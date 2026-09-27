@@ -3,7 +3,8 @@
  *
  * Tokens, reset, and cross-module primitives:
  *   - Custom properties (:root) — dark mode
- *   - Custom properties ([data-theme="light"]) — light mode
+ *   - Custom properties ([data-theme="light"]) — soft cream light mode
+ *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -25,9 +26,10 @@
  * Load order: shared.css MUST load first.
  *
  * THEME SYSTEM:
- *   Dark mode is the default. Light mode is activated by setting
- *   `data-theme="light"` on <html>. All colors are driven by the
- *   tokens below, so a single attribute swap re-themes the app.
+ *   Dark mode is the default. Light and vaporwave are activated
+ *   by setting `data-theme="light"` / `data-theme="vaporwave"`
+ *   on <html>. All colors are driven by the tokens below, so a
+ *   single attribute swap re-themes the app.
  *   See js/utils/theme-manager.js for the toggle logic.
  *
  * DOMAIN COLOR TOKENS:
@@ -52,8 +54,8 @@
  *         Inline title chip background on relationship rows
  *         (social-views.js).
  *
- *   These are declared here, in both dark and light variants,
- *   because they need to re-theme with everything else.
+ *   These are declared here, in every theme variant, because
+ *   they need to re-theme with everything else.
  */
 
 /* ============================================================
@@ -192,25 +194,28 @@
 }
 
 /* ============================================================
-   TOKENS — LIGHT MODE
+   TOKENS — LIGHT MODE (SOFT CREAM)
    ============================================================
-   Activated by data-theme="light" on <html>. Every color token
-   is inverted or adjusted for contrast on a light background.
-   The accent hues stay in the same family so domain semantics
-   (e.g. "green = success") remain intact across themes.
+   Activated by data-theme="light" on <html>.
+
+   The previous light palette used pure white (#ffffff) panels,
+   which was fatiguing. This palette uses a warm off-white and
+   a slightly deeper page background so the panel layer reads as
+   raised without glare. Contrast still meets accessibility
+   targets; the text is a deep ink rather than pure black.
  */
 
 [data-theme="light"] {
     /* --------------------------------------------------------
        BASE PALETTE
        -------------------------------------------------------- */
-    --bg: #f5f7f0;
-    --panel: #ffffff;
-    --panel-alt: #eef2e6;
-    --border: #c5d4b8;
-    --border-soft: #dde5d3;
-    --text: #1a2e0f;
-    --text-dim: #5a7248;
+    --bg: #ece9df;              /* page: warm parchment */
+    --panel: #f7f4ec;           /* cards: soft cream, not white */
+    --panel-alt: #e3e0d3;       /* recessed wells */
+    --border: #c8c3b0;
+    --border-soft: #d9d5c6;
+    --text: #26301c;            /* deep ink green */
+    --text-dim: #5f6a52;
     --accent: #4f7a12;
     --accent-soft: rgba(79, 122, 18, 0.14);
     --accent-hover: rgba(79, 122, 18, 0.22);
@@ -240,7 +245,7 @@
        GRAPH NODE PALETTE (LIGHT MODE)
        --------------------------------------------------------
        Darker strokes, richer fills so nodes read against the
-       near-white background. */
+       warm cream background. */
 
     --graph-node-accent-fill: #6f9b28;
     --graph-node-accent-stroke: #4d7218;
@@ -250,7 +255,7 @@
     /* --------------------------------------------------------
        GRAPH NODE STATUS COLORS (LIGHT MODE)
        --------------------------------------------------------
-       Deepened for legibility against a near-white background.
+       Deepened for legibility against a warm cream background.
        The identity of each status is preserved: senior is still
        gold-tinged, student is still green, etc. */
 
@@ -267,7 +272,7 @@
     /* --------------------------------------------------------
        MAGIC TYPE COLORS (LIGHT MODE)
        --------------------------------------------------------
-       Adjusted for readability on a near-white background.
+       Adjusted for readability on a warm cream background.
        Colors are slightly deepened, and hues that were nearly
        invisible on white (bone, void) are re-tuned. The type's
        IDENTITY is preserved — fire is still orange, death is
@@ -300,8 +305,8 @@
     /* --------------------------------------------------------
        RELATIONSHIP COLORS (LIGHT MODE)
        --------------------------------------------------------
-       Slightly deepened for contrast against a light panel. The
-       pairing matches the dark-mode palette one-for-one. */
+       Slightly deepened for contrast against a warm cream panel.
+       The pairing matches the dark-mode palette one-for-one. */
 
     --relationship-familial:     #5a8a1a;
     --relationship-professional: #9c7a1e;
@@ -315,10 +320,146 @@
     /* --------------------------------------------------------
        SUBTLE CHIP BACKGROUND (LIGHT MODE)
        --------------------------------------------------------
-       A faint black wash reads correctly on a light panel; the
+       A faint black wash reads correctly on a cream panel; the
        dark-mode white wash was invisible. */
 
     --chip-bg-subtle: rgba(0, 0, 0, 0.05);
+}
+
+/* ============================================================
+   TOKENS — VAPORWAVE (NEON PINK + CYAN ON INDIGO)
+   ============================================================
+   Activated by data-theme="vaporwave" on <html>.
+
+   A neon pink/cyan palette on a deep indigo base. Both accents
+   are first-class: the "accent" slot is the neon pink, the
+   "info" slot is the neon cyan. Together they carry the classic
+   pink-and-blue vaporwave look. A third hue (a soft neon violet)
+   is reserved for the warning slot so warnings still read as
+   distinct from both accents.
+
+   Contrast note: the neon accents are bright enough to read as
+   foreground on the indigo base, but they are NOT dark enough
+   to carry body text. Body text uses the pale lavender; accents
+   are used for borders, fills, badges, and headings only.
+ */
+
+[data-theme="vaporwave"] {
+    /* --------------------------------------------------------
+       BASE PALETTE
+       -------------------------------------------------------- */
+    --bg: #1a1030;              /* deep indigo night */
+    --panel: #241645;           /* raised panel */
+    --panel-alt: #2e1c56;       /* recessed well */
+    --border: #4a2d8a;          /* violet border */
+    --border-soft: #37216a;
+    --text: #e8dcff;            /* pale lavender ink */
+    --text-dim: #9d86c8;        /* muted lilac */
+
+    /* Neon pink — the primary accent */
+    --accent: #ff4fd8;
+    --accent-soft: rgba(255, 79, 216, 0.16);
+    --accent-hover: rgba(255, 79, 216, 0.28);
+
+    /* Neon cyan — the secondary accent (info slot) */
+    --info: #2ee6ff;
+    --info-soft: rgba(46, 230, 255, 0.14);
+    --info-hover: rgba(46, 230, 255, 0.26);
+
+    /* Danger: hot magenta-red, distinct from both accents */
+    --danger: #ff5c7a;
+    --danger-soft: rgba(255, 92, 122, 0.16);
+    --danger-hover: rgba(255, 92, 122, 0.28);
+
+    /* Warning: soft neon violet */
+    --warning: #c07bff;
+    --warning-soft: rgba(192, 123, 255, 0.16);
+    --warning-hover: rgba(192, 123, 255, 0.28);
+
+    /* --------------------------------------------------------
+       OVERLAY / BACKDROP
+       -------------------------------------------------------- */
+    --overlay: rgba(10, 4, 24, 0.85);
+    --overlay-light: rgba(10, 4, 24, 0.6);
+
+    /* --------------------------------------------------------
+       LAYOUT
+       -------------------------------------------------------- */
+    --radius: 10px;
+    --shadow: 0 4px 24px rgba(255, 79, 216, 0.12),
+              0 0 60px rgba(46, 230, 255, 0.06);
+
+    /* --------------------------------------------------------
+       SCROLLBAR
+       -------------------------------------------------------- */
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    /* --------------------------------------------------------
+       GRAPH NODE PALETTE
+       -------------------------------------------------------- */
+    --graph-node-accent-fill: #ff4fd8;
+    --graph-node-accent-stroke: #c030a8;
+    --graph-node-info-fill: #2ee6ff;
+    --graph-node-info-stroke: #20a8c0;
+
+    /* --------------------------------------------------------
+       GRAPH NODE STATUS COLORS
+       -------------------------------------------------------- */
+    --graph-node-status-deceased:   #6b5c8a;
+    --graph-node-status-instructor: #c07bff;
+    --graph-node-status-senior:     #ffd166;
+    --graph-node-status-junior:     #2ee6ff;
+    --graph-node-status-rookie:     #5cffb0;
+    --graph-node-status-student:    #ff4fd8;
+    --graph-node-status-support:    #ff9e4f;
+    --graph-node-status-civilian:   #9d86c8;
+    --graph-node-status-other:      #9d86c8;
+
+    /* --------------------------------------------------------
+       MAGIC TYPE COLORS
+       -------------------------------------------------------- */
+
+    /* Elemental */
+    --magic-earth: #b08060;
+    --magic-water: #2ee6ff;
+    --magic-fire:  #ff7a4f;
+    --magic-air:   #a8e6ff;
+    --magic-metal: #b0c4d4;
+    --magic-wood:  #5cffb0;
+
+    /* Body */
+    --magic-blood:   #ff5c7a;
+    --magic-bone:    #e8dcff;
+    --magic-mind:    #c07bff;
+    --magic-morphic: #4fffd4;
+    --magic-life:    #5cffb0;
+    --magic-death:   #6b5c8a;
+
+    /* Aether */
+    --magic-space:        #2ee6ff;
+    --magic-time:         #ffd166;
+    --magic-dimension:    #c07bff;
+    --magic-void:         #1a1030;
+    --magic-reality:      #ff4fd8;
+    --magic-transference: #ff5c7a;
+
+    /* --------------------------------------------------------
+       RELATIONSHIP COLORS
+       -------------------------------------------------------- */
+    --relationship-familial:     #5cffb0;
+    --relationship-professional: #ffd166;
+    --relationship-romantic:     #ff5c7a;
+    --relationship-friendship:   #2ee6ff;
+    --relationship-mentor:       #c07bff;
+    --relationship-rivalry:      #ff9e4f;
+    --relationship-alliance:     #4fffd4;
+    --relationship-other:        #9d86c8;
+
+    /* --------------------------------------------------------
+       SUBTLE CHIP BACKGROUND
+       -------------------------------------------------------- */
+    --chip-bg-subtle: rgba(255, 255, 255, 0.06);
 }
 
 /* ============================================================
@@ -377,6 +518,50 @@ a,
     .loading-state {
         transition: none !important;
     }
+}
+
+/* ============================================================
+   VAPORWAVE BACKDROP GLOW
+   ============================================================
+   A soft two-tone gradient behind the app when the vaporwave
+   theme is active. The pink and cyan radials sit in opposite
+   corners so the base reads as pink-and-blue rather than one
+   dominant hue. Inert in every other theme.
+ */
+
+[data-theme="vaporwave"] body {
+    background:
+        radial-gradient(circle at 15% 0%,
+            rgba(255, 79, 216, 0.18) 0%,
+            transparent 45%),
+        radial-gradient(circle at 85% 100%,
+            rgba(46, 230, 255, 0.16) 0%,
+            transparent 45%),
+        var(--bg);
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   VAPORWAVE HEADING GLOW
+   ============================================================
+   Neon text-shadow on headings so the two accents read as a
+   pair rather than a single tint. The pink shadow sits close,
+   the cyan shadow sits further out; together they read as a
+   pink core with a blue halo. Inert in every other theme.
+ */
+
+[data-theme="vaporwave"] h1,
+[data-theme="vaporwave"] h2,
+[data-theme="vaporwave"] h3,
+[data-theme="vaporwave"] h4 {
+    text-shadow:
+        0 0 8px rgba(255, 79, 216, 0.45),
+        0 0 20px rgba(46, 230, 255, 0.25);
+}
+
+[data-theme="vaporwave"] #theme-toggle-btn {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 /* ============================================================
@@ -528,9 +713,9 @@ button.small {
 /* ============================================================
    THEME TOGGLE BUTTON
    ============================================================
-   Lives in the header-actions cluster. Shows ☀ in dark mode
-   (click to go light) and ☾ in light mode (click to go dark).
-   Sized to match the other small header buttons.
+   Lives in the header-actions cluster. Cycles through the
+   available themes; the glyph previews the NEXT theme in the
+   cycle. Sized to match the other small header buttons.
  */
 
 #theme-toggle-btn {
@@ -922,7 +1107,7 @@ main {
    ============================================================
    Owned by shared.css. Previously these rules were injected
    from js/utils/modal.js; they now live here so a single
-   stylesheet governs modal appearance in both themes.
+   stylesheet governs modal appearance in every theme.
 
    VISIBILITY CONVENTION:
      - .modal is visible by default (display: flex).
@@ -975,6 +1160,12 @@ main {
 
 [data-theme="light"] .modal-content {
     box-shadow: 0 0 50px rgba(30, 45, 20, 0.18);
+}
+
+[data-theme="vaporwave"] .modal-content {
+    box-shadow:
+        0 0 50px rgba(255, 79, 216, 0.18),
+        0 0 90px rgba(46, 230, 255, 0.10);
 }
 
 @media (min-width: 768px) {
@@ -1065,8 +1256,8 @@ main {
    ============================================================
    Owned by shared.css. Previously these rules were injected
    from js/utils/notification.js; they now live here so a
-   single stylesheet governs notification appearance in both
-   themes.
+   single stylesheet governs notification appearance in every
+   theme.
  */
 
 .notification-container {
