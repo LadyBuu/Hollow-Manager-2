@@ -12,7 +12,326 @@
     <link rel="stylesheet" href="css/teams.css" />
     <link rel="stylesheet" href="css/social.css" />
     <link rel="stylesheet" href="css/missions.css" />
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hollow Manager 2</title>
+    <link rel="icon" href="data:," />
 
+    <link rel="stylesheet" href="css/shared.css" />
+    <link rel="stylesheet" href="css/dashboard.css" />
+    <link rel="stylesheet" href="css/characters.css" />
+    <link rel="stylesheet" href="css/teams.css" />
+    <link rel="stylesheet" href="css/social.css" />
+    <link rel="stylesheet" href="css/missions.css" />
+
+    <link rel="stylesheet" href="css/academy.css" />
+
+    <link rel="stylesheet" href="css/academy/modals.css" />
+    <link rel="stylesheet" href="css/academy/ranking.css" />
+    <link rel="stylesheet" href="css/academy/exams.css" />
+    <link rel="stylesheet" href="css/academy/discipline.css" />
+    <link rel="stylesheet" href="css/academy/location.css" />
+    <link rel="stylesheet" href="css/academy/weekly-teams.css" />
+    <link rel="stylesheet" href="css/academy/character-detail.css" />
+    <link rel="stylesheet" href="css/academy/class-detail.css" />
+
+    <link rel="stylesheet" href="css/calendar.css" />
+
+    <script>
+        // Apply theme before first paint to avoid a flash of the
+        // wrong theme. This runs inline so it takes effect before
+        // the stylesheets are parsed.
+        (function() {
+            try {
+                var stored = localStorage.getItem('hollow-manager-theme');
+                if (stored === 'light') {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                }
+            } catch (e) {
+                // localStorage unavailable — fall through to dark default
+            }
+        })();
+    </script>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="header-top">
+                <h1>Hollow Manager 2</h1>
+                <button class="burger-btn" id="nav-toggle" aria-label="Toggle navigation">☰</button>
+            </div>
+
+            <nav id="main-nav">
+                <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+                <a href="#characters" data-tab="characters">Characters</a>
+                <a href="#teams" data-tab="teams">Teams</a>
+                <a href="#social" data-tab="social">Social</a>
+                <a href="#academy" data-tab="academy">Academy</a>
+                <a href="#missions" data-tab="missions">Missions</a>
+            </nav>
+
+            <div class="header-actions">
+                <button id="theme-toggle-btn" class="small" title="Toggle theme" aria-label="Toggle theme">☀</button>
+                <button id="export-json-btn" class="small" title="Export JSON" aria-label="Export JSON">↓</button>
+                <button id="import-json-btn" class="small" title="Import JSON" aria-label="Import JSON">↑</button>
+                <input type="file" id="json-file-input" accept=".json" style="display:none;">
+
+                <button id="export-graduates-json-btn" class="small" title="Export Graduates (JSON)" aria-label="Export Graduates JSON">↓🎓</button>
+            </div>
+        </header>
+
+        <main id="main-content">
+            <div id="tab-dashboard" class="tab-content active"></div>
+            <div id="tab-characters" class="tab-content"></div>
+            <div id="tab-teams" class="tab-content"></div>
+            <div id="tab-social" class="tab-content"></div>
+            <div id="tab-academy" class="tab-content"></div>
+            <div id="tab-missions" class="tab-content"></div>
+        </main>
+    </div>
+
+    <!-- Utilities -->
+    <script src="js/utils/object-utils.js"></script>
+    <script src="js/utils/id-utils.js"></script>
+    <script src="js/utils/validation-utils.js"></script>
+    <script src="js/utils/format-utils.js"></script>
+    <script src="js/utils/dom-utils.js"></script>
+    <script src="js/utils/form-utils.js"></script>
+    <script src="js/utils/timing-utils.js"></script>
+    <script src="js/utils/modal.js"></script>
+    <script src="js/utils/notification.js"></script>
+
+    <!-- Theme management -->
+    <script src="js/utils/theme-manager.js"></script>
+
+    <!-- Shared constants -->
+    <script src="js/modules/shared/constants.js"></script>
+    <script src="js/modules/shared/calendar-constants.js"></script>
+    <script src="js/modules/shared/character-constants.js"></script>
+    <script src="js/modules/shared/academy-constants.js"></script>
+    <script src="js/modules/shared/magic-constants.js"></script>
+    <script src="js/modules/shared/social-constants.js"></script>
+    <script src="js/modules/shared/team-constants.js"></script>
+
+    <script src="js/modules/tournaments/tournament-schema.js"></script>
+    <script src="js/modules/shared/tournament-constants.js"></script>
+
+    <script src="js/modules/shared/mission-constants.js"></script>
+    <script src="js/modules/missions/mission-id.js"></script>
+
+    <script src="js/utils/calendar-validation.js"></script>
+    <script src="js/utils/range-utils.js"></script>
+
+    <!-- Tournament rules -->
+    <script src="js/modules/tournaments/tournament-rules.js"></script>
+
+    <!-- Shared queries -->
+    <script src="js/modules/shared/queries/character-queries.js"></script>
+    <script src="js/modules/shared/queries/team-queries.js"></script>
+    <script src="js/modules/shared/queries/tournament-queries.js"></script>
+    <script src="js/modules/shared/queries/mission-queries.js"></script>
+    <script src="js/modules/shared/queries/social-queries.js"></script>
+    <script src="js/modules/shared/queries/discipline-queries.js"></script>
+    <script src="js/modules/shared/queries/location-queries.js"></script>
+    <script src="js/modules/shared/queries/elimination-queries.js"></script>
+
+    <!-- Core infrastructure -->
+    <script src="js/core/activity-log.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/state.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+
+    <!-- Shared components -->
+    <script src="js/modules/shared/member-manager.js"></script>
+
+    <!-- Calendar renderer -->
+    <script src="js/modules/calendar/calendar-renderer.js"></script>
+
+    <!-- Academy domain -->
+    <script src="js/modules/academy/academy-grade-schemes.js"></script>
+    <script src="js/modules/academy/academy-classes.js"></script>
+    <script src="js/modules/academy/academy-grades.js"></script>
+    <script src="js/modules/academy/academy-disciplines.js"></script>
+    <script src="js/modules/academy/academy-locations.js"></script>
+
+    <script src="js/modules/academy/academy-cascade.js"></script>
+    <script src="js/modules/academy/academy-eliminations.js"></script>
+    <script src="js/modules/academy/academy-settings.js"></script>
+    <script src="js/modules/academy/academy-enrolments.js"></script>
+    <script src="js/modules/academy/academy-social-score.js"></script>
+    <script src="js/modules/academy/academy-performance.js"></script>
+
+    <script src="js/modules/academy/academy-ranking.js"></script>
+
+    <!-- Academy teaching model -->
+    <script src="js/modules/academy/academy-class-disciplines-queries.js"></script>
+    <script src="js/modules/academy/academy-class-disciplines.js"></script>
+    <script src="js/modules/academy/academy-discipline-sessions-panel.js"></script>
+    <script src="js/modules/academy/academy-teaching-groups.js"></script>
+    <script src="js/modules/academy/academy-teaching-sessions.js"></script>
+    <script src="js/modules/academy/academy-instructor-commitments.js"></script>
+    <script src="js/modules/academy/academy-teaching-projector.js"></script>
+    <script src="js/modules/academy/academy-teaching-collisions.js"></script>
+    <script src="js/modules/academy/academy-teaching-validation.js"></script>
+
+    <!-- Academy schedule coordinator -->
+    <script src="js/modules/academy/academy-schedule.js"></script>
+
+    <!-- Academy calendar aggregator -->
+    <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
+
+    <script src="js/modules/academy/academy-weekly-teams.js"></script>
+
+    <script src="js/modules/academy/academy-aggregator.js"></script>
+    <script src="js/modules/academy/academy-ui.js"></script>
+
+    <!-- Academy member adapter -->
+    <script src="js/modules/academy/member-adapter-academy.js"></script>
+
+    <!-- Academy balance suggestions -->
+    <script src="js/modules/academy/academy-balance-suggestions.js"></script>
+
+    <!-- Social domain -->
+    <script src="js/modules/social/social-core.js"></script>
+    <script src="js/modules/social/social-aggregator.js"></script>
+    <script src="js/modules/social/social-views.js"></script>
+    <script src="js/modules/social/social-graph.js"></script>
+    <script src="js/modules/social/social-events.js"></script>
+    <script src="js/modules/social/index.js"></script>
+
+    <!-- Character domain -->
+    <script src="js/modules/characters/character-generator.js"></script>
+    <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-moves.js"></script>
+    <script src="js/modules/characters/character-crud.js"></script>
+    <script src="js/modules/characters/character-aggregator.js"></script>
+    <script src="js/modules/characters/character-list.js"></script>
+    <script src="js/modules/characters/character-form.js"></script>
+    <script src="js/modules/characters/character-detail.js"></script>
+    <script src="js/modules/characters/character-class-view.js"></script>
+    <script src="js/modules/characters/character-stats-view.js"></script>
+    <script src="js/modules/characters/character-views.js"></script>
+    <script src="js/modules/characters/character-events.js"></script>
+    <script src="js/modules/characters/index.js"></script>
+
+    <!-- Tournament domain -->
+    <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
+    <script src="js/modules/tournaments/tournament-cascade.js"></script>
+    <script src="js/modules/tournaments/tournament-matches.js"></script>
+    <script src="js/modules/tournaments/tournament-core.js"></script>
+
+    <!-- Academy view shell -->
+    <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
+    <script src="js/modules/academy/academy-class-detail.js"></script>
+    <script src="js/modules/academy/academy-grades-editor.js"></script>
+    <script src="js/modules/academy/academy-character-detail.js"></script>
+    <script src="js/modules/academy/academy-discipline-view.js"></script>
+    <script src="js/modules/academy/academy-discipline-schedule-summary.js"></script>
+    <script src="js/modules/academy/academy-location-view.js"></script>
+    <script src="js/modules/academy/academy-ranking-view.js"></script>
+
+    <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
+
+    <script src="js/modules/academy/academy-tournament-view.js"></script>
+    <script src="js/modules/academy/academy-tournament-events.js"></script>
+    <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
+    <script src="js/modules/academy/academy-crud-modals.js"></script>
+
+    <!-- Academy modals -->
+    <script src="js/modules/academy/academy-class-disciplines-picker.js"></script>
+    <script src="js/modules/academy/academy-enrollment-modal.js"></script>
+    <script src="js/modules/academy/academy-schedule-assign-modal.js"></script>
+    <script src="js/modules/academy/academy-schedule-instructor-modal.js"></script>
+    <script src="js/modules/academy/academy-session-form-modal.js"></script>
+    <script src="js/modules/academy/academy-session-actions-modal.js"></script>
+    <script src="js/modules/academy/academy-group-management-modal.js"></script>
+    <script src="js/modules/academy/academy-rebalance-modal.js"></script>
+
+    <script src="js/modules/academy/academy-view.js"></script>
+
+    <!-- Team domain -->
+    <script src="js/modules/teams/team-aggregator.js"></script>
+    <script src="js/modules/teams/team-ui.js"></script>
+    <script src="js/modules/teams/team-render.js"></script>
+    <script src="js/modules/teams/team-core.js"></script>
+
+    <script src="js/modules/teams/team-matchmaking.js"></script>
+    <script src="js/modules/teams/team-matchmaking-view.js"></script>
+
+    <script src="js/modules/teams/member-adapter-teams.js"></script>
+
+    <script src="js/modules/teams/team-events.js"></script>
+    <script src="js/modules/teams/index.js"></script>
+
+    <!-- Academy controllers -->
+    <script src="js/modules/academy/controllers/controller-contract.js"></script>
+    <script src="js/modules/academy/controllers/academy-controllers.js"></script>
+
+    <script src="js/modules/academy/controllers/academy-people-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-exam-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-weekly-teams-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-ranking-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-discipline-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
+
+    <script src="js/modules/academy/academy-weekly-teams-operations.js"></script>
+
+    <script src="js/modules/academy/index.js"></script>
+
+    <!-- Missions domain -->
+    <script src="js/modules/missions/mission-schema.js"></script>
+    <script src="js/modules/missions/mission-rules.js"></script>
+    <script src="js/modules/missions/mission-cascade.js"></script>
+    <script src="js/modules/missions/mission-core.js"></script>
+    <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-render.js"></script>
+    <script src="js/modules/missions/mission-aggregator.js"></script>
+    <script src="js/modules/missions/mission-ui.js"></script>
+    <script src="js/modules/missions/index.js"></script>
+
+    <!-- Import / export -->
+    <script src="js/import-export/export-utils.js"></script>
+    <script src="js/import-export/import-result.js"></script>
+    <script src="js/import-export/csv-parser.js"></script>
+    <script src="js/import-export/export-schema.js"></script>
+    <script src="js/import-export/export-envelope.js"></script>
+    <script src="js/import-export/format-migrations.js"></script>
+    <script src="js/import-export/cross-domain-validator.js"></script>
+    <script src="js/import-export/import-pipeline.js"></script>
+    <script src="js/import-export/json-io.js"></script>
+    <script src="js/import-export/character-csv.js"></script>
+    <script src="js/import-export/mission-csv.js"></script>
+    <script src="js/import-export/team-export.js"></script>
+    <script src="js/import-export/schedule-export.js"></script>
+    <script src="js/import-export/class-roster-export.js"></script>
+    <script src="js/import-export/graduates-export-picker.js"></script>
+    <script src="js/import-export/team-export-picker.js"></script>
+    <script src="js/import-export/character-export.js"></script>
+    <script src="js/import-export/ui.js"></script>
+    <script src="js/import-export/index.js"></script>
+
+
+    <!-- Application settings -->
+    <script src="js/modules/application/application-settings-core.js"></script>
+    <script src="js/modules/application/application-settings-queries.js"></script>
+
+    <!-- Dashboard -->
+    <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
+    <script src="js/modules/dashboard/dashboard-render.js"></script>
+    <script src="js/modules/dashboard/dashboard-ui.js"></script>
+    <script src="js/modules/dashboard/index.js"></script>
+
+    <!-- Bootstrap + app shell -->
+    <script src="js/core/bootstrap.js"></script>
+    <script src="js/app.js"></script>
+
+</body>
+</html>
     <link rel="stylesheet" href="css/academy.css" />
 
         <link rel="stylesheet" href="css/academy/modals.css" />
