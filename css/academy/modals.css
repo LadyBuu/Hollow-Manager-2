@@ -31,8 +31,8 @@
  *   Almost every rule here uses theme tokens. The only hardcoded
  *   colors are two danger-tinted rgba() values on the rebalance
  *   modal's unplaceable disclosure, which carry explicit
- *   [data-theme="light"] and [data-theme="vaporwave"] overrides
- *   at the bottom of the file.
+ *   [data-theme="light"], [data-theme="vaporwave"], and
+ *   [data-theme="pastel"] overrides at the bottom of the file.
  */
 
 /* ============================================================
@@ -1007,17 +1007,38 @@
    The rebalance modal's unplaceable disclosure uses two
    hardcoded danger-tinted rgba() values. They are derived from
    --danger and are legible in dark and light modes, but in
-   vaporwave the danger token is a hot magenta-red (#ff5c7a)
-   and the base rules' rgba values were tuned for the darker
+   vaporwave the danger token is a hot coral-red (#ff557f) and
+   the base rules' rgba values were tuned for the darker
    dark-mode red. These overrides re-derive the wash from the
    vaporwave danger hue so the tint reads as the same color
    family as the rest of the theme.
  */
 
 [data-theme="vaporwave"] .academy-rebalance-unplaceable-toggle:hover {
-    background: rgba(255, 92, 122, 0.18);
+    background: rgba(255, 85, 127, 0.18);
 }
 
 [data-theme="vaporwave"] .academy-rebalance-unplaceable-body {
-    border-top-color: rgba(255, 92, 122, 0.35);
+    border-top-color: rgba(255, 85, 127, 0.35);
+}
+
+/* ============================================================
+   PASTEL OVERRIDES
+   ============================================================
+   The rebalance modal's unplaceable disclosure uses two
+   hardcoded danger-tinted rgba() values. They are derived from
+   --danger and are legible in dark mode, but in pastel the
+   danger hue is a soft rose-red (#e87591) and the base rules'
+   rgba values were tuned for a darker red. These overrides
+   re-derive the wash from the pastel danger hue so the tint
+   reads as the same color family as the rest of the theme
+   without becoming a saturated red splotch on the blush panel.
+ */
+
+[data-theme="pastel"] .academy-rebalance-unplaceable-toggle:hover {
+    background: rgba(232, 117, 145, 0.14);
+}
+
+[data-theme="pastel"] .academy-rebalance-unplaceable-body {
+    border-top-color: rgba(232, 117, 145, 0.32);
 }
