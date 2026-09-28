@@ -69,7 +69,7 @@
  *     data-action="character-export"
  *     data-character-id="<the character id>"
  *
- * SOCIAL SCORE (this revision):
+ * SOCIAL SCORE:
  *   The Performance card's "Social Score" row carries an Edit
  *   action. The action element emits:
  *
@@ -78,15 +78,8 @@
  *
  *   The character id is sourced from the character detail VM
  *   (`viewModel.character.id`), NOT from `performance.characterId`.
- *   The aggregator does not set `performance.characterId`; an
- *   earlier revision read it and produced an action element with no
- *   character id, which the People controller could not resolve.
  *
- *   The id is threaded through `renderPerformanceScores` as an
- *   explicit argument so the renderer never has to guess where it
- *   lives on the VM.
- *
- * GRADES TAB (this revision):
+ * GRADES TAB:
  *   The Grades tab renders ONLY a host container:
  *
  *     <div id="academy-grades-editor-host"></div>
@@ -94,11 +87,21 @@
  *   The grades editor mounts into that host and emits its own
  *   header (title "Grades", week badge, "+ Add Grade" button).
  *
- *   An earlier revision ALSO emitted a section header
- *   (`<h4 class="academy-character-detail-section-title">Grades
- *   </h4>`) in this file, producing two "Grades" headers when the
- *   tab mounted. That outer header has been removed. The editor's
- *   header is the only one.
+ * SCHEDULE TAB — EXPORT BUTTON (this revision):
+ *   The Schedule tab's section header carries a small
+ *   secondary-styled "Export" button:
+ *
+ *     data-action="character-export-schedule-text"
+ *     data-character-id="<the character id>"
+ *
+ *   The button triggers a plain-text export of the character's
+ *   weekly schedule grid for the current display week. The export
+ *   itself is built by ScheduleExport.exportStudentScheduleText;
+ *   this renderer only emits the button.
+ *
+ *   Unlike the character report (which exports the whole character
+ *   across every domain), the schedule export is week-scoped and
+ *   grid-shaped. The two live in different modules for that reason.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -266,16 +269,6 @@
     // ============================================================
     // HEADER
     // ============================================================
-    //
-    // The title row carries:
-    //   1. the character name (h3)
-    //   2. the role badge, scoped to the currently selected class
-    //   3. the Export button
-    //
-    // The role badge reads "Instructor of <ClassName>" or
-    // "Student of <ClassName>". When no class is selected, the
-    // badge reads "Instructor" or "Student" without a class
-    // qualifier, and the mode toggle is disabled with a hint.
 
     function renderHeader(character, mode, classContext) {
         var displayRole = mode === 'instructor' ? 'instructor' : 'student';
@@ -339,27 +332,6 @@
         return html;
     }
 
-    /**
-     * Per-class mode toggle.
-     *
-     * The toggle is a checkbox. Its checked state reflects whether
-     * the character is currently an instructor OF THE SELECTED
-     * CLASS.
-     *
-     * When no class is selected, the toggle is disabled and shows
-     * a hint. Without a class, there is no per-class role to
-     * toggle; the mode cannot be changed in a class-less context.
-     *
-     * The emitted markers:
-     *   data-action="character-mode-toggle"
-     *   data-character-id="<character id>"
-     *   data-class-id="<class id>"   (only when a class is selected)
-     *   data-target-role="instructor"|"student"
-     *
-     * The controller reads these and calls
-     * CharacterCRUD.setInstructorForClass(charId, classId,
-     * targetRole === 'instructor') on click.
-     */
     function renderModeToggle(mode, classContext, character) {
         var isInstructor = mode === 'instructor';
         var hasClass = !!classContext && isNonEmptyString(classContext.id);
@@ -561,14 +533,6 @@
     // ============================================================
     // PERFORMANCE SCORES
     // ============================================================
-    //
-    // The character id is passed in explicitly. It is NOT read off
-    // `performance`. The aggregator's `buildPerformance` returns
-    // { week, academicAverage, socialScore, overallScore } and does
-    // not carry a character id; an earlier revision read
-    // `performance.characterId` (undefined) and produced a Social
-    // Score edit action with no `data-character-id`, which the
-    // People controller could not resolve.
 
     function renderPerformanceScores(performance, charId) {
         var html = '';
@@ -904,21 +868,8 @@
     }
 
     // ============================================================
-    // GRADES TAB (this revision)
+    // GRADES TAB
     // ============================================================
-    //
-    // The Grades tab renders ONLY the host container. The grades
-    // editor mounts into it and emits its own header (title, week
-    // badge, "+ Add Grade" button).
-    //
-    // An earlier revision emitted an outer section header here too,
-    // producing two "Grades" headings when the tab mounted. That
-    // outer header is removed. Do not re-add it.
-    //
-    // When no class is selected, the tab still emits an
-    // explanatory message so the tab is not visually empty before
-    // the editor has a chance to mount. The editor's own empty
-    // state covers the "class selected but no grades" case.
 
     function renderGradesTab(vm) {
         if (!vm.classContext) {
@@ -942,10 +893,12 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB
+    // SCHEDULE TAB (this revision adds the Export button)
     // ============================================================
 
     function renderScheduleTab(vm) {
+        var charId = getCharacterId(vm);
+
         var html = '';
         html += '<div class="academy-character-detail-section ' +
                     'academy-character-schedule">';
@@ -958,6 +911,19 @@
                         'Week ' +
                         escapeHtml(String(vm.performance.week)) +
                     '</span>';
+        }
+
+        if (charId) {
+            html += '<button type="button" ' +
+                        'class="small secondary ' +
+                        'academy-character-schedule-export-btn" ' +
+                        'data-action="character-export-schedule-text" ' +
+                        'data-character-id="' +
+                            escapeAttribute(charId) + '" ' +
+                        'title="Export this week\'s schedule grid as a ' +
+                            'plain-text file">' +
+                        'Export Schedule' +
+                    '</button>';
         }
 
         html += '</div>';
@@ -1223,10 +1189,6 @@
         return html;
     }
 
-    // ============================================================
-    // TEACHING GROUP BLOCK (collapsible)
-    // ============================================================
-
     function renderTeachingGroupBlock(
         group,
         charId,
@@ -1249,7 +1211,6 @@
                     'data-expanded="' +
                         escapeAttribute(isExpanded ? 'true' : 'false') + '">';
 
-        // ---- Header (caret + name + count + actions) ----
         html += '<div class="academy-teaching-group-header">';
 
         html += '<button type="button" ' +
@@ -1312,7 +1273,6 @@
 
         html += '</div>';
 
-        // ---- Body (collapsible) ----
         html += '<div class="academy-teaching-group-body">';
 
         if (isPickerOpen) {
@@ -1377,10 +1337,6 @@
         html += '</div>';
         return html;
     }
-
-    // ============================================================
-    // CANDIDATE PICKER (multi-select)
-    // ============================================================
 
     function renderCandidatePicker(group, charId, pickerCandidates) {
         var hasVM = pickerCandidates &&
@@ -1621,10 +1577,6 @@
         return 'Conflicts with a session on ' + parts.join(' at ');
     }
 
-    // ============================================================
-    // SESSIONS LIST (inside a teaching-group block)
-    // ============================================================
-
     function renderTeachingGroupSessionsList(group) {
         if (!group || !group.groupId) { return ''; }
 
@@ -1741,10 +1693,6 @@
             '</button>'
         );
     }
-
-    // ============================================================
-    // CREATE-GROUP MODAL
-    // ============================================================
 
     function canOpenCreateGroupModal() {
         var Schedule = window.AcademySchedule;
