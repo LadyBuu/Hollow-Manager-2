@@ -58,33 +58,6 @@
  *   the snapshot. The mutate() callback applies the set. If any
  *   pair fails validate, the whole batch is rejected.
  *
- * TEAM DELETION AND CROSS-DOMAIN REFERENCES:
- *   Deleting a team splices the team record out of appData.teams.
- *   Before the splice, deleteTeam calls
- *   TournamentCore.stripTeamRefs(appData, teamId) inside the same
- *   transaction. That cascade removes every reference to the team
- *   from every tournament: participants entries, tournament-side
- *   elimination records, match participant slots, and teamResults
- *   keys.
- *
- *   Without this cascade, a delete left dangling team references
- *   in tournaments. The application continued to render, but the
- *   next export carried those dangling references and the next
- *   import failed cross-domain validation with "Tournament
- *   participant references non-existent team".
- *
- *   The cascade lives on TournamentCascade. TournamentCore exposes
- *   it as a one-line delegator so TeamCore does not have to reach
- *   into the tournament module's internals directly.
- *
- *   If TournamentCore is unavailable at the moment of deletion
- *   (load-order edge case), the cascade is skipped and the delete
- *   proceeds. This is the pre-fix behavior, and it is the
- *   conservative choice: a missing cascade must not block a
- *   delete. The alternative — throwing — would leave the user
- *   unable to delete a team in the presence of a partial
- *   dependency load.
- *
  * PERIOD SEMANTICS:
  *   - Periods are positive integers (or integer strings).
  *   - Periods are CANONICALISED on write: "02025" -> "2025".
@@ -120,6 +93,29 @@
  *   When a character's deathYear transitions from blank to a
  *   parseable year, every active PROFESSIONAL-team stint for that
  *   character is ended at that year.
+ *
+ *   ADD-AFTER-DEATH GUARD (this revision):
+ *     endStintsForCharacter only runs on save of the character
+ *     record. A character added to a team AFTER their death was
+ *     recorded would create an open stint that no future save
+ *     would close (unless the user re-saved the character).
+ *
+ *     addMember and batchAddMembers now run endStintsForCharacter
+ *     inline, against the pipeline snapshot, immediately after
+ *     adding. Any newly-added stint that extends past the
+ *     character's death year is closed at deathYear in the same
+ *     transaction.
+ *
+ *     The guard is idempotent and narrow:
+ *       - It only fires when the character has a parseable
+ *         deathYear.
+ *       - It only touches professional teams.
+ *       - It only closes intervals whose leavePeriod is blank and
+ *         whose joinPeriod is at or before deathYear.
+ *
+ *     The result: adding a dead character to a professional team
+ *     produces a stint that ends at their death year. Adding a
+ *     living character is unchanged.
  *
  *   SCOPE:
  *     Professional teams only. Academic, temporary, and civilian
@@ -164,7 +160,8 @@
  *   PURITY:
  *     Pure with respect to `appData`. Mutates the snapshot. Never
  *     touches window.data. Never throws. Runs inside another
- *     module's pipeline transaction (CharacterCRUD.save).
+ *     module's pipeline transaction (CharacterCRUD.save, or the
+ *     add-member transaction here).
  *
  *   IDEMPOTENCY:
  *     The cascade is idempotent. Running it twice on the same
@@ -179,10 +176,6 @@
  *
  *   characterProvider is injected via configure(). Only member
  *   mutations require it. Cascade helpers do not.
- *
- * DEPENDENCIES (LAZY):
- *   - window.TournamentCore   (used only by deleteTeam, for the
- *                              stripTeamRefs cascade)
  */
 
 (function() {
@@ -364,6 +357,39 @@
             }
         }
         return null;
+    }
+
+    function findCharacterInData(data, id) {
+        if (!data || !Array.isArray(data.characters) ||
+            !isNonEmptyString(id)) {
+            return null;
+        }
+        var target = String(id);
+        for (var i = 0; i < data.characters.length; i++) {
+            var c = data.characters[i];
+            if (c && typeof c === 'object' &&
+                String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Parse a character's deathYear to an integer >= 1, or null.
+     *
+     * Blank, malformed, and sub-1 values all return null. Used by
+     * the add-after-death guard.
+     */
+    function parseDeathYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var n = parseInt(String(value).trim(), 10);
+        if (isNaN(n) || n < 1) {
+            return null;
+        }
+        return n;
     }
 
     // ============================================================
@@ -1520,6 +1546,52 @@
                 }
 
                 target.updatedAt = new Date().toISOString();
+
+                // ---- ADD-AFTER-DEATH GUARD ----
+                //
+                // If the character has a parseable deathYear, run
+                // endStintsForCharacter against this same snapshot.
+                // Any newly-added interval that extends past the
+                // death year is closed at deathYear, in this same
+                // transaction.
+                //
+                // The guard is:
+                //   - idempotent (safe to run on every add),
+                //   - narrow (only touches professional teams, only
+                //     closes intervals whose leavePeriod is blank
+                //     and whose joinPeriod is at or before
+                //     deathYear),
+                //   - non-fatal (a throw here would roll back the
+                //     entire add; we do not want adding a living
+                //     character to fail because of an unrelated
+                //     corrupt record on a different team).
+                //
+                // endStintsForCharacter itself never throws. The
+                // try/catch is belt-and-braces for a future
+                // refactor.
+                var character = findCharacterInData(
+                    snapshot, targetChar
+                );
+                if (character) {
+                    var deathYear = parseDeathYear(character.deathYear);
+                    if (deathYear !== null) {
+                        try {
+                            endStintsForCharacter(
+                                snapshot,
+                                targetChar,
+                                deathYear
+                            );
+                        } catch (e) {
+                            console.warn(
+                                '[TeamCore] endStintsForCharacter ' +
+                                'failed during addMember; newly-' +
+                                'added stint may remain open past ' +
+                                'the character\'s death year:', e
+                            );
+                        }
+                    }
+                }
+
                 return {
                     memberId: entry.memberId,
                     characterId: targetChar,
@@ -1571,8 +1643,21 @@
      *     assignments to the same team and character in one
      *     batch).
      *
-     * The error messages name the offending row so a caller can
-     * surface a useful message.
+     * ADD-AFTER-DEATH GUARD:
+     *   After the batch is applied, each distinct character in the
+     *   batch is checked once for a parseable deathYear. If
+     *   present, endStintsForCharacter is run for that character
+     *   against the same snapshot. This closes any newly-added
+     *   stint that extends past the character's death year, in the
+     *   same transaction.
+     *
+     *   The check is deduplicated: a character assigned to multiple
+     *   teams in one batch is cascaded once, after all their
+     *   intervals have been added.
+     *
+     *   endStintsForCharacter is idempotent, so this is safe even
+     *   when the character already had closed stints on some of
+     *   the affected teams.
      */
     function batchAddMembers(assignments) {
         if (failIfMissing(checkMemberDependencies(), 'batchAddMembers')) {
@@ -1796,6 +1881,7 @@
                 }
 
                 var teamsTouched = Object.create(null);
+                var charactersTouched = Object.create(null);
                 var added = 0;
 
                 for (var i = 0; i < rowsCopy.length; i++) {
@@ -1846,7 +1932,44 @@
 
                     team.updatedAt = new Date().toISOString();
                     teamsTouched[row.teamId] = true;
+                    charactersTouched[row.charId] = true;
                     added++;
+                }
+
+                // ---- ADD-AFTER-DEATH GUARD ----
+                //
+                // For each distinct character touched by the batch,
+                // if they have a parseable deathYear, close any
+                // stint that now extends past the death year. Runs
+                // once per character, after all their intervals
+                // have been added, so a character assigned to
+                // multiple teams in one batch is cascaded once
+                // against the final state.
+                var charIdsTouched = Object.keys(charactersTouched);
+                for (var c = 0; c < charIdsTouched.length; c++) {
+                    var charId = charIdsTouched[c];
+                    var character = findCharacterInData(
+                        snapshot, charId
+                    );
+                    if (!character) { continue; }
+
+                    var deathYear = parseDeathYear(character.deathYear);
+                    if (deathYear === null) { continue; }
+
+                    try {
+                        endStintsForCharacter(
+                            snapshot,
+                            charId,
+                            deathYear
+                        );
+                    } catch (e) {
+                        console.warn(
+                            '[TeamCore] endStintsForCharacter ' +
+                            'failed during batchAddMembers; some ' +
+                            'newly-added stints may remain open ' +
+                            'past the character\'s death year:', e
+                        );
+                    }
                 }
 
                 return {
@@ -2785,10 +2908,17 @@
 
     /**
      * End every active PROFESSIONAL-team stint for a character at
-     * the given year. Called from CharacterCRUD when a character's
-     * deathYear transitions from blank to a parseable year, and
-     * from CharacterCRUD.backfillDeathCascades for data that
-     * predates the cascade.
+     * the given year.
+     *
+     * Called from:
+     *   - CharacterCRUD.save (on every save of a character with a
+     *     parseable deathYear — see character-crud.js).
+     *   - CharacterCRUD.backfillDeathCascades (one-time maintenance
+     *     for pre-cascade data).
+     *   - addMember and batchAddMembers (add-after-death guard; a
+     *     character added to a team after their death was recorded
+     *     has the newly-added stint closed in the same
+     *     transaction).
      *
      * SCOPE:
      *   Professional teams only. Academic teams are managed by the
