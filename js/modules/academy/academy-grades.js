@@ -28,7 +28,7 @@
  *   curriculum.disciplines only for pre-v28 snapshots loaded
  *   mid-transaction.
  *
- * GRADE TYPE VOCABULARY (this revision):
+ * GRADE TYPE VOCABULARY:
  *   The grade type vocabulary is:
  *
  *     exam              Final exam.
@@ -43,20 +43,16 @@
  *     'project'      → replaced by 'groupProject'
  *     'final'        → REMOVED. Its role is covered by 'exam'.
  *
- *   This module does not migrate legacy records. The batch that
- *   introduced this vocabulary was preceded by a data audit: no
- *   records carrying the old names existed in any live database.
- *   If a legacy record surfaces (an old backup, an imported
- *   envelope), it will fail type validation on the next save and
- *   the user must pick a current type.
+ *   This module does not migrate legacy records. If a legacy record
+ *   surfaces (an old backup, an imported envelope), it will fail
+ *   type validation on the next save and the user must pick a
+ *   current type.
  *
  *   THE LABEL MAP IS OWNED HERE:
  *     GRADE_TYPE_LABELS maps a type id to its display label.
  *     getGradeTypeLabel(type) is the accessor. Editors, exporters,
  *     and any other consumer that needs the label reads from here
- *     rather than maintaining its own copy. A label defined in
- *     one place cannot drift from the vocabulary defined in the
- *     same place.
+ *     rather than maintaining its own copy.
  *
  * GRADE IDENTITY:
  *   A grade's identity is the five-field tuple:
@@ -67,27 +63,25 @@
  *   week of the same discipline; both are legitimate records.
  *   Identity includes `type` for that reason.
  *
- *   `create` does not enforce the tuple (two grades with different
- *   IDs may coexist), because a caller that genuinely wants two
- *   records of the same tuple is allowed to write them. The tuple
- *   is the OVERWRITE MATCHING KEY in `saveGrades`: an input record
- *   whose tuple matches an existing grade updates that grade in
- *   place.
+ * GRADE SLOT:
+ *   A grade carries an optional slot:
  *
- * GRADE SLOT (this revision):
- *   A grade carries an optional slot: { day, startTime }.
+ *     { day: number, startTime: number, groupId: string | null }
  *
  *   The slot identifies WHICH class meeting the grade was recorded
- *   at. Tuesday at 08:00 is a slot. The grade is anchored to that
- *   occurrence: the historical time is a fact about when the grade
- *   was recorded, not a pointer to a mutable session. If the
- *   class's Tuesday session is later moved to Wednesday, the
- *   Tuesday-morning grade stays a Tuesday-morning grade.
+ *   at. Tuesday at 08:00 for teaching group "Combat Training A" is
+ *   a slot. The grade is anchored to that occurrence: the
+ *   historical time is a fact about when the grade was recorded,
+ *   not a pointer to a mutable session. If the class's Tuesday
+ *   session is later moved to Wednesday, the Tuesday-morning grade
+ *   stays a Tuesday-morning grade.
  *
- *   The slot is derived from a teaching-session occurrence at the
- *   moment the user picks it. It is NOT a foreign key. A reader
- *   that wants to re-derive the current schedule for the same
- *   (day, hour) queries the projector.
+ *   `groupId` names the teaching group the meeting belonged to.
+ *   It is optional in the sense that a slot can be stored with
+ *   groupId null (a caller that does not know the group can still
+ *   record the slot). It is NOT a foreign key; a reader that wants
+ *   to resolve the current group label queries the teaching-groups
+ *   module.
  *
  *   homeAssignment DOES NOT CARRY A SLOT. Its shape on the record
  *   is slot: null. A take-home assignment does not happen at a
@@ -95,9 +89,6 @@
  *   homeAssignment.
  *
  *   The retired `date` field is gone. Records no longer carry it.
- *   Records that predate the retirement are handled by whatever
- *   migration the surrounding batch provides; this module neither
- *   reads nor writes `date`.
  *
  * WEEK PARSING:
  *   Week parsing goes through CalendarValidation.parseWeek, the
@@ -110,11 +101,6 @@
  *   must be a valid finite number after trimming. "85" parses to
  *   85. "85abc" is rejected. "" is rejected. NaN and Infinity are
  *   rejected.
- *
- *   This is stricter than `parseFloat`, which accepts "85abc" as
- *   85. The strict parser exists because loose parsing silently
- *   turns malformed input into plausible data, which is the exact
- *   failure mode this module's validation layer exists to prevent.
  *
  * WEIGHT MODEL:
  *   Grades do NOT carry a `weight` field. Weight is a property of
@@ -153,13 +139,6 @@
  *     getWeekGrades / getGrade / getAllGrades / getStudentClassGrades
  *     stay synchronous
  *
- * SUMMARY SEMANTICS:
- *   - calculateSummary(grades, scheme) — every grade in the input
- *     participates. Malformed input (a non-object entry) is
- *     REJECTED with a throw, not silently skipped.
- *   - The summary returns unweighted average, min, max, pass count,
- *     fail count, pass rate, and a distribution.
- *
  * CASCADE SEMANTICS (stripCharacterRefs):
  *   When a character is deleted, all grade records keyed to that
  *   character are removed from academy.grades. This helper is called
@@ -167,9 +146,7 @@
  *   so it runs in the same transaction as the character removal.
  *
  *   A missing grades store is a no-op. A store that is present but
- *   malformed (not a plain object, or an array) is an ERROR. The
- *   stricter rule prevents a corrupted store from masquerading as
- *   "nothing to remove".
+ *   malformed (not a plain object, or an array) is an ERROR.
  *
  * GRADE DATA STRUCTURE:
  *   window.data.academy.grades = {
@@ -182,7 +159,7 @@
  *       score: 85,
  *       maxScore: 100,
  *       type: 'classAssignment',
- *       slot: { day: 2, startTime: 8 },   // null for homeAssignment
+ *       slot: { day: 2, startTime: 8, groupId: 'tgroup_xyz' },
  *       notes: 'Good work',
  *       createdAt: '2026-02-15T10:00:00Z',
  *       updatedAt: '2026-02-15T10:00:00Z'
@@ -190,30 +167,28 @@
  *   }
  *
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
- *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
- *   - window.AcademyGradeSchemes (from academy-grade-schemes.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.AcademyClasses
+ *   - window.AcademyGradeSchemes
+ *   - window.MutationPipeline
  *
  * USAGE:
  *   var grades = window.AcademyGrades;
  *
- *   grades.create({ studentId, classId, disciplineId, week, score, maxScore, type, slot })
- *       .then(function(result) { ... });
- *
- *   var studentGrades = grades.getStudentGrades('char_456');
- *   var classGrades = grades.getStudentClassGrades('char_456', 'class_789');
- *   var summary = grades.calculateSummary(studentGrades);
+ *   grades.create({
+ *       studentId, classId, disciplineId, week,
+ *       score, maxScore, type,
+ *       slot: { day, startTime, groupId }
+ *   }).then(function(result) { ... });
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__academyGradesLoaded) {
         return;
     }
@@ -299,12 +274,6 @@
     var MAX_SCORE = 100;
 
     // ---- Grade type vocabulary ----
-    //
-    // Six types. See the file header for the vocabulary note.
-    //
-    // homeAssignment is the ONLY type that does not carry a slot.
-    // The editor hides the slot picker for it, and the validator
-    // rejects a slot on a homeAssignment record.
 
     var VALID_GRADE_TYPES = [
         'exam',
@@ -320,9 +289,6 @@
     var TYPE_WITHOUT_SLOT = 'homeAssignment';
 
     // ---- Grade type labels ----
-    //
-    // The display layer reads labels from here. Editors and exports
-    // do not maintain their own copy; see the file header.
 
     var GRADE_TYPE_LABELS = Object.freeze({
         exam:            'Exam',
@@ -399,13 +365,6 @@
         return parsed;
     }
 
-    /**
-     * Parse a finite number strictly.
-     *
-     * Accepts a number that is finite, or a numeric string whose
-     * trimmed form is a valid finite decimal number. Rejects
-     * trailing characters, empty strings, NaN, Infinity.
-     */
     function parseFiniteNumberStrict(value) {
         if (value === undefined || value === null) {
             return null;
@@ -433,13 +392,15 @@
     /**
      * Normalise a slot value.
      *
-     * Accepts a plain object { day, startTime }. Returns either:
-     *   - { ok: true, slot: { day, startTime } } on success
+     * Accepts a plain object { day, startTime, groupId? }. Returns:
+     *   - { ok: true, slot: { day, startTime, groupId } } on success
      *   - { ok: true, slot: null } for null, undefined, or empty
      *   - { ok: false, message } on malformed input
      *
      * The parser is strict: day and startTime must be integers in
-     * their respective calendar ranges. No coercion from strings.
+     * their respective calendar ranges. groupId, when present, must
+     * be a non-empty string; a missing or empty groupId normalises
+     * to null.
      */
     function normaliseSlot(rawSlot) {
         if (rawSlot === undefined || rawSlot === null) {
@@ -471,9 +432,24 @@
             };
         }
 
+        var groupId = null;
+        if (rawSlot.groupId !== undefined && rawSlot.groupId !== null) {
+            if (!isNonEmptyString(rawSlot.groupId)) {
+                return {
+                    ok: false,
+                    message: 'Slot groupId must be a non-empty string when present.'
+                };
+            }
+            groupId = String(rawSlot.groupId);
+        }
+
         return {
             ok: true,
-            slot: { day: dayParsed, startTime: startParsed }
+            slot: {
+                day: dayParsed,
+                startTime: startParsed,
+                groupId: groupId
+            }
         };
     }
 
@@ -589,9 +565,6 @@
     // ============================================================
     // SNAPSHOT-AWARE LOOKUPS
     // ============================================================
-    //
-    // Used by pipeline validate() callbacks. Read from the appData
-    // snapshot, not window.data.
 
     function findGradeInSnapshot(appData, gradeId) {
         if (!appData || !appData.academy) {
@@ -639,15 +612,6 @@
         return null;
     }
 
-    /**
-     * Resolve a discipline reference against the transaction
-     * snapshot.
-     *
-     * Disciplines live at academy.disciplines. The legacy
-     * curriculum.disciplines location is checked as a fallback for
-     * pre-v28 snapshots that may still be in play mid-transaction.
-     * The primary store always wins when both are present.
-     */
     function findDisciplineInSnapshot(appData, disciplineId) {
         if (!appData || typeof appData !== 'object') {
             return null;
@@ -658,7 +622,6 @@
 
         var target = String(disciplineId);
 
-        // Primary: academy.disciplines
         if (appData.academy && typeof appData.academy === 'object') {
             var academyList = appData.academy.disciplines;
             if (Array.isArray(academyList)) {
@@ -671,7 +634,6 @@
             }
         }
 
-        // Legacy fallback: curriculum.disciplines
         if (appData.curriculum && typeof appData.curriculum === 'object') {
             var legacyList = appData.curriculum.disciplines;
             if (Array.isArray(legacyList)) {
@@ -688,7 +650,7 @@
     }
 
     // ============================================================
-    // CLASS VALIDATION - Preflight (live reads, UX only)
+    // CLASS VALIDATION - Preflight
     // ============================================================
 
     function validateClassExists(classId) {
@@ -777,9 +739,6 @@
             }
         }
 
-        // Slot validation. When the type is homeAssignment, the slot
-        // must be null or absent. When the type is any other, the
-        // slot is optional but must be well-formed when present.
         if (data.slot !== undefined && data.slot !== null) {
             if (data.type !== undefined &&
                 isSlotlessType(data.type)) {
@@ -1030,7 +989,6 @@
 
         var hasChanges = false;
 
-        // Fields that can be updated directly.
         var stringFields = ['studentId', 'classId', 'disciplineId'];
         for (var i = 0; i < stringFields.length; i++) {
             var sf = stringFields[i];
@@ -1077,11 +1035,6 @@
             }
         }
 
-        // Type change: also forces a slot reconsideration. When the
-        // new type is slotless (homeAssignment), the slot is cleared.
-        // When the new type is not slotless but the record currently
-        // has a null slot, the slot stays null (slot is optional for
-        // non-slotless types).
         if (updates.type !== undefined) {
             if (VALID_GRADE_TYPES.indexOf(updates.type) === -1) {
                 return Promise.resolve(failure(
@@ -1100,8 +1053,6 @@
             }
         }
 
-        // Slot change: only meaningful when the current type is not
-        // slotless. A homeAssignment rejects a slot-bearing update.
         if (updates.slot !== undefined) {
             if (isSlotlessType(candidate.type)) {
                 if (updates.slot !== null) {
@@ -1265,15 +1216,6 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
-    //
-    // Grades are returned as DEEP CLONES. The derived fields
-    // (`percentage`, `passing`) are NOT attached by default. Callers
-    // that need them either pass a scheme to the query helpers here,
-    // or call `decorateGrade` / `decorateGrades` directly.
-    //
-    // WEEK FILTER:
-    //   A provided-but-invalid week is a filter that matches
-    //   nothing, not "no filter".
 
     function sortGrades(a, b) {
         if (a.week !== b.week) {
@@ -1840,10 +1782,13 @@
         getGradeTypeLabel: getGradeTypeLabel,
         isSlotlessType: isSlotlessType,
 
+        // ---- Slot helper ----
+        normaliseSlot: normaliseSlot,
+
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
 
-        // ---- Internal (LIVE REFERENCES - for AcademyQueries and internal use) ----
+        // ---- Internal (LIVE REFERENCES) ----
         getGradeRecord: getGradeRecord,
         getGradeRecords: getGradeRecords,
 
