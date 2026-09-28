@@ -52,62 +52,87 @@
  *   - The Schedule tab's free-slots actions.
  *   - The Schedule tab's group management.
  *
- * GRADE SCHEME ROUND-TRIP (this revision):
- *   The editor's grade scheme round-trip had two silent failure
- *   paths that caused a user's custom scheme to revert to Numeric
- *   on save. Both are closed here.
+ * GRADE SCHEME DRAFT — MUTABLE, NOT THE FROZEN CANONICAL (this
+ * revision):
+ *   AcademyGradeSchemes.normalizeScheme returns a DEEP-FROZEN
+ *   scheme. That is the correct contract for a canonical value:
+ *   the scheme a caller receives cannot be mutated by accident.
  *
- *   PATH A — empty-label band drop:
- *     handleAddBand used to push `{ label: '', minPercent: 0 }`.
- *     normalizeScheme's candidate pass drops bands with empty
- *     labels. If a scheme's only minPercent: 0 band was a fresh
- *     empty one (or became one after removing the previous 0-band),
- *     the scheme failed validation and normalizeScheme fell back
- *     to the numeric default wholesale.
+ *   The editor draft is NOT that object. The draft is a
+ *   work-in-progress that the user edits in place: typing into a
+ *   band label, changing a band's minPercent, editing the scheme
+ *   label. Every one of those writes needs a MUTABLE target.
  *
- *     handleAddBand now pushes a band with a generated
- *     non-colliding label ('Band N') and a minPercent chosen to
- *     sit below the current lowest band's value. It never creates
- *     a second band at 0.
+ *   An earlier revision assigned the frozen canonical scheme to
+ *   `_disciplineDraft.gradeScheme` directly. Every band-field
+ *   write then threw `TypeError: "label" is read-only` (or
+ *   "minPercent"), the write was silently discarded, the draft
+ *   kept its prior value, and the user's edit was lost. The
+ *   `[AcademyView] controller handleInput threw...` warnings in
+ *   the console were the visible symptom; the invisible symptom
+ *   was a grade scheme that reverted to Numeric on save because
+ *   one band had an empty label or stale minPercent.
  *
- *   PATH B — raw-string minPercent:
- *     handleBandFieldChange wrote `inputEl.value` (a string)
- *     directly into the draft's band. If the user typed "80.5",
- *     " 80", "80garbage", or left the field empty, that string
- *     survived into buildDisciplinePayload. normalizeScheme's
- *     strict parser either dropped the band (removing the only 0
- *     band) or rejected the whole scheme, and the fallback kicked
- *     in.
+ *   The draft now holds a SHALLOW, MUTABLE CLONE of the
+ *   normalized scheme:
  *
- *     handleBandFieldChange now parses the input strictly. On
- *     success the parsed integer is written to the draft and the
- *     input loses its error state. On failure the input is marked
- *     with `academy-field-has-error`, the draft keeps its prior
- *     value, and a per-band error is recorded so the save path
- *     can refuse with a specific message.
+ *     {
+ *       id:    string,
+ *       label: string,
+ *       bands: [
+ *         { label, minPercent, passing? },
+ *         ...
+ *       ]
+ *     }
+ *
+ *   The clone is produced by cloneSchemeForDraft(), which flattens
+ *   the frozen structure into a fresh object graph with plain
+ *   band objects. After that, every write in this controller
+ *   operates on mutable data.
+ *
+ *   WHERE THE CLONE IS APPLIED:
+ *     - initializeDraftFromDiscipline: normalize → clone
+ *     - initializeNewDraft:            getDefaultScheme → clone
+ *     - handleApplySchemePreset:       getPreset/normalize → clone
+ *     - handleAddBand:                 replace with cloned scheme
+ *     - handleRemoveBand:              replace with cloned scheme
+ *
+ *   WHERE IT IS NOT APPLIED:
+ *     - buildDisciplinePayload: normalizeScheme is called once
+ *       more to canonicalise the draft before dispatch. The
+ *       frozen result is passed through to the domain layer,
+ *       which never mutates it.
+ *
+ *   This keeps the frozen-canonical contract on the domain side
+ *   AND gives the editor a mutable draft. Neither side has to
+ *   know about the other's expectations.
+ *
+ * GRADE SCHEME ROUND-TRIP — OTHER FAILURE PATHS:
+ *   Two other paths that could discard a user's custom scheme
+ *   remain closed from the previous revision:
+ *
+ *   PATH A — empty-label band on add:
+ *     handleAddBand pushes a labelled band ('Band N') with a
+ *     non-colliding minPercent. It never creates a second
+ *     minPercent: 0 band.
  *
  *   PATH C — removing the only 0-band:
- *     handleRemoveBand used to splice unconditionally, allowing
- *     the user to remove the only minPercent: 0 band. That
- *     invalidated the scheme; on save, normalizeScheme fell back
- *     to Numeric.
- *
- *     handleRemoveBand now refuses to remove a band whose
- *     minPercent is 0 when it is the only band at 0. The user
- *     sees an error toast and the draft is unchanged.
+ *     handleRemoveBand refuses to remove a band whose minPercent
+ *     is 0 when it is the only band at 0.
  *
  *   PATH D — silent fallback on save:
- *     buildDisciplinePayload used to call normalizeScheme, which
- *     silently replaces an invalid scheme with the numeric default.
- *     saveDisciplineDraft then dispatched that normalized payload.
- *     The user's scheme was lost with no signal.
- *
- *     saveDisciplineDraft now validates the draft's scheme BEFORE
+ *     saveDisciplineDraft validates the draft's scheme BEFORE
  *     building the payload. On failure it surfaces the specific
- *     validation errors as a toast and does not dispatch. The
- *     editor's live preview (via the file-7 diagnostic log) and
- *     this preflight together mean a user's scheme is either saved
- *     as they built it, or they are told exactly what is wrong.
+ *     validation errors and refuses to save.
+ *
+ *   PATH B — raw-string minPercent:
+ *     handleBandFieldChange parses minPercent strictly, writes
+ *     the integer to the (now-mutable) draft, and refuses to
+ *     write non-integer input. The draft never carries a
+ *     malformed value into save.
+ *
+ *   With the freeze bug closed, all four paths are closed
+ *   end-to-end.
  *
  * CANDIDATE PICKER STATE:
  *   The Add button in the discipline sessions panel's candidate
@@ -361,6 +386,82 @@
             return Number.isInteger(n) ? n : null;
         }
         return null;
+    }
+
+    /**
+     * Produce a mutable clone of a normalized grade scheme.
+     *
+     * THE PROBLEM THIS SOLVES:
+     *   AcademyGradeSchemes.normalizeScheme returns a DEEP-FROZEN
+     *   scheme. Every band in the returned scheme is
+     *   Object.freeze'd. Assigning that object to the editor draft
+     *   and then typing into a band field throws
+     *   `TypeError: "label" is read-only` (or "minPercent"), the
+     *   write is silently discarded, and the user's edit is lost.
+     *
+     *   See the file header's GRADE SCHEME DRAFT section for the
+     *   full diagnosis.
+     *
+     * WHAT THIS RETURNS:
+     *   A fresh object graph that is structurally identical to the
+     *   input but has no frozen nodes. Bands are plain objects.
+     *   The `passing` field is copied when present.
+     *
+     *   This is a purpose-built clone, not JSON.parse(JSON.stringify
+     *   (scheme)) — the scheme shape is small and well-defined, and
+     *   a purpose-built clone is clearer about what it preserves.
+     *
+     * FAILURE MODE:
+     *   When the input is missing or malformed, returns a mutable
+     *   clone of the numeric default. The caller can rely on the
+     *   result being a well-formed, mutable scheme with at least
+     *   one band at minPercent 0.
+     *
+     * @param {object|null} raw
+     * @returns {object} mutable scheme
+     */
+    function cloneSchemeForDraft(raw) {
+        // Normalize first, so we always start from a validated
+        // canonical shape. The result is frozen.
+        var canonical = GradeSchemes.normalizeScheme(raw);
+
+        // Now flatten it into a mutable structure. The canonical
+        // has { id, label, bands[] }, and each band has
+        // { label, minPercent, passing? }.
+        var bands = [];
+        if (Array.isArray(canonical.bands)) {
+            for (var i = 0; i < canonical.bands.length; i++) {
+                var band = canonical.bands[i];
+                if (!band || typeof band !== 'object') { continue; }
+                var cloneBand = {
+                    label: typeof band.label === 'string'
+                        ? band.label
+                        : '',
+                    minPercent: typeof band.minPercent === 'number'
+                        ? band.minPercent
+                        : 0
+                };
+                if (typeof band.passing === 'boolean') {
+                    cloneBand.passing = band.passing;
+                }
+                bands.push(cloneBand);
+            }
+        }
+
+        // A well-formed scheme always has at least one band.
+        // Belt-and-braces: if the canonical somehow had none,
+        // synthesize a single 0-band so the draft is never empty.
+        if (bands.length === 0) {
+            bands.push({ label: '%', minPercent: 0 });
+        }
+
+        return {
+            id: isNonEmptyString(canonical.id) ? canonical.id : 'custom',
+            label: isNonEmptyString(canonical.label)
+                ? canonical.label
+                : 'Custom Scheme',
+            bands: bands
+        };
     }
 
     // ============================================================
@@ -947,6 +1048,12 @@
     // ============================================================
     // DRAFT LIFECYCLE
     // ============================================================
+    //
+    // DRAFT SCHEME IS MUTABLE (this revision):
+    //   Each draft-construction site uses cloneSchemeForDraft,
+    //   which normalizes and then flattens the frozen canonical
+    //   into a mutable object graph. See the file header's
+    //   GRADE SCHEME DRAFT section.
 
     function initializeDraftFromDiscipline(disciplineId) {
         if (!AcademyDisciplines || !GradeSchemes) {
@@ -982,7 +1089,7 @@
                 ? record.weeklyHours
                 : 1,
             weight: typeof record.weight === 'number' ? record.weight : 1,
-            gradeScheme: GradeSchemes.normalizeScheme(record.gradeScheme),
+            gradeScheme: cloneSchemeForDraft(record.gradeScheme),
             assessmentWeights: weights || {}
         };
     }
@@ -1006,7 +1113,9 @@
             endWeek: MAX_WEEK,
             weeklyHours: 1,
             weight: 1,
-            gradeScheme: GradeSchemes.getDefaultScheme(),
+            gradeScheme: cloneSchemeForDraft(
+                GradeSchemes.getDefaultScheme()
+            ),
             assessmentWeights: (AcademyDisciplines &&
                 typeof AcademyDisciplines.getDefaultAssessmentWeights === 'function')
                 ? AcademyDisciplines.getDefaultAssessmentWeights()
@@ -2066,6 +2175,8 @@
                 _disciplineDraft.weight = inputEl.value;
                 return;
             case 'schemeLabel':
+                // The draft's scheme is a mutable clone; the write
+                // lands.
                 _disciplineDraft.gradeScheme.label = inputEl.value;
                 return;
             case 'schemePresetId':
@@ -2078,18 +2189,28 @@
     /**
      * Handle a change to a band field.
      *
-     * MIN-PERCENT PARSING (this revision):
+     * MUTABLE DRAFT (this revision):
+     *   The draft's bands array is a plain (unfrozen) array of
+     *   plain band objects. Writes to band.label and
+     *   band.minPercent succeed. See the file header's GRADE
+     *   SCHEME DRAFT section.
+     *
+     * MIN-PERCENT PARSING:
      *   The input's value is parsed strictly before it is written
-     *   to the draft. A non-integer input is NOT written to the
-     *   draft: the input element is marked with the has-error class
-     *   and a per-band error is recorded, but the draft keeps its
+     *   to the draft. A non-integer input is NOT written: the
+     *   input element is marked with the has-error class and a
+     *   per-band error is recorded, but the draft keeps its
      *   previous value so the scheme stays valid until the user
      *   corrects the input.
      *
-     *   This closes the "raw-string minPercent" failure path: the
-     *   draft never carries a malformed value into save, so
-     *   normalizeScheme's fallback cannot be reached through this
-     *   route.
+     * LABEL WRITE:
+     *   A label write succeeds even for empty input. Empty labels
+     *   are tolerated in the draft but are caught at save time by
+     *   saveDisciplineDraft's preflight validation, which surfaces
+     *   a specific "Band N label is required" error. This keeps
+     *   the per-keystroke behaviour non-disruptive: a user can
+     *   clear a field to retype it without an error firing on the
+     *   first Backspace.
      */
     function handleBandFieldChange(inputEl) {
         if (!_disciplineDraft) { return; }
@@ -2104,6 +2225,7 @@
         if (field === 'label') {
             bands[idx].label = inputEl.value;
             clearBandFieldError(idx, 'label');
+            inputEl.classList.remove('academy-field-has-error');
             updateDisciplinePreviewInPlace();
             return;
         }
@@ -2226,7 +2348,7 @@
         var presetId = presetSelect ? presetSelect.value : 'numeric';
 
         if (presetId === 'custom') {
-            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+            _disciplineDraft.gradeScheme = cloneSchemeForDraft({
                 id: 'custom',
                 label: _disciplineDraft.gradeScheme.label ||
                     'Custom Scheme',
@@ -2236,7 +2358,7 @@
             var preset = GradeSchemes.getPreset(presetId);
             if (preset) {
                 _disciplineDraft.gradeScheme =
-                    GradeSchemes.normalizeScheme(preset);
+                    cloneSchemeForDraft(preset);
             }
         }
 
@@ -2249,23 +2371,10 @@
     /**
      * Add a band to the draft.
      *
-     * GENERATED LABEL AND MIN-PERCENT (this revision):
-     *   The new band gets a non-colliding label ('Band N') and a
-     *   minPercent strictly below the current lowest band's value.
-     *   It does not get `{ label: '', minPercent: 0 }`, which
-     *   normalizeScheme's candidate pass silently drops.
-     *
-     *   The new band's minPercent is chosen as follows:
-     *     - if any band currently has minPercent > 0, the new band
-     *       gets one less than the smallest such value;
-     *     - if every band is at minPercent 0 (only possible with
-     *       a single band, since validation forbids two 0-bands),
-     *       the new band gets 50 so it lands above the existing 0
-     *       band and produces a two-band scheme with a clean
-     *       descending order.
-     *
-     *   Either way, the resulting scheme is valid, so
-     *   normalizeScheme does not fall back.
+     * The new band gets a non-colliding label ('Band N') and a
+     * minPercent strictly below the current lowest band's value.
+     * The scheme is replaced with a fresh mutable clone so all
+     * subsequent writes hit mutable targets.
      */
     function handleAddBand() {
         if (!_disciplineDraft) { return; }
@@ -2280,11 +2389,7 @@
             return;
         }
 
-        // Pick a label that does not collide with an existing label.
         var newLabel = nextBandLabel(bands);
-
-        // Pick a minPercent strictly below the current lowest
-        // positive value, or 50 if every band is at 0.
         var newMinPercent = nextBandMinPercent(bands);
 
         bands.push({
@@ -2292,8 +2397,11 @@
             minPercent: newMinPercent
         });
 
+        // Replace the draft's scheme with a fresh mutable clone.
+        // This canonicalises (sort descending) and ensures every
+        // node is unfrozen.
         if (GradeSchemes) {
-            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+            _disciplineDraft.gradeScheme = cloneSchemeForDraft({
                 id: _disciplineDraft.gradeScheme.id,
                 label: _disciplineDraft.gradeScheme.label,
                 bands: bands
@@ -2339,17 +2447,10 @@
         }
 
         if (lowestPositive === null) {
-            // Every band is at 0 (or no bands). Give the new band 50
-            // so it lands above the 0-band with a clean descending
-            // order.
             return 50;
         }
 
         if (lowestPositive <= 1) {
-            // No room below. Notify the caller's UI with a value
-            // that will be visible; the resulting scheme is still
-            // valid because the new band's minPercent will be
-            // unique (validated by handleBandFieldChange later).
             return 0;
         }
 
@@ -2359,12 +2460,8 @@
     /**
      * Remove a band from the draft.
      *
-     * LAST ZERO-BAND GUARD (this revision):
-     *   If the band being removed is the only band whose
-     *   minPercent is 0, the removal is refused. A scheme without
-     *   a 0-band fails validation, which would cause
-     *   normalizeScheme to fall back to Numeric on save. The user
-     *   sees an error toast and the draft is unchanged.
+     * The scheme is replaced with a fresh mutable clone.
+     * Refuses to remove the last minPercent: 0 band.
      */
     function handleRemoveBand(buttonEl) {
         if (!_disciplineDraft) { return; }
@@ -2407,7 +2504,7 @@
         currentBands.splice(idx, 1);
 
         if (GradeSchemes) {
-            _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
+            _disciplineDraft.gradeScheme = cloneSchemeForDraft({
                 id: _disciplineDraft.gradeScheme.id,
                 label: _disciplineDraft.gradeScheme.label,
                 bands: currentBands
@@ -2460,13 +2557,16 @@
     /**
      * Build the payload for AcademyDisciplines.create / update.
      *
-     * NORMALISATION (this revision):
-     *   The payload carries the draft's scheme through
-     *   normalizeScheme as a last-resort canonicalisation. That is
-     *   safe because saveDisciplineDraft has already validated the
-     *   scheme; by the time this runs, normalizeScheme cannot fall
-     *   back. The call exists to guarantee the payload's bands are
-     *   sorted descending, matching what the domain layer expects.
+     * NORMALISATION:
+     *   The draft's scheme (already mutable, already valid) is
+     *   passed through normalizeScheme once more, which
+     *   canonicalises the bands (sorts descending) and returns a
+     *   frozen object. That frozen object goes straight into the
+     *   payload; the domain layer stores and returns it; no one
+     *   mutates it.
+     *
+     *   saveDisciplineDraft has already validated the scheme
+     *   before this runs, so normalizeScheme cannot fall back.
      */
     function buildDisciplinePayload(draft) {
         var scheme = draft.gradeScheme;
@@ -2491,16 +2591,11 @@
     /**
      * Save the discipline draft.
      *
-     * PREFLIGHT VALIDATION (this revision):
+     * PREFLIGHT VALIDATION:
      *   The draft's grade scheme is validated before the payload
      *   is built. When validation fails, the specific errors are
      *   surfaced as a toast and the save is refused. The draft is
      *   unchanged, so the user can fix the problem in place.
-     *
-     *   Previously, the draft was silently normalised. If the
-     *   scheme was invalid, normalizeScheme replaced it with the
-     *   numeric default, and the user's custom scheme disappeared
-     *   with no signal.
      */
     function saveDisciplineDraft() {
         if (!_disciplineDraft) { return; }
