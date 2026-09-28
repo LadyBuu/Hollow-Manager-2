@@ -8,6 +8,71 @@
  * rendering, its event handling, and its sub-editor lifecycle
  * (grades editor, schedule grid, teaching-group candidate picker).
  *
+ * CHARACTER MODE (this revision):
+ *   AcademyUI.getCharacterMode(charId, classId) takes TWO
+ *   arguments. The v31 signature scopes the role to a specific
+ *   class, because a character can teach Class A and study in
+ *   Class B.
+ *
+ *   Three call sites in this controller were passing only charId:
+ *
+ *     renderCharacterDetailContent
+ *     mountScheduleGridIfPresent
+ *     handleEnrollDiscipline
+ *
+ *   With one argument, getCharacterMode's `classId` is null and the
+ *   function returns null per its own spec. That null then flowed
+ *   into:
+ *
+ *     - AcademyCharacterDetailAggregator.getViewModel({ mode: null }),
+ *       which resolved the mode to 'student' and rendered the wrong
+ *       tab set
+ *
+ *     - AcademyCharacterDetailAggregator.getScheduleGridViewModel
+ *       ({ mode: null }), which logged "unknown mode: null" and
+ *       returned null, and the Schedule tab rendered "Schedule data
+ *       not available"
+ *
+ *   Every call site now passes the currently-selected class id. In
+ *   the two sites that feed the aggregator (character detail VM and
+ *   schedule grid VM), the mode is additionally coalesced to
+ *   'student' when getCharacterMode returns null because no class
+ *   is selected. That is the correct default for a class-less
+ *   context: the aggregator's tab set for 'student' is a superset
+ *   of the 'instructor' tab set, and the panel's header already
+ *   reads "Select a class to change this character's role for that
+ *   class" when classContext is null.
+ *
+ *   getCharacterMode is a READ. The aggregator's null handling was
+ *   the reason the Schedule tab went empty; this controller no
+ *   longer feeds it null.
+ *
+ * MODE TOGGLE (this revision):
+ *   handleCharacterModeToggle used to call CharacterCRUD.setMode,
+ *   which is retired in v31 and always resolves with
+ *   { success: false, message: 'setMode is retired...' }. The
+ *   checkbox therefore did nothing when clicked, silently.
+ *
+ *   The replacement is CharacterCRUD.setInstructorForClass(
+ *   charId, classId, isInstructor). It rewrites every enrolment
+ *   interval of that (char, class) pair to the target role in one
+ *   transaction, and it does not touch the character record, other
+ *   classes, teaching groups, sessions, grades, rankings, social
+ *   scores, or any other store.
+ *
+ *   The handler now reads the class id from the checkbox's own
+ *   dataset (the panel emits data-class-id when a class is
+ *   selected), falls back to AcademyUI.getSelectedClassId() when
+ *   the dataset is absent, and refuses with a toast when no class
+ *   context is available. The target role is read from the
+ *   checkbox's dataset too, so the checkbox's visual state and the
+ *   intended role cannot drift apart.
+ *
+ *   On success, the tab is re-checked against the new mode: a
+ *   toggle that changes student→instructor while the user is on the
+ *   Grades or Teams tab falls back to Main, because those tabs no
+ *   longer exist under the instructor tab set.
+ *
  * DISCIPLINE-HOURS PICKER:
  *   The picker reads two new VM fields from the aggregator:
  *
@@ -162,8 +227,8 @@
         _missing.push('AcademyCharacterDetailAggregator API');
     }
     if (!CharacterCRUD ||
-        typeof CharacterCRUD.setMode !== 'function') {
-        _missing.push('CharacterCRUD.setMode');
+        typeof CharacterCRUD.setInstructorForClass !== 'function') {
+        _missing.push('CharacterCRUD.setInstructorForClass');
     }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
@@ -255,6 +320,52 @@
             }
         }
         return hour + ':00';
+    }
+
+    /**
+     * Resolve the effective mode for the character detail panel and
+     * the schedule grid.
+     *
+     * READ SEMANTICS (this revision):
+     *   AcademyUI.getCharacterMode(charId, classId) returns null
+     *   when either id is missing, when the character does not
+     *   exist, or when there is no class context. That null is
+     *   correct at the AcademyUI layer: it is a genuine "I cannot
+     *   answer" signal.
+     *
+     *   The two aggregator consumers (getViewModel and
+     *   getScheduleGridViewModel) do not accept null and do not
+     *   treat it as a mode. They throw a warning and return an
+     *   empty VM, which is what produced the empty Schedule tab and
+     *   the "unknown mode: null" console message.
+     *
+     *   This helper is the adapter: it calls getCharacterMode with
+     *   both arguments and coalesces a null to 'student' when there
+     *   is no class context. The 'student' default is the correct
+     *   class-less mode — its tab set is a superset of the
+     *   instructor tab set — and the panel header already tells the
+     *   user they need to select a class to change the role.
+     *
+     *   Returns 'student' | 'instructor'.
+     *
+     * @param {string} charId
+     * @param {string|null} classId
+     * @returns {'student'|'instructor'}
+     */
+    function resolveCharacterMode(charId, classId) {
+        if (!isNonEmptyString(charId)) {
+            return 'student';
+        }
+
+        if (!isNonEmptyString(classId)) {
+            // No class context: the mode cannot be evaluated per
+            // class. 'student' is the class-less default.
+            return 'student';
+        }
+
+        var mode = AcademyUI.getCharacterMode(charId, classId);
+        if (mode === 'instructor') { return 'instructor'; }
+        return 'student';
     }
 
     // ============================================================
@@ -611,10 +722,24 @@
         );
     }
 
+    /**
+     * Render the character detail panel content.
+     *
+     * MODE RESOLUTION (this revision):
+     *   The mode is resolved via resolveCharacterMode, which calls
+     *   AcademyUI.getCharacterMode with BOTH charId and classId.
+     *   The aggregator's getViewModel requires a non-null mode; it
+     *   was previously receiving null (because classId was not
+     *   passed), and was resolving the wrong tab set.
+     *
+     *   resolveCharacterMode coalesces a null result to 'student'
+     *   when there is no class context. The aggregator never sees
+     *   null.
+     */
     function renderCharacterDetailContent(classVM, charId) {
         var classId = classVM ? classVM.id : null;
         var week = AcademyUI.getDisplayWeek();
-        var mode = AcademyUI.getCharacterMode(charId);
+        var mode = resolveCharacterMode(charId, classId);
 
         var vm = null;
         try {
@@ -758,7 +883,7 @@
         if (!target) { return; }
 
         if (target.id === 'academy-character-mode-checkbox') {
-            handleCharacterModeToggle(target.checked);
+            handleCharacterModeToggle(target);
             return;
         }
 
@@ -1129,18 +1254,6 @@
     // ============================================================
     // CHARACTER EXPORT
     // ============================================================
-    //
-    // The character detail panel's header carries one Export
-    // button. It emits `character-export` with the character id in
-    // its own dataset.
-    //
-    // The handler reads the id off the button, not off AcademyUI.
-    // This matches the class export handlers below and keeps the
-    // button robust to selection changes between render and click.
-    //
-    // The export module is resolved at click time. It is not a
-    // load-time dependency of this controller; a missing module
-    // produces a notification rather than a load-time throw.
 
     function handleCharacterExport(charId) {
         if (!isNonEmptyString(charId)) {
@@ -1341,41 +1454,156 @@
     }
 
     // ============================================================
-    // CHARACTER MODE
+    // CHARACTER MODE — PER-CLASS TOGGLE (this revision)
     // ============================================================
+    //
+    // The mode checkbox in the character detail panel emits:
+    //
+    //   data-action="character-mode-toggle"
+    //   data-character-id="<charId>"
+    //   data-class-id="<classId>"        (only when a class is selected)
+    //   data-target-role="instructor"|"student"
+    //
+    // The handler:
+    //
+    //   1. Reads charId off the checkbox (not from AcademyUI;
+    //      see the CHARACTER EXPORT section for why).
+    //   2. Reads classId off the checkbox, falling back to
+    //      AcademyUI.getSelectedClassId() when absent.
+    //   3. Reads the target role off the checkbox, so the
+    //      visual state and the intended role cannot drift apart.
+    //   4. Refuses with a toast when no class is selected.
+    //   5. Adjusts the active tab when the target mode removes the
+    //      current tab from the tab set.
+    //   6. Calls CharacterCRUD.setInstructorForClass with the three
+    //      arguments. That function rewrites the enrolment intervals
+    //      for the (char, class) pair in one transaction.
+    //
+    // The retired CharacterCRUD.setMode is NOT called. It would
+    // resolve with { success: false } and leave the UI unchanged.
 
-    function handleCharacterModeToggle(checked) {
-        var charId = AcademyUI.getSelectedCharacterId();
-        if (!charId) { return; }
+    var STUDENT_ONLY_TABS = ['grades', 'teams'];
+    var INSTRUCTOR_ONLY_TABS = ['teachingGroups'];
 
-        var newMode = checked ? 'instructor' : 'student';
+    function handleCharacterModeToggle(checkboxEl) {
+        if (!checkboxEl || !checkboxEl.dataset) { return; }
 
-        if (newMode === 'instructor' &&
-            (_activeCharacterTab === 'grades' ||
-                _activeCharacterTab === 'teams')) {
+        var charId = isNonEmptyString(checkboxEl.dataset.characterId)
+            ? String(checkboxEl.dataset.characterId)
+            : null;
+
+        if (!charId) {
+            charId = AcademyUI.getSelectedCharacterId();
+        }
+
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            restoreCheckboxState(checkboxEl);
+            return;
+        }
+
+        var classId = isNonEmptyString(checkboxEl.dataset.classId)
+            ? String(checkboxEl.dataset.classId)
+            : null;
+
+        if (!classId) {
+            var selectedClass = AcademyUI.getSelectedClassId();
+            if (isNonEmptyString(selectedClass)) {
+                classId = String(selectedClass);
+            }
+        }
+
+        if (!classId) {
+            notify(
+                'Select a class to change this character\'s role for ' +
+                'that class.',
+                'error'
+            );
+            restoreCheckboxState(checkboxEl);
+            return;
+        }
+
+        // The checkbox emits its target role. When absent, fall
+        // back to the checkbox's current checked state.
+        var targetRole = isNonEmptyString(checkboxEl.dataset.targetRole)
+            ? String(checkboxEl.dataset.targetRole)
+            : (checkboxEl.checked ? 'instructor' : 'student');
+
+        if (targetRole !== 'instructor' && targetRole !== 'student') {
+            console.warn(
+                '[AcademyPeopleController] mode toggle emitted an ' +
+                'unexpected target role:',
+                targetRole
+            );
+            restoreCheckboxState(checkboxEl);
+            return;
+        }
+
+        var isInstructor = targetRole === 'instructor';
+
+        // Pre-adjust the active tab if the target mode removes the
+        // current tab from the tab set. Both checks are symmetric;
+        // a no-op when the current tab is in the target tab set.
+        if (isInstructor &&
+            STUDENT_ONLY_TABS.indexOf(_activeCharacterTab) !== -1) {
             _activeCharacterTab = 'main';
         }
-        if (newMode === 'student' &&
-            _activeCharacterTab === 'teachingGroups') {
+        if (!isInstructor &&
+            INSTRUCTOR_ONLY_TABS.indexOf(_activeCharacterTab) !== -1) {
             _activeCharacterTab = 'main';
         }
 
         clearPickerState();
         _openDisciplinePicker = null;
 
-        CharacterCRUD.setMode(charId, newMode)
-            .then(function(result) {
-                if (result && result.success) {
-                    var ctx = getContext();
-                    ctx.onChange();
-                }
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[AcademyPeopleController] setMode failed:', err
-                );
-                notify('Failed to change character mode.', 'error');
-            });
+        // Disable the checkbox during the write. A repeat click on
+        // a slow transaction would otherwise fire a second write.
+        checkboxEl.disabled = true;
+
+        CharacterCRUD.setInstructorForClass(
+            charId, classId, isInstructor
+        ).then(function(result) {
+            checkboxEl.disabled = false;
+
+            if (result && result.success) {
+                var ctx = getContext();
+                ctx.onChange();
+                return;
+            }
+
+            if (result && result.message) {
+                notify(result.message, 'error');
+            } else {
+                notify('Failed to change the character role.', 'error');
+            }
+
+            restoreCheckboxState(checkboxEl);
+        }).catch(function(err) {
+            checkboxEl.disabled = false;
+            console.warn(
+                '[AcademyPeopleController] setInstructorForClass ' +
+                'failed:', err
+            );
+            notify('Failed to change the character role.', 'error');
+            restoreCheckboxState(checkboxEl);
+        });
+    }
+
+    /**
+     * Restore the checkbox to reflect the current domain state.
+     *
+     * Called on failure, when the target role cannot be applied. The
+     * checkbox's checked state is flipped back to the opposite of
+     * what was clicked.
+     *
+     * The next onChange re-render will rebuild the checkbox from
+     * the domain, so this restore is only for the brief window
+     * before that render.
+     */
+    function restoreCheckboxState(checkboxEl) {
+        if (!checkboxEl) { return; }
+        checkboxEl.checked = !checkboxEl.checked;
+        checkboxEl.disabled = false;
     }
 
     // ============================================================
@@ -1477,6 +1705,21 @@
     // DISCIPLINE ENROLMENT FLOWS
     // ============================================================
 
+    /**
+     * Open the enrollment modal for a character.
+     *
+     * MODE RESOLUTION (this revision):
+     *   The mode is resolved via resolveCharacterMode, which passes
+     *   both charId and classId. The modal's title depends on the
+     *   mode: 'instructor' produces "Assign to teach a discipline",
+     *   'student' produces no title override (the modal defaults to
+     *   its student heading).
+     *
+     *   Previously this call site passed only charId to
+     *   getCharacterMode, which returned null, which the title
+     *   resolver treated as student-only. An instructor enrolling
+     *   through this modal saw the student flow.
+     */
     function handleEnrollDiscipline(charId) {
         if (!isNonEmptyString(charId)) {
             return;
@@ -1502,7 +1745,7 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        var mode = AcademyUI.getCharacterMode(charId);
+        var mode = resolveCharacterMode(charId, classId);
         var title = mode === 'instructor'
             ? 'Assign to teach a discipline'
             : null;
@@ -1611,6 +1854,20 @@
     // SCHEDULE GRID SUB-EDITOR
     // ============================================================
 
+    /**
+     * Mount the character's schedule grid.
+     *
+     * MODE RESOLUTION (this revision):
+     *   The mode is resolved via resolveCharacterMode, which passes
+     *   both charId and classId. The aggregator's
+     *   getScheduleGridViewModel dispatches on mode; a null mode
+     *   produces "unknown mode: null" and returns null, and the
+     *   Schedule tab renders "Schedule data not available".
+     *
+     *   resolveCharacterMode coalesces a null result to 'student'
+     *   when there is no class context, so the aggregator never
+     *   sees null through this controller again.
+     */
     function mountScheduleGridIfPresent(charId, classId, week) {
         var host = document.getElementById('academy-schedule-host');
         if (!host) { return; }
@@ -1623,7 +1880,7 @@
             return;
         }
 
-        var mode = AcademyUI.getCharacterMode(charId);
+        var mode = resolveCharacterMode(charId, classId);
 
         var gridVM = null;
         if (typeof AcademyCharacterDetailAggregator
