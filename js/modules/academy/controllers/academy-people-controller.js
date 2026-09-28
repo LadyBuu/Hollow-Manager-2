@@ -8,70 +8,63 @@
  * rendering, its event handling, and its sub-editor lifecycle
  * (grades editor, schedule grid, teaching-group candidate picker).
  *
- * CHARACTER MODE (this revision):
+ * FORM CONTROLS ARE NOT CLICK-ACTIONS (this revision):
+ *   handleClick used to call e.preventDefault() unconditionally
+ *   on every element with a data-action attribute, then dispatch
+ *   that action. The pattern is correct for buttons, whose entire
+ *   purpose is to be click-driven. It is WRONG for form controls:
+ *
+ *     - <input type="checkbox"> must be allowed to toggle.
+ *     - <input type="radio"> must be allowed to check.
+ *     - <select> must be allowed to open.
+ *     - <textarea>, <input type="text"> must be allowed to focus.
+ *
+ *   The character mode checkbox carries
+ *   data-action="character-mode-toggle" purely as an identification
+ *   marker. It is not a command the click handler executes; the
+ *   change event is what drives the toggle's write. When
+ *   preventDefault() fired on its click, the browser's default
+ *   "toggle the checkbox" behaviour was cancelled, the checkbox
+ *   never flipped, no change event dispatched, and the write never
+ *   ran. The user saw a checkbox that did nothing.
+ *
+ *   handleClick now skips preventDefault for form controls and
+ *   labels wrapping them. The change event paths for those
+ *   controls are unchanged.
+ *
+ *   The check uses a small allowlist of interactive tag names, plus
+ *   a class check for the mode checkbox (whose click may land on
+ *   its wrapping <label>, not on the <input> itself). Any future
+ *   form control in this view needs only to be a recognised tag
+ *   name, or to carry a recognised class.
+ *
+ * CHARACTER MODE (v31):
  *   AcademyUI.getCharacterMode(charId, classId) takes TWO
- *   arguments. The v31 signature scopes the role to a specific
- *   class, because a character can teach Class A and study in
- *   Class B.
+ *   arguments. Three call sites in this controller pass both:
+ *   renderCharacterDetailContent, mountScheduleGridIfPresent,
+ *   handleEnrollDiscipline. A fourth site, handleCharacterModeToggle,
+ *   reads classId off the checkbox's own dataset rather than
+ *   re-querying AcademyUI.
  *
- *   Three call sites in this controller were passing only charId:
+ *   getCharacterMode is a READ. Where the mode is needed for a
+ *   class-less context, this controller coalesces a null result to
+ *   'student' before handing it to the aggregator. See
+ *   resolveCharacterMode below.
  *
- *     renderCharacterDetailContent
- *     mountScheduleGridIfPresent
- *     handleEnrollDiscipline
+ * MODE TOGGLE:
+ *   handleCharacterModeToggle reads three values off the checkbox's
+ *   dataset:
  *
- *   With one argument, getCharacterMode's `classId` is null and the
- *   function returns null per its own spec. That null then flowed
- *   into:
+ *     data-character-id    the character whose role is being set
+ *     data-class-id        the class the role applies to
+ *     data-target-role     'instructor' or 'student'
  *
- *     - AcademyCharacterDetailAggregator.getViewModel({ mode: null }),
- *       which resolved the mode to 'student' and rendered the wrong
- *       tab set
+ *   and calls CharacterCRUD.setInstructorForClass(charId, classId,
+ *   isInstructor). That function rewrites every enrolment interval
+ *   of the (char, class) pair to the target role in one
+ *   transaction.
  *
- *     - AcademyCharacterDetailAggregator.getScheduleGridViewModel
- *       ({ mode: null }), which logged "unknown mode: null" and
- *       returned null, and the Schedule tab rendered "Schedule data
- *       not available"
- *
- *   Every call site now passes the currently-selected class id. In
- *   the two sites that feed the aggregator (character detail VM and
- *   schedule grid VM), the mode is additionally coalesced to
- *   'student' when getCharacterMode returns null because no class
- *   is selected. That is the correct default for a class-less
- *   context: the aggregator's tab set for 'student' is a superset
- *   of the 'instructor' tab set, and the panel's header already
- *   reads "Select a class to change this character's role for that
- *   class" when classContext is null.
- *
- *   getCharacterMode is a READ. The aggregator's null handling was
- *   the reason the Schedule tab went empty; this controller no
- *   longer feeds it null.
- *
- * MODE TOGGLE (this revision):
- *   handleCharacterModeToggle used to call CharacterCRUD.setMode,
- *   which is retired in v31 and always resolves with
- *   { success: false, message: 'setMode is retired...' }. The
- *   checkbox therefore did nothing when clicked, silently.
- *
- *   The replacement is CharacterCRUD.setInstructorForClass(
- *   charId, classId, isInstructor). It rewrites every enrolment
- *   interval of that (char, class) pair to the target role in one
- *   transaction, and it does not touch the character record, other
- *   classes, teaching groups, sessions, grades, rankings, social
- *   scores, or any other store.
- *
- *   The handler now reads the class id from the checkbox's own
- *   dataset (the panel emits data-class-id when a class is
- *   selected), falls back to AcademyUI.getSelectedClassId() when
- *   the dataset is absent, and refuses with a toast when no class
- *   context is available. The target role is read from the
- *   checkbox's dataset too, so the checkbox's visual state and the
- *   intended role cannot drift apart.
- *
- *   On success, the tab is re-checked against the new mode: a
- *   toggle that changes student→instructor while the user is on the
- *   Grades or Teams tab falls back to Main, because those tabs no
- *   longer exist under the instructor tab set.
+ *   The retired CharacterCRUD.setMode is not called.
  *
  * DISCIPLINE-HOURS PICKER:
  *   The picker reads two new VM fields from the aggregator:
@@ -168,16 +161,6 @@
  *   reports the result via NotificationSystem. The report itself
  *   is built by the export module; this controller never walks
  *   character data.
- *
- *   The button reads its character id off its own dataset rather
- *   than re-reading AcademyUI.getSelectedCharacterId(). This
- *   matches the class export buttons and keeps the handler robust
- *   to selection changes between render and click.
- *
- *   The export module is looked up on window.CharacterExport at
- *   click time. It is not a load-time dependency of this
- *   controller; a missing module produces a clear error
- *   notification rather than a load-time throw.
  */
 
 (function() {
@@ -326,7 +309,7 @@
      * Resolve the effective mode for the character detail panel and
      * the schedule grid.
      *
-     * READ SEMANTICS (this revision):
+     * READ SEMANTICS:
      *   AcademyUI.getCharacterMode(charId, classId) returns null
      *   when either id is missing, when the character does not
      *   exist, or when there is no class context. That null is
@@ -335,18 +318,16 @@
      *
      *   The two aggregator consumers (getViewModel and
      *   getScheduleGridViewModel) do not accept null and do not
-     *   treat it as a mode. They throw a warning and return an
-     *   empty VM, which is what produced the empty Schedule tab and
-     *   the "unknown mode: null" console message.
+     *   treat it as a mode. They warn and return an empty VM,
+     *   which produced the empty Schedule tab and the
+     *   "unknown mode: null" console message.
      *
      *   This helper is the adapter: it calls getCharacterMode with
-     *   both arguments and coalesces a null to 'student' when there
-     *   is no class context. The 'student' default is the correct
-     *   class-less mode — its tab set is a superset of the
-     *   instructor tab set — and the panel header already tells the
+     *   both arguments and coalesces a null to 'student' when
+     *   there is no class context. The 'student' default is the
+     *   correct class-less mode; its tab set is a superset of the
+     *   instructor tab set, and the panel header already tells the
      *   user they need to select a class to change the role.
-     *
-     *   Returns 'student' | 'instructor'.
      *
      * @param {string} charId
      * @param {string|null} classId
@@ -366,6 +347,65 @@
         var mode = AcademyUI.getCharacterMode(charId, classId);
         if (mode === 'instructor') { return 'instructor'; }
         return 'student';
+    }
+
+    // ============================================================
+    // FORM CONTROLS — NOT CLICK-ACTIONS
+    // ============================================================
+    //
+    // handleClick must not preventDefault a click whose target is a
+    // form control. See the file header's FORM CONTROLS section for
+    // the full rationale.
+    //
+    // The check has two parts:
+    //
+    //   isNativeFormControl(el)
+    //     tag-name check: input, select, textarea, option
+    //
+    //   isModeCheckboxClick(el)
+    //     class check: the mode checkbox's wrapping <label>, the
+    //     checkbox itself, or its descriptive text. A user who
+    //     clicks the label text is still interacting with the
+    //     checkbox; the click must not be cancelled.
+    //
+    // Either being true means handleClick does not preventDefault
+    // on the event and does not dispatch it as an action.
+    //
+    // A future form control with a data-action attribute needs to
+    // be recognised by one of these two checks. Adding its tag name
+    // to FORM_CONTROL_TAGS is the usual answer; a class check is
+    // only needed when the click may land on a wrapping element.
+
+    var FORM_CONTROL_TAGS = ['INPUT', 'SELECT', 'TEXTAREA', 'OPTION'];
+
+    var MODE_TOGGLE_CLASSES = [
+        'academy-character-mode-checkbox',
+        'academy-mode-checkbox-label',
+        'academy-mode-checkbox-text',
+        'academy-character-mode-toggle'
+    ];
+
+    function isNativeFormControl(el) {
+        if (!el || typeof el.tagName !== 'string') { return false; }
+        return FORM_CONTROL_TAGS.indexOf(el.tagName.toUpperCase()) !== -1;
+    }
+
+    function isModeCheckboxClick(el) {
+        if (!el || typeof el.closest !== 'function') { return false; }
+
+        for (var i = 0; i < MODE_TOGGLE_CLASSES.length; i++) {
+            if (el.closest('.' + MODE_TOGGLE_CLASSES[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function isFormControlClick(el) {
+        if (!el) { return false; }
+        if (isNativeFormControl(el)) { return true; }
+        if (isModeCheckboxClick(el)) { return true; }
+        return false;
     }
 
     // ============================================================
@@ -722,20 +762,6 @@
         );
     }
 
-    /**
-     * Render the character detail panel content.
-     *
-     * MODE RESOLUTION (this revision):
-     *   The mode is resolved via resolveCharacterMode, which calls
-     *   AcademyUI.getCharacterMode with BOTH charId and classId.
-     *   The aggregator's getViewModel requires a non-null mode; it
-     *   was previously receiving null (because classId was not
-     *   passed), and was resolving the wrong tab set.
-     *
-     *   resolveCharacterMode coalesces a null result to 'student'
-     *   when there is no class context. The aggregator never sees
-     *   null.
-     */
     function renderCharacterDetailContent(classVM, charId) {
         var classId = classVM ? classVM.id : null;
         var week = AcademyUI.getDisplayWeek();
@@ -810,9 +836,31 @@
     // EVENT HANDLERS
     // ============================================================
 
+    /**
+     * Handle a delegated click.
+     *
+     * FORM CONTROLS ARE NOT CLICK-ACTIONS:
+     *   If the click target is a native form control (input,
+     *   select, textarea) or is inside the character mode
+     *   checkbox's label, the handler returns early WITHOUT
+     *   calling preventDefault. The browser's default click
+     *   behaviour for those controls is what drives them.
+     *
+     *   See the file header's FORM CONTROLS section for the full
+     *   rationale and the bug this fixes.
+     */
     function handleClick(e) {
         var target = e.target;
         if (!target || typeof target.closest !== 'function') {
+            return;
+        }
+
+        // ---- Form controls: return early, do not preventDefault ----
+        if (isFormControlClick(target)) {
+            // The character mode checkbox is identified by
+            // data-action="character-mode-toggle". It is a form
+            // control; its change event drives the write. Do
+            // nothing here.
             return;
         }
 
@@ -1454,33 +1502,32 @@
     }
 
     // ============================================================
-    // CHARACTER MODE — PER-CLASS TOGGLE (this revision)
+    // CHARACTER MODE — PER-CLASS TOGGLE
     // ============================================================
     //
     // The mode checkbox in the character detail panel emits:
     //
     //   data-action="character-mode-toggle"
     //   data-character-id="<charId>"
-    //   data-class-id="<classId>"        (only when a class is selected)
+    //   data-class-id="<classId>"
     //   data-target-role="instructor"|"student"
+    //
+    // The click on the checkbox (or its label) is NOT handled by
+    // handleClick. handleClick returns early for form controls.
+    // The browser toggles the checkbox, a change event fires, and
+    // handleChange routes it here.
     //
     // The handler:
     //
-    //   1. Reads charId off the checkbox (not from AcademyUI;
-    //      see the CHARACTER EXPORT section for why).
+    //   1. Reads charId off the checkbox.
     //   2. Reads classId off the checkbox, falling back to
-    //      AcademyUI.getSelectedClassId() when absent.
-    //   3. Reads the target role off the checkbox, so the
-    //      visual state and the intended role cannot drift apart.
+    //      AcademyUI.getSelectedClassId().
+    //   3. Reads the target role off the checkbox.
     //   4. Refuses with a toast when no class is selected.
     //   5. Adjusts the active tab when the target mode removes the
     //      current tab from the tab set.
     //   6. Calls CharacterCRUD.setInstructorForClass with the three
-    //      arguments. That function rewrites the enrolment intervals
-    //      for the (char, class) pair in one transaction.
-    //
-    // The retired CharacterCRUD.setMode is NOT called. It would
-    // resolve with { success: false } and leave the UI unchanged.
+    //      arguments.
 
     var STUDENT_ONLY_TABS = ['grades', 'teams'];
     var INSTRUCTOR_ONLY_TABS = ['teachingGroups'];
@@ -1523,8 +1570,6 @@
             return;
         }
 
-        // The checkbox emits its target role. When absent, fall
-        // back to the checkbox's current checked state.
         var targetRole = isNonEmptyString(checkboxEl.dataset.targetRole)
             ? String(checkboxEl.dataset.targetRole)
             : (checkboxEl.checked ? 'instructor' : 'student');
@@ -1541,9 +1586,6 @@
 
         var isInstructor = targetRole === 'instructor';
 
-        // Pre-adjust the active tab if the target mode removes the
-        // current tab from the tab set. Both checks are symmetric;
-        // a no-op when the current tab is in the target tab set.
         if (isInstructor &&
             STUDENT_ONLY_TABS.indexOf(_activeCharacterTab) !== -1) {
             _activeCharacterTab = 'main';
@@ -1556,8 +1598,6 @@
         clearPickerState();
         _openDisciplinePicker = null;
 
-        // Disable the checkbox during the write. A repeat click on
-        // a slow transaction would otherwise fire a second write.
         checkboxEl.disabled = true;
 
         CharacterCRUD.setInstructorForClass(
@@ -1589,17 +1629,6 @@
         });
     }
 
-    /**
-     * Restore the checkbox to reflect the current domain state.
-     *
-     * Called on failure, when the target role cannot be applied. The
-     * checkbox's checked state is flipped back to the opposite of
-     * what was clicked.
-     *
-     * The next onChange re-render will rebuild the checkbox from
-     * the domain, so this restore is only for the brief window
-     * before that render.
-     */
     function restoreCheckboxState(checkboxEl) {
         if (!checkboxEl) { return; }
         checkboxEl.checked = !checkboxEl.checked;
@@ -1705,21 +1734,6 @@
     // DISCIPLINE ENROLMENT FLOWS
     // ============================================================
 
-    /**
-     * Open the enrollment modal for a character.
-     *
-     * MODE RESOLUTION (this revision):
-     *   The mode is resolved via resolveCharacterMode, which passes
-     *   both charId and classId. The modal's title depends on the
-     *   mode: 'instructor' produces "Assign to teach a discipline",
-     *   'student' produces no title override (the modal defaults to
-     *   its student heading).
-     *
-     *   Previously this call site passed only charId to
-     *   getCharacterMode, which returned null, which the title
-     *   resolver treated as student-only. An instructor enrolling
-     *   through this modal saw the student flow.
-     */
     function handleEnrollDiscipline(charId) {
         if (!isNonEmptyString(charId)) {
             return;
@@ -1854,20 +1868,6 @@
     // SCHEDULE GRID SUB-EDITOR
     // ============================================================
 
-    /**
-     * Mount the character's schedule grid.
-     *
-     * MODE RESOLUTION (this revision):
-     *   The mode is resolved via resolveCharacterMode, which passes
-     *   both charId and classId. The aggregator's
-     *   getScheduleGridViewModel dispatches on mode; a null mode
-     *   produces "unknown mode: null" and returns null, and the
-     *   Schedule tab renders "Schedule data not available".
-     *
-     *   resolveCharacterMode coalesces a null result to 'student'
-     *   when there is no class context, so the aggregator never
-     *   sees null through this controller again.
-     */
     function mountScheduleGridIfPresent(charId, classId, week) {
         var host = document.getElementById('academy-schedule-host');
         if (!host) { return; }
