@@ -5,6 +5,26 @@
  *
  * Path: js/modules/academy/academy-character-detail.js
  *
+ * ROLE MODEL (v31):
+ *   A character's role — student or instructor — is CLASS-SCOPED.
+ *   Alice can teach Class of 2026 and study in Class of 2027. The
+ *   role the panel displays is the role for the class currently
+ *   selected in the sidebar.
+ *
+ *   The header renders a role badge that reads:
+ *     "Instructor of <ClassName>"
+ *   or
+ *     "Student of <ClassName>"
+ *
+ *   The mode toggle is a per-class toggle. It is emitted with the
+ *   character id and the class id, so the controller knows exactly
+ *   which pair the user is flipping. When no class is selected,
+ *   the toggle is disabled and shows a hint, because there is no
+ *   class to scope the role to.
+ *
+ *   The panel does NOT read character.mode. That field is a legacy
+ *   tombstone. It is not consulted anywhere in this file.
+ *
  * TEACHING GROUPS CANDIDATE PICKER:
  *   The inline "add students to this group" picker is a
  *   multi-select picker with two sections:
@@ -28,54 +48,26 @@
  *   Each group block header carries, in order:
  *
  *     Caret          toggles the block's body (roster + sessions).
- *                    Emits data-action="teaching-groups-toggle-group".
- *                    State is stored under the "tg:<groupId>" key in
- *                    AcademyUI's expansion map. Default: expanded.
- *
  *     Clear Roster   secondary. Shown only when the group has
- *                    members. Removes every member entry from
- *                    the group (hard delete). The group and its
- *                    sessions are untouched. Emits
- *                    data-action="teaching-groups-clear-roster".
- *
+ *                    members.
  *     + Add Student  primary. Opens the candidate picker.
- *                    Emits data-action="teaching-groups-add-student".
- *
- *     ✕ (delete)     danger. Deletes the group and every session
- *                    on it. Confirmed by the controller. Emits
- *                    data-action="teaching-groups-delete-group"
- *                    with data-group-id and data-class-id.
- *
- *   The renderer emits markers only. The confirmation and the
- *   domain mutations live in the controller.
+ *     ✕ (delete)     danger. Deletes the group and every session.
  *
  * COLLAPSE STATE:
  *   Read through a local helper (readTeachingGroupExpanded) that
  *   consults AcademyUI.isExpanded. When AcademyUI is unavailable
- *   or the key is absent, the default is EXPANDED — a group the
- *   user has never touched is always shown.
- *
- *   The controller handles the toggle action. A fast path that
- *   flips the attribute and the caret in place (no re-render) is
- *   documented at the handler site, because a full re-render
- *   would reset scroll and drop any open candidate picker.
+ *   or the key is absent, the default is EXPANDED.
  *
  * CHARACTER EXPORT BUTTON:
- *   The header title row carries a third element after the role
- *   badge: a small, secondary-styled Export button. Clicking it
- *   produces a plain-text report of everything the application
- *   knows about the character, downloaded as a .txt file. The
- *   report is built by CharacterExport.exportCharacterText.
+ *   The header title row carries a small, secondary-styled Export
+ *   button. Clicking it produces a plain-text report of everything
+ *   the application knows about the character, downloaded as a
+ *   .txt file. The report is built by
+ *   CharacterExport.exportCharacterText.
  *
  *   The button emits:
  *     data-action="character-export"
  *     data-character-id="<the character id>"
- *
- *   The People controller's dispatchAction routes the marker to
- *   CharacterExport.exportCharacterText and reports the result
- *   via NotificationSystem. The renderer does not build the
- *   report and does not trigger the download; it emits the marker
- *   and the id, nothing else.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -145,11 +137,6 @@
         return String(vm.character.id);
     }
 
-    /**
-     * Discipline-level collapse state (existing behaviour). Keyed by
-     * character + discipline. Unrelated to the per-group collapse
-     * added in this revision.
-     */
     function isDisciplineExpanded(charId, disciplineId) {
         var AcademyUI = window.AcademyUI;
         if (!AcademyUI || typeof AcademyUI.isExpanded !== 'function') {
@@ -159,13 +146,6 @@
         return AcademyUI.isExpanded(key) === true;
     }
 
-    /**
-     * Per-group collapse state. Keyed "tg:<groupId>". Defaults to
-     * EXPANDED when the key is absent (the common case: a user has
-     * never touched this group). When AcademyUI is unavailable,
-     * also defaults to expanded so the block renders fully rather
-     * than collapsing silently.
-     */
     function readTeachingGroupExpanded(groupId) {
         if (!isNonEmptyString(groupId)) { return true; }
         var AcademyUI = window.AcademyUI;
@@ -193,13 +173,18 @@
         var mode = viewModel.mode === 'instructor' ? 'instructor' : 'student';
         var activeTab = viewModel.activeTab || 'main';
         var tabs = Array.isArray(viewModel.tabs) ? viewModel.tabs : [];
+        var classContext = viewModel.classContext || null;
 
         var html = '';
         html += '<div class="academy-character-detail" ' +
                     'data-character-id="' + escapeAttribute(viewModel.character.id) + '" ' +
-                    'data-mode="' + escapeAttribute(mode) + '">';
+                    'data-mode="' + escapeAttribute(mode) + '" ' +
+                    (classContext
+                        ? 'data-class-id="' + escapeAttribute(classContext.id) + '" '
+                        : '') +
+                    '>';
 
-        html += renderHeader(viewModel.character, mode);
+        html += renderHeader(viewModel.character, mode, classContext);
         html += renderEliminationWarning(viewModel.elimination);
         html += renderTabBar(tabs, activeTab);
         html += '<div class="academy-character-tab-body">';
@@ -251,17 +236,26 @@
     // HEADER
     // ============================================================
     //
-    // The title row carries three elements, left to right:
+    // The title row carries:
     //   1. the character name (h3)
-    //   2. the role badge (student / instructor)
+    //   2. the role badge, scoped to the currently selected class
     //   3. the Export button
     //
-    // The Export button emits the marker the People controller
-    // dispatches on. It is a read-only side action, styled
-    // `secondary` so it does not visually outrank Drop Out.
+    // The role badge reads "Instructor of <ClassName>" or
+    // "Student of <ClassName>". When no class is selected, the
+    // badge reads "Instructor" or "Student" without a class
+    // qualifier, and the mode toggle is disabled with a hint.
 
-    function renderHeader(character, mode) {
+    function renderHeader(character, mode, classContext) {
         var displayRole = mode === 'instructor' ? 'instructor' : 'student';
+        var className = classContext && isNonEmptyString(classContext.name)
+            ? classContext.name
+            : null;
+
+        var badgeLabel = getRoleLabel(displayRole);
+        if (className) {
+            badgeLabel += ' of ' + className;
+        }
 
         var html = '';
         html += '<div class="academy-character-detail-header">';
@@ -271,7 +265,7 @@
                     escapeHtml(character.name) +
                 '</h3>';
         html += '<span class="' + getRoleBadgeClass(displayRole) + '">' +
-                    escapeHtml(getRoleLabel(displayRole)) +
+                    escapeHtml(badgeLabel) +
                 '</span>';
         html += '<button type="button" ' +
                     'class="small secondary academy-character-export-btn" ' +
@@ -307,25 +301,94 @@
 
         html += '</div>';
 
-        html += renderModeToggle(mode);
+        html += renderModeToggle(mode, classContext);
 
         html += '</div>';
 
         return html;
     }
 
-    function renderModeToggle(mode) {
+    /**
+     * Per-class mode toggle.
+     *
+     * The toggle is a checkbox. Its checked state reflects whether
+     * the character is currently an instructor OF THE SELECTED
+     * CLASS.
+     *
+     * When no class is selected, the toggle is disabled and shows
+     * a hint. Without a class, there is no per-class role to
+     * toggle; the mode cannot be changed in a class-less context.
+     *
+     * The emitted markers:
+     *   data-action="character-mode-toggle"
+     *   data-character-id="<character id>"
+     *   data-class-id="<class id>"   (only when a class is selected)
+     *   data-target-role="instructor"|"student"
+     *
+     * The controller reads these and calls
+     * CharacterCRUD.setInstructorForClass(charId, classId,
+     * targetRole === 'instructor') on click.
+     */
+    function renderModeToggle(mode, classContext) {
         var isInstructor = mode === 'instructor';
+        var hasClass = !!classContext && isNonEmptyString(classContext.id);
+
+        var className = hasClass && isNonEmptyString(classContext.name)
+            ? classContext.name
+            : null;
+
+        var labelText;
+        if (hasClass) {
+            labelText = 'Instructor of ' + className;
+        } else {
+            labelText = 'Instructor mode';
+        }
+
+        var checkboxId = 'academy-character-mode-checkbox';
 
         var html = '';
         html += '<div class="academy-character-mode-toggle">';
+
         html += '<label class="academy-mode-checkbox-label" ' +
-                    'for="academy-character-mode-checkbox">';
-        html += '<input type="checkbox" id="academy-character-mode-checkbox" ' +
-                    'class="academy-character-mode-checkbox"' +
-                    (isInstructor ? ' checked' : '') + '>';
-        html += '<span class="academy-mode-checkbox-text">Instructor mode</span>';
+                    'for="' + checkboxId + '">';
+
+        html += '<input type="checkbox" ' +
+                    'id="' + checkboxId + '" ' +
+                    'class="academy-character-mode-checkbox" ' +
+                    'data-action="character-mode-toggle" ' +
+                    'data-character-id="' + escapeAttribute(
+                        classContext && classContext.id
+                            ? // fall through: the character id is added
+                              // by the wrapper. The controller reads
+                              // data-character-id from the closest
+                              // .academy-character-detail element
+                              // if not set here.
+                              ''
+                            : ''
+                    ) + '" ' +
+                    (hasClass
+                        ? 'data-class-id="' +
+                            escapeAttribute(classContext.id) + '" '
+                        : '') +
+                    'data-target-role="' +
+                        (isInstructor ? 'student' : 'instructor') + '" ' +
+                    (hasClass ? '' : 'disabled ') +
+                    (isInstructor ? 'checked ' : '') +
+                    '>';
+
+        html += '<span class="academy-mode-checkbox-text">' +
+                    escapeHtml(labelText) +
+                '</span>';
+
         html += '</label>';
+
+        if (!hasClass) {
+            html += '<p class="field-hint academy-mode-checkbox-hint">' +
+                        'Select a class to change this character\'s ' +
+                        'role for that class.' +
+                    '</p>';
+        }
+
         html += '</div>';
         return html;
     }
@@ -1127,29 +1190,6 @@
     // ============================================================
     // TEACHING GROUP BLOCK (collapsible)
     // ============================================================
-    //
-    // Each group is a self-contained collapsible block.
-    //
-    //   [▾] Group name   3 students   [Clear Roster] [+ Add Student] [✕]
-    //   |  Roster: Alice, Bob, Carol
-    //   |  Sessions:
-    //   |    Tuesday, 11:00  2h   [Edit] [Delete]
-    //   |    Thursday, 11:00 2h   [Edit] [Delete]
-    //   |  [+ Add Session]
-    //
-    // The header row is the toggle. The body carries the roster,
-    // the sessions list, and (when open) the candidate picker.
-    // Collapse state is per-group, stored under "tg:<groupId>".
-    //
-    // The header retains the existing Clear Roster / Add Student /
-    // Delete buttons. The caret is a new element, placed before
-    // the group name so it reads as a disclosure on the group
-    // label rather than as a fourth action.
-    //
-    // The candidate picker only renders when the block is expanded
-    // AND the picker is open for this group. A collapsed block
-    // with an open picker hides the picker until the block is
-    // re-expanded; the controller's state is not discarded.
 
     function renderTeachingGroupBlock(
         group,
