@@ -16,6 +16,7 @@
  *   - Render prior-round pass/retry badges in the picker (C8)
  *   - Render an "Edit Exam" button in the exam header and provide
  *     the edit modal builder/collector (C5)
+ *   - Render one added pair row for the pair builder
  *
  * NOT RESPONSIBILITIES:
  *   - Event binding. AcademyView binds; this module emits data-*.
@@ -1616,6 +1617,57 @@
         return html;
     }
 
+    // ============================================================
+    // PAIR ROW (added via the pair builder)
+    // ============================================================
+    //
+    // One row per added pair/triple. The row carries the participant
+    // IDs as a JSON array in `data-pair`. `collectPairings` reads
+    // that attribute back out; nothing else about the row is
+    // load-bearing.
+    //
+    // The row is rendered by the events layer when the user clicks
+    // "+ Add" in the pair builder. That is why this builder lives
+    // here, next to the rest of the pair-picker markup: the events
+    // module should not be assembling HTML by string concatenation
+    // for a component this module owns.
+
+    function renderPairRow(pair) {
+        if (!Array.isArray(pair) || pair.length < 2) { return ''; }
+
+        var names = [];
+        var ids = [];
+        for (var i = 0; i < pair.length; i++) {
+            var entry = pair[i];
+            if (!entry) { continue; }
+            var id = (entry.id !== undefined && entry.id !== null)
+                ? String(entry.id)
+                : '';
+            if (id === '') { continue; }
+            ids.push(id);
+            names.push(isNonEmptyString(entry.name)
+                ? entry.name
+                : id);
+        }
+
+        if (ids.length < 2) { return ''; }
+
+        var html = '';
+        html += '<div class="at-pair-row" ' +
+                    'data-pair="' +
+                        escapeAttribute(JSON.stringify(ids)) + '">';
+        html += '<span class="at-pair-row-names">' +
+                    escapeHtml(names.join(' + ')) +
+                '</span>';
+        html += '<button type="button" class="small danger at-pair-remove" ' +
+                    'data-action="exam-pair-remove" ' +
+                    'title="Remove this pair">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
+        return html;
+    }
+
     function collectPickerSelections(form) {
         var checks = form.querySelectorAll('.at-picker-check');
         var ids = [];
@@ -2124,7 +2176,9 @@
         collectAutoGenerateRoundForm: collectAutoGenerateRoundForm,
         collectAddMatchForm: collectAddMatchForm,
         collectEditMatchForm: collectEditMatchForm,
-        collectCompleteMatchForm: collectCompleteMatchForm
+        collectCompleteMatchForm: collectCompleteMatchForm,
+
+        renderPairRow: renderPairRow
     });
 
     // ============================================================
@@ -2156,7 +2210,8 @@
             'collectAutoGenerateRoundForm',
             'collectAddMatchForm',
             'collectEditMatchForm',
-            'collectCompleteMatchForm'
+            'collectCompleteMatchForm',
+            'renderPairRow'
         ];
 
         for (var i = 0; i < required.length; i++) {
