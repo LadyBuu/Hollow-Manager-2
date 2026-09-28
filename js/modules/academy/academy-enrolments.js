@@ -6,6 +6,1559 @@
  * SINGLE SOURCE OF TRUTH for student ↔ class-discipline enrolment.
  *
  * WHAT THIS MODULE OWNS:
+ *   The historical record that a character participated in a class's
+ *   offering of a discipline for a bounded week range, IN A SPECIFIC
+ *   ROLE — student or instructor.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Class entities            (AcademyClasses)
+ *   - Discipline entities       (AcademyDisciplines)
+ *   - Class-discipline windows  (AcademyClassDisciplines)
+ *   - Teaching group membership (AcademyTeachingGroups)
+ *   - Recurring meetings        (AcademyTeachingSessions)
+ *   - Compound operations that touch several stores
+ *                               (AcademySchedule)
+ *
+ * HISTORICAL-RECORD PRINCIPLE:
+ *   An enrolment is a historical fact. Leaving a discipline sets
+ *   the enrolment's endWeek; it does NOT delete the record. The
+ *   record survives, so a rejoin produces a second, non-overlapping
+ *   interval.
+ *
+ * ROLE MODEL (v31):
+ *   Every enrolment interval carries a role:
+ *
+ *     role: 'student' | 'instructor'
+ *
+ *   The role is CLASS-SCOPED: Alice can teach Class of 2026 and
+ *   study in Class of 2027. Per-class, she cannot hold both roles
+ *   for the same class (that invariant is enforced upstream by
+ *   CharacterCRUD.setInstructorForClass, which rewrites every
+ *   interval of a (character, class) pair in one transaction).
+ *
+ *   A missing role is treated as 'student' by every reader. That
+ *   is the migration-safe default: pre-v31 data carried no role
+ *   and was overwhelmingly student data.
+ *
+ *   READ SIDE:
+ *     getClassInstructorIdsAllTime in AcademyClasses derives the
+ *     class's instructor set from role === 'instructor' intervals.
+ *
+ *   WRITE SIDE:
+ *     The instructor-side "Assign to teach a discipline" flow calls
+ *     enrol(..., 'instructor').
+ *
+ *     The per-class "Instructor mode" toggle calls
+ *     setRoleForClass(appData, charId, classId, role), which
+ *     rewrites every interval of that (char, class) pair.
+ *
+ * STORAGE:
+ *   window.data.academy.enrolments[classId][charId] = [
+ *     {
+ *       disciplineId,
+ *       startWeek,
+ *       endWeek,     // null = ongoing; endWeek is INCLUSIVE
+ *       role         // 'student' | 'instructor'
+ *     }
+ *   ]
+ *
+ *   The array holds one entry per enrolment INTERVAL. A student can
+ *   have multiple entries for the same disciplineId if they left
+ *   and rejoined. Overlapping intervals for the same
+ *   (classId, charId, disciplineId) are invalid.
+ *
+ * WEEK SEMANTICS:
+ *   - Weeks are integers bounded by [MIN_WEEK, MAX_WEEK].
+ *   - endWeek === null means "ongoing".
+ *   - endWeek is INCLUSIVE.
+ *   - No silent coercion. Invalid weeks are rejected with a
+ *     message; they are never defaulted to 1 or MAX_WEEK.
+ *
+ * RANGE PREDICATES:
+ *   The week-containment question ("does [start, end] contain this
+ *   week") is owned by window.RangeUtils. The interval-overlap
+ *   question ("do these two intervals intersect") is also owned by
+ *   RangeUtils.
+ *
+ * MUTATION CONTRACT:
+ *   - enrol / leave / replaceEnrolments / setRoleForClass
+ *   - All public mutations return Promise<{ success, data?, message? }>.
+ *   - All go through MutationPipeline.
+ *   - setRoleForClass is SNAPSHOT-PURE: it takes appData and
+ *     mutates the snapshot. It is called from inside another
+ *     module's pipeline transaction
+ *     (CharacterCRUD.setInstructorForClass).
+ *
+ * READ SAFETY:
+ *   - Reads never create the store.
+ *   - Public reads return fresh arrays / deep clones.
+ *   - Internal accessors (used by the mutation callbacks) read the
+ *     live snapshot.
+ *
+ * CASCADE SEMANTICS:
+ *   stripCharacterRefs, stripClassRefs, stripDisciplineRefs,
+ *   stripInstructorRefs are PURE with respect to appData: they
+ *   mutate the given snapshot, never touch window.data, and never
+ *   throw. They run inside another module's pipeline transaction.
+ *
+ *   stripInstructorRefs is the v31 addition: it removes every
+ *   instructor-role interval of a character across every class.
+ *   It is called by AcademyCascade.characterDeleted BEFORE
+ *   stripCharacterRefs, so its count reflects instructor intervals
+ *   that actually existed at the time it ran.
+ *
+ * DEPENDENCIES (MANDATORY):
+ *   - window.ObjectUtils           (deepClone)
+ *   - window.ValidationUtils       (isNonEmptyString)
+ *   - window.CalendarValidation    (parseWeek)
+ *   - window.CalendarConstants     (MIN_WEEK, MAX_WEEK)
+ *   - window.RangeUtils            (containsWeek, weeksOverlap)
+ *   - window.MutationPipeline      (performMutation)
+ *
+ * USAGE:
+ *   var AE = window.AcademyEnrolments;
+ *
+ *   // Student enrolment.
+ *   AE.enrol('char_1', 'class_1', 'disc_en', 1).then(...);
+ *
+ *   // Instructor assignment (explicit role).
+ *   AE.enrol('char_1', 'class_1', 'disc_en', 1, 'instructor')
+ *       .then(...);
+ *
+ *   // Role-scoped reads.
+ *   var studentDisciplines = AE.getStudentDisciplineIds(
+ *       'char_1', 'class_1', { role: 'student' }
+ *   );
+ *
+ *   // Class-scoped role flip. Normally called from
+ *   // CharacterCRUD.setInstructorForClass, not directly.
+ */
+
+(function() {
+    'use strict';
+
+    if (window.__academyEnrolmentsLoaded) {
+        return;
+    }
+
+    // ============================================================
+    // MANDATORY DEPENDENCIES
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
+    var RangeUtils = window.RangeUtils;
+    var MutationPipeline = window.MutationPipeline;
+
+    var _missing = [];
+
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        _missing.push('ObjectUtils.deepClone');
+    }
+    if (!ValidationUtils ||
+        typeof ValidationUtils.isNonEmptyString !== 'function') {
+        _missing.push('ValidationUtils.isNonEmptyString');
+    }
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseWeek !== 'function') {
+        _missing.push('CalendarValidation.parseWeek');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof CalendarConstants.MAX_WEEK !== 'number') {
+        _missing.push('CalendarConstants.MIN_WEEK / MAX_WEEK');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.containsWeek !== 'function') {
+        _missing.push('RangeUtils.containsWeek');
+    }
+    if (!RangeUtils ||
+        typeof RangeUtils.weeksOverlap !== 'function') {
+        _missing.push('RangeUtils.weeksOverlap');
+    }
+    if (!MutationPipeline ||
+        typeof MutationPipeline.performMutation !== 'function') {
+        _missing.push('MutationPipeline.performMutation');
+    }
+
+    if (_missing.length > 0) {
+        throw new Error(
+            '[AcademyEnrolments] Missing mandatory dependencies: ' +
+            _missing.join(', ')
+        );
+    }
+
+    window.__academyEnrolmentsLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    var ROLE_STUDENT = 'student';
+    var ROLE_INSTRUCTOR = 'instructor';
+
+    var VALID_ROLES = [ROLE_STUDENT, ROLE_INSTRUCTOR];
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isNonEmptyString(value) {
+        return ValidationUtils.isNonEmptyString(value);
+    }
+
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
+    }
+
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
+            throw new Error(
+                '[AcademyEnrolments] deepClone returned the original reference.'
+            );
+        }
+        return result;
+    }
+
+    function failure(message) {
+        return { success: false, message: message };
+    }
+
+    function success(data) {
+        return { success: true, data: data };
+    }
+
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
+            return null;
+        }
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
+            return null;
+        }
+        return parsed;
+    }
+
+    /**
+     * Read the role of an interval.
+     *
+     * A missing role is treated as 'student'. That is the
+     * migration-safe default: pre-v31 data carried no role, and
+     * pre-v31 enrolment data was overwhelmingly student data.
+     *
+     * Anything that is not 'instructor' is treated as 'student'
+     * here, including malformed values. This is the read path; it
+     * does not police stored data. Writes go through validateRole
+     * below, which does enforce the vocabulary.
+     */
+    function intervalRole(interval) {
+        if (!interval || typeof interval !== 'object') {
+            return ROLE_STUDENT;
+        }
+        if (interval.role === ROLE_INSTRUCTOR) {
+            return ROLE_INSTRUCTOR;
+        }
+        return ROLE_STUDENT;
+    }
+
+    function validateRole(role, allowUndefined) {
+        if (role === undefined || role === null || role === '') {
+            if (allowUndefined) {
+                return { valid: true, value: ROLE_STUDENT };
+            }
+            return {
+                valid: false,
+                message:
+                    'Role must be one of: ' +
+                    VALID_ROLES.join(', ') + '.'
+            };
+        }
+        if (typeof role !== 'string') {
+            return {
+                valid: false,
+                message: 'Role must be a string.'
+            };
+        }
+        var trimmed = role.trim().toLowerCase();
+        if (VALID_ROLES.indexOf(trimmed) === -1) {
+            return {
+                valid: false,
+                message:
+                    'Role must be one of: ' +
+                    VALID_ROLES.join(', ') + '.'
+            };
+        }
+        return { valid: true, value: trimmed };
+    }
+
+    // ============================================================
+    // RANGE PREDICATES — DELEGATE TO RangeUtils
+    // ============================================================
+
+    function intervalContainsWeek(startWeek, endWeek, week) {
+        return RangeUtils.containsWeek(week, startWeek, endWeek);
+    }
+
+    function intervalsOverlap(startA, endA, startB, endB) {
+        return RangeUtils.weeksOverlap(startA, endA, startB, endB);
+    }
+
+    // ============================================================
+    // STORE ACCESS
+    // ============================================================
+
+    function getAcademyStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            return null;
+        }
+        return window.data.academy;
+    }
+
+    function getEnrolmentsStore() {
+        var academy = getAcademyStore();
+        if (!academy) { return null; }
+        var store = academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return null;
+        }
+        return store;
+    }
+
+    function getEnrolmentsStoreFromSnapshot(appData) {
+        if (!appData || typeof appData !== 'object') {
+            return null;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return null;
+        }
+        var store = appData.academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return null;
+        }
+        return store;
+    }
+
+    function ensureEnrolmentsStore(appData) {
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            appData.academy = {};
+        }
+        if (!appData.academy.enrolments ||
+            typeof appData.academy.enrolments !== 'object' ||
+            Array.isArray(appData.academy.enrolments)) {
+            appData.academy.enrolments = {};
+        }
+        return appData.academy.enrolments;
+    }
+
+    // ============================================================
+    // INTERNAL READ HELPERS - LIVE REFERENCES
+    // ============================================================
+
+    function getIntervalArrayFromStore(store, classId, charId) {
+        if (!store || !isNonEmptyString(classId) || !isNonEmptyString(charId)) {
+            return null;
+        }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) { return null; }
+        var arr = byClass[String(charId)];
+        if (!Array.isArray(arr)) { return null; }
+        return arr;
+    }
+
+    function getIntervalArray(classId, charId) {
+        return getIntervalArrayFromStore(
+            getEnrolmentsStore(), classId, charId
+        );
+    }
+
+    function getIntervalsForDiscipline(intervals, disciplineId) {
+        if (!Array.isArray(intervals) || !isNonEmptyString(disciplineId)) {
+            return [];
+        }
+        var target = String(disciplineId);
+        var result = [];
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            if (entry && String(entry.disciplineId) === target) {
+                result.push(entry);
+            }
+        }
+        return result;
+    }
+
+    function sortIntervals(intervals) {
+        intervals.sort(function(a, b) {
+            var da = String(a.disciplineId);
+            var db = String(b.disciplineId);
+            if (da !== db) { return da < db ? -1 : 1; }
+            return a.startWeek - b.startWeek;
+        });
+    }
+
+    // ============================================================
+    // PUBLIC READS
+    // ============================================================
+
+    /**
+     * Get every enrolment interval for a student in a class.
+     *
+     * The returned array is sorted by (disciplineId, startWeek).
+     * Each interval carries its `role`. Empty when there is no
+     * entry or no data.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @returns {array} Array of cloned interval objects
+     */
+    function getStudentDisciplines(charId, classId) {
+        var arr = getIntervalArray(classId, charId);
+        if (!arr) { return []; }
+        var result = [];
+        for (var i = 0; i < arr.length; i++) {
+            var clone = deepClone(arr[i]);
+            // Migration-safe read: a missing role is exposed as
+            // 'student'. Callers that want to know whether the
+            // value was explicit can check the raw store.
+            clone.role = intervalRole(arr[i]);
+            result.push(clone);
+        }
+        result.sort(function(a, b) {
+            var da = String(a.disciplineId);
+            var db = String(b.disciplineId);
+            if (da !== db) { return da < db ? -1 : 1; }
+            return a.startWeek - b.startWeek;
+        });
+        return result;
+    }
+
+    /**
+     * Distinct discipline IDs for a student in a class.
+     *
+     * A discipline appears once even if the student has rejoined.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @param {object} [options]
+     * @param {string} [options.role]  When 'student' or
+     *   'instructor', only intervals with that role contribute a
+     *   discipline ID. When omitted, both roles contribute.
+     * @returns {array} Array of unique disciplineId strings
+     */
+    function getStudentDisciplineIds(charId, classId, options) {
+        var intervals = getStudentDisciplines(charId, classId);
+
+        var roleFilter = null;
+        if (options && options.role !== undefined && options.role !== null) {
+            var check = validateRole(options.role, false);
+            if (!check.valid) {
+                return [];
+            }
+            roleFilter = check.value;
+        }
+
+        var seen = Object.create(null);
+        var result = [];
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            var id = entry.disciplineId;
+            if (!id) { continue; }
+
+            if (roleFilter !== null) {
+                var entryRole = intervalRole(entry);
+                if (entryRole !== roleFilter) { continue; }
+            }
+
+            var key = String(id);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+            result.push(key);
+        }
+        return result;
+    }
+
+    /**
+     * Is the student enrolled in a discipline in any week of the
+     * class's window? A "yes" here does not imply an active current
+     * enrolment; use isEnrolledInWeek for that.
+     *
+     * Role-agnostic: returns true if any interval for the
+     * discipline exists, regardless of role. Callers that want a
+     * role-scoped answer use getStudentDisciplineIds with a role
+     * option.
+     */
+    function isEnrolled(charId, classId, disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return false; }
+        var arr = getIntervalArray(classId, charId);
+        if (!arr) { return false; }
+        var matches = getIntervalsForDiscipline(arr, disciplineId);
+        return matches.length > 0;
+    }
+
+    function isEnrolledInWeek(charId, classId, disciplineId, week) {
+        if (!isNonEmptyString(disciplineId)) { return false; }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) { return false; }
+
+        var arr = getIntervalArray(classId, charId);
+        if (!arr) { return false; }
+
+        var matches = getIntervalsForDiscipline(arr, disciplineId);
+        for (var i = 0; i < matches.length; i++) {
+            var entry = matches[i];
+            if (intervalContainsWeek(
+                entry.startWeek, entry.endWeek, weekNum
+            )) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get every enrolled student in a class, mapped to a deduplicated
+     * list of disciplineIds.
+     *
+     * Role-agnostic. An instructor enrolled in a discipline appears
+     * in the map with that discipline, exactly like a student.
+     * Callers that need role-scoped answers walk the intervals
+     * themselves or use getStudentDisciplineIds per character.
+     *
+     * @param {string} classId
+     * @returns {object} { charId: [disciplineId, ...] }
+     */
+    function getClassEnrolments(classId) {
+        if (!isNonEmptyString(classId)) { return {}; }
+        var store = getEnrolmentsStore();
+        if (!store) { return {}; }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) { return {}; }
+
+        var result = {};
+        var charIds = Object.keys(byClass);
+        for (var i = 0; i < charIds.length; i++) {
+            var arr = byClass[charIds[i]];
+            if (!Array.isArray(arr)) {
+                result[charIds[i]] = [];
+                continue;
+            }
+            var seen = Object.create(null);
+            var ids = [];
+            for (var j = 0; j < arr.length; j++) {
+                var entry = arr[j];
+                if (!entry || !entry.disciplineId) { continue; }
+                var id = String(entry.disciplineId);
+                if (seen[id]) { continue; }
+                seen[id] = true;
+                ids.push(id);
+            }
+            result[charIds[i]] = ids;
+        }
+        return result;
+    }
+
+    /**
+     * Get every student in a class who is enrolled in a given
+     * discipline for a given week.
+     *
+     * Role-agnostic by default. With options.role supplied, only
+     * intervals of that role qualify.
+     *
+     * @param {string} classId
+     * @param {string} disciplineId
+     * @param {number|string} week
+     * @param {object} [options]
+     * @param {string} [options.role]  'student' | 'instructor'
+     * @returns {array} Array of charIds
+     */
+    function getEnrolledStudents(classId, disciplineId, week, options) {
+        if (!isNonEmptyString(classId) ||
+            !isNonEmptyString(disciplineId)) {
+            return [];
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) { return []; }
+
+        var roleFilter = null;
+        if (options && options.role !== undefined && options.role !== null) {
+            var check = validateRole(options.role, false);
+            if (!check.valid) { return []; }
+            roleFilter = check.value;
+        }
+
+        var store = getEnrolmentsStore();
+        if (!store) { return []; }
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) { return []; }
+
+        var target = String(disciplineId);
+        var result = [];
+        var charIds = Object.keys(byClass);
+        for (var i = 0; i < charIds.length; i++) {
+            var charId = charIds[i];
+            var arr = byClass[charId];
+            if (!Array.isArray(arr)) { continue; }
+
+            var matched = false;
+            for (var j = 0; j < arr.length; j++) {
+                var entry = arr[j];
+                if (!entry || String(entry.disciplineId) !== target) {
+                    continue;
+                }
+                if (roleFilter !== null &&
+                    intervalRole(entry) !== roleFilter) {
+                    continue;
+                }
+                if (intervalContainsWeek(
+                    entry.startWeek, entry.endWeek, weekNum
+                )) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) {
+                result.push(charId);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Get every class a student has any enrolment in.
+     * Role-agnostic.
+     *
+     * @param {string} charId
+     * @returns {array} Array of classIds
+     */
+    function getStudentClasses(charId) {
+        if (!isNonEmptyString(charId)) { return []; }
+        var store = getEnrolmentsStore();
+        if (!store) { return []; }
+
+        var target = String(charId);
+        var result = [];
+        var classIds = Object.keys(store);
+        for (var i = 0; i < classIds.length; i++) {
+            var byClass = store[classIds[i]];
+            if (!isPlainObject(byClass)) { continue; }
+            if (Object.prototype.hasOwnProperty.call(byClass, target)) {
+                result.push(classIds[i]);
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
+    // VALIDATION FOR MUTATIONS
+    // ============================================================
+
+    function validateIds(charId, classId, disciplineId) {
+        if (!isNonEmptyString(charId)) {
+            return { valid: false, message: 'Character ID is required.' };
+        }
+        if (!isNonEmptyString(classId)) {
+            return { valid: false, message: 'Class ID is required.' };
+        }
+        if (!isNonEmptyString(disciplineId)) {
+            return { valid: false, message: 'Discipline ID is required.' };
+        }
+        return { valid: true };
+    }
+
+    function validateStartWeek(week) {
+        var parsed = parseWeekStrict(week);
+        if (parsed === null) {
+            return {
+                valid: false,
+                message:
+                    'Start week must be between ' + MIN_WEEK +
+                    ' and ' + MAX_WEEK + '.'
+            };
+        }
+        return { valid: true, value: parsed };
+    }
+
+    function validateEffectiveWeek(week) {
+        var parsed = parseWeekStrict(week);
+        if (parsed === null) {
+            return {
+                valid: false,
+                message:
+                    'Effective week must be between ' + MIN_WEEK +
+                    ' and ' + MAX_WEEK + '.'
+            };
+        }
+        return { valid: true, value: parsed };
+    }
+
+    function findOverlappingInterval(
+        existingIntervals,
+        newStartWeek,
+        newEndWeek
+    ) {
+        for (var i = 0; i < existingIntervals.length; i++) {
+            var entry = existingIntervals[i];
+            if (intervalsOverlap(
+                entry.startWeek, entry.endWeek,
+                newStartWeek, newEndWeek
+            )) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    // ============================================================
+    // MUTATIONS
+    // ============================================================
+
+    /**
+     * Enrol a student (or instructor) in a discipline for a class,
+     * from a given week.
+     *
+     * The enrolment is open-ended: endWeek is null. To end it later,
+     * call leave() with an effective week.
+     *
+     * Overlapping intervals for the same (classId, charId,
+     * disciplineId) are rejected.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @param {string} disciplineId
+     * @param {number|string} startWeek
+     * @param {string} [role]  'student' (default) | 'instructor'
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function enrol(charId, classId, disciplineId, startWeek, role) {
+        var idCheck = validateIds(charId, classId, disciplineId);
+        if (!idCheck.valid) {
+            return Promise.resolve(failure(idCheck.message));
+        }
+
+        var weekCheck = validateStartWeek(startWeek);
+        if (!weekCheck.valid) {
+            return Promise.resolve(failure(weekCheck.message));
+        }
+
+        var roleCheck = validateRole(role, true);
+        if (!roleCheck.valid) {
+            return Promise.resolve(failure(roleCheck.message));
+        }
+
+        var targetChar = String(charId);
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+        var startNum = weekCheck.value;
+        var targetRole = roleCheck.value;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                var store = getEnrolmentsStoreFromSnapshot(appData);
+                var intervals = getIntervalArrayFromStore(
+                    store, targetClass, targetChar
+                );
+
+                if (!intervals) {
+                    return { valid: true };
+                }
+
+                var sameDiscipline = getIntervalsForDiscipline(
+                    intervals, targetDiscipline
+                );
+                var conflict = findOverlappingInterval(
+                    sameDiscipline, startNum, null
+                );
+                if (conflict) {
+                    return {
+                        valid: false,
+                        message:
+                            'Student already has an enrolment in this ' +
+                            'discipline from week ' +
+                            conflict.startWeek + '.'
+                    };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureEnrolmentsStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+                if (!Array.isArray(store[targetClass][targetChar])) {
+                    store[targetClass][targetChar] = [];
+                }
+
+                var entry = {
+                    disciplineId: targetDiscipline,
+                    startWeek: startNum,
+                    endWeek: null,
+                    role: targetRole
+                };
+                store[targetClass][targetChar].push(entry);
+                sortIntervals(store[targetClass][targetChar]);
+
+                return {
+                    charId: targetChar,
+                    classId: targetClass,
+                    disciplineId: targetDiscipline,
+                    startWeek: startNum,
+                    role: targetRole
+                };
+            },
+            logMessage:
+                'Enrolled ' + targetChar + ' in ' + targetDiscipline +
+                ' for ' + targetClass + ' from week ' + startNum +
+                ' as ' + targetRole,
+            successMessage: 'Enrolled successfully.',
+            failureMessage: 'Failed to enrol.'
+        });
+    }
+
+    /**
+     * End a student's enrolment in a discipline effective from a
+     * given week. History survives.
+     *
+     * SEMANTICS:
+     *   leave(charId, classId, discId, 15) sets endWeek = 14 on the
+     *   interval that contains week 15. If the active interval
+     *   already ended before week 15, the mutation is a no-op.
+     *
+     *   If the interval starts on or after the effective week, it is
+     *   removed entirely.
+     *
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function leave(charId, classId, disciplineId, effectiveWeek) {
+        var idCheck = validateIds(charId, classId, disciplineId);
+        if (!idCheck.valid) {
+            return Promise.resolve(failure(idCheck.message));
+        }
+
+        var weekCheck = validateEffectiveWeek(effectiveWeek);
+        if (!weekCheck.valid) {
+            return Promise.resolve(failure(weekCheck.message));
+        }
+
+        var targetChar = String(charId);
+        var targetClass = String(classId);
+        var targetDiscipline = String(disciplineId);
+        var effectiveNum = weekCheck.value;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+
+                var store = getEnrolmentsStoreFromSnapshot(appData);
+                var intervals = getIntervalArrayFromStore(
+                    store, targetClass, targetChar
+                );
+
+                if (!intervals) {
+                    return {
+                        valid: false,
+                        message: 'Student is not enrolled in this class.'
+                    };
+                }
+
+                var sameDiscipline = getIntervalsForDiscipline(
+                    intervals, targetDiscipline
+                );
+                if (sameDiscipline.length === 0) {
+                    return {
+                        valid: false,
+                        message:
+                            'Student is not enrolled in this discipline.'
+                    };
+                }
+
+                var affected = false;
+                for (var i = 0; i < sameDiscipline.length; i++) {
+                    var entry = sameDiscipline[i];
+
+                    if (entry.startWeek >= effectiveNum) {
+                        affected = true;
+                        break;
+                    }
+                    if (intervalContainsWeek(
+                        entry.startWeek, entry.endWeek, effectiveNum
+                    )) {
+                        affected = true;
+                        break;
+                    }
+                    if (entry.endWeek === null && entry.startWeek <= effectiveNum) {
+                        affected = true;
+                        break;
+                    }
+                }
+
+                if (!affected) {
+                    return {
+                        valid: false,
+                        message:
+                            'No active enrolment to end at week ' +
+                            effectiveNum + '.'
+                    };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureEnrolmentsStore(appData);
+                if (!store ||
+                    !isPlainObject(store[targetClass]) ||
+                    !Array.isArray(store[targetClass][targetChar])) {
+                    return { changed: false };
+                }
+
+                var intervals = store[targetClass][targetChar];
+                var newIntervals = [];
+                var changed = false;
+
+                for (var i = 0; i < intervals.length; i++) {
+                    var entry = intervals[i];
+                    if (!entry ||
+                        String(entry.disciplineId) !== targetDiscipline) {
+                        newIntervals.push(entry);
+                        continue;
+                    }
+
+                    if (entry.endWeek !== null &&
+                        entry.endWeek !== undefined &&
+                        entry.endWeek < effectiveNum) {
+                        newIntervals.push(entry);
+                        continue;
+                    }
+
+                    if (entry.startWeek >= effectiveNum) {
+                        changed = true;
+                        continue;
+                    }
+
+                    entry.endWeek = effectiveNum - 1;
+                    changed = true;
+                    newIntervals.push(entry);
+                }
+
+                if (changed) {
+                    store[targetClass][targetChar] = newIntervals;
+                    sortIntervals(store[targetClass][targetChar]);
+
+                    if (store[targetClass][targetChar].length === 0) {
+                        delete store[targetClass][targetChar];
+                    }
+                    if (Object.keys(store[targetClass]).length === 0) {
+                        delete store[targetClass];
+                    }
+                }
+
+                return {
+                    charId: targetChar,
+                    classId: targetClass,
+                    disciplineId: targetDiscipline,
+                    effectiveWeek: effectiveNum,
+                    changed: changed
+                };
+            },
+            logMessage:
+                'Ended enrolment of ' + targetChar + ' in ' +
+                targetDiscipline + ' for ' + targetClass +
+                ' effective week ' + effectiveNum,
+            successMessage: 'Left discipline.',
+            failureMessage: 'Failed to leave discipline.'
+        });
+    }
+
+    /**
+     * Replace the entire enrolment list for a student in a class.
+     *
+     * `entries` is an array of
+     *   { disciplineId, startWeek, endWeek?, role? }.
+     * Uniqueness and non-overlap are enforced per disciplineId.
+     *
+     * A missing role defaults to 'student'.
+     *
+     * @returns {Promise<{success, data?, message?}>}
+     */
+    function replaceEnrolments(charId, classId, entries) {
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!Array.isArray(entries)) {
+            return Promise.resolve(
+                failure('Enrolments must be an array.')
+            );
+        }
+
+        var targetChar = String(charId);
+        var targetClass = String(classId);
+        var cleaned = [];
+        var seenDisciplineStart = Object.create(null);
+
+        for (var i = 0; i < entries.length; i++) {
+            var raw = entries[i];
+            if (!isPlainObject(raw)) {
+                return Promise.resolve(failure(
+                    'Entry ' + (i + 1) + ' must be an object.'
+                ));
+            }
+            if (!isNonEmptyString(raw.disciplineId)) {
+                return Promise.resolve(failure(
+                    'Entry ' + (i + 1) + ' requires a disciplineId.'
+                ));
+            }
+
+            var startCheck = validateStartWeek(raw.startWeek);
+            if (!startCheck.valid) {
+                return Promise.resolve(failure(
+                    'Entry ' + (i + 1) + ': ' + startCheck.message
+                ));
+            }
+
+            var roleCheck = validateRole(raw.role, true);
+            if (!roleCheck.valid) {
+                return Promise.resolve(failure(
+                    'Entry ' + (i + 1) + ': ' + roleCheck.message
+                ));
+            }
+
+            var endNum = null;
+            if (raw.endWeek !== undefined && raw.endWeek !== null) {
+                var endCheck = validateEffectiveWeek(raw.endWeek);
+                if (!endCheck.valid) {
+                    return Promise.resolve(failure(
+                        'Entry ' + (i + 1) + ': ' + endCheck.message
+                    ));
+                }
+                if (endCheck.value < startCheck.value) {
+                    return Promise.resolve(failure(
+                        'Entry ' + (i + 1) +
+                        ': endWeek cannot be before startWeek.'
+                    ));
+                }
+                endNum = endCheck.value;
+            }
+
+            var disciplineKey = String(raw.disciplineId);
+            var startKey = disciplineKey + '::' + startCheck.value;
+            if (seenDisciplineStart[startKey]) {
+                return Promise.resolve(failure(
+                    'Entry ' + (i + 1) +
+                    ': duplicate (disciplineId, startWeek).'
+                ));
+            }
+            seenDisciplineStart[startKey] = true;
+
+            cleaned.push({
+                disciplineId: disciplineKey,
+                startWeek: startCheck.value,
+                endWeek: endNum,
+                role: roleCheck.value
+            });
+        }
+
+        var byDiscipline = {};
+        for (var k = 0; k < cleaned.length; k++) {
+            var entry = cleaned[k];
+            if (!byDiscipline[entry.disciplineId]) {
+                byDiscipline[entry.disciplineId] = [];
+            }
+            byDiscipline[entry.disciplineId].push(entry);
+        }
+
+        var disciplineIds = Object.keys(byDiscipline);
+        for (var d = 0; d < disciplineIds.length; d++) {
+            var list = byDiscipline[disciplineIds[d]];
+            for (var a = 0; a < list.length; a++) {
+                for (var b = a + 1; b < list.length; b++) {
+                    if (intervalsOverlap(
+                        list[a].startWeek, list[a].endWeek,
+                        list[b].startWeek, list[b].endWeek
+                    )) {
+                        return Promise.resolve(failure(
+                            'Overlapping intervals for discipline ' +
+                            disciplineIds[d] + '.'
+                        ));
+                    }
+                }
+            }
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = ensureEnrolmentsStore(appData);
+                if (!isPlainObject(store[targetClass])) {
+                    store[targetClass] = {};
+                }
+
+                if (cleaned.length === 0) {
+                    delete store[targetClass][targetChar];
+                    if (Object.keys(store[targetClass]).length === 0) {
+                        delete store[targetClass];
+                    }
+                } else {
+                    store[targetClass][targetChar] =
+                        cleaned.map(function(e) { return deepClone(e); });
+                    sortIntervals(store[targetClass][targetChar]);
+                }
+
+                return {
+                    charId: targetChar,
+                    classId: targetClass,
+                    count: cleaned.length
+                };
+            },
+            logMessage:
+                'Replaced enrolments for ' + targetChar +
+                ' in ' + targetClass,
+            successMessage: 'Enrolments updated.',
+            failureMessage: 'Failed to update enrolments.'
+        });
+    }
+
+    // ============================================================
+    // ROLE MUTATION — SNAPSHOT-PURE (v31)
+    // ============================================================
+    //
+    // Rewrite every interval of a (charId, classId) pair to the
+    // given role. Used by CharacterCRUD.setInstructorForClass.
+    //
+    // This is a SNAPSHOT-PURE helper: it takes appData and mutates
+    // the snapshot in place. It does NOT go through MutationPipeline
+    // and does NOT touch window.data. It is meant to be called from
+    // inside another module's pipeline transaction.
+    //
+    // Returns { intervalsChanged: <int> }. The count is the number
+    // of intervals whose role was actually flipped. An interval that
+    // already had the target role is not counted.
+    //
+    // Returns 0 when:
+    //   - the character has no enrolments in the class
+    //   - the classId or charId is blank
+    //   - appData is missing
+    //   - the role is not a valid role
+    //
+    // It does NOT throw on missing structure; a snapshot with no
+    // enrolments is not an error, it is just a no-op.
+
+    function setRoleForClass(appData, charId, classId, role) {
+        var result = { intervalsChanged: 0 };
+
+        if (!appData || typeof appData !== 'object') {
+            return result;
+        }
+        if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
+            return result;
+        }
+
+        var roleCheck = validateRole(role, false);
+        if (!roleCheck.valid) {
+            return result;
+        }
+        var targetRole = roleCheck.value;
+
+        var store = getEnrolmentsStoreFromSnapshot(appData);
+        if (!store) {
+            return result;
+        }
+
+        var byClass = store[String(classId)];
+        if (!isPlainObject(byClass)) {
+            return result;
+        }
+
+        var intervals = byClass[String(charId)];
+        if (!Array.isArray(intervals) || intervals.length === 0) {
+            return result;
+        }
+
+        for (var i = 0; i < intervals.length; i++) {
+            var entry = intervals[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var currentRole = intervalRole(entry);
+            if (currentRole === targetRole) {
+                // Rewrite the field anyway, in case it was absent
+                // and the default was applied by the reader. This
+                // materialises the role on the record.
+                if (entry.role !== targetRole) {
+                    entry.role = targetRole;
+                }
+                continue;
+            }
+
+            entry.role = targetRole;
+            result.intervalsChanged++;
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // CASCADE HELPERS
+    // ============================================================
+
+    /**
+     * Strip all enrolment references to a character.
+     *
+     * Removes the character's whole bucket from the enrolment
+     * store. Does not distinguish roles; every interval goes.
+     *
+     * PURE with respect to appData. Does not touch window.data.
+     * Never throws.
+     *
+     * @returns {object} { enrolmentsRemoved }
+     */
+    function stripCharacterRefs(appData, charId) {
+        var result = { enrolmentsRemoved: 0 };
+        if (!appData || !isNonEmptyString(charId)) {
+            return result;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return result;
+        }
+        var store = appData.academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return result;
+        }
+
+        var target = String(charId);
+        var classIds = Object.keys(store);
+        for (var i = 0; i < classIds.length; i++) {
+            var classId = classIds[i];
+            var byClass = store[classId];
+            if (!isPlainObject(byClass)) { continue; }
+            if (Object.prototype.hasOwnProperty.call(byClass, target)) {
+                delete byClass[target];
+                result.enrolmentsRemoved++;
+            }
+            if (Object.keys(byClass).length === 0) {
+                delete store[classId];
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Strip all enrolment references to a class.
+     *
+     * @returns {object} { enrolmentsRemoved }
+     */
+    function stripClassRefs(appData, classId) {
+        var result = { enrolmentsRemoved: 0 };
+        if (!appData || !isNonEmptyString(classId)) {
+            return result;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return result;
+        }
+        var store = appData.academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return result;
+        }
+
+        var target = String(classId);
+        var byClass = store[target];
+        if (isPlainObject(byClass)) {
+            result.enrolmentsRemoved = Object.keys(byClass).length;
+            delete store[target];
+        }
+        return result;
+    }
+
+    /**
+     * Strip references to a discipline from every enrolment.
+     *
+     * @returns {object} { intervalsRemoved }
+     */
+    function stripDisciplineRefs(appData, disciplineId) {
+        var result = { intervalsRemoved: 0 };
+        if (!appData || !isNonEmptyString(disciplineId)) {
+            return result;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return result;
+        }
+        var store = appData.academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return result;
+        }
+
+        var target = String(disciplineId);
+        var classIds = Object.keys(store);
+
+        for (var i = 0; i < classIds.length; i++) {
+            var classId = classIds[i];
+            var byClass = store[classId];
+            if (!isPlainObject(byClass)) { continue; }
+
+            var charIds = Object.keys(byClass);
+            for (var j = 0; j < charIds.length; j++) {
+                var charId = charIds[j];
+                var arr = byClass[charId];
+                if (!Array.isArray(arr)) { continue; }
+
+                var before = arr.length;
+                var filtered = arr.filter(function(entry) {
+                    return !(entry &&
+                             String(entry.disciplineId) === target);
+                });
+                var removed = before - filtered.length;
+
+                if (removed > 0) {
+                    result.intervalsRemoved += removed;
+                    if (filtered.length === 0) {
+                        delete byClass[charId];
+                    } else {
+                        byClass[charId] = filtered;
+                    }
+                }
+            }
+
+            if (Object.keys(byClass).length === 0) {
+                delete store[classId];
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Strip every instructor-role interval of a character, across
+     * every class.
+     *
+     * This is the v31 addition. It is called by
+     * AcademyCascade.characterDeleted BEFORE stripCharacterRefs, so
+     * its count reflects instructor intervals that actually existed
+     * at the time it ran. After stripCharacterRefs runs, the
+     * character's bucket is gone entirely; stripInstructorRefs
+     * would then report zero.
+     *
+     * Semantics:
+     *   - Intervals with role === 'instructor' are removed.
+     *   - Intervals with any other role (or a missing role, which
+     *     the reader treats as 'student') are left in place.
+     *   - After removal, empty char buckets and empty class buckets
+     *     are pruned.
+     *
+     * PURE with respect to appData. Never throws.
+     *
+     * @returns {object} { intervalsRemoved }
+     */
+    function stripInstructorRefs(appData, charId) {
+        var result = { intervalsRemoved: 0 };
+        if (!appData || !isNonEmptyString(charId)) {
+            return result;
+        }
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return result;
+        }
+        var store = appData.academy.enrolments;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return result;
+        }
+
+        var target = String(charId);
+        var classIds = Object.keys(store);
+
+        for (var i = 0; i < classIds.length; i++) {
+            var classId = classIds[i];
+            var byClass = store[classId];
+            if (!isPlainObject(byClass)) { continue; }
+
+            var arr = byClass[target];
+            if (!Array.isArray(arr) || arr.length === 0) {
+                continue;
+            }
+
+            var before = arr.length;
+            var filtered = arr.filter(function(entry) {
+                return intervalRole(entry) !== ROLE_INSTRUCTOR;
+            });
+            var removed = before - filtered.length;
+
+            if (removed > 0) {
+                result.intervalsRemoved += removed;
+                if (filtered.length === 0) {
+                    delete byClass[target];
+                } else {
+                    byClass[target] = filtered;
+                }
+            }
+
+            if (Object.keys(byClass).length === 0) {
+                delete store[classId];
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.AcademyEnrolments = Object.freeze({
+        // Reads
+        getStudentDisciplines: getStudentDisciplines,
+        getStudentDisciplineIds: getStudentDisciplineIds,
+        isEnrolled: isEnrolled,
+        isEnrolledInWeek: isEnrolledInWeek,
+        getClassEnrolments: getClassEnrolments,
+        getEnrolledStudents: getEnrolledStudents,
+        getStudentClasses: getStudentClasses,
+
+        // Mutations
+        enrol: enrol,
+        leave: leave,
+        replaceEnrolments: replaceEnrolments,
+
+        // Role mutation (snapshot-pure, for use inside a pipeline)
+        setRoleForClass: setRoleForClass,
+
+        // Cascade helpers
+        stripCharacterRefs: stripCharacterRefs,
+        stripClassRefs: stripClassRefs,
+        stripDisciplineRefs: stripDisciplineRefs,
+        stripInstructorRefs: stripInstructorRefs,
+
+        // Constants
+        ROLE_STUDENT: ROLE_STUDENT,
+        ROLE_INSTRUCTOR: ROLE_INSTRUCTOR,
+        VALID_ROLES: VALID_ROLES
+    });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyEnrolments;
+        var missing = [];
+
+        var required = [
+            'getStudentDisciplines',
+            'getStudentDisciplineIds',
+            'isEnrolled',
+            'isEnrolledInWeek',
+            'getClassEnrolments',
+            'getEnrolledStudents',
+            'getStudentClasses',
+            'enrol',
+            'leave',
+            'replaceEnrolments',
+            'setRoleForClass',
+            'stripCharacterRefs',
+            'stripClassRefs',
+            'stripDisciplineRefs',
+            'stripInstructorRefs'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        try {
+            if (intervalContainsWeek(1, 10, 5) !== true) {
+                missing.push('intervalContainsWeek(1,10,5) !== true');
+            }
+            if (intervalContainsWeek(1, 10, 10) !== true) {
+                missing.push('intervalContainsWeek inclusive end not honoured');
+            }
+            if (intervalContainsWeek(1, 10, 11) !== false) {
+                missing.push('intervalContainsWeek(1,10,11) !== false');
+            }
+            if (intervalContainsWeek(1, null, 52) !== true) {
+                missing.push('intervalContainsWeek null end not ongoing');
+            }
+
+            if (intervalsOverlap(1, 10, 5, 15) !== true) {
+                missing.push('intervalsOverlap missed a simple overlap');
+            }
+            if (intervalsOverlap(1, 10, 11, 20) !== false) {
+                missing.push('intervalsOverlap found a false overlap');
+            }
+            if (intervalsOverlap(1, 10, 10, 20) !== true) {
+                missing.push('intervalsOverlap missed inclusive endpoint');
+            }
+            if (intervalsOverlap(1, null, 30, 40) !== true) {
+                missing.push('intervalsOverlap missed open-ended overlap');
+            }
+            if (intervalsOverlap(1, 5, 6, 10) !== false) {
+                missing.push('intervalsOverlap flagged disjoint ranges');
+            }
+
+            // Role helpers.
+            if (intervalRole({ role: 'instructor' }) !== 'instructor') {
+                missing.push('intervalRole missed instructor');
+            }
+            if (intervalRole({ role: 'student' }) !== 'student') {
+                missing.push('intervalRole missed student');
+            }
+            if (intervalRole({}) !== 'student') {
+                missing.push('intervalRole did not default to student');
+            }
+            if (intervalRole(null) !== 'student') {
+                missing.push('intervalRole(null) did not default');
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[AcademyEnrolments] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
+
+})();/**
+ * modules/academy/academy-enrolments.js - Academy Enrolments
+ *
+ * Path: js/modules/academy/academy-enrolments.js
+ *
+ * SINGLE SOURCE OF TRUTH for student ↔ class-discipline enrolment.
+ *
+ * WHAT THIS MODULE OWNS:
  *   The historical record that a student participated in a class's
  *   offering of a discipline for a bounded week range.
  *
