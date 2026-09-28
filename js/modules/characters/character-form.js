@@ -40,17 +40,45 @@
  *   The form-level actions row at the bottom of the form carries:
  *
  *     [Delete]                (only when editing an existing character)
+ *     [Export]                (only when editing an existing character)
  *     <spacer>
  *     [Cancel]
  *     [Create Character]      (or "Update Character")
  *
- *   The Delete button was previously rendered in the form header
- *   alongside a redundant Save button. Both have been retired from
- *   the header. Delete now lives in the bottom row, next to the
- *   other form actions, matching where a user expects to find it.
+ *   Delete and Export are rendered only when editing an existing
+ *   character; a new draft has no id, so neither is meaningful.
  *
- *   Delete is bound via delegation in character-events.js so it
- *   survives every re-render of #character-form-content.
+ *   Delete is bound via delegation in character-events.js on
+ *   #delete-char-btn. Export is bound the same way on
+ *   #export-character-report-btn.
+ *
+ * CHARACTER ID FIELD (this revision):
+ *   The Name tab carries a read-only text input, #char-id, above
+ *   the First / Middle name row. It displays the character's id
+ *   and is not editable. Its purpose is to make the id easily
+ *   copyable without opening DevTools.
+ *
+ *   For a new character (no id yet), the field renders with the
+ *   placeholder "Assigned on save" and the disabled attribute.
+ *   After the character is created, the panel re-renders with the
+ *   real id.
+ *
+ *   The field is NOT collected by collect(). It is a display-only
+ *   affordance. CharacterCRUD owns the id; the form does not
+ *   write it.
+ *
+ * EXPORT BUTTON (this revision):
+ *   The form-actions row carries an Export button,
+ *   #export-character-report-btn. It is rendered only when editing
+ *   an existing character. Clicking it produces a plain-text
+ *   report of the character, downloaded as a .txt file, built by
+ *   CharacterExport.exportCharacterText.
+ *
+ *   The button emits no data-* markers; character-events.js binds
+ *   a delegated click listener to it by id. The id matches the one
+ *   the previous character-page header used, so an existing
+ *   delegate that targeted the old header button will work
+ *   unchanged if it is already wired.
  *
  * EDIT ID RESOLUTION:
  *   getCurrentEditId() / setCurrentEditId() prefer the global
@@ -612,18 +640,26 @@
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
-        // ---- Delete button ----
+        // ---- Left-side action buttons ----
         //
-        // Rendered only when editing an existing character. A new
-        // character has no id and therefore nothing to delete.
+        // Delete and Export are rendered only when editing an
+        // existing character. A new draft has no id, so neither
+        // operation is meaningful.
         //
-        // The button is bound via delegation in character-events.js
-        // (bindDeleteButton uses a delegated listener on
-        // '#delete-char-btn'), so it survives every re-render of
-        // #character-form-content.
-        var deleteButtonHTML = editId
-            ? '<button type="button" id="delete-char-btn" class="danger small" ' +
-                'style="font-size:0.75rem;padding:6px 12px;">Delete</button>'
+        // Both are bound via delegation in character-events.js:
+        //   #delete-char-btn
+        //   #export-character-report-btn
+        //
+        // The report button's id matches the one the previous
+        // character-page header used. An existing delegate that
+        // targeted the old header button continues to work.
+        var leftActionsHTML = editId
+            ? ('<button type="button" id="delete-char-btn" class="danger small" ' +
+                    'style="font-size:0.75rem;padding:6px 12px;">Delete</button>' +
+                '<button type="button" id="export-character-report-btn" class="secondary small" ' +
+                    'style="font-size:0.75rem;padding:6px 12px;">' +
+                    'Export' +
+                '</button>')
             : '';
 
         return `
@@ -632,7 +668,7 @@
                     ${tabs}
                 </div>
                 <div class="form-tab-content" id="form-tab-content">
-                    ${getNameTabHTML(char || {})}
+                    ${getNameTabHTML(char || {}, editId)}
                     ${getPhysicalTabHTML(char || {})}
                     ${getPersonalityTabHTML(char || {})}
                     ${getAcademicTabHTML(char || {})}
@@ -642,7 +678,7 @@
                     ${getNotesTabHTML(char || {})}
                 </div>
                 <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);align-items:center;">
-                    ${deleteButtonHTML}
+                    ${leftActionsHTML}
                     <div style="flex:1;"></div>
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
                     <button type="submit" id="save-character-btn" class="primary" style="font-size:0.75rem;padding:6px 12px;">${editId ? 'Update' : 'Create'} Character</button>
@@ -676,7 +712,7 @@
     // NAME TAB
     // ============================================================
 
-    function getNameTabHTML(c) {
+    function getNameTabHTML(c, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
 
         var dp = c.displayParts || {};
@@ -704,8 +740,32 @@
             }
         }
 
+        // ---- Character ID field ----
+        //
+        // Read-only. Displays the id when it exists. For a new
+        // character (no id), shows a placeholder and is disabled.
+        // The field is not collected; it is a display-only
+        // affordance.
+        var charIdValue = c.id ? String(c.id) : '';
+        var charIdPlaceholder = c.id
+            ? ''
+            : 'Assigned on save';
+        var charIdDisabled = c.id ? '' : 'disabled';
+
         return `
             <div class="tab-panel" data-tab="name" style="display:${active};">
+
+                <div class="form-group" style="margin-bottom:8px;">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Character ID</label>
+                    <input type="text"
+                           id="char-id"
+                           class="char-id-input"
+                           value="${escapeAttribute(charIdValue)}"
+                           placeholder="${escapeAttribute(charIdPlaceholder)}"
+                           readonly
+                           ${charIdDisabled}
+                           style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.7rem;font-family:monospace;cursor:${c.id ? 'text' : 'not-allowed'};opacity:${c.id ? '1' : '0.5'};">
+                </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
@@ -1212,6 +1272,10 @@
 
         var FormUtils = getFormUtils();
         if (!FormUtils) { return; }
+
+        // Character ID field is populated from char.id directly
+        // by the render pass; it is not a FormUtils-managed field
+        // because it is readonly and never collected.
 
         FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-middleName', char.middleName);
