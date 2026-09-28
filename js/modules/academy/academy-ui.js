@@ -8,8 +8,8 @@
  *   - Which view is selected
  *   - Which class and character are selected
  *   - Which week is displayed
- *   - Per-character display mode (student / instructor) — READ ONLY,
- *     the value is a domain fact owned by CharacterCRUD.setMode
+ *   - Per-class character mode (student / instructor) — READ ONLY,
+ *     the value is derived from the class-scoped instructor set
  *   - People filter state
  *   - Expanded element ids
  *   - Tournament round collapse state (C4)
@@ -37,51 +37,63 @@
  *   tab, Locations, Exams) is class-scoped. Only the character
  *   selection is People-specific.
  *
- * CHARACTER MODE (v27+):
- *   The character's mode is a DOMAIN FACT. It lives on the character
- *   record as `character.mode`, and it is written by
- *   CharacterCRUD.setMode. This module is a READ-ONLY window onto
- *   that fact:
+ * CHARACTER MODE (v27+, revised in v31):
+ *   The character's role — student or instructor — is a
+ *   CLASS-SCOPED fact. Alice can teach Class of 2026 and study in
+ *   Class of 2027. The relationship is expressed by a
+ *   role-tagged enrolment: the enrolment interval carries
+ *   role: 'student' | 'instructor'. The authoritative read is
+ *   AcademyClasses.getClassInstructorIdsAllTime(classId), which
+ *   walks the class's enrolments and reports who has any
+ *   instructor-role interval.
  *
- *     AcademyUI.getCharacterMode(charId)
- *       -> reads CharacterQueries.getCharacterById(charId).mode
- *       -> returns 'student' | 'instructor' | null
+ *   This module is a READ-ONLY window onto that fact:
+ *
+ *     AcademyUI.getCharacterMode(charId, classId)
+ *       -> 'instructor' if charId is in the class's instructor set
+ *       -> 'student'    if charId is enrolled in the class as a
+ *                       student (or is not enrolled at all — see
+ *                       below)
+ *       -> null         when charId or classId is blank, or the
+ *                       character record cannot be found
  *
  *   READ SEMANTICS:
  *     - null / blank charId               -> null
+ *     - null / blank classId              -> null
  *     - character does not exist          -> null
- *     - character exists, mode==='instructor' -> 'instructor'
+ *     - character exists, listed as
+ *       instructor for the class          -> 'instructor'
  *     - character exists, anything else   -> 'student'
+ *     - AcademyClasses unavailable        -> throws
  *     - CharacterQueries unavailable      -> throws
  *
- *   A missing character is not the same as a student. Callers that
- *   need a mode for a missing character must decide what that
- *   means. An earlier revision returned 'student' for that case,
- *   which fabricated a domain fact out of a failed reference.
+ *   A missing character is not the same as a student. A missing
+ *   class is not the same as a student-only class. Callers that
+ *   need a mode for a missing reference must decide what that
+ *   means. The earlier revision returned 'student' for every
+ *   failed lookup, which fabricated a domain fact out of a failed
+ *   reference.
  *
- *   The write-side API (setCharacterMode, toggleCharacterMode,
- *   clearCharacterMode, isValidCharacterMode, getValidCharacterModes,
- *   VALID_CHARACTER_MODES, DEFAULT_CHARACTER_MODE) is GONE. Callers
- *   that want to change the mode call CharacterCRUD.setMode and
- *   trigger a re-render on success.
+ *   The write side has never lived here. Callers that want to
+ *   change the mode call CharacterCRUD.setInstructorForClass (or
+ *   its replacement, once the domain layer lands) and trigger a
+ *   re-render on success.
  *
- *   The sessionStorage `characterModes` map is GONE. Previously this
- *   module kept a per-character mode map in session state; the mode
- *   reset to 'student' on every page reload. That made the instructor
- *   relationship non-persistent, which is wrong for a domain fact.
+ *   The sessionStorage characterModes map is still gone. It was
+ *   removed in v27. Session state is not the right home for a
+ *   domain fact.
  *
  * DEPENDENCY MODEL:
- *   CharacterQueries is LAZY-BUT-MANDATORY. The module loads without
- *   it, initialises, and serves view / class / week / filter state
+ *   CharacterQueries is LAZY-BUT-MANDATORY. AcademyClasses is
+ *   LAZY-BUT-MANDATORY too. The module loads without either,
+ *   initialises, and serves view / class / week / filter state
  *   normally. `getCharacterMode` is the only method that requires
- *   CharacterQueries, and it resolves the dependency at call time.
- *   A missing module at that moment throws — it is not a silent
- *   fallback to a fabricated mode.
+ *   them, and it resolves both at call time.
  *
  *   This distinction matters because the entire Academy UI state
  *   surface (view selection, class selection, display week, People
- *   filters, expansion state, round collapse state) does not depend
- *   on the character-query layer. Gating module load on a read-only
+ *   filters, expansion state, round collapse state) does not
+ *   depend on the domain layer. Gating module load on a read-only
  *   helper is a load-order failure disguised as a dependency.
  *
  * REMOVED FROM PRIOR VERSIONS:
@@ -172,6 +184,9 @@
  *   - window.CharacterQueries   (getCharacterById) — LAZY, resolved
  *     at call time by getCharacterMode. Mandatory when that method
  *     is invoked.
+ *   - window.AcademyClasses     (getClassInstructorIdsAllTime) —
+ *     LAZY, resolved at call time by getCharacterMode. Mandatory
+ *     when that method is invoked.
  *
  * USAGE:
  *   AcademyUI.getSelectedView();
@@ -179,7 +194,7 @@
  *   AcademyUI.selectClass('class_123');
  *   AcademyUI.selectCharacter('char_456');
  *   AcademyUI.setDisplayWeek(5);
- *   AcademyUI.getCharacterMode('char_456');  // read-only; use CharacterCRUD.setMode to write
+ *   AcademyUI.getCharacterMode('char_456', 'class_123');
  *   AcademyUI.getPeopleFilter();
  *   AcademyUI.setPeopleFilter({ role: 'student' });
  *
@@ -201,7 +216,7 @@
     // ============================================================
     //
     // Only CalendarConstants is required at load. CharacterQueries
-    // is lazy-but-mandatory; see the header.
+    // and AcademyClasses are lazy-but-mandatory; see the header.
 
     var CalendarConstants = window.CalendarConstants;
 
@@ -240,6 +255,25 @@
         return Queries;
     }
 
+    /**
+     * Resolve AcademyClasses at call time. Throws when the module
+     * is missing or malformed.
+     */
+    function requireAcademyClasses() {
+        var Classes = window.AcademyClasses;
+
+        if (!Classes ||
+            typeof Classes.getClassInstructorIdsAllTime !== 'function') {
+            throw new Error(
+                '[AcademyUI] AcademyClasses.getClassInstructorIdsAllTime ' +
+                'is unavailable. It is required by getCharacterMode. ' +
+                'Check the script load order in index.html.'
+            );
+        }
+
+        return Classes;
+    }
+
     // ============================================================
     // CONSTANTS — frozen
     // ============================================================
@@ -265,6 +299,7 @@
     var DEFAULT_STATUS_FILTER = 'active';
 
     var DEFAULT_CHARACTER_MODE = 'student';
+    var INSTRUCTOR_CHARACTER_MODE = 'instructor';
 
     // Round collapse policy. INTERNAL. The storage layer stores
     // exceptions to this default; callers do not pass it in.
@@ -284,7 +319,7 @@
     // NOTE (v27): `characterModes` is gone. The mode is a domain
     // fact and does not belong in session state.
     //
-    // NOTE (this revision): the collapsed-rounds map is named
+    // NOTE (v31): the collapsed-rounds map is named
     // `collapsedRoundIds`, not `expandedRoundIds`. The map stores
     // COLLAPSED rounds. The old name inverted the meaning.
 
@@ -447,8 +482,8 @@
      * from pre-v27 state. It is not a known field anymore, so it is
      * not carried forward.
      *
-     * The storage key was bumped to v5 in this revision, so pre-
-     * rename `expandedRoundIds` state is also abandoned wholesale.
+     * The storage key was bumped to v5 in an earlier revision, so
+     * pre-rename `expandedRoundIds` state is also abandoned wholesale.
      */
     function mergeWithDefaults(parsed, defaults) {
         var merged = defaults;
@@ -687,39 +722,48 @@
     }
 
     // ============================================================
-    // CHARACTER MODE — READ ONLY
+    // CHARACTER MODE — READ ONLY, CLASS-SCOPED (v31)
     // ============================================================
     //
-    // The mode is a domain fact. It lives on the character record
-    // and is written by CharacterCRUD.setMode. This module is a
-    // read-only window onto that fact.
+    // The mode is a class-scoped domain fact. Alice can teach Class
+    // of 2026 and study in Class of 2027. This module is a
+    // read-only window onto the per-class answer.
     //
     // READ SEMANTICS:
     //   - null / blank charId               → null
+    //   - null / blank classId              → null
     //   - character does not exist          → null
-    //   - character exists, mode==='instructor' → 'instructor'
+    //   - character listed as instructor
+    //     for the class                     → 'instructor'
     //   - character exists, anything else   → 'student'
     //   - CharacterQueries unavailable      → throws
+    //   - AcademyClasses unavailable        → throws
     //
-    // A missing character is not the same as a student. Callers that
-    // need a mode for a missing character must decide what that
-    // means. The previous revision returned 'student' for that case,
-    // which fabricated a domain fact out of a failed reference.
+    // A missing character is not the same as a student. A missing
+    // class is not the same as a student-only class. Callers that
+    // need a mode for a missing reference must decide what that
+    // means.
     //
     // WRITE SEMANTICS:
-    //   There are none. The write API has been retired. Callers that
-    //   want to change the mode call CharacterCRUD.setMode and
-    //   trigger a re-render on success.
+    //   There are none. Callers that want to change the mode call
+    //   CharacterCRUD.setInstructorForClass (or its replacement)
+    //   and trigger a re-render on success.
 
     /**
-     * Read the mode of a character.
+     * Read the mode of a character within a specific class.
      *
      * @param {string} charId
+     * @param {string} classId
      * @returns {'student'|'instructor'|null}
      */
-    function getCharacterMode(charId) {
+    function getCharacterMode(charId, classId) {
         var id = normaliseId(charId);
         if (id === null) {
+            return null;
+        }
+
+        var cls = normaliseId(classId);
+        if (cls === null) {
             return null;
         }
 
@@ -730,8 +774,29 @@
             return null;
         }
 
-        if (char.mode === 'instructor') {
-            return 'instructor';
+        var Classes = requireAcademyClasses();
+
+        var instructorIds = [];
+        try {
+            instructorIds = Classes.getClassInstructorIdsAllTime(cls) || [];
+        } catch (e) {
+            // A query that throws is a broken dependency, not
+            // evidence that the character is a student. Rethrow.
+            throw new Error(
+                '[AcademyUI] AcademyClasses.getClassInstructorIdsAllTime ' +
+                'threw while reading the mode of character ' + id +
+                ' in class ' + cls + ': ' + (e && e.message ? e.message : e)
+            );
+        }
+
+        if (!Array.isArray(instructorIds)) {
+            instructorIds = [];
+        }
+
+        for (var i = 0; i < instructorIds.length; i++) {
+            if (String(instructorIds[i]) === id) {
+                return INSTRUCTOR_CHARACTER_MODE;
+            }
         }
 
         return DEFAULT_CHARACTER_MODE;
@@ -1120,9 +1185,11 @@
         getDisplayWeek: getDisplayWeek,
         setDisplayWeek: setDisplayWeek,
 
-        // Character mode — READ ONLY
-        // The mode is a domain fact. Use CharacterCRUD.setMode to
-        // write it. Returns 'student' | 'instructor' | null.
+        // Character mode — READ ONLY, CLASS-SCOPED
+        // The mode is a class-scoped domain fact. Callers that want
+        // to change it go through CharacterCRUD.setInstructorForClass
+        // (or its replacement) and trigger a re-render on success.
+        // Returns 'student' | 'instructor' | null.
         getCharacterMode: getCharacterMode,
 
         // People filter
