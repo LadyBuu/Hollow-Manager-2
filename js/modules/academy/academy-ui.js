@@ -178,6 +178,13 @@
  *   different defaults for the same state would disagree about what
  *   the state means.
  *
+ * INSTRUCTOR REPAIR VIEW (this revision):
+ *   'instructorRepair' is a valid view id. It is registered by
+ *   AcademyRepairController and mounted by the shell's view
+ *   dispatcher. The view has no week selector and no class
+ *   selector; it reads the class instructor sets directly from
+ *   AcademyClasses.
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants  (MIN_WEEK, MAX_WEEK) — MANDATORY at
  *     load.
@@ -288,7 +295,8 @@
         'weeklyTeams',
         'rankings',
         'disciplines',
-        'locations'
+        'locations',
+        'instructorRepair'
     ]);
     var DEFAULT_VIEW = 'people';
 
