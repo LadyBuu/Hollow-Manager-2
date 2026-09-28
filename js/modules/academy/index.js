@@ -6,7 +6,7 @@
  *
  * RESPONSIBILITIES:
  *   - Register with TabManager
- *   - Register the six Academy controllers with AcademyControllers
+ *   - Register the seven Academy controllers with AcademyControllers
  *   - Validate the academy data structure before mount
  *   - Hand the container to AcademyView for rendering
  *   - Handle DataLoader and tabChanged integration
@@ -53,7 +53,7 @@
  *   initialization, its own module handles it.
  *
  * CONTROLLER REGISTRATION:
- *   The six Academy controllers register themselves with
+ *   The seven Academy controllers register themselves with
  *   window.AcademyControllers here, NOT in their own files. The
  *   controllers capture their domain dependencies at IIFE time,
  *   so by the time this file runs they are fully constructed.
@@ -206,7 +206,7 @@
     // CONTROLLER REGISTRATION
     // ============================================================
     //
-    // The six controllers are loaded as separate script tags in
+    // The seven controllers are loaded as separate script tags in
     // index.html. They expose themselves on window and capture their
     // domain dependencies at IIFE time. This block is the single
     // owner of the registration step.
@@ -215,7 +215,7 @@
     // switcher by iterating the registry in insertion order. The
     // order below matches the pinboard's expected list:
     //   ['weeklyTeams','disciplines','tournaments','people',
-    //    'locations','rankings']
+    //    'locations','rankings','instructorRepair']
     //
     // AcademyControllers is treated as an optional dependency. When
     // it is missing (e.g. a test harness that loads index.js without
@@ -237,12 +237,13 @@
         }
 
         var registry = {
-            weeklyTeams: window.AcademyWeeklyTeamsController,
-            disciplines: window.AcademyDisciplineController,
-            tournaments: window.AcademyExamController,
-            people:      window.AcademyPeopleController,
-            locations:   window.AcademyLocationController,
-            rankings:    window.AcademyRankingController
+            weeklyTeams:       window.AcademyWeeklyTeamsController,
+            disciplines:       window.AcademyDisciplineController,
+            tournaments:       window.AcademyExamController,
+            people:            window.AcademyPeopleController,
+            locations:         window.AcademyLocationController,
+            rankings:          window.AcademyRankingController,
+            instructorRepair:  window.AcademyRepairController
         };
 
         var registered = [];
