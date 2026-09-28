@@ -61,16 +61,8 @@
  *     character.mode === 'instructor'
  *       AND this class is in character.classIds
  *
- *   That is the whole rule. It is a YEAR-LEVEL fact. It does not
- *   change when a discipline stops running for the term. It does
- *   not change week to week. A character who taught this class
- *   during weeks 1-4 and stopped is still an instructor of this
- *   class in week 12. The role is theirs until the class or the
- *   role itself changes.
- *
- *   This is the answer used for roster derivation, role
- *   classification, the People sidebar, the Weekly Teams candidate
- *   pool, and the Add-Character-to-Class picker.
+ *   That WAS the rule. It is no longer the rule. See the
+ *   INSTRUCTOR-OF-CLASS — v31 UPDATE below.
  *
  *   "Who is actively teaching this class this week?"
  *
@@ -86,14 +78,52 @@
  *   list (ranking eligibility is a live-schedule question), and
  *   anywhere else that needs to know what is actually running.
  *
- *   The two are deliberately separate. They used to be conflated:
- *   the roster derivation, role classification, and candidate
- *   pools all reached for the week-scoped query, which meant an
- *   instructor whose disciplines had ended for the term silently
- *   became a student in every derived view. The character's stored
- *   mode was correct throughout; only the views were wrong. That
- *   bug is fixed here: those views now consult the year-level
- *   rule.
+ * INSTRUCTOR-OF-CLASS — v31 UPDATE (this revision):
+ *   Prior to v31, the year-level question was answered by reading
+ *   `character.mode` and `character.classIds`:
+ *
+ *     character.mode === 'instructor'
+ *       AND this class is in character.classIds
+ *
+ *   That rule worked while mode was the canonical per-character
+ *   fact. In v31 the role model changed: the role is CLASS-SCOPED
+ *   and lives on the enrolment interval's `role` field. The
+ *   character-wide `mode` field is a legacy TOMBSTONE — the v31
+ *   migration leaves it in place but no reader is supposed to
+ *   consult it. The canonical year-level query is:
+ *
+ *     AcademyClasses.getClassInstructorIdsAllTime(classId)
+ *
+ *   which walks the class's enrolment intervals and returns every
+ *   character who has any instructor-role interval in this class.
+ *
+ *   `getClassInstructorSetForClass` now delegates to that query.
+ *   It no longer reads `character.mode`.
+ *
+ *   WHAT WAS BROKEN:
+ *     The previous implementation of getClassInstructorSetForClass
+ *     read the tombstone. This caused a divergence between two
+ *     views that both claim to answer the same question:
+ *
+ *       - The character detail panel's role badge is driven by
+ *         AcademyUI.getCharacterMode, which reads the enrolment
+ *         intervals. It correctly showed "Student of <Class>"
+ *         after the user toggled a character back to student.
+ *
+ *       - The People sidebar's "Instructor" badge and the class
+ *         roster were driven by getClassInstructorSetForClass,
+ *         which read the tombstone. It kept showing "Instructor"
+ *         because character.mode was still 'instructor' — the
+ *         v31 migration never cleared the field, by design.
+ *
+ *     The user toggled the class-scoped role via the detail panel
+ *     checkbox; the write went to the enrolment intervals; the
+ *     sidebar did not update because it was reading a different
+ *     source.
+ *
+ *   The sidebar, the roster, and the class-instructor filters all
+ *   now agree with the detail panel because they all read the
+ *   same store.
  *
  * INSTRUCTOR DISCIPLINES (v27):
  *   getClassInstructorDisciplines(classId, instructorId, week)
@@ -381,6 +411,9 @@
     if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIds !== 'function') {
         _missing.push('AcademyClasses.getClassInstructorIds');
     }
+    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
+    }
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplines !== 'function') {
         _missing.push('AcademyDisciplines.getDisciplines');
     }
@@ -657,14 +690,31 @@
     /**
      * Return the set of characters who are instructors OF THIS CLASS.
      *
-     * THE RULE (year-level, not week-scoped):
+     * THE RULE (v31, this revision):
      *
-     *     character.mode === 'instructor'
-     *       AND this class is in character.classIds
+     *     AcademyClasses.getClassInstructorIdsAllTime(classId)
      *
-     * That is the whole rule. A character who is an instructor of
-     * this class stays an instructor of this class when their
-     * disciplines stop running for the term.
+     * which walks the class's enrolment intervals and returns
+     * every character who has any instructor-role interval in
+     * this class. The role is a CLASS-SCOPED fact on the
+     * enrolment; the character-wide `mode` field is a legacy
+     * tombstone and is NOT consulted.
+     *
+     * WHAT THIS REPLACED:
+     *   Prior to this revision, the function walked
+     *   CharacterQueries.getCharacters() and tested
+     *   `character.mode === 'instructor'` plus
+     *   `classId ∈ character.classIds`. That rule read the
+     *   tombstone, which the v31 migration leaves in place and
+     *   which the class-scoped role toggle does not clear. The
+     *   result was that the People sidebar and the class roster
+     *   disagreed with the character detail panel after a role
+     *   toggle: the panel read the enrolment intervals and showed
+     *   the new role; the sidebar read the tombstone and showed
+     *   the old one.
+     *
+     *   Delegating to getClassInstructorIdsAllTime closes the
+     *   divergence: both views now read the same store.
      *
      * Returns an object shaped as a set for O(1) membership tests:
      *   { [charId: string]: true }
@@ -675,21 +725,28 @@
             return set;
         }
 
-        var target = String(classId);
-        var all = CharacterQueries.getCharacters() || [];
+        var ids;
+        try {
+            ids = AcademyClasses.getClassInstructorIdsAllTime(
+                classId
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getClassInstructorIdsAllTime ' +
+                'failed:', e
+            );
+            return set;
+        }
 
-        for (var i = 0; i < all.length; i++) {
-            var c = all[i];
-            if (!c || !c.id) { continue; }
-            if (c.mode !== 'instructor') { continue; }
-            if (!Array.isArray(c.classIds)) { continue; }
+        if (!Array.isArray(ids)) { return set; }
 
-            for (var j = 0; j < c.classIds.length; j++) {
-                if (String(c.classIds[j]) === target) {
-                    set[String(c.id)] = true;
-                    break;
-                }
+        for (var i = 0; i < ids.length; i++) {
+            if (ids[i] === undefined || ids[i] === null) {
+                continue;
             }
+            var key = String(ids[i]);
+            if (key === '') { continue; }
+            set[key] = true;
         }
 
         return set;
