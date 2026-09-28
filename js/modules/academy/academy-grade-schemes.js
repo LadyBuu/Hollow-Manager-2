@@ -78,6 +78,22 @@
  *         of a subtly wrong one. The caller can detect the
  *         fallback and surface it; silent repair would hide it.
  *
+ *       DIAGNOSTIC OUTPUT (this revision):
+ *         When normalizeScheme falls back to the numeric default,
+ *         it logs a console.warn naming the specific validation
+ *         errors that caused the fallback. This exists because
+ *         the fallback is otherwise invisible: a user builds a
+ *         custom scheme, saves, and sees it silently replaced
+ *         with Numeric. The warn tells the developer (or the
+ *         curious user with the console open) exactly which band
+ *         failed and why.
+ *
+ *         The warn is emitted at `console.warn` level with a
+ *         `[AcademyGradeSchemes]` prefix and a structured payload
+ *         so it can be filtered. It fires at most once per
+ *         normalizeScheme call. It is diagnostic only; the return
+ *         value is unchanged.
+ *
  * PASSING SEMANTICS:
  *   A band may carry an explicit `passing: boolean` field. When ANY
  *   band in the scheme carries an explicit `passing` field, that
@@ -596,6 +612,15 @@
     //   - exactly one band has minPercent === 0
     //   - band.passing is preserved when present and boolean
     //   - returned object is frozen
+    //
+    // DIAGNOSTIC OUTPUT (this revision):
+    //   The fallback path logs a console.warn with the specific
+    //   validation errors. See the file header for why.
+    //
+    //   The warn is emitted at most once per normalizeScheme call.
+    //   It names the scheme being discarded (by label, if present)
+    //   and lists each validation error's field and message. The
+    //   return value is unchanged; the warn is purely diagnostic.
 
     function normalizeScheme(raw) {
         if (!isObject(raw)) {
@@ -643,6 +668,11 @@
             // Fall back to the numeric default wholesale. Do not
             // repair; a repaired scheme silently changes what a
             // student's grade means.
+            //
+            // DIAGNOSTIC: log what failed. This is the only signal
+            // the caller gets that a scheme they built was thrown
+            // away. See the file header for the full rationale.
+            logFallbackDiagnostic(raw, candidate, check.errors);
             return deepFreeze(getDefaultScheme());
         }
 
@@ -653,6 +683,68 @@
         });
 
         return deepFreeze(candidate);
+    }
+
+    /**
+     * Log a structured diagnostic when normalizeScheme falls back
+     * to the numeric default.
+     *
+     * The message names the scheme and lists every validation
+     * error. It is emitted at console.warn level with a
+     * `[AcademyGradeSchemes]` prefix so it can be filtered.
+     *
+     * Diagnostic only; the caller's return value is unaffected.
+     *
+     * @param {object} raw       the input passed to normalizeScheme
+     * @param {object} candidate the coerced candidate that failed
+     * @param {array}  errors    the validation errors from
+     *                           validateScheme
+     */
+    function logFallbackDiagnostic(raw, candidate, errors) {
+        var schemeLabel = 'unnamed';
+
+        if (isObject(raw) && isNonEmptyString(raw.label)) {
+            schemeLabel = '"' + String(raw.label).trim() + '"';
+        } else if (isObject(candidate) &&
+                   isNonEmptyString(candidate.label)) {
+            schemeLabel = '"' + String(candidate.label).trim() + '"';
+        }
+
+        var rawBandCount = (isObject(raw) && Array.isArray(raw.bands))
+            ? raw.bands.length
+            : 0;
+        var candidateBandCount = Array.isArray(candidate.bands)
+            ? candidate.bands.length
+            : 0;
+
+        var errorMessages = [];
+        if (Array.isArray(errors)) {
+            for (var i = 0; i < errors.length; i++) {
+                var err = errors[i];
+                if (!err) { continue; }
+                var field = err.field ? String(err.field) : '?';
+                var message = err.message
+                    ? String(err.message)
+                    : 'unknown validation error';
+                errorMessages.push(field + ': ' + message);
+            }
+        }
+
+        console.warn(
+            '[AcademyGradeSchemes] normalizeScheme fell back to the ' +
+            'numeric default for scheme ' + schemeLabel +
+            ' (raw bands: ' + rawBandCount +
+            ', after coercion: ' + candidateBandCount + '). ' +
+            'The scheme was discarded because it failed validation. ' +
+            'Validation errors follow.',
+            {
+                schemeLabel: schemeLabel,
+                rawBandCount: rawBandCount,
+                candidateBandCount: candidateBandCount,
+                errors: errors,
+                errorSummary: errorMessages
+            }
+        );
     }
 
     // ============================================================
@@ -1064,6 +1156,11 @@
         try {
             // Malformed minPercent must fall back to the numeric
             // default, not repair into a plausible scheme.
+            //
+            // NOTE: this smoke test intentionally exercises the
+            // fallback path, which now logs a diagnostic. The
+            // console.warn is expected; the test verifies the
+            // returned value only.
             var malformed = exports.normalizeScheme({
                 label: 'My Scheme',
                 bands: [
