@@ -28,6 +28,54 @@
  *   This module reads through the domain modules only. It walks no
  *   raw storage. It mutates nothing.
  *
+ * ROLE-AWARE CLASSES / DISCIPLINES (v31):
+ *   A character's role — student or instructor — is CLASS-SCOPED.
+ *   Alice can teach Class of 2026 and study in Class of 2027. The
+ *   export must show which is which, per class.
+ *
+ *   The role is read from the enrolment interval's `role` field:
+ *
+ *     academy.enrolments[classId][charId][i].role =
+ *       'student' | 'instructor'
+ *
+ *   A missing role is treated as 'student' (migration-safe default).
+ *
+ *   Sections:
+ *     CLASSES STUDIED          classes where the character has at
+ *                              least one student-role enrolment
+ *     DISCIPLINES STUDIED      the student-role disciplines, per
+ *                              class
+ *     CLASSES TAUGHT           classes where the character has at
+ *                              least one instructor-role enrolment
+ *     DISCIPLINES TAUGHT       the instructor-role disciplines,
+ *                              per class
+ *
+ *   A character in both roles for the same class is not
+ *   representable in the current model; the invariant is enforced
+ *   upstream by CharacterCRUD.setInstructorForClass, which
+ *   rewrites every interval of a (character, class) pair in a
+ *   single transaction.
+ *
+ * DISCIPLINE WINDOWS AND SCHEMES ARE NOT EXPORTED:
+ *   The DISCIPLINES STUDIED section deliberately prints only the
+ *   discipline name. It does NOT print the enrolment window
+ *   ("Week X – Week Y") and it does NOT print the grade scheme.
+ *
+ *   Rationale: the enrolment window is bookkeeping, and the scheme
+ *   is a property of the discipline (visible via the discipline
+ *   editor), not a fact about the character. The export is a
+ *   character report; it lists what the character studies, not
+ *   when the school scheduled it or how the school grades it.
+ *
+ * ACADEMIC TEAMS ARE SUB-GROUPED BY CLASS:
+ *   Under TEAMS, the Academic group is broken into one subsection
+ *   per class, each with the class's display name as the
+ *   sub-header. Professional, temporary, and civilian groups stay
+ *   flat under their own headings.
+ *
+ *   Academic teams without a resolvable classId are listed under
+ *   "(Unassigned)".
+ *
  * OUTPUT FORMAT:
  *   A plain-text document. Deliberately readable, deliberately
  *   sparse. A field line appears only when the field has content.
@@ -39,9 +87,10 @@
  *     AT A GLANCE
  *     TIMELINE
  *     IDENTITY
- *     CLASSES (as student)
- *     DISCIPLINES ENROLLED
- *     CLASSES TAUGHT (as instructor)
+ *     CLASSES STUDIED
+ *     DISCIPLINES STUDIED
+ *     CLASSES TAUGHT
+ *     DISCIPLINES TAUGHT
  *     COMMITMENTS
  *     TEAMS
  *     SOCIAL
@@ -50,29 +99,19 @@
  *     ACADEMY HISTORY
  *     Footer
  *
- *   The TIMELINE is the narrative; the domain sections are the
- *   reference. A reader who wants "what happened?" reads the first
- *   two sections. A reader who wants "what were their grades?"
- *   skips to DISCIPLINES ENROLLED.
- *
  * IDENTITY — WHAT IT CARRIES:
- *   IDENTITY is not just the name and dates. It carries three
- *   further groups, in order:
+ *   IDENTITY carries four groups:
  *
- *     Physical     build, height, weight, eye/hair/skin colour,
- *                  appearance notes
+ *     Identity     name, dates, career specialty
+ *     Physical     build, height, weight, eye/hair/skin colour
  *     Personality  traits, ideals, bonds, flaws, alignment,
  *                  likes, dislikes, habits, fears, goals, plus
- *                  the four newer fields (authority,
- *                  conflictStyle, socialStyle, quirks)
- *     Combat       stats (STR / DEX / CON / INT / WIS / CHA),
- *                  HP, MP, magic levels, weapons, special moves,
- *                  combat notes
+ *                  the four newer fields
+ *     Combat       stats, HP, MP, magic levels, weapons,
+ *                  special moves, combat notes
  *
  *   Each group is emitted when it has at least one field of
- *   content, and omitted when it has none. The labels match the
- *   ones used by the character detail panel so the report and the
- *   panel read as the same document.
+ *   content, and omitted when it has none.
  *
  * FAIL-OPEN:
  *   Every optional domain read is wrapped in try/catch and falls
@@ -222,6 +261,13 @@
     }
 
     // ============================================================
+    // ROLE CONSTANTS
+    // ============================================================
+
+    var ROLE_STUDENT = 'student';
+    var ROLE_INSTRUCTOR = 'instructor';
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -268,8 +314,19 @@
     }
 
     /**
-     * Sanitise a display name for use in a filename.
+     * Read the role of an enrolment interval.
+     * A missing role is treated as 'student' (migration-safe).
      */
+    function intervalRole(interval) {
+        if (!interval || typeof interval !== 'object') {
+            return ROLE_STUDENT;
+        }
+        if (interval.role === ROLE_INSTRUCTOR) {
+            return ROLE_INSTRUCTOR;
+        }
+        return ROLE_STUDENT;
+    }
+
     function sanitiseForFilename(value) {
         var str = safeString(value);
         str = str.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '');
@@ -283,10 +340,6 @@
         return str;
     }
 
-    /**
-     * Left-pad a label to LABEL_WIDTH, then a colon and a space.
-     * Multi-line values are collapsed to single spaces.
-     */
     function line(label, value) {
         if (!hasText(value)) { return ''; }
         var v = String(value).replace(/\s+/g, ' ').trim();
@@ -296,11 +349,6 @@
         return lbl + ': ' + v + '\n';
     }
 
-    /**
-     * A section header:
-     *   IDENTITY
-     *   --------
-     */
     function sectionHeader(title) {
         var underlineLen = Math.min(title.length, 60);
         var underline = new Array(underlineLen + 1).join('-');
@@ -311,19 +359,12 @@
         return '(none)\n';
     }
 
-    /**
-     * An indented line. Two spaces of indent, then the label/value
-     * pair.
-     */
     function indentedLine(label, value) {
         var inner = line(label, value);
         if (inner === '') { return ''; }
         return '  ' + inner;
     }
 
-    /**
-     * Emit a multi-line text block, indented.
-     */
     function indentBlock(label, text) {
         if (!hasText(text)) { return ''; }
         var out = '  ' + label + ':\n';
@@ -334,11 +375,6 @@
         return out;
     }
 
-    /**
-     * Emit a labelled list value inside a group. The label is
-     * indented four spaces, the value follows. Used for the
-     * physical / personality / combat sub-groups.
-     */
     function groupLine(label, value) {
         if (!hasText(value)) { return ''; }
         var v = String(value).replace(/\s+/g, ' ').trim();
@@ -348,11 +384,6 @@
         return '    ' + lbl + ': ' + v + '\n';
     }
 
-    /**
-     * Emit a group header inside a section.
-     *   Physical
-     *   ~~~~~~~~
-     */
     function groupHeader(title) {
         var underlineLen = Math.min(title.length, 40);
         var underline = new Array(underlineLen + 1).join('~');
@@ -434,7 +465,6 @@
     function collectTimelineEntries(char, charId) {
         var entries = [];
 
-        // ---- Career status changes (year-dated) ----
         if (Array.isArray(char.careerStatus)) {
             for (var i = 0; i < char.careerStatus.length; i++) {
                 var status = char.careerStatus[i];
@@ -448,7 +478,6 @@
             }
         }
 
-        // ---- Team stints (period-dated) ----
         var TeamQueries = getTeamQueries();
         if (TeamQueries &&
             typeof TeamQueries
@@ -496,7 +525,6 @@
             }
         }
 
-        // ---- Eliminations (year, week) ----
         var EQ = getEliminationQueries();
         if (EQ && typeof EQ.getEliminationYear === 'function') {
             var elimYear = null;
@@ -525,7 +553,6 @@
             }
         }
 
-        // ---- Graduation (year) ----
         var Classes = getAcademyClasses();
         if (Classes && typeof Classes.getClasses === 'function') {
             var allClasses = [];
@@ -562,7 +589,6 @@
             }
         }
 
-        // ---- Sort and dedupe ----
         entries.sort(function(a, b) {
             var keyCmp = a.sortKey.localeCompare(b.sortKey);
             if (keyCmp !== 0) { return keyCmp; }
@@ -639,10 +665,6 @@
         } catch (e) { deceased = false; }
         out += line('Deceased', deceased ? 'yes' : 'no');
 
-        var mode = isNonEmptyString(char.mode) ? char.mode : '';
-        out += line('Mode', mode);
-
-        // Current teams (year-scoped)
         var TeamQueries = getTeamQueries();
         var teamNames = [];
         if (TeamQueries &&
@@ -671,7 +693,6 @@
             out += line('On teams', teamNames.join(', '));
         }
 
-        // Current classes (by name)
         var Classes = getAcademyClasses();
         if (Classes &&
             typeof Classes.getCharacterClassNames === 'function') {
@@ -694,9 +715,6 @@
     // IDENTITY
     // ============================================================
 
-    /**
-     * Emit the physical sub-group.
-     */
     function buildIdentityPhysicalGroup(char) {
         var out = '';
         var physicalParts = [];
@@ -745,9 +763,6 @@
         return groupHeader('Physical') + out + '\n';
     }
 
-    /**
-     * Emit the personality sub-group.
-     */
     function buildIdentityPersonalityGroup(char) {
         var p = isObject(char.personality) ? char.personality : {};
 
@@ -772,13 +787,9 @@
         return groupHeader('Personality') + out + '\n';
     }
 
-    /**
-     * Emit the combat sub-group.
-     */
     function buildIdentityCombatGroup(char) {
         var out = '';
 
-        // ---- Stats ----
         var statKeys = DEFAULT_STAT_KEYS;
         var CC = getCharacterConstants();
         if (CC && Array.isArray(CC.STAT_KEYS) &&
@@ -799,7 +810,6 @@
             out += groupLine('Stats', statParts.join(' \u00b7 '));
         }
 
-        // ---- HP / MP ----
         var hpmp = [];
         if (isFiniteNumber(char.hp)) {
             hpmp.push('HP ' + char.hp);
@@ -811,7 +821,6 @@
             out += groupLine('HP / MP', hpmp.join(' \u00b7 '));
         }
 
-        // ---- Magic ----
         var magicKeys = [];
         var MC = getMagicConstants();
         if (MC && typeof MC.getTypeKeys === 'function') {
@@ -835,7 +844,6 @@
             out += groupLine('Magic', magicParts.join(' \u00b7 '));
         }
 
-        // ---- Weapons ----
         if (Array.isArray(char.weapons) && char.weapons.length > 0) {
             var weapons = [];
             for (var w = 0; w < char.weapons.length; w++) {
@@ -858,7 +866,6 @@
             }
         }
 
-        // ---- Special moves ----
         var sm = isObject(char.specialMoves) ? char.specialMoves : {};
         var moveParts = [];
 
@@ -889,7 +896,6 @@
             out += groupLine('Moves', moveParts.join(' \u00b7 '));
         }
 
-        // ---- Combat notes ----
         if (isNonEmptyString(char.combatNotes)) {
             out += groupLine('Combat notes', char.combatNotes);
         }
@@ -929,7 +935,6 @@
             out += line('Also known as', char.previousNames.join(', '));
         }
 
-        // ---- Dates ----
         if (isNonEmptyString(char.birthYear)) {
             out += line('Birth year', char.birthYear);
         }
@@ -946,18 +951,15 @@
             out += line('Age at death', char.deathAge);
         }
 
-        // ---- Career ----
         if (isNonEmptyString(char.specialty)) {
             out += line('Specialty', char.specialty);
         }
 
-        // ---- Long-form text ----
         if (isNonEmptyString(char.notes)) {
             out += '\n';
             out += indentBlock('Notes', char.notes);
         }
 
-        // ---- Physical / Personality / Combat ----
         var physical = buildIdentityPhysicalGroup(char);
         var personality = buildIdentityPersonalityGroup(char);
         var combat = buildIdentityCombatGroup(char);
@@ -976,342 +978,238 @@
     }
 
     // ============================================================
-    // CLASSES (as student)
+    // ROLE-AWARE CLASS ENROLMENT PROJECTION
     // ============================================================
+    //
+    // Walk every enrolment of a character, once, and split by role.
+    //
+    // Returns:
+    //   {
+    //     student: {
+    //       classId: { classId, className, disciplines: [...] }
+    //     },
+    //     instructor: {
+    //       classId: { classId, className, disciplines: [...] }
+    //     }
+    //   }
+    //
+    // A class appears in the student map only if the character has
+    // at least one student-role interval in it, and vice versa. A
+    // class in both maps (should be impossible) would be printed in
+    // both sections; the invariant is enforced upstream.
 
-    function buildClassesAsStudentSection(char, charId) {
+    function buildRoleSplitEnrolmentMap(char, charId) {
+        var result = {
+            student: {},
+            instructor: {}
+        };
+
         var Enrol = getAcademyEnrolments();
         var Classes = getAcademyClasses();
+        var Disciplines = getAcademyDisciplines();
 
         if (!Enrol ||
-            typeof Enrol.getStudentClasses !== 'function' ||
-            !Classes ||
-            typeof Classes.getClass !== 'function') {
-            return emptySectionBody();
+            typeof Enrol.getStudentDisciplines !== 'function') {
+            return result;
         }
 
+        // Enumerate every class the character has any enrolment in.
         var classIds = [];
-        try {
-            classIds = Enrol.getStudentClasses(charId) || [];
-        } catch (e) { classIds = []; }
+        if (Classes &&
+            typeof Classes.getCharacterClasses === 'function') {
+            try {
+                var classes = Classes.getCharacterClasses(char) || [];
+                for (var i = 0; i < classes.length; i++) {
+                    if (classes[i] && isNonEmptyString(classes[i].id)) {
+                        classIds.push(String(classes[i].id));
+                    }
+                }
+            } catch (e) { classIds = []; }
+        }
+
+        // Enrolments are authoritative; a class with enrolments but
+        // no classIds entry is unusual but not impossible. Add any
+        // such classId as well.
+        if (Enrol && typeof Enrol.getStudentClasses === 'function') {
+            try {
+                var extra = Enrol.getStudentClasses(charId) || [];
+                for (var e = 0; e < extra.length; e++) {
+                    if (isNonEmptyString(extra[e]) &&
+                        classIds.indexOf(String(extra[e])) === -1) {
+                        classIds.push(String(extra[e]));
+                    }
+                }
+            } catch (e2) { /* ignore */ }
+        }
+
+        for (var ci = 0; ci < classIds.length; ci++) {
+            var classId = classIds[ci];
+
+            var intervals = [];
+            try {
+                intervals = Enrol.getStudentDisciplines(
+                    charId, classId
+                ) || [];
+            } catch (e) {
+                intervals = [];
+            }
+            if (!Array.isArray(intervals)) { intervals = []; }
+
+            var studentDisciplineIds = Object.create(null);
+            var instructorDisciplineIds = Object.create(null);
+
+            for (var ii = 0; ii < intervals.length; ii++) {
+                var iv = intervals[ii];
+                if (!iv || !isNonEmptyString(iv.disciplineId)) {
+                    continue;
+                }
+                var discId = String(iv.disciplineId);
+                if (intervalRole(iv) === ROLE_INSTRUCTOR) {
+                    instructorDisciplineIds[discId] = true;
+                } else {
+                    studentDisciplineIds[discId] = true;
+                }
+            }
+
+            var className = '';
+            if (Classes &&
+                typeof Classes.getDisplayName === 'function') {
+                try {
+                    className = Classes.getDisplayName(classId) || '';
+                } catch (e) { className = ''; }
+            }
+            if (!className || className === 'Unknown Class') {
+                className = 'Unknown Class';
+            }
+
+            var studentList = Object.keys(studentDisciplineIds);
+            if (studentList.length > 0) {
+                studentList.sort(function(a, b) {
+                    var na = '';
+                    var nb = '';
+                    if (Disciplines &&
+                        typeof Disciplines.getDiscipline === 'function') {
+                        var da = Disciplines.getDiscipline(a);
+                        var db = Disciplines.getDiscipline(b);
+                        na = da && isNonEmptyString(da.name) ? da.name : a;
+                        nb = db && isNonEmptyString(db.name) ? db.name : b;
+                    } else {
+                        na = a; nb = b;
+                    }
+                    return na.localeCompare(nb);
+                });
+                result.student[classId] = {
+                    classId: classId,
+                    className: className,
+                    disciplineIds: studentList
+                };
+            }
+
+            var instructorList = Object.keys(instructorDisciplineIds);
+            if (instructorList.length > 0) {
+                instructorList.sort(function(a, b) {
+                    var na = '';
+                    var nb = '';
+                    if (Disciplines &&
+                        typeof Disciplines.getDiscipline === 'function') {
+                        var da = Disciplines.getDiscipline(a);
+                        var db = Disciplines.getDiscipline(b);
+                        na = da && isNonEmptyString(da.name) ? da.name : a;
+                        nb = db && isNonEmptyString(db.name) ? db.name : b;
+                    } else {
+                        na = a; nb = b;
+                    }
+                    return na.localeCompare(nb);
+                });
+                result.instructor[classId] = {
+                    classId: classId,
+                    className: className,
+                    disciplineIds: instructorList
+                };
+            }
+        }
+
+        return result;
+    }
+
+    function getDisciplineNameSafe(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return 'Unknown Discipline'; }
+        var Disciplines = getAcademyDisciplines();
+        if (Disciplines &&
+            typeof Disciplines.getDiscipline === 'function') {
+            try {
+                var d = Disciplines.getDiscipline(disciplineId);
+                if (d && isNonEmptyString(d.name)) {
+                    return d.name;
+                }
+            } catch (e) { /* fall through */ }
+        }
+        return 'Unknown Discipline';
+    }
+
+    // ============================================================
+    // CLASSES STUDIED
+    // ============================================================
+
+    function buildClassesStudiedSection(char, charId) {
+        var split = buildRoleSplitEnrolmentMap(char, charId);
+        var classIds = Object.keys(split.student);
 
         if (classIds.length === 0) {
             return emptySectionBody();
         }
 
-        var classEntries = [];
-        for (var i = 0; i < classIds.length; i++) {
-            var cls = null;
-            try {
-                cls = Classes.getClass(classIds[i]);
-            } catch (e) { cls = null; }
-            if (!cls) { continue; }
-            classEntries.push(cls);
-        }
-
-        classEntries.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
+        classIds.sort(function(a, b) {
+            return split.student[a].className
+                .localeCompare(split.student[b].className);
         });
 
         var out = '';
+        for (var i = 0; i < classIds.length; i++) {
+            var entry = split.student[classIds[i]];
+            out += entry.className + ' [' + entry.classId + ']\n';
+        }
+        return out;
+    }
 
-        for (var c = 0; c < classEntries.length; c++) {
-            var cls2 = classEntries[c];
-            var name = isNonEmptyString(cls2.name)
-                ? cls2.name
-                : 'Unnamed Class';
-            var status = isNonEmptyString(cls2.status)
-                ? cls2.status
-                : 'active';
-            var year = isFiniteNumber(cls2.year)
-                ? String(cls2.year)
-                : '';
+    // ============================================================
+    // DISCIPLINES STUDIED
+    // ============================================================
+    //
+    // Prints ONLY the discipline name.
+    //
+    // Deliberately does NOT print the enrolment window
+    // ("Week X – Week Y") and does NOT print the grade scheme.
+    // See the DISCIPLINE WINDOWS AND SCHEMES ARE NOT EXPORTED note
+    // in the file header.
 
-            out += name +
-                (year ? ' (' + year + ')' : '') +
-                ' [' + cls2.id + ']\n';
+    function buildDisciplinesStudiedSection(char, charId) {
+        var split = buildRoleSplitEnrolmentMap(char, charId);
+        var classIds = Object.keys(split.student);
 
-            out += indentedLine('Status', status);
+        if (classIds.length === 0) {
+            return emptySectionBody();
+        }
 
-            // Aggregate enrolment window from the intervals
-            var intervals = [];
-            try {
-                intervals = Enrol.getStudentDisciplines(
-                    charId, cls2.id
-                ) || [];
-            } catch (e) { intervals = []; }
+        classIds.sort(function(a, b) {
+            return split.student[a].className
+                .localeCompare(split.student[b].className);
+        });
 
-            if (intervals.length > 0) {
-                var earliest = null;
-                var latest = null;
-                for (var iv = 0; iv < intervals.length; iv++) {
-                    var interval = intervals[iv];
-                    if (!interval) { continue; }
-                    var s = parseInt(interval.startWeek, 10);
-                    var e = parseInt(interval.endWeek, 10);
+        var out = '';
+        for (var i = 0; i < classIds.length; i++) {
+            var entry = split.student[classIds[i]];
 
-                    if (!isNaN(s) &&
-                        (earliest === null || s < earliest)) {
-                        earliest = s;
-                    }
-                    if (isNaN(e)) {
-                        latest = null;
-                    } else if (latest !== null &&
-                               !isNaN(e) && e > latest) {
-                        latest = e;
-                    }
-                }
+            out += entry.className + ' [' + entry.classId + ']\n';
 
-                if (earliest !== null) {
-                    out += indentedLine(
-                        'Enrolled',
-                        formatWeekRange(earliest, latest)
-                    );
-                }
+            for (var d = 0; d < entry.disciplineIds.length; d++) {
+                var discId = entry.disciplineIds[d];
+                out += '  ' + getDisciplineNameSafe(discId) + '\n';
             }
 
             out += '\n';
         }
 
-        return out;
-    }
-
-    // ============================================================
-    // DISCIPLINES ENROLLED
-    // ============================================================
-
-    function getGradeSchemeName(discipline) {
-        if (!discipline) { return ''; }
-        var GS = getGradeSchemes();
-        if (!GS) { return ''; }
-        if (typeof GS.getRangeLabel === 'function') {
-            try {
-                var label = GS.getRangeLabel(discipline.gradeScheme);
-                if (isNonEmptyString(label)) { return label; }
-            } catch (e) { /* fall through */ }
-        }
-        if (discipline.gradeScheme &&
-            isNonEmptyString(discipline.gradeScheme.id)) {
-            return discipline.gradeScheme.id;
-        }
-        return '';
-    }
-
-    function buildGradeLine(grade) {
-        if (!grade) { return ''; }
-
-        var weekLabel = isFiniteNumber(grade.week) ||
-            isNonEmptyString(grade.week)
-            ? 'Wk ' + String(grade.week)
-            : 'Wk ?';
-
-        var typeLabel = isNonEmptyString(grade.type)
-            ? grade.type
-            : 'grade';
-
-        var scoreStr = '';
-        var pct = null;
-        if (isFiniteNumber(grade.score) &&
-            isFiniteNumber(grade.maxScore) &&
-            grade.maxScore > 0) {
-            scoreStr = grade.score + '/' + grade.maxScore;
-            pct = Math.round(
-                (grade.score / grade.maxScore) * 100
-            );
-        }
-
-        var parts = [weekLabel, typeLabel, scoreStr];
-        if (pct !== null) {
-            parts.push('(' + pct + '%)');
-        }
-
-        var line = '      ' + parts.join('  ');
-        if (isNonEmptyString(grade.notes)) {
-            line += ' \u2014 ' + String(grade.notes)
-                .replace(/\s+/g, ' ').trim();
-        }
-
-        return line + '\n';
-    }
-
-    function buildDisciplinesEnrolledSection(char, charId) {
-        var Enrol = getAcademyEnrolments();
-        var Classes = getAcademyClasses();
-        var Disciplines = getAcademyDisciplines();
-        var Grades = getAcademyGrades();
-
-        if (!Enrol ||
-            typeof Enrol.getStudentClasses !== 'function' ||
-            typeof Enrol.getStudentDisciplines !== 'function') {
-            return emptySectionBody();
-        }
-
-        var classIds = [];
-        try {
-            classIds = Enrol.getStudentClasses(charId) || [];
-        } catch (e) { classIds = []; }
-
-        if (classIds.length === 0) {
-            return emptySectionBody();
-        }
-
-        var classEntries = [];
-        for (var i = 0; i < classIds.length; i++) {
-            var cls = null;
-            if (Classes && typeof Classes.getClass === 'function') {
-                try {
-                    cls = Classes.getClass(classIds[i]);
-                } catch (e) { cls = null; }
-            }
-            if (!cls) { continue; }
-            classEntries.push(cls);
-        }
-
-        classEntries.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var out = '';
-
-        for (var c = 0; c < classEntries.length; c++) {
-            var cls2 = classEntries[c];
-            var className = isNonEmptyString(cls2.name)
-                ? cls2.name
-                : 'Unnamed Class';
-
-            var intervals = [];
-            try {
-                intervals = Enrol.getStudentDisciplines(
-                    charId, cls2.id
-                ) || [];
-            } catch (e) { intervals = []; }
-
-            if (intervals.length === 0) { continue; }
-
-            var byDiscipline = Object.create(null);
-            var disciplineOrder = [];
-            for (var iv = 0; iv < intervals.length; iv++) {
-                var interval = intervals[iv];
-                if (!interval || !interval.disciplineId) { continue; }
-                var key = String(interval.disciplineId);
-                if (!byDiscipline[key]) {
-                    byDiscipline[key] = [];
-                    disciplineOrder.push(key);
-                }
-                byDiscipline[key].push(interval);
-            }
-
-            var disciplineEntries = [];
-            for (var d = 0; d < disciplineOrder.length; d++) {
-                var did = disciplineOrder[d];
-                var disc = null;
-                if (Disciplines &&
-                    typeof Disciplines.getDiscipline === 'function') {
-                    try {
-                        disc = Disciplines.getDiscipline(did);
-                    } catch (e) { disc = null; }
-                }
-                disciplineEntries.push({
-                    disciplineId: did,
-                    discipline: disc,
-                    intervals: byDiscipline[did]
-                });
-            }
-
-            disciplineEntries.sort(function(a, b) {
-                var an = a.discipline && a.discipline.name
-                    ? a.discipline.name
-                    : 'Unknown';
-                var bn = b.discipline && b.discipline.name
-                    ? b.discipline.name
-                    : 'Unknown';
-                return an.localeCompare(bn);
-            });
-
-            out += className + ' [' + cls2.id + ']\n';
-
-            for (var de = 0; de < disciplineEntries.length; de++) {
-                var entry = disciplineEntries[de];
-                var discName = entry.discipline &&
-                    isNonEmptyString(entry.discipline.name)
-                    ? entry.discipline.name
-                    : 'Unknown Discipline';
-
-                out += '  ' + discName + '\n';
-
-                for (var ii = 0; ii < entry.intervals.length; ii++) {
-                    var intv = entry.intervals[ii];
-                    out += '    ' + 'Enrolled'.padEnd(LABEL_WIDTH) +
-                        ': ' + formatWeekRange(
-                            intv.startWeek, intv.endWeek
-                        ) + '\n';
-                }
-
-                var schemeName = getGradeSchemeName(entry.discipline);
-                if (schemeName) {
-                    out += '    ' + 'Scheme'.padEnd(LABEL_WIDTH) +
-                        ': ' + schemeName + '\n';
-                }
-
-                if (Grades &&
-                    typeof Grades.getStudentClassGrades === 'function') {
-                    var rawGrades = [];
-                    try {
-                        rawGrades = Grades.getStudentClassGrades(
-                            charId, cls2.id
-                        ) || [];
-                    } catch (e) { rawGrades = []; }
-
-                    var relevantGrades = [];
-                    for (var g = 0; g < rawGrades.length; g++) {
-                        var gr = rawGrades[g];
-                        if (!gr) { continue; }
-                        if (String(gr.disciplineId) !==
-                            String(entry.disciplineId)) {
-                            continue;
-                        }
-                        relevantGrades.push(gr);
-                    }
-
-                    if (relevantGrades.length > 0) {
-                        out += '    Grades:\n';
-                        for (var rg = 0;
-                             rg < relevantGrades.length;
-                             rg++) {
-                            out += buildGradeLine(relevantGrades[rg]);
-                        }
-
-                        if (typeof Grades.calculateSummary ===
-                            'function') {
-                            var summary = null;
-                            try {
-                                summary = Grades.calculateSummary(
-                                    relevantGrades,
-                                    entry.discipline
-                                        ? entry.discipline.gradeScheme
-                                        : null
-                                );
-                            } catch (e) { summary = null; }
-                            if (summary &&
-                                isFiniteNumber(summary.average)) {
-                                out += '    ' +
-                                    'Average'.padEnd(LABEL_WIDTH) +
-                                    ': ' + summary.average +
-                                    ' (' + summary.passing +
-                                    ' pass / ' + summary.failing +
-                                    ' fail)\n';
-                            }
-                        }
-                    }
-                }
-
-                out += '\n';
-            }
-        }
-
-        if (out === '') {
-            return emptySectionBody();
-        }
         return out;
     }
 
@@ -1320,61 +1218,57 @@
     // ============================================================
 
     function buildClassesTaughtSection(char, charId) {
-        var Classes = getAcademyClasses();
-        if (!Classes ||
-            typeof Classes.getClassInstructorIdsAllTime !== 'function') {
-            return emptySectionBody();
-        }
-
-        if (char.mode !== 'instructor') {
-            return emptySectionBody();
-        }
-
-        var classIds = [];
-        if (Classes && typeof Classes.getClasses === 'function') {
-            var all = [];
-            try {
-                all = Classes.getClasses() || [];
-            } catch (e) { all = []; }
-            for (var i = 0; i < all.length; i++) {
-                if (!all[i] || !all[i].id) { continue; }
-                var instructors = [];
-                try {
-                    instructors = Classes.getClassInstructorIdsAllTime(
-                        all[i].id
-                    ) || [];
-                } catch (e) { instructors = []; }
-
-                for (var ii = 0; ii < instructors.length; ii++) {
-                    if (String(instructors[ii]) === String(charId)) {
-                        classIds.push(all[i].id);
-                        break;
-                    }
-                }
-            }
-        }
+        var split = buildRoleSplitEnrolmentMap(char, charId);
+        var classIds = Object.keys(split.instructor);
 
         if (classIds.length === 0) {
             return emptySectionBody();
         }
 
+        classIds.sort(function(a, b) {
+            return split.instructor[a].className
+                .localeCompare(split.instructor[b].className);
+        });
+
         var out = '';
+        for (var i = 0; i < classIds.length; i++) {
+            var entry = split.instructor[classIds[i]];
+            out += entry.className + ' [' + entry.classId + ']\n';
+        }
+        return out;
+    }
 
-        for (var c = 0; c < classIds.length; c++) {
-            var cls = null;
-            try {
-                cls = Classes.getClass(classIds[c]);
-            } catch (e) { cls = null; }
-            if (!cls) { continue; }
+    // ============================================================
+    // DISCIPLINES TAUGHT
+    // ============================================================
+    //
+    // For each class the character teaches, list the
+    // instructor-role disciplines. Same rationale as DISCIPLINES
+    // STUDIED: no window, no scheme.
 
-            var className = isNonEmptyString(cls.name)
-                ? cls.name
-                : 'Unnamed Class';
+    function buildDisciplinesTaughtSection(char, charId) {
+        var split = buildRoleSplitEnrolmentMap(char, charId);
+        var classIds = Object.keys(split.instructor);
 
-            out += className + ' [' + cls.id + ']\n';
+        if (classIds.length === 0) {
+            return emptySectionBody();
+        }
 
-            out += buildInstructorDisciplinesBlock(cls.id, charId);
-            out += buildCommitmentsBlock(cls.id, charId);
+        classIds.sort(function(a, b) {
+            return split.instructor[a].className
+                .localeCompare(split.instructor[b].className);
+        });
+
+        var out = '';
+        for (var i = 0; i < classIds.length; i++) {
+            var entry = split.instructor[classIds[i]];
+
+            out += entry.className + ' [' + entry.classId + ']\n';
+
+            for (var d = 0; d < entry.disciplineIds.length; d++) {
+                var discId = entry.disciplineIds[d];
+                out += '  ' + getDisciplineNameSafe(discId) + '\n';
+            }
 
             out += '\n';
         }
@@ -1382,205 +1276,9 @@
         return out;
     }
 
-    function buildInstructorDisciplinesBlock(classId, charId) {
-        var Enrol = getAcademyEnrolments();
-        var Disciplines = getAcademyDisciplines();
-        var TG = getAcademyTeachingGroups();
-        var TS = getAcademyTeachingSessions();
-
-        if (!Enrol ||
-            typeof Enrol.getStudentDisciplineIds !== 'function') {
-            return indentedLine('Disciplines',
-                '(enrolment module unavailable)');
-        }
-
-        var disciplineIds = [];
-        try {
-            disciplineIds = Enrol.getStudentDisciplineIds(
-                charId, classId
-            ) || [];
-        } catch (e) { disciplineIds = []; }
-
-        if (disciplineIds.length === 0) {
-            return indentedLine('Disciplines', '(none)');
-        }
-
-        var out = '  ' + 'Disciplines:' + '\n';
-
-        var sortedDisciplines = disciplineIds.slice().sort();
-
-        for (var i = 0; i < sortedDisciplines.length; i++) {
-            var did = sortedDisciplines[i];
-            var disc = null;
-            if (Disciplines &&
-                typeof Disciplines.getDiscipline === 'function') {
-                try {
-                    disc = Disciplines.getDiscipline(did);
-                } catch (e) { disc = null; }
-            }
-            var discName = disc && isNonEmptyString(disc.name)
-                ? disc.name
-                : 'Unknown Discipline';
-
-            out += '    ' + discName + '\n';
-
-            if (TG &&
-                typeof TG.getGroupsForClassDisciplineInstructor ===
-                    'function') {
-                var groups = [];
-                try {
-                    groups = TG.getGroupsForClassDisciplineInstructor(
-                        classId, did, charId
-                    ) || [];
-                } catch (e) { groups = []; }
-
-                if (groups.length === 0) {
-                    out += '      Groups: (none)\n';
-                } else {
-                    out += '      Groups:\n';
-                    for (var g = 0; g < groups.length; g++) {
-                        var group = groups[g];
-                        if (!group) { continue; }
-                        out += '        ' +
-                            buildInstructorGroupHeading(group, disc) +
-                            '\n';
-
-                        var members = [];
-                        try {
-                            members = TG.getActiveMembers(
-                                group.id, null
-                            ) || [];
-                        } catch (e) { members = []; }
-
-                        if (Array.isArray(members) &&
-                            members.length > 0) {
-                            out += '          Members: ' +
-                                members.map(function(id) {
-                                    return resolveCharName(id);
-                                }).join(', ') + '\n';
-                        }
-
-                        if (TS &&
-                            typeof TS.getSessionsForGroup ===
-                                'function') {
-                            var sessions = [];
-                            try {
-                                sessions = TS.getSessionsForGroup(
-                                    group.id
-                                ) || [];
-                            } catch (e) { sessions = []; }
-
-                            if (sessions.length > 0) {
-                                out += '          Sessions:\n';
-                                for (var s = 0;
-                                     s < sessions.length;
-                                     s++) {
-                                    out +=
-                                        '            ' +
-                                        buildSessionLine(sessions[s]) +
-                                        '\n';
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                out += '      Groups: (groups module unavailable)\n';
-            }
-        }
-
-        return out;
-    }
-
-    function buildInstructorGroupHeading(group, discipline) {
-        var name = '';
-        if (isNonEmptyString(group.customName)) {
-            name = String(group.customName);
-        } else {
-            var discName = discipline && isNonEmptyString(discipline.name)
-                ? discipline.name
-                : 'Group';
-            if (isFiniteNumber(group.groupNumber)) {
-                name = discName + ' ' + group.groupNumber;
-            } else {
-                name = discName;
-            }
-        }
-
-        var bits = [name];
-        if (isNonEmptyString(group.id)) {
-            bits.push('[' + group.id + ']');
-        }
-        return bits.join(' ');
-    }
-
-    function buildSessionLine(session) {
-        if (!session) { return '(invalid session)'; }
-
-        var AC = getCalendarConstants();
-        var dayLabel = 'Day ' + String(session.day || '?');
-        if (AC && typeof AC.getDayName === 'function') {
-            var dn = AC.getDayName(session.day);
-            if (isNonEmptyString(dn)) { dayLabel = dn; }
-        }
-
-        var timeLabel = '';
-        if (isFiniteNumber(session.startTime)) {
-            var start = String(session.startTime).padStart(2, '0');
-            var duration = isFiniteNumber(session.duration)
-                ? session.duration
-                : 1;
-            var endHour = session.startTime + duration;
-            var end = String(endHour).padStart(2, '0');
-            timeLabel = start + ':00\u2013' + end + ':00';
-        }
-
-        var locLabel = '';
-        if (isNonEmptyString(session.locationId)) {
-            var Loc = window.LocationQueries;
-            if (Loc && typeof Loc.getLocationName === 'function') {
-                var name = Loc.getLocationName(session.locationId);
-                if (isNonEmptyString(name) && name !== 'Unknown') {
-                    locLabel = name;
-                }
-            }
-        }
-
-        var bits = [dayLabel];
-        if (timeLabel) { bits.push(timeLabel); }
-        if (locLabel) { bits.push(locLabel); }
-        return bits.join(' ');
-    }
-
-    function resolveCharName(charId) {
-        if (!isNonEmptyString(charId)) { return 'Unknown'; }
-        var c = null;
-        try {
-            c = CharacterQueries.getCharacterById(charId);
-        } catch (e) { c = null; }
-        if (!c) { return String(charId); }
-        try {
-            return CharacterQueries.getDisplayName(c) || String(charId);
-        } catch (e) {
-            return String(charId);
-        }
-    }
-
     // ============================================================
     // COMMITMENTS
     // ============================================================
-    //
-    // Two functions:
-    //
-    //   buildCommitmentsSection(char, charId) — the top-level
-    //     COMMITMENTS section. Covers every commitment the
-    //     instructor owns, across every class.
-    //
-    //   buildCommitmentsBlock(classId, charId) — the class-scoped
-    //     block the CLASSES TAUGHT section emits beneath each
-    //     class. Filters to the commitments attached to that one
-    //     class and returns them in the indented sub-block
-    //     format the surrounding code uses.
 
     function buildCommitmentsSection(char, charId) {
         var Commit = getAcademyInstructorCommitments();
@@ -1660,148 +1358,170 @@
         return out;
     }
 
-    /**
-     * Class-scoped commitments block, for the CLASSES TAUGHT
-     * section.
-     *
-     * Differs from buildCommitmentsSection (the top-level section
-     * builder) in two ways:
-     *
-     *   1. It takes a classId and filters to commitments attached
-     *      to that class. The top-level builder covers every
-     *      commitment the instructor owns, regardless of class.
-     *
-     *   2. It returns indented lines in the sub-block format the
-     *      CLASSES TAUGHT section uses, not the top-level section
-     *      format with its own labelled lines.
-     *
-     * A commitment belongs to exactly one class (see
-     * AcademyInstructorCommitments). So the union of every class's
-     * block is exactly the set the top-level builder would list,
-     * just partitioned by class.
-     *
-     * Returns '' when the class has no commitments, so the
-     * caller's blank-line handling stays correct.
-     */
-    function buildCommitmentsBlock(classId, charId) {
-        var Commit = getAcademyInstructorCommitments();
-        if (!Commit ||
-            typeof Commit.getCommitmentsForInstructor !== 'function') {
-            return '';
-        }
-
-        var all = [];
+    function resolveCharName(charId) {
+        if (!isNonEmptyString(charId)) { return 'Unknown'; }
+        var c = null;
         try {
-            all = Commit.getCommitmentsForInstructor(charId) || [];
+            c = CharacterQueries.getCharacterById(charId);
+        } catch (e) { c = null; }
+        if (!c) { return String(charId); }
+        try {
+            return CharacterQueries.getDisplayName(c) || String(charId);
         } catch (e) {
+            return String(charId);
+        }
+    }
+
+    // ============================================================
+    // TEAMS
+    // ============================================================
+    //
+    // Academic teams are sub-grouped by class. Non-academic types
+    // are printed flat under their own type headings.
+    //
+    // Team memberships are read from the persistent Team entity's
+    // members array, filtered to the export character.
+
+    function buildTeamMemberBlock(team, charId) {
+        var TeamQueries = getTeamQueries();
+        if (!TeamQueries ||
+            typeof TeamQueries.getAllTeamMemberRecords !== 'function') {
             return '';
         }
 
-        if (!Array.isArray(all) || all.length === 0) {
-            return '';
+        var records = [];
+        try {
+            records = TeamQueries.getAllTeamMemberRecords(team) || [];
+        } catch (e) {
+            records = [];
         }
 
-        // Filter to this class.
-        var target = String(classId);
-        var mine = [];
-        for (var i = 0; i < all.length; i++) {
-            var c = all[i];
-            if (!c || typeof c !== 'object') { continue; }
-            if (String(c.classId) !== target) { continue; }
-            mine.push(c);
-        }
-
-        if (mine.length === 0) {
-            return '';
-        }
-
-        // Sort by day, then startTime. Stable output regardless of
-        // the store's insertion order.
-        mine.sort(function(a, b) {
-            var da = isFiniteNumber(a.day) ? a.day : 99;
-            var db = isFiniteNumber(b.day) ? b.day : 99;
-            if (da !== db) { return da - db; }
-            var sa = isFiniteNumber(a.startTime) ? a.startTime : 99;
-            var sb = isFiniteNumber(b.startTime) ? b.startTime : 99;
-            return sa - sb;
-        });
-
-        var out = '  ' + 'Commitments:' + '\n';
-
-        for (var m = 0; m < mine.length; m++) {
-            var c2 = mine[m];
-
-            var kind = isNonEmptyString(c2.kind)
-                ? c2.kind
-                : 'commitment';
-            var kindLabel;
-            if (kind === 'officeHours') {
-                kindLabel = 'Office hours';
-            } else if (kind === 'tutoring') {
-                kindLabel = 'Tutoring';
-            } else {
-                kindLabel = kind;
+        var out = '';
+        for (var r = 0; r < records.length; r++) {
+            var rec = records[r];
+            if (!rec) { continue; }
+            if (String(rec.characterId) !== String(charId)) {
+                continue;
             }
 
-            var dayLabel = 'Day ' + String(c2.day || '?');
-            var AC = getCalendarConstants();
-            if (AC && typeof AC.getDayName === 'function') {
-                var dn = AC.getDayName(c2.day);
-                if (isNonEmptyString(dn)) { dayLabel = dn; }
+            if (isNonEmptyString(rec.role) &&
+                rec.role !== 'Member') {
+                out += indentedLine('Role', rec.role);
             }
 
-            var timeLabel = '';
-            if (isFiniteNumber(c2.startTime)) {
-                var start = String(c2.startTime).padStart(2, '0');
-                var dur = isFiniteNumber(c2.duration)
-                    ? c2.duration
-                    : 1;
-                var end = String(c2.startTime + dur).padStart(2, '0');
-                timeLabel = start + ':00\u2013' + end + ':00';
-            }
+            if (Array.isArray(rec.intervals)) {
+                for (var iv = 0; iv < rec.intervals.length; iv++) {
+                    var interval = rec.intervals[iv];
+                    if (!interval) { continue; }
 
-            var lineText = kindLabel + ': ' + dayLabel;
-            if (timeLabel) { lineText += ' ' + timeLabel; }
-            out += '    ' + lineText + '\n';
+                    var range = isAcademicTeamType(team.type)
+                        ? formatWeekRange(
+                            interval.joinPeriod,
+                            interval.leavePeriod
+                        )
+                        : formatYearRange(
+                            interval.joinPeriod,
+                            interval.leavePeriod
+                        );
 
-            if (isNonEmptyString(c2.characterId)) {
-                out += '      ' + 'With'.padEnd(LABEL_WIDTH) +
-                    ': ' + resolveCharName(c2.characterId) + '\n';
-            }
-            if (isNonEmptyString(c2.label)) {
-                out += '      ' + 'Label'.padEnd(LABEL_WIDTH) +
-                    ': ' + c2.label + '\n';
-            }
-            if (isNonEmptyString(c2.locationId)) {
-                var Loc = window.LocationQueries;
-                if (Loc &&
-                    typeof Loc.getLocationName === 'function') {
-                    var locName = Loc.getLocationName(c2.locationId);
-                    if (isNonEmptyString(locName) &&
-                        locName !== 'Unknown') {
-                        out += '      ' +
-                            'Location'.padEnd(LABEL_WIDTH) +
-                            ': ' + locName + '\n';
-                    }
+                    out += indentedLine('Stint', range);
                 }
-            }
-            if (isFiniteNumber(c2.startWeek) ||
-                isFiniteNumber(c2.endWeek)) {
-                out += '      ' + 'Period'.padEnd(LABEL_WIDTH) +
-                    ': ' + formatWeekRange(
-                        c2.startWeek, c2.endWeek
-                    ) + '\n';
             }
         }
 
         return out;
     }
 
-    // ============================================================
-    // TEAMS
-    // ============================================================
+    function buildAcademicTeamsGroup(academicTeams, charId) {
+        // Group by classId. Teams with no classId go under
+        // "(Unassigned)".
+        var Classes = getAcademyClasses();
+        var byClass = Object.create(null);
+        var classOrder = [];
 
-    function emitTeamGroup(typeLabel, teams, charId) {
+        for (var i = 0; i < academicTeams.length; i++) {
+            var team = academicTeams[i];
+            if (!team || !team.id) { continue; }
+
+            var classId = isNonEmptyString(team.classId)
+                ? String(team.classId)
+                : '__unassigned__';
+
+            if (!byClass[classId]) {
+                byClass[classId] = [];
+                classOrder.push(classId);
+            }
+            byClass[classId].push(team);
+        }
+
+        // Sort class sections by display name; unassigned last.
+        classOrder.sort(function(a, b) {
+            if (a === '__unassigned__') { return 1; }
+            if (b === '__unassigned__') { return -1; }
+
+            var nameA = '';
+            var nameB = '';
+            if (Classes &&
+                typeof Classes.getDisplayName === 'function') {
+                try { nameA = Classes.getDisplayName(a) || ''; }
+                catch (e) { nameA = ''; }
+                try { nameB = Classes.getDisplayName(b) || ''; }
+                catch (e) { nameB = ''; }
+            }
+            if (!nameA) { nameA = a; }
+            if (!nameB) { nameB = b; }
+            return nameA.localeCompare(nameB);
+        });
+
+        var out = '';
+
+        for (var c = 0; c < classOrder.length; c++) {
+            var cid = classOrder[c];
+            var teams = byClass[cid];
+
+            var heading;
+            if (cid === '__unassigned__') {
+                heading = '(Unassigned)';
+            } else if (Classes &&
+                       typeof Classes.getDisplayName === 'function') {
+                try {
+                    heading = Classes.getDisplayName(cid) || cid;
+                } catch (e) {
+                    heading = cid;
+                }
+            } else {
+                heading = cid;
+            }
+
+            out += '  ' + heading + ':\n';
+
+            teams.sort(function(a, b) {
+                return (a.name || '').localeCompare(b.name || '');
+            });
+
+            for (var t = 0; t < teams.length; t++) {
+                var team = teams[t];
+                var name = isNonEmptyString(team.name)
+                    ? team.name
+                    : 'Unnamed Team';
+
+                out += '    ' + name + ' [' + team.id + ']\n';
+
+                var memberBlock = buildTeamMemberBlock(team, charId);
+                if (memberBlock) {
+                    out += memberBlock
+                        .split('\n')
+                        .filter(function(l) { return l !== ''; })
+                        .map(function(l) { return '  ' + l; })
+                        .join('\n') + '\n';
+                }
+            }
+        }
+
+        return out;
+    }
+
+    function buildNonAcademicTeamsGroup(typeLabel, teams, charId) {
         var displayType = isNonEmptyString(typeLabel)
             ? typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)
             : 'Other';
@@ -1821,53 +1541,9 @@
 
             out += '  ' + name + ' [' + team.id + ']\n';
 
-            var TeamQueries = getTeamQueries();
-            var records = [];
-            if (TeamQueries &&
-                typeof TeamQueries.getAllTeamMemberRecords ===
-                    'function') {
-                try {
-                    records = TeamQueries.getAllTeamMemberRecords(
-                        team
-                    ) || [];
-                } catch (e) { records = []; }
-            }
-
-            for (var r = 0; r < records.length; r++) {
-                var rec = records[r];
-                if (!rec) { continue; }
-                if (String(rec.characterId) !== String(charId)) {
-                    continue;
-                }
-
-                if (isNonEmptyString(rec.role) &&
-                    rec.role !== 'Member') {
-                    out += indentedLine('Role', rec.role);
-                }
-
-                if (Array.isArray(rec.intervals)) {
-                    for (var iv = 0; iv < rec.intervals.length; iv++) {
-                        var interval = rec.intervals[iv];
-                        if (!interval) { continue; }
-
-                        var range = isAcademicTeamType(team.type)
-                            ? formatWeekRange(
-                                interval.joinPeriod,
-                                interval.leavePeriod
-                            )
-                            : formatYearRange(
-                                interval.joinPeriod,
-                                interval.leavePeriod
-                            );
-
-                        out += indentedLine('Stint', range);
-                    }
-                }
-            }
-
-            if (isNonEmptyString(team.status) &&
-                team.status !== 'active') {
-                out += indentedLine('Status', team.status);
+            var memberBlock = buildTeamMemberBlock(team, charId);
+            if (memberBlock) {
+                out += memberBlock;
             }
         }
 
@@ -1894,33 +1570,53 @@
             return emptySectionBody();
         }
 
-        var byType = Object.create(null);
+        var academicTeams = [];
+        var nonAcademicByType = Object.create(null);
+        var nonAcademicOrder = [];
+
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team) { continue; }
+
+            if (isAcademicTeamType(team.type)) {
+                academicTeams.push(team);
+                continue;
+            }
+
             var type = isNonEmptyString(team.type) ? team.type : 'other';
-            if (!byType[type]) { byType[type] = []; }
-            byType[type].push(team);
+            if (!nonAcademicByType[type]) {
+                nonAcademicByType[type] = [];
+                nonAcademicOrder.push(type);
+            }
+            nonAcademicByType[type].push(team);
         }
 
         var out = '';
 
-        var typeOrder = ['academic', 'professional', 'temporary', 'civilian'];
+        if (academicTeams.length > 0) {
+            out += 'Academic:\n';
+            out += buildAcademicTeamsGroup(academicTeams, charId);
+        }
+
+        var typeOrder = ['professional', 'temporary', 'civilian'];
         var emittedTypes = Object.create(null);
 
         for (var to = 0; to < typeOrder.length; to++) {
             var t = typeOrder[to];
-            if (byType[t]) {
-                out += emitTeamGroup(t, byType[t], charId);
+            if (nonAcademicByType[t]) {
+                out += buildNonAcademicTeamsGroup(
+                    t, nonAcademicByType[t], charId
+                );
                 emittedTypes[t] = true;
             }
         }
 
-        var allTypes = Object.keys(byType);
-        for (var at = 0; at < allTypes.length; at++) {
-            var otherType = allTypes[at];
+        for (var no = 0; no < nonAcademicOrder.length; no++) {
+            var otherType = nonAcademicOrder[no];
             if (emittedTypes[otherType]) { continue; }
-            out += emitTeamGroup(otherType, byType[otherType], charId);
+            out += buildNonAcademicTeamsGroup(
+                otherType, nonAcademicByType[otherType], charId
+            );
         }
 
         if (out === '') {
@@ -2087,7 +1783,6 @@
     function buildTournamentsSection(char, charId) {
         var out = '';
 
-        // ---- Eliminations ----
         var eliminationLines = [];
 
         if (Array.isArray(char.eliminations)) {
@@ -2136,7 +1831,6 @@
             }
         }
 
-        // ---- Rankings ----
         var Ranking = getAcademyRanking();
         var Classes = getAcademyClasses();
         var rankLines = [];
@@ -2158,10 +1852,6 @@
                     ? cls.name
                     : 'Unnamed Class';
 
-                // getRankingRecords with no week filter returns
-                // every ranking record for the class. We then filter
-                // to this character. This is one call per class,
-                // not one call per (class, week).
                 var records = [];
                 try {
                     records = Ranking.getRankingRecords(cls.id) || [];
@@ -2174,12 +1864,12 @@
                         continue;
                     }
 
-                    var week = isFiniteNumber(ranking.week)
+                    var week2 = isFiniteNumber(ranking.week)
                         ? String(ranking.week)
                         : '?';
 
                     var lineText = '  ' + className +
-                        ', Week ' + week + ': ' +
+                        ', Week ' + week2 + ': ' +
                         'rank ' + String(ranking.rank || '?');
 
                     if (isFiniteNumber(ranking.totalStudents) &&
@@ -2289,74 +1979,64 @@
 
         var out = '';
 
-        // ---- Banner ----
         out += BANNER + '\n';
         out += 'CHARACTER REPORT \u2014 ' +
             (displayName || 'Unknown') + '\n';
         out += 'Generated: ' + new Date().toISOString() + '\n';
         out += BANNER + '\n\n';
 
-        // ---- AT A GLANCE ----
         out += sectionHeader('AT A GLANCE');
         out += buildAtAGlanceSection(char, charId);
         out += '\n';
 
-        // ---- TIMELINE ----
         out += sectionHeader('TIMELINE');
         out += buildTimelineSection(char, charId);
         out += '\n';
 
-        // ---- IDENTITY ----
         out += sectionHeader('IDENTITY');
         out += buildIdentitySection(char, charId);
         out += '\n';
 
-        // ---- CLASSES (as student) ----
-        out += sectionHeader('CLASSES (as student)');
-        out += buildClassesAsStudentSection(char, charId);
+        out += sectionHeader('CLASSES STUDIED');
+        out += buildClassesStudiedSection(char, charId);
         out += '\n';
 
-        // ---- DISCIPLINES ENROLLED ----
-        out += sectionHeader('DISCIPLINES ENROLLED');
-        out += buildDisciplinesEnrolledSection(char, charId);
+        out += sectionHeader('DISCIPLINES STUDIED');
+        out += buildDisciplinesStudiedSection(char, charId);
         out += '\n';
 
-        // ---- CLASSES TAUGHT ----
-        out += sectionHeader('CLASSES TAUGHT (as instructor)');
+        out += sectionHeader('CLASSES TAUGHT');
         out += buildClassesTaughtSection(char, charId);
         out += '\n';
 
-        // ---- COMMITMENTS ----
+        out += sectionHeader('DISCIPLINES TAUGHT');
+        out += buildDisciplinesTaughtSection(char, charId);
+        out += '\n';
+
         out += sectionHeader('COMMITMENTS');
         out += buildCommitmentsSection(char, charId);
         out += '\n';
 
-        // ---- TEAMS ----
         out += sectionHeader('TEAMS');
         out += buildTeamsSection(char, charId);
         out += '\n';
 
-        // ---- SOCIAL ----
         out += sectionHeader('SOCIAL');
         out += buildSocialSection(char, charId);
         out += '\n';
 
-        // ---- MISSIONS ----
         out += sectionHeader('MISSIONS');
         out += buildMissionsSection(char, charId);
         out += '\n';
 
-        // ---- TOURNAMENTS / EXAMS ----
         out += sectionHeader('TOURNAMENTS / EXAMS');
         out += buildTournamentsSection(char, charId);
         out += '\n';
 
-        // ---- ACADEMY HISTORY ----
         out += sectionHeader('ACADEMY HISTORY');
         out += buildAcademyHistorySection(char, charId);
         out += '\n';
 
-        // ---- Footer ----
         out += BANNER + '\n';
         out += 'END OF REPORT\n';
         out += 'Character ID: ' + String(charId) + '\n';
