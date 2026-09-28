@@ -18,8 +18,6 @@
  *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
  *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
  *   - This module does NOT call saveData() directly - the pipeline does.
- *   - AcademyQueries is the PUBLIC read facade that uses these internal
- *     lookups.
  *
  * STORAGE NAMESPACE (v28):
  *   Grade records live at academy.grades (unchanged).
@@ -30,66 +28,76 @@
  *   curriculum.disciplines only for pre-v28 snapshots loaded
  *   mid-transaction.
  *
- * READ SAFETY:
- *   - getAcademyStore() returns null (does NOT create academy.{...})
- *     when the store is missing. Reads are side-effect free.
- *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
- *   - Internal accessors (getGradeRecord, getGradeRecords) return LIVE
- *     REFERENCES. They are consumed by this module's own mutation paths
- *     and by AcademyQueries.
- *   - Pipeline validate() callbacks read from the `appData` argument the
- *     pipeline supplies, not from window.data.
- *   - ObjectUtils.deepClone is used as the clone primitive. If cloning
- *     fails, the accessor throws. It does NOT fall back to returning the
- *     original reference.
+ * GRADE TYPE VOCABULARY (this revision):
+ *   The grade type vocabulary is:
+ *
+ *     exam              Final exam.
+ *     classAssignment   Assignment completed in class.
+ *     participation     Participation / engagement grade.
+ *     groupProject      Team project. Multiple students.
+ *     quiz              Short assessment.
+ *     homeAssignment    Take-home assignment. NO TIME SLOT.
+ *
+ *   The retired names:
+ *     'assignment'   → replaced by 'classAssignment'
+ *     'project'      → replaced by 'groupProject'
+ *     'final'        → REMOVED. Its role is covered by 'exam'.
+ *
+ *   This module does not migrate legacy records. The batch that
+ *   introduced this vocabulary was preceded by a data audit: no
+ *   records carrying the old names existed in any live database.
+ *   If a legacy record surfaces (an old backup, an imported
+ *   envelope), it will fail type validation on the next save and
+ *   the user must pick a current type.
+ *
+ *   THE LABEL MAP IS OWNED HERE:
+ *     GRADE_TYPE_LABELS maps a type id to its display label.
+ *     getGradeTypeLabel(type) is the accessor. Editors, exporters,
+ *     and any other consumer that needs the label reads from here
+ *     rather than maintaining its own copy. A label defined in
+ *     one place cannot drift from the vocabulary defined in the
+ *     same place.
  *
  * GRADE IDENTITY:
  *   A grade's identity is the five-field tuple:
  *
  *     (studentId, classId, disciplineId, week, type)
  *
- *   A student can have an exam and an assignment in the same week of
- *   the same discipline; both are legitimate records. Identity
- *   includes `type` for that reason.
+ *   A student can have an exam and a class assignment in the same
+ *   week of the same discipline; both are legitimate records.
+ *   Identity includes `type` for that reason.
  *
  *   `create` does not enforce the tuple (two grades with different
  *   IDs may coexist), because a caller that genuinely wants two
- *   records of the same tuple is allowed to write them. The tuple is
- *   the OVERWRITE MATCHING KEY in `saveGrades`: an input record whose
- *   tuple matches an existing grade updates that grade in place.
+ *   records of the same tuple is allowed to write them. The tuple
+ *   is the OVERWRITE MATCHING KEY in `saveGrades`: an input record
+ *   whose tuple matches an existing grade updates that grade in
+ *   place.
  *
- *   Callers that want "exactly one grade per tuple" enforce it
- *   themselves.
+ * GRADE SLOT (this revision):
+ *   A grade carries an optional slot: { day, startTime }.
  *
- * TRANSACTION SNAPSHOT RULE:
- *   Every pipeline validate() callback resolves references against
- *   the `appData` argument it is handed. It does not read
- *   window.data. Preflight reads against window.data are for early
- *   UX feedback only; the pipeline re-checks against the snapshot.
+ *   The slot identifies WHICH class meeting the grade was recorded
+ *   at. Tuesday at 08:00 is a slot. The grade is anchored to that
+ *   occurrence: the historical time is a fact about when the grade
+ *   was recorded, not a pointer to a mutable session. If the
+ *   class's Tuesday session is later moved to Wednesday, the
+ *   Tuesday-morning grade stays a Tuesday-morning grade.
  *
- *   This applies to create, update, delete, and saveGrades.
- *   Foreign keys (classId, studentId, disciplineId) are validated
- *   against the snapshot, not against AcademyClasses or
- *   CharacterQueries.
+ *   The slot is derived from a teaching-session occurrence at the
+ *   moment the user picks it. It is NOT a foreign key. A reader
+ *   that wants to re-derive the current schedule for the same
+ *   (day, hour) queries the projector.
  *
- * FOREIGN KEYS:
- *   A grade carries three foreign keys: classId, studentId,
- *   disciplineId.
+ *   homeAssignment DOES NOT CARRY A SLOT. Its shape on the record
+ *   is slot: null. A take-home assignment does not happen at a
+ *   meeting. The editor hides the slot picker when the type is
+ *   homeAssignment.
  *
- *   - classId MUST resolve in the transaction snapshot. This is the
- *     module's oldest invariant and is enforced at every mutation.
- *
- *   - studentId MUST resolve in the transaction snapshot. A grade
- *     whose student no longer exists is orphaned state.
- *
- *   - disciplineId MUST resolve in the transaction snapshot. A
- *     grade whose discipline no longer exists is orphaned state.
- *
- *   The cascade path handles the "student or discipline removed"
- *   case: stripCharacterRefs removes the student's grades, and
- *   AcademyCascade.disciplineDeleted removes a discipline's grades.
- *   So a grade that survives a cascade is one whose references
- *   were live at the moment it was written.
+ *   The retired `date` field is gone. Records no longer carry it.
+ *   Records that predate the retirement are handled by whatever
+ *   migration the surrounding batch provides; this module neither
+ *   reads nor writes `date`.
  *
  * WEEK PARSING:
  *   Week parsing goes through CalendarValidation.parseWeek, the
@@ -173,8 +181,8 @@
  *       week: 5,
  *       score: 85,
  *       maxScore: 100,
- *       type: 'exam',
- *       date: '2026-02-15',
+ *       type: 'classAssignment',
+ *       slot: { day: 2, startTime: 8 },   // null for homeAssignment
  *       notes: 'Good work',
  *       createdAt: '2026-02-15T10:00:00Z',
  *       updatedAt: '2026-02-15T10:00:00Z'
@@ -194,7 +202,7 @@
  * USAGE:
  *   var grades = window.AcademyGrades;
  *
- *   grades.create({ studentId, classId, disciplineId, week, score, maxScore })
+ *   grades.create({ studentId, classId, disciplineId, week, score, maxScore, type, slot })
  *       .then(function(result) { ... });
  *
  *   var studentGrades = grades.getStudentGrades('char_456');
@@ -230,6 +238,12 @@
 
     if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
         missing.push('CalendarValidation.parseWeek');
+    }
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseDay !== 'function') {
+        missing.push('CalendarValidation.parseDay');
+    }
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseHour !== 'function') {
+        missing.push('CalendarValidation.parseHour');
     }
 
     if (!window.CalendarConstants) {
@@ -276,10 +290,58 @@
 
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+
     var MIN_SCORE = 0;
     var MAX_SCORE = 100;
 
-    var VALID_GRADE_TYPES = ['exam', 'assignment', 'participation', 'project', 'quiz', 'final'];
+    // ---- Grade type vocabulary ----
+    //
+    // Six types. See the file header for the vocabulary note.
+    //
+    // homeAssignment is the ONLY type that does not carry a slot.
+    // The editor hides the slot picker for it, and the validator
+    // rejects a slot on a homeAssignment record.
+
+    var VALID_GRADE_TYPES = [
+        'exam',
+        'classAssignment',
+        'participation',
+        'groupProject',
+        'quiz',
+        'homeAssignment'
+    ];
+
+    var DEFAULT_GRADE_TYPE = 'classAssignment';
+
+    var TYPE_WITHOUT_SLOT = 'homeAssignment';
+
+    // ---- Grade type labels ----
+    //
+    // The display layer reads labels from here. Editors and exports
+    // do not maintain their own copy; see the file header.
+
+    var GRADE_TYPE_LABELS = Object.freeze({
+        exam:            'Exam',
+        classAssignment: 'Class Assignment',
+        participation:   'Participation',
+        groupProject:    'Group Project',
+        quiz:            'Quiz',
+        homeAssignment:  'Home Assignment'
+    });
+
+    function getGradeTypeLabel(type) {
+        if (!isNonEmptyString(type)) { return 'Unknown'; }
+        if (GRADE_TYPE_LABELS[type]) { return GRADE_TYPE_LABELS[type]; }
+        return String(type);
+    }
+
+    function isSlotlessType(type) {
+        return type === TYPE_WITHOUT_SLOT;
+    }
 
     var DEFAULT_PASSING_THRESHOLD =
         (GradeSchemes.PASSING_THRESHOLD !== undefined &&
@@ -366,6 +428,53 @@
         }
 
         return null;
+    }
+
+    /**
+     * Normalise a slot value.
+     *
+     * Accepts a plain object { day, startTime }. Returns either:
+     *   - { ok: true, slot: { day, startTime } } on success
+     *   - { ok: true, slot: null } for null, undefined, or empty
+     *   - { ok: false, message } on malformed input
+     *
+     * The parser is strict: day and startTime must be integers in
+     * their respective calendar ranges. No coercion from strings.
+     */
+    function normaliseSlot(rawSlot) {
+        if (rawSlot === undefined || rawSlot === null) {
+            return { ok: true, slot: null };
+        }
+
+        if (!isObject(rawSlot)) {
+            return {
+                ok: false,
+                message: 'Slot must be an object with day and startTime.'
+            };
+        }
+
+        var dayParsed = CalendarValidation.parseDay(rawSlot.day);
+        if (dayParsed === null || dayParsed < MIN_DAY || dayParsed > MAX_DAY) {
+            return {
+                ok: false,
+                message: 'Slot day must be between ' +
+                    MIN_DAY + ' and ' + MAX_DAY + '.'
+            };
+        }
+
+        var startParsed = CalendarValidation.parseHour(rawSlot.startTime);
+        if (startParsed === null || startParsed < MIN_HOUR || startParsed > MAX_HOUR) {
+            return {
+                ok: false,
+                message: 'Slot start time must be between ' +
+                    MIN_HOUR + ' and ' + MAX_HOUR + '.'
+            };
+        }
+
+        return {
+            ok: true,
+            slot: { day: dayParsed, startTime: startParsed }
+        };
     }
 
     // ============================================================
@@ -536,9 +645,8 @@
      *
      * Disciplines live at academy.disciplines. The legacy
      * curriculum.disciplines location is checked as a fallback for
-     * pre-v28 snapshots that may still be in play mid-transaction
-     * (an old save loaded into memory, a mid-upgrade window). The
-     * primary store always wins when both are present.
+     * pre-v28 snapshots that may still be in play mid-transaction.
+     * The primary store always wins when both are present.
      */
     function findDisciplineInSnapshot(appData, disciplineId) {
         if (!appData || typeof appData !== 'object') {
@@ -661,7 +769,29 @@
 
         if (data.type !== undefined) {
             if (VALID_GRADE_TYPES.indexOf(data.type) === -1) {
-                return { valid: false, message: 'Invalid grade type. Must be one of: ' + VALID_GRADE_TYPES.join(', ') };
+                return {
+                    valid: false,
+                    message: 'Invalid grade type. Must be one of: ' +
+                        VALID_GRADE_TYPES.join(', ') + '.'
+                };
+            }
+        }
+
+        // Slot validation. When the type is homeAssignment, the slot
+        // must be null or absent. When the type is any other, the
+        // slot is optional but must be well-formed when present.
+        if (data.slot !== undefined && data.slot !== null) {
+            if (data.type !== undefined &&
+                isSlotlessType(data.type)) {
+                return {
+                    valid: false,
+                    message: 'A home assignment does not take a slot.'
+                };
+            }
+
+            var slotCheck = normaliseSlot(data.slot);
+            if (!slotCheck.ok) {
+                return { valid: false, message: slotCheck.message };
             }
         }
 
@@ -705,9 +835,22 @@
             };
         }
 
-        if (candidate.type !== undefined &&
-            VALID_GRADE_TYPES.indexOf(candidate.type) === -1) {
+        if (VALID_GRADE_TYPES.indexOf(candidate.type) === -1) {
             return { valid: false, message: 'Candidate type is invalid.' };
+        }
+
+        if (isSlotlessType(candidate.type)) {
+            if (candidate.slot !== null) {
+                return {
+                    valid: false,
+                    message: 'A home assignment does not take a slot.'
+                };
+            }
+        } else if (candidate.slot !== null) {
+            var slotCheck = normaliseSlot(candidate.slot);
+            if (!slotCheck.ok) {
+                return { valid: false, message: slotCheck.message };
+            }
         }
 
         return { valid: true };
@@ -773,6 +916,26 @@
             );
         }
 
+        var type = data.type || DEFAULT_GRADE_TYPE;
+        if (VALID_GRADE_TYPES.indexOf(type) === -1) {
+            throw new Error(
+                '[AcademyGrades] buildGradeRecord received an invalid type: ' +
+                type + '.'
+            );
+        }
+
+        var slot = null;
+        if (!isSlotlessType(type)) {
+            var slotCheck = normaliseSlot(data.slot);
+            if (!slotCheck.ok) {
+                throw new Error(
+                    '[AcademyGrades] buildGradeRecord received a malformed slot: ' +
+                    slotCheck.message
+                );
+            }
+            slot = slotCheck.slot;
+        }
+
         return {
             id: existingId || generateId(),
             studentId: String(data.studentId),
@@ -781,8 +944,8 @@
             week: week,
             score: score,
             maxScore: maxScore,
-            type: data.type || 'assignment',
-            date: data.date || now.split('T')[0],
+            type: type,
+            slot: slot,
             notes: data.notes || '',
             createdAt: existingCreatedAt || now,
             updatedAt: now
@@ -866,89 +1029,105 @@
         }
 
         var hasChanges = false;
-        var updateFields = ['studentId', 'classId', 'disciplineId', 'week', 'score', 'maxScore', 'type', 'date', 'notes'];
 
-        for (var i = 0; i < updateFields.length; i++) {
-            var field = updateFields[i];
-            if (updates[field] === undefined) {
-                continue;
+        // Fields that can be updated directly.
+        var stringFields = ['studentId', 'classId', 'disciplineId'];
+        for (var i = 0; i < stringFields.length; i++) {
+            var sf = stringFields[i];
+            if (updates[sf] === undefined) { continue; }
+            if (!isNonEmptyString(updates[sf])) {
+                return Promise.resolve(failure(sf + ' must be a non-empty string.'));
+            }
+            if (candidate[sf] !== String(updates[sf])) {
+                candidate[sf] = String(updates[sf]);
+                hasChanges = true;
+            }
+        }
+
+        if (updates.week !== undefined) {
+            var week = parseWeekStrict(updates.week);
+            if (week === null) {
+                return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
+            }
+            if (candidate.week !== week) {
+                candidate.week = week;
+                hasChanges = true;
+            }
+        }
+
+        if (updates.score !== undefined) {
+            var score = parseFiniteNumberStrict(updates.score);
+            if (score === null || score < MIN_SCORE) {
+                return Promise.resolve(failure('Score must be a finite number greater than or equal to 0.'));
+            }
+            if (candidate.score !== score) {
+                candidate.score = score;
+                hasChanges = true;
+            }
+        }
+
+        if (updates.maxScore !== undefined) {
+            var newMax = parseFiniteNumberStrict(updates.maxScore);
+            if (newMax === null || newMax <= 0) {
+                return Promise.resolve(failure('Max score must be a finite number greater than 0.'));
+            }
+            if (candidate.maxScore !== newMax) {
+                candidate.maxScore = newMax;
+                hasChanges = true;
+            }
+        }
+
+        // Type change: also forces a slot reconsideration. When the
+        // new type is slotless (homeAssignment), the slot is cleared.
+        // When the new type is not slotless but the record currently
+        // has a null slot, the slot stays null (slot is optional for
+        // non-slotless types).
+        if (updates.type !== undefined) {
+            if (VALID_GRADE_TYPES.indexOf(updates.type) === -1) {
+                return Promise.resolve(failure(
+                    'Invalid grade type. Must be one of: ' +
+                    VALID_GRADE_TYPES.join(', ') + '.'
+                ));
+            }
+            if (candidate.type !== updates.type) {
+                candidate.type = updates.type;
+                hasChanges = true;
             }
 
-            var value = updates[field];
+            if (isSlotlessType(candidate.type) && candidate.slot !== null) {
+                candidate.slot = null;
+                hasChanges = true;
+            }
+        }
 
-            switch (field) {
-                case 'studentId':
-                case 'classId':
-                case 'disciplineId':
-                    if (!isNonEmptyString(value)) {
-                        return Promise.resolve(failure(field + ' must be a non-empty string.'));
-                    }
-                    if (candidate[field] !== String(value)) {
-                        candidate[field] = String(value);
-                        hasChanges = true;
-                    }
-                    break;
+        // Slot change: only meaningful when the current type is not
+        // slotless. A homeAssignment rejects a slot-bearing update.
+        if (updates.slot !== undefined) {
+            if (isSlotlessType(candidate.type)) {
+                if (updates.slot !== null) {
+                    return Promise.resolve(failure(
+                        'A home assignment does not take a slot.'
+                    ));
+                }
+            } else {
+                var slotCheck = normaliseSlot(updates.slot);
+                if (!slotCheck.ok) {
+                    return Promise.resolve(failure(slotCheck.message));
+                }
+                var oldJson = JSON.stringify(candidate.slot);
+                var newJson = JSON.stringify(slotCheck.slot);
+                if (oldJson !== newJson) {
+                    candidate.slot = slotCheck.slot;
+                    hasChanges = true;
+                }
+            }
+        }
 
-                case 'week':
-                    var week = parseWeekStrict(value);
-                    if (week === null) {
-                        return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
-                    }
-                    if (candidate.week !== week) {
-                        candidate.week = week;
-                        hasChanges = true;
-                    }
-                    break;
-
-                case 'score':
-                    var score = parseFiniteNumberStrict(value);
-                    if (score === null || score < MIN_SCORE) {
-                        return Promise.resolve(failure('Score must be a finite number greater than or equal to 0.'));
-                    }
-                    if (candidate.score !== score) {
-                        candidate.score = score;
-                        hasChanges = true;
-                    }
-                    break;
-
-                case 'maxScore':
-                    var newMax = parseFiniteNumberStrict(value);
-                    if (newMax === null || newMax <= 0) {
-                        return Promise.resolve(failure('Max score must be a finite number greater than 0.'));
-                    }
-                    if (candidate.maxScore !== newMax) {
-                        candidate.maxScore = newMax;
-                        hasChanges = true;
-                    }
-                    break;
-
-                case 'type':
-                    if (VALID_GRADE_TYPES.indexOf(value) === -1) {
-                        return Promise.resolve(failure('Invalid grade type. Must be one of: ' + VALID_GRADE_TYPES.join(', ')));
-                    }
-                    if (candidate.type !== value) {
-                        candidate.type = value;
-                        hasChanges = true;
-                    }
-                    break;
-
-                case 'date':
-                    if (value !== null && typeof value !== 'string') {
-                        return Promise.resolve(failure('Date must be a string.'));
-                    }
-                    if (candidate.date !== value) {
-                        candidate.date = value || new Date().toISOString().split('T')[0];
-                        hasChanges = true;
-                    }
-                    break;
-
-                case 'notes':
-                    var notes = value || '';
-                    if (candidate.notes !== notes) {
-                        candidate.notes = notes;
-                        hasChanges = true;
-                    }
-                    break;
+        if (updates.notes !== undefined) {
+            var notes = updates.notes || '';
+            if (candidate.notes !== notes) {
+                candidate.notes = notes;
+                hasChanges = true;
             }
         }
 
@@ -1100,7 +1279,7 @@
         if (a.week !== b.week) {
             return a.week - b.week;
         }
-        return (a.date || '').localeCompare(b.date || '');
+        return (a.createdAt || '').localeCompare(b.createdAt || '');
     }
 
     function filterGradesByStudentAndClass(all, studentId, classId) {
@@ -1464,7 +1643,7 @@
                 continue;
             }
 
-            var effectiveType = data.type || 'assignment';
+            var effectiveType = data.type || DEFAULT_GRADE_TYPE;
             var tupleKey = String(data.studentId) + '::' +
                            String(data.classId) + '::' +
                            String(data.disciplineId) + '::' +
@@ -1486,7 +1665,7 @@
                     String(g.classId) === String(data.classId) &&
                     String(g.disciplineId) === String(data.disciplineId) &&
                     parseWeekStrict(g.week) === parseWeekStrict(data.week) &&
-                    String(g.type || 'assignment') === String(effectiveType)) {
+                    String(g.type || DEFAULT_GRADE_TYPE) === String(effectiveType)) {
                     existing = g;
                     break;
                 }
@@ -1653,6 +1832,14 @@
         calculatePercentage: calculatePercentage,
         isPassing: isPassing,
 
+        // ---- Type vocabulary ----
+        VALID_GRADE_TYPES: VALID_GRADE_TYPES,
+        DEFAULT_GRADE_TYPE: DEFAULT_GRADE_TYPE,
+        TYPE_WITHOUT_SLOT: TYPE_WITHOUT_SLOT,
+        GRADE_TYPE_LABELS: GRADE_TYPE_LABELS,
+        getGradeTypeLabel: getGradeTypeLabel,
+        isSlotlessType: isSlotlessType,
+
         // ---- Cascade helpers (for cross-domain cleanup) ----
         stripCharacterRefs: stripCharacterRefs,
 
@@ -1665,8 +1852,7 @@
         MAX_WEEK: MAX_WEEK,
         MIN_SCORE: MIN_SCORE,
         MAX_SCORE: MAX_SCORE,
-        DEFAULT_PASSING_THRESHOLD: DEFAULT_PASSING_THRESHOLD,
-        VALID_GRADE_TYPES: VALID_GRADE_TYPES
+        DEFAULT_PASSING_THRESHOLD: DEFAULT_PASSING_THRESHOLD
     };
 
 })();
