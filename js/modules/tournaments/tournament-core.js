@@ -9,14 +9,15 @@
  *   - Participant management (add, remove)
  *   - Round management (add, remove, reopen) — by stable round ID
  *   - Elimination week shift when endWeek changes (T8)
- *   - Cascade helper (stripCharacterRefs) for cross-domain cleanup
+ *   - Cascade helpers (stripCharacterRefs, stripTeamRefs) for
+ *     cross-domain cleanup
  *
  * NOT RESPONSIBILITIES:
  *   - Match-level mutations (TournamentMatches)
  *   - Tournament-level reads (TournamentQueries)
  *   - Cross-domain cascade logic (TournamentCascade owns the
- *     algorithm; this module exposes a one-line delegator so the
- *     cross-domain coordinator can reach the helper by convention)
+ *     algorithm; this module exposes one-line delegators so the
+ *     cross-domain coordinator can reach the helpers by convention)
  *   - Lifecycle state machine (status is a soft label)
  *   - Public read surface (query via TournamentQueries)
  *
@@ -129,14 +130,14 @@
  *   TournamentConstants.parsePositiveInteger, the single strict
  *   parser for the domain. This file has no local parser.
  *
- * CASCADE HELPER:
- *   stripCharacterRefs delegates to TournamentCascade, which owns
- *   the character-deletion cleanup algorithm for this domain. The
- *   delegation exists so the cross-domain cascade coordinator
- *   (AcademyCascade) can reach every domain's cascade helper
+ * CASCADE HELPERS:
+ *   stripCharacterRefs and stripTeamRefs delegate to
+ *   TournamentCascade, which owns the character- and team-deletion
+ *   cleanup algorithms for this domain. The delegation exists so
+ *   the cross-domain cascade coordinator (AcademyCascade) and the
+ *   team delete path (TeamCore.deleteTeam) can reach the helpers
  *   through the domain's mutation module by convention, without
- *   the coordinator having to know each domain's internal module
- *   layout.
+ *   each consumer having to know TournamentCascade's name.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TournamentConstants
@@ -151,7 +152,7 @@
  *   - window.MutationPipeline
  *
  * DEPENDENCIES (LAZY):
- *   - window.TournamentCascade   (used only by stripCharacterRefs)
+ *   - window.TournamentCascade   (used only by the cascade delegators)
  */
 
 (function() {
@@ -711,19 +712,6 @@
                 }
 
                 // ---- Capture pre-update endWeek FROM THE SNAPSHOT ----
-                //
-                // The shift decision (T8) must be made against the
-                // transaction's own view. Reading the previous value
-                // here, before applying the updates, ensures the
-                // comparison is between the snapshot's current endWeek
-                // and the proposed new endWeek. If a prior mutation in
-                // the same transaction had already changed endWeek,
-                // this read sees the change.
-                //
-                // The preflight read in getTournamentInternal is used
-                // only for the "tournament exists" check and the
-                // allowed-keys validation. It is NOT the source of the
-                // shift comparison.
                 var previousEndWeek = current.endWeek;
 
                 var keys = Object.keys(updatesCopy);
@@ -732,18 +720,6 @@
                 }
 
                 // ---- T8: shift elimination weeks if endWeek changed ----
-                //
-                // The elimination week is derived from the tournament
-                // endWeek (see TournamentEliminationCascade.
-                // applyFailEliminations). When endWeek moves, every
-                // tournament-driven elimination record for this
-                // tournament moves with it, on both sides.
-                //
-                // Standalone eliminations (Drop Out) are not touched.
-                //
-                // The check is "endWeek was present in the update
-                // AND the new value differs from the pre-update
-                // value." Saving the same week again is a no-op.
                 var shiftResult = null;
                 if (updatesCopy.endWeek !== undefined) {
                     var newEndWeek = parseWeek(current.endWeek);
@@ -1506,22 +1482,21 @@
     }
 
     // ============================================================
-    // CASCADE HELPER
+    // CASCADE HELPERS
     // ============================================================
     //
-    // Delegates to TournamentCascade.stripCharacterRefs, which owns
-    // the character-deletion cleanup algorithm for this domain
-    // (participants, eliminations, match participant slots, match
-    // result maps, and the character-side elimination mirror).
+    // Delegate to TournamentCascade, which owns the character- and
+    // team-deletion cleanup algorithms for this domain.
     //
-    // The delegation exists so AcademyCascade.characterDeleted can
-    // reach every domain's cascade helper through the domain's
-    // mutation module by convention.
+    // The delegation exists so AcademyCascade.characterDeleted and
+    // TeamCore.deleteTeam can reach the helpers through the domain's
+    // mutation module by convention, without each consumer having to
+    // know TournamentCascade's name.
     //
-    // TournamentCascade is loaded lazily. When absent, the helper
-    // returns a zero-count summary rather than throwing, because
-    // the cascade coordinator's contract is "never throw, always
-    // return a summary."
+    // TournamentCascade is loaded lazily. When absent, each helper
+    // returns a zero-count summary rather than throwing, because the
+    // cascade coordinator's contract is "never throw, always return
+    // a summary."
 
     function stripCharacterRefs(appData, charId) {
         var TournamentCascade = window.TournamentCascade;
@@ -1535,6 +1510,20 @@
             };
         }
         return TournamentCascade.stripCharacterRefs(appData, charId);
+    }
+
+    function stripTeamRefs(appData, teamId) {
+        var TournamentCascade = window.TournamentCascade;
+        if (!TournamentCascade ||
+            typeof TournamentCascade.stripTeamRefs !== 'function') {
+            return {
+                participantRecordsRemoved: 0,
+                eliminationRecordsRemoved: 0,
+                matchParticipantSlotsRemoved: 0,
+                matchTeamResultEntriesRemoved: 0
+            };
+        }
+        return TournamentCascade.stripTeamRefs(appData, teamId);
     }
 
     // ============================================================
@@ -1557,8 +1546,9 @@
         removeRound: removeRound,
         reopenRound: reopenRound,
 
-        // Cascade helper (delegates to TournamentCascade)
-        stripCharacterRefs: stripCharacterRefs
+        // Cascade helpers (delegate to TournamentCascade)
+        stripCharacterRefs: stripCharacterRefs,
+        stripTeamRefs: stripTeamRefs
     });
 
     // ============================================================
@@ -1579,7 +1569,8 @@
             'addRound',
             'removeRound',
             'reopenRound',
-            'stripCharacterRefs'
+            'stripCharacterRefs',
+            'stripTeamRefs'
         ];
 
         for (var i = 0; i < required.length; i++) {
