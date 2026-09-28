@@ -58,6 +58,33 @@
  *   the snapshot. The mutate() callback applies the set. If any
  *   pair fails validate, the whole batch is rejected.
  *
+ * TEAM DELETION AND CROSS-DOMAIN REFERENCES:
+ *   Deleting a team splices the team record out of appData.teams.
+ *   Before the splice, deleteTeam calls
+ *   TournamentCore.stripTeamRefs(appData, teamId) inside the same
+ *   transaction. That cascade removes every reference to the team
+ *   from every tournament: participants entries, tournament-side
+ *   elimination records, match participant slots, and teamResults
+ *   keys.
+ *
+ *   Without this cascade, a delete left dangling team references
+ *   in tournaments. The application continued to render, but the
+ *   next export carried those dangling references and the next
+ *   import failed cross-domain validation with "Tournament
+ *   participant references non-existent team".
+ *
+ *   The cascade lives on TournamentCascade. TournamentCore exposes
+ *   it as a one-line delegator so TeamCore does not have to reach
+ *   into the tournament module's internals directly.
+ *
+ *   If TournamentCore is unavailable at the moment of deletion
+ *   (load-order edge case), the cascade is skipped and the delete
+ *   proceeds. This is the pre-fix behavior, and it is the
+ *   conservative choice: a missing cascade must not block a
+ *   delete. The alternative — throwing — would leave the user
+ *   unable to delete a team in the presence of a partial
+ *   dependency load.
+ *
  * PERIOD SEMANTICS:
  *   - Periods are positive integers (or integer strings).
  *   - Periods are CANONICALISED on write: "02025" -> "2025".
@@ -152,6 +179,10 @@
  *
  *   characterProvider is injected via configure(). Only member
  *   mutations require it. Cascade helpers do not.
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.TournamentCore   (used only by deleteTeam, for the
+ *                              stripTeamRefs cascade)
  */
 
 (function() {
@@ -1250,6 +1281,55 @@
                 if (idx === -1) {
                     throw new Error('Team not found in data store.');
                 }
+
+                // ---- CROSS-DOMAIN CASCADE ----
+                //
+                // Strip the team from every tournament before the
+                // team record disappears. Same pattern
+                // TournamentCore.purgeTournament uses for its
+                // elimination reversal.
+                //
+                // The cascade removes:
+                //   - tournament.participants[] entries whose type
+                //     is 'team' and whose id is this team.
+                //   - tournament.eliminations[] records whose
+                //     participantType is 'team' and whose
+                //     participantId is this team.
+                //   - match.participants[] slots referencing this
+                //     team.
+                //   - match.teamResults{} keys for this team.
+                //
+                // It does NOT touch match.individualResults{} —
+                // those are keyed by character IDs and belong to
+                // the team's members.
+                //
+                // TournamentCore is resolved lazily so a load-order
+                // edge case degrades to the pre-fix behaviour
+                // rather than blocking the delete. The cascade is
+                // important but not so important that a missing
+                // dependency should leave the user unable to
+                // delete a team.
+                var TournamentCore = window.TournamentCore;
+                if (TournamentCore &&
+                    typeof TournamentCore.stripTeamRefs === 'function') {
+                    try {
+                        TournamentCore.stripTeamRefs(
+                            snapshot,
+                            targetId
+                        );
+                    } catch (e) {
+                        console.warn(
+                            '[TeamCore] stripTeamRefs failed during ' +
+                            'deleteTeam; tournament references may ' +
+                            'remain dangling:', e
+                        );
+                        // Non-fatal: proceed with the delete. The
+                        // alternative is to fail the transaction,
+                        // which would block the user. See the file
+                        // header for the rationale.
+                    }
+                }
+
                 snapshot.teams.splice(idx, 1);
                 return { id: targetId };
             },
