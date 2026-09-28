@@ -36,9 +36,53 @@
  *     include classId. AcademyQueries owns that derivation.
  *
  * NO CLASS-LEVEL INSTRUCTOR (v29):
- *   Prior to this revision, a class record carried `instructorId`.
+ *   Prior to that revision, a class record carried `instructorId`.
  *   That field was retired. Instructors are per-discipline
  *   enrolments. See getClassInstructorIds below.
+ *
+ * INSTRUCTOR-OF-CLASS DERIVATION (v31):
+ *   A class does not carry an instructor field. An instructor-of-a-
+ *   class is a character with at least one enrolment interval in
+ *   that class whose `role` is 'instructor'.
+ *
+ *   The role is stored ON THE ENROLMENT, not on the character. This
+ *   is what makes instructor-ness CLASS-SCOPED: Alice can teach
+ *   Class of 2026 and study in Class of 2027 without either role
+ *   bleeding into the other.
+ *
+ *   The two queries below read the enrolment store directly. They
+ *   do NOT consult character.mode. The character-wide mode field is
+ *   a legacy tombstone, kept for one migration cycle and then
+ *   removed.
+ *
+ *   ROLE FIELD:
+ *     Every enrolment interval carries:
+ *
+ *       {
+ *         disciplineId,
+ *         startWeek,
+ *         endWeek,
+ *         role: 'student' | 'instructor'
+ *       }
+ *
+ *     The `role` field is written by AcademyEnrolments.enrol. It is
+ *     assigned at enrolment time. An interval without a role
+ *     (pre-migration data) is treated as a student interval by the
+ *     reader. That is the migration-safe default.
+ *
+ *   TWO QUERIES, TWO QUESTIONS:
+ *
+ *     getClassInstructorIds(classId, week, options)
+ *       "Who teaches something in this class DURING this week?"
+ *       Week-scoped. Reads the discipline's own window via
+ *       AcademyClassDisciplinesQueries.isActiveInWeek, then checks
+ *       each candidate enrolment interval's role and week range.
+ *
+ *     getClassInstructorIdsAllTime(classId)
+ *       "Who has EVER taught something in this class?"
+ *       NOT week-scoped. Returns every character who has at least
+ *       one instructor-role interval in the class, regardless of
+ *       whether the interval is currently active.
  *
  * REST DAYS (v30, extended in v31):
  *   class.restDays = [dayNumber, ...]
@@ -75,14 +119,6 @@
  *   window.data. Preflight reads against window.data are for
  *   early UX feedback only; the pipeline re-checks against the
  *   snapshot.
- *
- *   This applies to:
- *     - create: name-uniqueness against the snapshot
- *     - update: name-uniqueness against the snapshot
- *     - deleteClass: existence in the snapshot
- *     - addToClass / removeClassById / addClassByName /
- *       removeFromAllClasses: the character and class exist in
- *       the snapshot, and the membership invariant holds there
  *
  * CLASS-NAME COMPARISON:
  *   Two class names match when their normalised forms
@@ -237,9 +273,16 @@
     // Lazy resolution solves load order. It does NOT make a
     // dependency optional at call time. Callers that need a
     // dependency (deleteClass needs AcademyCascade; membership
-    // mutations need CharacterQueries; getClassInstructorIds
-    // needs AcademyClassDisciplinesQueries) throw when the
-    // dependency is absent.
+    // mutations need CharacterQueries; getClassInstructorIds needs
+    // AcademyClassDisciplinesQueries) throw when the dependency is
+    // absent.
+    //
+    // NOTE (v31): CharacterQueries is no longer required by the
+    // instructor derivation queries. Those now read role-tagged
+    // enrolments directly. CharacterQueries remains mandatory for
+    // the membership mutations (addToClass, removeClassById,
+    // addClassByName, removeFromAllClasses), which resolve the
+    // character for validation and display purposes.
 
     function getAcademyCascade() {
         return window.AcademyCascade || null;
@@ -280,6 +323,12 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
     var MIN_DAY = CalendarConstants.MIN_DAY;
     var MAX_DAY = CalendarConstants.MAX_DAY;
+
+    // Role vocabulary for enrolment intervals. An interval without
+    // an explicit role is treated as a student interval by the
+    // reader. That is the migration-safe default.
+    var ROLE_STUDENT = 'student';
+    var ROLE_INSTRUCTOR = 'instructor';
 
     // ============================================================
     // HELPERS
@@ -341,6 +390,20 @@
             return '';
         }
         return String(name).trim().toLowerCase();
+    }
+
+    /**
+     * Does this enrolment interval have instructor role?
+     *
+     * An interval without an explicit role is treated as a student
+     * interval. That is the migration-safe default; pre-v31 data
+     * carried no role field, and pre-v31 enrolment data was
+     * overwhelmingly student data. The migration adds roles; a
+     * missing role is the fallback.
+     */
+    function intervalHasInstructorRole(interval) {
+        if (!interval || typeof interval !== 'object') { return false; }
+        return interval.role === ROLE_INSTRUCTOR;
     }
 
     // ============================================================
@@ -580,34 +643,29 @@
     }
 
     // ============================================================
-    // INSTRUCTOR-OF-CLASS DERIVATION
+    // INSTRUCTOR-OF-CLASS DERIVATION (v31)
     // ============================================================
     //
-    // A class does not carry an instructor field. The instructors of
-    // a class are whoever has an instructor-mode enrolment in one of
-    // the class's offerings.
+    // An instructor-of-a-class is a character with at least one
+    // enrolment interval in that class whose role is 'instructor'.
     //
-    // TWO QUERIES, TWO QUESTIONS:
+    // The role lives on the enrolment, not on the character. This
+    // is what makes instructor-ness CLASS-SCOPED. The character-
+    // wide `mode` field is a legacy tombstone and is not consulted
+    // here.
     //
-    //   getClassInstructorIds(classId, week, options)
-    //     "Who teaches something in this class DURING this week?"
-    //     Week-scoped.
+    // MANDATORY DEPENDENCY:
+    //   getClassInstructorIds requires AcademyClassDisciplinesQueries
+    //   for the offering filter (its "who teaches something in this
+    //   class during this week" semantics require knowing which
+    //   disciplines the class offers and are active that week).
     //
-    //   getClassInstructorIdsAllTime(classId)
-    //     "Who has EVER taught something in this class?"
-    //     NOT week-scoped.
+    //   getClassInstructorIdsAllTime requires no external module.
     //
-    // MANDATORY DEPENDENCIES:
-    //   getClassInstructorIds requires:
-    //     - AcademyClassDisciplinesQueries (offering filter)
-    //     - CharacterQueries (mode lookup)
-    //
-    //   getClassInstructorIdsAllTime requires:
-    //     - CharacterQueries
-    //
-    //   A missing dependency THROWS. It does not return [].
-    //   [] means "nobody teaches this class," which is a different
-    //   answer from "the answer could not be determined."
+    //   A missing AcademyClassDisciplinesQueries dependency THROWS.
+    //   It does not return []. [] means "nobody teaches this class,"
+    //   which is a different answer from "the answer could not be
+    //   determined."
     //
     // NOT AUTHORITATIVE INSIDE A MUTATION TRANSACTION:
     //   Both functions read window.data through the live store.
@@ -676,13 +734,6 @@
             disciplineFilter = String(options.disciplineId);
         }
 
-        // ---- CharacterQueries is MANDATORY ----
-        //
-        // Without it, the module cannot determine whether an
-        // enrolled character is an instructor. Throwing is correct;
-        // returning [] would be a false answer.
-        var CQ = requireCharacterQueries('getClassInstructorIds');
-
         var result = Object.create(null);
         var charIds = Object.keys(byClass);
 
@@ -691,10 +742,18 @@
             var intervals = byClass[charId];
             if (!Array.isArray(intervals)) { continue; }
 
-            var matchedDiscipline = false;
+            var matched = false;
             for (var ii = 0; ii < intervals.length; ii++) {
                 var iv = intervals[ii];
                 if (!iv || typeof iv !== 'object') { continue; }
+
+                // ---- Role gate ----
+                //
+                // The interval must be an instructor interval.
+                // Student intervals do not qualify.
+                if (!intervalHasInstructorRole(iv)) {
+                    continue;
+                }
 
                 var discId = isNonEmptyString(iv.disciplineId)
                     ? String(iv.disciplineId)
@@ -716,15 +775,11 @@
                     continue;
                 }
 
-                matchedDiscipline = true;
+                matched = true;
                 break;
             }
 
-            if (!matchedDiscipline) { continue; }
-
-            var char = CQ.getCharacterById(charId);
-            if (!char || typeof char !== 'object') { continue; }
-            if (char.mode !== 'instructor') { continue; }
+            if (!matched) { continue; }
 
             result[String(charId)] = true;
         }
@@ -754,8 +809,6 @@
             return [];
         }
 
-        var CQ = requireCharacterQueries('getClassInstructorIdsAllTime');
-
         var result = Object.create(null);
         var charIds = Object.keys(byClass);
 
@@ -767,11 +820,17 @@
                 continue;
             }
 
-            var char = CQ.getCharacterById(charId);
-            if (!char || typeof char !== 'object') { continue; }
-            if (char.mode !== 'instructor') { continue; }
+            var hasInstructorInterval = false;
+            for (var ii = 0; ii < intervals.length; ii++) {
+                if (intervalHasInstructorRole(intervals[ii])) {
+                    hasInstructorInterval = true;
+                    break;
+                }
+            }
 
-            result[String(charId)] = true;
+            if (hasInstructorInterval) {
+                result[String(charId)] = true;
+            }
         }
 
         var out = Object.keys(result);
@@ -1399,9 +1458,7 @@
      *   - the week was invalid, OR
      *   - the stored rest days for this week are corrupt
      *
-     * The three cases are indistinguishable at this API. Callers
-     * that need to distinguish them should pre-validate the week
-     * and inspect the stored fields directly.
+     * The three cases are indistinguishable at this API.
      *
      * WHY [] FOR A MALFORMED WEEK:
      *   A malformed week is not a request for the default rest
