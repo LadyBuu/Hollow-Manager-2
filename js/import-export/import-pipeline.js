@@ -156,12 +156,56 @@
         };
     }
 
+    /**
+     * Normalise a single error entry to a human-readable string.
+     *
+     * CrossDomainValidator emits structured objects of the shape
+     * { section, entityId, field, targetId, message }. ExportEnvelope
+     * emits plain strings. createFailureResult assumes strings. This
+     * helper bridges the two so no consumer ever sees "[object Object]".
+     */
+    function normaliseErrorEntry(e) {
+        if (typeof e === 'string') {
+            return e;
+        }
+
+        if (e && typeof e === 'object') {
+            var where = [];
+            if (e.section) { where.push(e.section); }
+            if (e.entityId) { where.push('entity ' + e.entityId); }
+            if (e.field) { where.push('field ' + e.field); }
+            if (e.targetId) { where.push('target ' + e.targetId); }
+
+            var msg = e.message || 'Validation error';
+            if (where.length > 0) {
+                msg += ' [' + where.join(', ') + ']';
+            }
+            return msg;
+        }
+
+        return String(e);
+    }
+
+    function normaliseErrorList(list) {
+        if (!Array.isArray(list)) {
+            return list === undefined || list === null ? [] : [String(list)];
+        }
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            out.push(normaliseErrorEntry(list[i]));
+        }
+        return out;
+    }
+
     function createValidationFailureResult(validation) {
+        var rawErrors = (validation && validation.errors) || [];
+        var errorStrings = normaliseErrorList(rawErrors);
+
         return {
             success: false,
-            message: 'Validation failed: ' + validation.errors.length + ' error(s) found.',
-            errors: validation.errors,
-            warnings: validation.warnings || [],
+            message: 'Validation failed: ' + errorStrings.length + ' error(s) found.',
+            errors: errorStrings,
+            warnings: (validation && validation.warnings) || [],
             details: validation,
             committed: false
         };
@@ -1045,7 +1089,8 @@
         if (!result.success) {
             var errorMsg = result.message || 'Import failed';
             if (result.errors && result.errors.length > 0) {
-                errorMsg += ': ' + result.errors.slice(0, 3).join('; ');
+                var firstThree = result.errors.slice(0, 3).map(normaliseErrorEntry);
+                errorMsg += ': ' + firstThree.join('; ');
                 if (result.errors.length > 3) {
                     errorMsg += ' (+ ' + (result.errors.length - 3) + ' more)';
                 }
