@@ -34,14 +34,30 @@
  *   header now carries only the character list controls.
  *
  *   Delete is only meaningful when editing an existing character. The
- *   button is present in the DOM unconditionally and hidden by
- *   CharacterEvents whenever a new character (no editId) is loaded.
+ *   button is rendered by character-form.js only when an editId is
+ *   present. CharacterEvents binds it via delegation.
  *
- * CHARACTER CSV CONTROLS (this revision):
- *   The Import / Export / Template buttons for character CSVs moved
- *   from the global page header into the character module's page
- *   header, next to "+ Add". They are icon-only to save space and
- *   carry title + aria-label for accessibility.
+ * CHARACTER PAGE HEADER CONTROLS:
+ *   The character page header carries, in order:
+ *
+ *     #export-characters-csv-btn        CSV export
+ *     #import-characters-csv-btn        CSV import (opens picker)
+ *     #template-characters-csv-btn      CSV template
+ *     #characters-csv-file-input        hidden file input
+ *     #export-character-report-btn      TXT report of the selected character
+ *     #toggle-char-list                 mobile list toggle
+ *     #add-character-btn                create a new character
+ *
+ *   The report-export button is enabled only when a character is
+ *   selected. CharacterEvents.refreshCharacterReportButton() keeps
+ *   its enabled state in sync with the current edit id; the button
+ *   itself does not decide. The binding is owned by CharacterEvents.
+ *
+ * CHARACTER CSV CONTROLS:
+ *   The Import / Export / Template buttons for character CSVs live
+ *   in the character module's page header, next to "+ Add". They
+ *   are icon-only to save space and carry title + aria-label for
+ *   accessibility.
  *
  *   The buttons keep their original IDs:
  *     #export-characters-csv-btn
@@ -49,9 +65,40 @@
  *     #template-characters-csv-btn
  *     #characters-csv-file-input
  *
- *   The delegated handlers live in character-events.js
- *   (bindCharacterCsvControls), so they survive every re-render of
- *   the module page.
+ *   The delegated handlers live in ImportExportUI, not in
+ *   character-events.js. See the ONE BINDING PER CONTROL note in
+ *   import-export/ui.js for the reasoning.
+ *
+ * COLLAPSIBLE CAREER STATUS FILTER:
+ *   The Career Status checkbox group inside .characters-filters is
+ *   collapsible. The container is:
+ *
+ *     #career-status-filter-group[data-collapsed="true|false"]
+ *
+ *   with:
+ *
+ *     .status-filter-header   clickable header (button)
+ *     .status-filter-body     the checkbox grid (hidden when collapsed)
+ *
+ *   The toggle is bound in character-events.js (bindCareerStatusToggle).
+ *   The collapsed state is stored at module scope in character-events.js
+ *   so it survives re-renders of the list panel.
+ *
+ *   The default state on mount is:
+ *     - mobile  (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT): collapsed
+ *     - desktop:                                                    expanded
+ *
+ *   This file emits the initial state. CharacterEvents toggles it.
+ *
+ * CHARACTER LIST PANEL — MOBILE DEFAULT-OPEN:
+ *   On mobile, the character list panel (#char-list-panel) is opened
+ *   immediately after mount so the user lands on the character picker
+ *   rather than a blank form area. On desktop the panel is always
+ *   visible (position: static) and the "open" class is a no-op.
+ *
+ *   The class is applied in mountCharacters() after CharacterEvents.init()
+ *   so any click-outside handler the events module registers sees the
+ *   panel already open.
  *
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
@@ -66,6 +113,7 @@
  *   - window.CharacterEvents (from character-events.js) - MANDATORY
  *   - window.CharacterClassView (from character-class-view.js) - MANDATORY
  *   - window.CharacterViews (from character-views.js) - MANDATORY (for Social tab)
+ *   - window.UI_CONSTANTS (from ui-constants.js) - MANDATORY (for MOBILE_BREAKPOINT)
  *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
  *
  * EXPOSED API:
@@ -96,6 +144,28 @@
     var DataLoader = window.DataLoader;
     var CharacterClassView = window.CharacterClassView;
     var CharacterViews = window.CharacterViews;
+
+    // ============================================================
+    // LAZY ACCESSORS
+    // ============================================================
+
+    function getUI_CONSTANTS() {
+        return window.UI_CONSTANTS || null;
+    }
+
+    function getMobileBreakpoint() {
+        var UI = getUI_CONSTANTS();
+        if (UI && typeof UI.MOBILE_BREAKPOINT === 'number') {
+            return UI.MOBILE_BREAKPOINT;
+        }
+        // Fallback: 768 is the widely-used tablet/mobile breakpoint.
+        // This is a defensive default, not a policy decision.
+        return 768;
+    }
+
+    function isMobileViewport() {
+        return window.innerWidth < getMobileBreakpoint();
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -219,6 +289,23 @@
             }
         }
 
+        // ---- Mobile default-open for the character list panel ----
+        //
+        // On mobile, the list panel is a slide-out. Opening it on
+        // mount means the user lands on the character picker rather
+        // than a blank form area.
+        //
+        // The panel is opened AFTER CharacterEvents.init() so any
+        // click-outside handler the events module registers sees
+        // the panel already open. On desktop the panel is always
+        // visible; the "open" class is a no-op.
+        if (isMobileViewport()) {
+            var listPanel = document.getElementById('char-list-panel');
+            if (listPanel) {
+                listPanel.classList.add('open');
+            }
+        }
+
         _mounted = true;
         _initialized = true;
 
@@ -247,6 +334,15 @@
     // ============================================================
 
     function getCharactersHTML() {
+        // The Career Status filter group starts collapsed on mobile
+        // and expanded on desktop. The initial state is written into
+        // the markup as data-collapsed; CharacterEvents reads and
+        // toggles it. See the COLLAPSIBLE CAREER STATUS FILTER note
+        // in the file header.
+        var careerStatusCollapsed = isMobileViewport();
+        var careerStatusBodyDisplay = careerStatusCollapsed ? 'none' : 'grid';
+        var careerStatusCaret = careerStatusCollapsed ? '\u25b8' : '\u25be';
+
         return `
             <div class="characters-layout">
                 <div class="characters-sidebar">
@@ -265,6 +361,10 @@
                                     class="small secondary"
                                     title="Character CSV Template"
                                     aria-label="Character CSV Template">▤</button>
+                            <button id="export-character-report-btn"
+                                    class="small secondary"
+                                    title="Export Character Report (TXT)"
+                                    aria-label="Export Character Report">⎙</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
@@ -282,9 +382,25 @@
                             <option value="all">All Classes</option>
                         </select>
 
-                        <div class="status-filter-group" style="margin-top:6px;">
-                            <div style="font-size:0.6rem;color:var(--text-dim);font-weight:600;margin-bottom:4px;">Career Status</div>
-                            <div id="char-status-filter" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;">
+                        <div id="career-status-filter-group"
+                             class="status-filter-group"
+                             data-collapsed="${careerStatusCollapsed ? 'true' : 'false'}"
+                             style="margin-top:6px;">
+
+                            <button type="button"
+                                    id="career-status-filter-toggle"
+                                    class="status-filter-header"
+                                    aria-expanded="${careerStatusCollapsed ? 'false' : 'true'}"
+                                    aria-controls="char-status-filter"
+                                    style="display:flex;align-items:center;gap:6px;width:100%;background:transparent;border:none;padding:4px 0;cursor:pointer;font-size:0.6rem;color:var(--text-dim);font-weight:600;text-align:left;">
+                                <span class="status-filter-caret"
+                                      style="display:inline-block;width:10px;font-size:0.7rem;">${careerStatusCaret}</span>
+                                <span>Career Status</span>
+                            </button>
+
+                            <div id="char-status-filter"
+                                 class="status-filter-body"
+                                 style="display:${careerStatusBodyDisplay};grid-template-columns:1fr 1fr;gap:2px 8px;">
                                 <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
                                     <input type="checkbox" data-status="civilian" />
                                     Civilian
