@@ -129,6 +129,32 @@
  *     Those two constraints together force the overflow to land
  *     on existing teams, however many students remain.
  *
+ * NEW TEAM PERIOD:
+ *   A team created by Auto-Distribute is a single-week-spanning
+ *   stint. It starts on the distribution week and ends one week
+ *   later:
+ *
+ *     startPeriod = String(week)
+ *     endPeriod   = String(week + 1)
+ *
+ *   Both bounds are inclusive (this is the application-wide period
+ *   convention), so a team created at week 3 is active during
+ *   weeks 3 and 4.
+ *
+ *   The end week is CLAMPED to the maximum valid academic period.
+ *   A distribution at the final week of the calendar (52) would
+ *   otherwise produce endPeriod = 53, which
+ *   TeamConstants.isValidPeriod rejects for academic teams — and
+ *   that rejection would fail createTeam and abort the whole
+ *   commit loop. Clamping to 52 yields a one-week team
+ *   (start === end) at the calendar boundary, which is a valid
+ *   record and keeps the batch from failing partway through.
+ *
+ *   The weekly-window record created alongside the team uses the
+ *   same [week, endWeek] range. The persistent Team entity and its
+ *   weekly window therefore agree on the team's active span. See
+ *   the setWindow call in the commit block.
+ *
  * IDEMPOTENCY:
  *   The operation is not idempotent. Running it twice places
  *   students twice (each into the least-full team that moment) and
@@ -563,6 +589,20 @@
             });
         });
 
+        // A newly-created team is a single-week-spanning stint:
+        // start on the distribution week, end one week later. Both
+        // bounds are inclusive (application-wide period
+        // convention), so the team is active during `week` and
+        // `week + 1`.
+        //
+        // Clamp the end at the maximum valid period. A distribution
+        // at week 52 would otherwise produce endPeriod = 53, which
+        // TeamConstants.isValidPeriod rejects for academic teams,
+        // failing createTeam and aborting the rest of the batch.
+        var newTeamStartWeek = week;
+        var newTeamEndWeek = week + 1;
+        if (newTeamEndWeek > 52) { newTeamEndWeek = 52; }
+
         newPlans.forEach(function(plan) {
             chain = chain.then(function() {
                 if (failed) { return; }
@@ -570,8 +610,8 @@
                     name: plan.teamName,
                     type: 'academic',
                     classId: ctx.classId,
-                    startPeriod: String(week),
-                    endPeriod: '',
+                    startPeriod: String(newTeamStartWeek),
+                    endPeriod: String(newTeamEndWeek),
                     status: 'active'
                 }).then(function(res) {
                     if (!res || !res.success) {
@@ -605,14 +645,20 @@
 
                     createdNewTeams++;
 
+                    // The window record uses the same range as the
+                    // persistent Team entity, so the two sources
+                    // agree on the team's active span.
                     var windowPromise;
                     if (typeof AWT.setWindow === 'function') {
                         windowPromise = AWT.setWindow(
-                            ctx.classId, newTeamId, week, null
+                            ctx.classId,
+                            newTeamId,
+                            newTeamStartWeek,
+                            newTeamEndWeek
                         );
                     } else {
                         windowPromise = AWT.ensureWindow(
-                            ctx.classId, newTeamId, week
+                            ctx.classId, newTeamId, newTeamStartWeek
                         );
                     }
 
