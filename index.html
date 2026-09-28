@@ -254,6 +254,16 @@
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
+    <!-- Academy instructor repair view + controller -->
+    <!--
+        The repair view is a top-level module. It exposes
+        AcademyInstructorRepairView, which the repair controller
+        wraps into the six-method controller contract.
+        Load order: the view must be present before the controller
+        runs its IIFE dependency check.
+    -->
+    <script src="js/modules/academy/academy-instructor-repair-view.js"></script>
+
     <!-- Academy controllers -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
@@ -264,6 +274,7 @@
     <script src="js/modules/academy/controllers/academy-ranking-controller.js"></script>
     <script src="js/modules/academy/controllers/academy-discipline-controller.js"></script>
     <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
+    <script src="js/modules/academy/controllers/academy-repair-controller.js"></script>
 
     <script src="js/modules/academy/academy-weekly-teams-operations.js"></script>
 
