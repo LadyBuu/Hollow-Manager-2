@@ -138,6 +138,35 @@
  *   Step 1 stays inline, because it touches the team entity roster,
  *   which is not an academy-domain concern.
  *
+ * UPDATE PATH — OBJECT IDENTITY (this revision):
+ *   updateExistingCharacter used to replace the character slot:
+ *
+ *     data.characters[index] = Object.assign({}, current, normalised, preserved);
+ *
+ *   That is a slot replacement: the array at that index now points
+ *   at a NEW object, while every other reference to the OLD object
+ *   — including the memoized id index in character-queries.js —
+ *   still sees the old values.
+ *
+ *   CharacterQueries.getCharacterById caches a Map<id, character>
+ *   keyed on window.data.characters by reference and by length.
+ *   Slot replacement changes neither, so the cache is not
+ *   invalidated and getCharacterById keeps returning the old
+ *   object. Every read of the edited character — in the list, in
+ *   the form after re-render, in the aggregator — sees the values
+ *   from BEFORE the save, even though the write landed in
+ *   window.data.characters.
+ *
+ *   This revision MERGES THE MERGED OBJECT'S KEYS BACK ONTO THE
+ *   LIVE OBJECT IN PLACE. Object identity is preserved. The id
+ *   index's Map entry — which already points at the live object —
+ *   sees the new values immediately.
+ *
+ *   As a belt-and-braces measure, invalidateCharacterIndex() is
+ *   ALSO called after the merge. If any future code path slips a
+ *   slot replacement past review, the next read rebuilds the
+ *   index rather than returning a stale object.
+ *
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
  *   - No UI rendering here - rendering is in character-form.js
@@ -316,6 +345,33 @@
             return null;
         }
         return TeamCore.endStintsForCharacter(data, charId, deathYear);
+    }
+
+    /**
+     * Force the CharacterQueries id index to be rebuilt on next
+     * lookup.
+     *
+     * The index is memoized on window.data.characters by array
+     * reference and length. Anything that changes a character's
+     * fields WITHOUT changing the array reference or its length
+     * (in-place edits, slot replacement) can leave the index
+     * pointing at a stale object. Calling this after such a change
+     * makes the next read rebuild from the live array.
+     *
+     * Safe to call at any time. Never throws.
+     */
+    function invalidateCharacterIndex() {
+        if (!CharacterQueries ||
+            typeof CharacterQueries.invalidateCharacterIndex !== 'function') {
+            return;
+        }
+        try {
+            CharacterQueries.invalidateCharacterIndex();
+        } catch (e) {
+            console.warn(
+                '[CharacterCRUD] invalidateCharacterIndex threw:', e
+            );
+        }
     }
 
     // ============================================================
@@ -811,22 +867,50 @@
             preserved.mode = current.mode;
         }
 
-        var updated = Object.assign({}, current, normalised, preserved);
+        // ---- Build the merged shape ----
+        var merged = Object.assign({}, current, normalised, preserved);
 
-        data.characters[index] = updated;
+        // ---- Apply it IN PLACE ----
+        //
+        // Merge the merged object's keys back onto the live object.
+        // Do NOT replace data.characters[index] with a new object:
+        //   - The id index in character-queries.js holds the live
+        //     object reference in its Map. Replacing the slot leaves
+        //     the Map pointing at the old object, and every read of
+        //     the edited character returns stale values until the
+        //     index is rebuilt.
+        //   - Any other holder of the character reference (aggregators,
+        //     forms that captured it before the mutation, pipelines)
+        //     sees the old values for the same reason.
+        //
+        // Mutating `current` preserves object identity. Every
+        // reference sees the new values immediately.
+        var mergeKeys = Object.keys(merged);
+        for (var mk = 0; mk < mergeKeys.length; mk++) {
+            current[mergeKeys[mk]] = merged[mergeKeys[mk]];
+        }
+
+        // ---- Belt-and-braces: force index rebuild ----
+        //
+        // The merge above is in-place, so the id index would see the
+        // new values without invalidation. The call is here to cover
+        // any future code path that replaces a character slot
+        // instead of mutating in place. invalidateCharacterIndex is
+        // safe to call at any time.
+        invalidateCharacterIndex();
 
         // ---- Death → professional team cascade ----
-        var previousDeathYear = parseDeathYear(current.deathYear);
-        var nextDeathYear = parseDeathYear(updated.deathYear);
+        var previousDeathYear = parseDeathYear(existing.deathYear);
+        var nextDeathYear = parseDeathYear(current.deathYear);
 
         if (previousDeathYear === null && nextDeathYear !== null) {
-            runDeathCascade(data, updated.id, nextDeathYear, 'save');
+            runDeathCascade(data, current.id, nextDeathYear, 'save');
         }
 
         return {
             success: true,
-            id: updated.id,
-            character: updated
+            id: current.id,
+            character: current
         };
     }
 
@@ -851,6 +935,12 @@
         });
 
         data.characters.push(newChar);
+
+        // A create pushes a new entry, which changes the array
+        // length. The index's rebuild check catches that on the next
+        // lookup. Calling invalidate unconditionally here is
+        // consistent with the update path and costs nothing.
+        invalidateCharacterIndex();
 
         var nextDeathYear = parseDeathYear(newChar.deathYear);
         if (nextDeathYear !== null) {
@@ -1285,6 +1375,13 @@
                     throw new Error('Character not found in data store.');
                 }
 
+                // The filter above reassigns data.characters, which
+                // changes the array reference. The index's rebuild
+                // check catches that on the next lookup. Calling
+                // invalidate unconditionally keeps the contract
+                // obvious: "mutate, then invalidate".
+                invalidateCharacterIndex();
+
                 return {
                     deleted: true,
                     cascade: cascade
@@ -1358,6 +1455,8 @@
                 }
 
                 data.characters = [];
+
+                invalidateCharacterIndex();
 
                 return { deletedCount: count };
             },
