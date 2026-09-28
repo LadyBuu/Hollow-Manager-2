@@ -28,14 +28,15 @@
  *   - The graph modal is created on demand by CharacterEvents
  *
  * FORM ACTION BUTTONS:
- *   The form-level actions (Delete / Cancel / Create-Update) live in the
- *   form-actions row rendered by character-form.js. The module header
- *   used to carry a duplicate "Save" button; it has been removed. The
- *   header now carries only the character list controls.
+ *   The form-level actions (Delete / Export / Cancel / Create-Update)
+ *   live in the form-actions row rendered by character-form.js. The
+ *   module header used to carry a duplicate "Save" button; it has
+ *   been removed. The header now carries only the character list
+ *   controls.
  *
- *   Delete is only meaningful when editing an existing character. The
- *   button is rendered by character-form.js only when an editId is
- *   present. CharacterEvents binds it via delegation.
+ *   Delete and Export are only meaningful when editing an existing
+ *   character. Both are rendered by character-form.js only when an
+ *   editId is present. CharacterEvents binds both via delegation.
  *
  * CHARACTER PAGE HEADER CONTROLS:
  *   The character page header carries, in order:
@@ -44,14 +45,13 @@
  *     #import-characters-csv-btn        CSV import (opens picker)
  *     #template-characters-csv-btn      CSV template
  *     #characters-csv-file-input        hidden file input
- *     #export-character-report-btn      TXT report of the selected character
  *     #toggle-char-list                 mobile list toggle
  *     #add-character-btn                create a new character
  *
- *   The report-export button is enabled only when a character is
- *   selected. CharacterEvents.refreshCharacterReportButton() keeps
- *   its enabled state in sync with the current edit id; the button
- *   itself does not decide. The binding is owned by CharacterEvents.
+ *   The character report export button (#export-character-report-btn)
+ *   is NOT in this header. It lives in the character form's actions
+ *   row, next to Delete / Cancel / Create-Update, and is rendered by
+ *   character-form.js's getCharacterFormHTML.
  *
  * CHARACTER CSV CONTROLS:
  *   The Import / Export / Template buttons for character CSVs live
@@ -361,10 +361,6 @@
                                     class="small secondary"
                                     title="Character CSV Template"
                                     aria-label="Character CSV Template">▤</button>
-                            <button id="export-character-report-btn"
-                                    class="small secondary"
-                                    title="Export Character Report (TXT)"
-                                    aria-label="Export Character Report">⎙</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
