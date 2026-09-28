@@ -6,6 +6,21 @@
  *
  * Produces the view model consumed by AcademyCharacterDetail.
  *
+ * ROLE MODEL (v31):
+ *   A character's role — student or instructor — is CLASS-SCOPED.
+ *   The relationship lives on the enrolment interval:
+ *
+ *     { disciplineId, startWeek, endWeek, role: 'student' | 'instructor' }
+ *
+ *   The class-scoped question "what role does Alice have in Class
+ *   of 2026?" is answered by reading the class's instructor set via
+ *   AcademyClasses.getClassInstructorIdsAllTime(classId). If
+ *   Alice is in that set, she teaches the class. Otherwise, if she
+ *   has any enrolment in the class, she studies it.
+ *
+ *   This module does NOT consult character.mode. That field is a
+ *   legacy tombstone in the migration path and is not read.
+ *
  * TEACHING GROUP CANDIDATE VIEW MODEL:
  *   The candidate picker for "add a student to this group" returns
  *   two lists:
@@ -128,6 +143,9 @@
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
         missing.push('AcademyClasses.getClass');
     }
+    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+        missing.push('AcademyClasses.getClassInstructorIdsAllTime');
+    }
 
     if (!AcademyClassDisciplinesQueries ||
         typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
@@ -161,6 +179,10 @@
     if (!AcademyEnrolments ||
         typeof AcademyEnrolments.getEnrolledStudents !== 'function') {
         missing.push('AcademyEnrolments.getEnrolledStudents');
+    }
+    if (!AcademyEnrolments ||
+        typeof AcademyEnrolments.getStudentDisciplines !== 'function') {
+        missing.push('AcademyEnrolments.getStudentDisciplines');
     }
 
     if (!AcademyGrades || typeof AcademyGrades.getStudentClassGrades !== 'function') {
@@ -211,6 +233,13 @@
     }
 
     window.__academyCharacterDetailAggregatorLoaded = true;
+
+    // ============================================================
+    // ROLE CONSTANTS
+    // ============================================================
+
+    var ROLE_STUDENT = 'student';
+    var ROLE_INSTRUCTOR = 'instructor';
 
     // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
@@ -287,11 +316,57 @@
         return n;
     }
 
-    function resolveMode(options) {
-        if (options && options.mode === 'instructor') {
-            return 'instructor';
+    // ============================================================
+    // ROLE RESOLUTION (v31)
+    // ============================================================
+    //
+    // The role of a character in a class is CLASS-SCOPED. It is
+    // derived from the class's instructor set, which is derived from
+    // the role-tagged enrolment intervals.
+    //
+    // READ SEMANTICS:
+    //   - blank charId or classId  → 'student' (the default mode)
+    //   - character listed as
+    //     instructor for the class → 'instructor'
+    //   - anything else            → 'student'
+    //
+    // A failure to resolve the instructor set (query throws) is NOT
+    // converted to 'student'. A caller that needs to know "did this
+    // succeed?" checks the character first. The mode function
+    // assumes the character exists and classId is well-formed.
+
+    function resolveModeForClass(charId, classId) {
+        if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
+            return ROLE_STUDENT;
         }
-        return 'student';
+
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIdsAllTime(
+                classId
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyCharacterDetailAggregator] ' +
+                'getClassInstructorIdsAllTime threw while resolving ' +
+                'mode for character ' + charId + ' in class ' + classId +
+                ':', e
+            );
+            instructorIds = [];
+        }
+
+        if (!Array.isArray(instructorIds)) {
+            instructorIds = [];
+        }
+
+        var target = String(charId);
+        for (var i = 0; i < instructorIds.length; i++) {
+            if (String(instructorIds[i]) === target) {
+                return ROLE_INSTRUCTOR;
+            }
+        }
+
+        return ROLE_STUDENT;
     }
 
     function resolveActiveTab(options, mode) {
@@ -299,13 +374,13 @@
 
         var STUDENT_TABS = ['main', 'disciplines', 'grades', 'schedule', 'teams'];
         var INSTRUCTOR_TABS = ['main', 'disciplines', 'schedule', 'teachingGroups'];
-        var valid = mode === 'instructor' ? INSTRUCTOR_TABS : STUDENT_TABS;
+        var valid = mode === ROLE_INSTRUCTOR ? INSTRUCTOR_TABS : STUDENT_TABS;
 
         return valid.indexOf(requested) !== -1 ? requested : 'main';
     }
 
     function getTabsForMode(mode) {
-        if (mode === 'instructor') {
+        if (mode === ROLE_INSTRUCTOR) {
             return [
                 { id: 'main',           label: 'Main' },
                 { id: 'disciplines',    label: 'Disciplines' },
@@ -320,6 +395,85 @@
             { id: 'schedule',    label: 'Schedule' },
             { id: 'teams',       label: 'Teams' }
         ];
+    }
+
+    // ============================================================
+    // ROLE-FILTERED ENROLMENT HELPERS
+    // ============================================================
+    //
+    // AcademyEnrolments.getStudentDisciplines(charId, classId) returns
+    // every interval for every discipline in the class. Each interval
+    // now carries a role. These helpers answer the two role-scoped
+    // questions this module needs:
+    //
+    //   hasStudentRoleInClass(charId, classId)
+    //     Does the character have at least one interval with role
+    //     'student' (or a missing role, treated as 'student')?
+    //
+    //   getStudentDisciplineIdsInClass(charId, classId)
+    //     The list of discipline IDs the character is enrolled in
+    //     with role 'student'.
+    //
+    // A missing role on an interval is treated as 'student'. That is
+    // the migration-safe default: pre-v31 enrolments carried no role
+    // and were overwhelmingly student enrolments.
+
+    function intervalIsStudentRole(interval) {
+        if (!interval || typeof interval !== 'object') { return false; }
+        if (interval.role === ROLE_INSTRUCTOR) { return false; }
+        return true;
+    }
+
+    function intervalIsInstructorRole(interval) {
+        if (!interval || typeof interval !== 'object') { return false; }
+        return interval.role === ROLE_INSTRUCTOR;
+    }
+
+    /**
+     * Get the character's discipline IDs in a class, filtered by
+     * the role the interval carries.
+     *
+     * @param {string} charId
+     * @param {string} classId
+     * @param {'student'|'instructor'} role
+     * @returns {array<string>} Deduplicated discipline IDs
+     */
+    function getDisciplineIdsForRole(charId, classId, role) {
+        if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var intervals = [];
+        try {
+            intervals = AcademyEnrolments.getStudentDisciplines(
+                charId, classId
+            ) || [];
+        } catch (e) {
+            intervals = [];
+        }
+
+        if (!Array.isArray(intervals)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < intervals.length; i++) {
+            var iv = intervals[i];
+            if (!iv || !isNonEmptyString(iv.disciplineId)) { continue; }
+
+            var matches = (role === ROLE_INSTRUCTOR)
+                ? intervalIsInstructorRole(iv)
+                : intervalIsStudentRole(iv);
+
+            if (!matches) { continue; }
+
+            var key = String(iv.disciplineId);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+            result.push(key);
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -480,14 +634,13 @@
     // ============================================================
 
     function buildStudentDisciplines(char, classId) {
-        var ids = [];
-        try {
-            ids = AcademyEnrolments.getStudentDisciplineIds(
-                char.id, classId
-            ) || [];
-        } catch (e) {
-            ids = [];
-        }
+        // Role-filtered: only student-role disciplines appear here.
+        // Instructor-role enrolments for the same class are handled
+        // by buildInstructorDisciplines and are not listed as the
+        // character's studies.
+        var ids = getDisciplineIdsForRole(
+            char.id, classId, ROLE_STUDENT
+        );
 
         var result = [];
         for (var i = 0; i < ids.length; i++) {
@@ -572,79 +725,45 @@
     // ============================================================
     // INSTRUCTOR DISCIPLINES
     // ============================================================
+    //
+    // Role-filtered: only instructor-role enrolments count. A
+    // character that studies discipline A and teaches discipline B
+    // in different classes will show only B here (assuming the
+    // aggregator is called with the class B context).
+    //
+    // The role gate replaces the previous code's reliance on
+    // AcademyEnrolments.isEnrolled, which returns true for either
+    // role. That was the role-blind read that caused a student
+    // enrolment to appear as a teaching assignment.
 
-    function buildInstructorDisciplines(char) {
-        var charClasses = AcademyClasses.getCharacterClasses(char) || [];
-        if (!Array.isArray(charClasses) || charClasses.length === 0) {
+    function buildInstructorDisciplines(char, classId) {
+        if (!isNonEmptyString(classId)) {
             return [];
         }
 
-        var classById = Object.create(null);
-        for (var c = 0; c < charClasses.length; c++) {
-            var cls = charClasses[c];
-            if (!cls || !cls.id) { continue; }
-            classById[String(cls.id)] = {
-                id: cls.id,
-                name: isNonEmptyString(cls.name) ? cls.name : 'Unnamed Class'
-            };
+        var disciplineIds = getDisciplineIdsForRole(
+            char.id, classId, ROLE_INSTRUCTOR
+        );
+
+        if (disciplineIds.length === 0) {
+            return [];
         }
 
-        var classIds = Object.keys(classById);
-        var disciplinesById = Object.create(null);
-
-        for (var ci = 0; ci < classIds.length; ci++) {
-            var classId = classIds[ci];
-
-            var markers = [];
-            try {
-                markers = AcademyClassDisciplinesQueries
-                    .getClassDisciplinesForClass(classId) || [];
-            } catch (e) {
-                markers = [];
-            }
-
-            for (var m = 0; m < markers.length; m++) {
-                var marker = markers[m];
-                if (!marker || !marker.disciplineId) { continue; }
-
-                var disciplineId = String(marker.disciplineId);
-
-                var enrolled = false;
-                try {
-                    enrolled = AcademyEnrolments.isEnrolled(
-                        char.id, classId, disciplineId
-                    ) === true;
-                } catch (e) {
-                    enrolled = false;
-                }
-
-                if (!enrolled) { continue; }
-
-                if (!disciplinesById[disciplineId]) {
-                    disciplinesById[disciplineId] = {
-                        id: disciplineId,
-                        name: getDisciplineName(disciplineId),
-                        type: getDisciplineType(disciplineId),
-                        classIds: [],
-                        classNames: []
-                    };
-                }
-
-                var entry = disciplinesById[disciplineId];
-                if (entry.classIds.indexOf(classId) === -1) {
-                    entry.classIds.push(classId);
-                    entry.classNames.push(classById[classId].name);
-                }
-            }
-        }
+        var cls = AcademyClasses.getClass(classId);
+        var className = cls && isNonEmptyString(cls.name)
+            ? cls.name
+            : 'Unnamed Class';
 
         var result = [];
-        var keys = Object.keys(disciplinesById);
-        for (var k = 0; k < keys.length; k++) {
-            var d = disciplinesById[keys[k]];
-            d.classIds.sort();
-            d.classNames.sort();
-            result.push(d);
+        for (var i = 0; i < disciplineIds.length; i++) {
+            var id = disciplineIds[i];
+            result.push({
+                id: id,
+                name: getDisciplineName(id),
+                type: getDisciplineType(id),
+                classIds: [classId],
+                classNames: [className]
+            });
         }
 
         result.sort(function(a, b) {
@@ -798,16 +917,8 @@
             return [];
         }
 
-        var disciplines = buildInstructorDisciplines(char);
-        var teachesForClass = [];
-        for (var d = 0; d < disciplines.length; d++) {
-            var disc = disciplines[d];
-            if (disc.classIds.indexOf(String(classId)) !== -1) {
-                teachesForClass.push(disc);
-            }
-        }
-
-        if (teachesForClass.length === 0) {
+        var disciplines = buildInstructorDisciplines(char, classId);
+        if (disciplines.length === 0) {
             return [];
         }
 
@@ -837,8 +948,8 @@
 
         var result = [];
 
-        for (var t = 0; t < teachesForClass.length; t++) {
-            var taught = teachesForClass[t];
+        for (var t = 0; t < disciplines.length; t++) {
+            var taught = disciplines[t];
             var rawGroups = groupsByDiscipline[taught.id] || [];
 
             rawGroups.sort(function(a, b) {
@@ -938,7 +1049,7 @@
 
     function buildInstructorProjection(char, classId, week) {
         return {
-            disciplines: buildInstructorDisciplines(char),
+            disciplines: buildInstructorDisciplines(char, classId),
             teachingGroups: buildInstructorTeachingGroups(
                 char, classId, week
             ),
@@ -949,10 +1060,6 @@
     // ============================================================
     // TEACHING GROUP CANDIDATE VIEW MODEL
     // ============================================================
-    //
-    // See the file header for the shape. Two lists are returned:
-    // candidates (selectable) and blocked (visible, not
-    // selectable, with a conflict reason).
 
     function buildInstructorExclusionSet(classId, disciplineId, week) {
         var set = Object.create(null);
@@ -997,18 +1104,6 @@
         return set;
     }
 
-    /**
-     * Build the schedule map for a whole week in one projector
-     * call. The map is charId → occurrences[].
-     *
-     * Used by the candidate picker to check collisions for every
-     * candidate at once. The projector walks the whole teaching
-     * model once; the per-candidate comparison is then a small
-     * in-memory loop.
-     *
-     * Returns an empty object when the projector is unavailable or
-     * the call throws.
-     */
     function buildWeekScheduleMapForCandidates(week) {
         var Projector = getAcademyTeachingProjector();
         if (!Projector || typeof Projector.projectWeek !== 'function') {
@@ -1045,15 +1140,6 @@
         return map;
     }
 
-    /**
-     * Return the target group's sessions, filtered to those active
-     * in the display week.
-     *
-     * The session records are the raw ones from the sessions
-     * store; the picker only needs day, startTime, duration.
-     * Session startWeek / endWeek is checked against the query
-     * week before the session is included.
-     */
     function readTargetGroupSessions(group, week) {
         if (!group || !group.id) { return []; }
 
@@ -1071,8 +1157,6 @@
 
         if (!Array.isArray(raw)) { return []; }
 
-        // Discipline window: when a session does not carry its own
-        // week range, the discipline's range is the fallback.
         var discStart = null;
         var discEnd = null;
         if (isNonEmptyString(group.disciplineId)) {
@@ -1124,15 +1208,6 @@
         return result;
     }
 
-    /**
-     * Does any of the candidate's occurrences overlap any of the
-     * target group's sessions?
-     *
-     * Time overlap: same day, and [start, start + duration)
-     * intersect. Back-to-back sessions do not overlap.
-     *
-     * Returns the first collision found, or null.
-     */
     function findCandidateConflict(
         candidateOccurrences,
         targetSessions
@@ -1262,10 +1337,6 @@
             classId, disciplineId, week
         );
 
-        // ---- Collision context ----
-        //
-        // One projector call, one schedule map. Then per candidate
-        // a small in-memory overlap check.
         var scheduleMap = buildWeekScheduleMapForCandidates(week);
         var targetSessions = readTargetGroupSessions(group, week);
 
@@ -1285,8 +1356,6 @@
 
             var c = CharacterQueries.getCharacterById(candidateId);
             if (!c) { continue; }
-
-            if (c.mode === 'instructor') { continue; }
 
             if (EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
                 var eliminated = false;
@@ -1308,15 +1377,6 @@
                 deceased: c.deceased === true
             };
 
-            // ---- Collision check ----
-            //
-            // The candidate's occurrences for the display week,
-            // cross-checked against the target group's sessions.
-            //
-            // targetSessions is empty when the group has no
-            // sessions yet — in that case there is nothing to
-            // collide with and the candidate goes straight into
-            // candidates.
             var candidateOccurrences = scheduleMap[key] || [];
             var conflict = findCandidateConflict(
                 candidateOccurrences, targetSessions
@@ -1384,12 +1444,17 @@
         }
 
         var week = resolveWeek(options);
-        var mode = resolveMode(options);
-        var activeTab = resolveActiveTab(options, mode);
 
         var classId = isNonEmptyString(options.classId)
             ? String(options.classId)
             : null;
+
+        // Mode is CLASS-SCOPED. When no class is selected the mode
+        // is 'student' (the default); callers that need the mode to
+        // be meaningful must supply a classId.
+        var mode = resolveModeForClass(charId, classId);
+
+        var activeTab = resolveActiveTab(options, mode);
 
         var classContext = buildClassContext(classId);
         var characterHeader = buildCharacterHeader(char);
@@ -1397,11 +1462,11 @@
         var elimination = buildElimination(char, week);
         var performance = buildPerformance(char, classId, week);
 
-        var student = mode === 'student'
+        var student = mode === ROLE_STUDENT
             ? buildStudentProjection(char, classId, week)
             : null;
 
-        var instructor = mode === 'instructor'
+        var instructor = mode === ROLE_INSTRUCTOR
             ? buildInstructorProjection(char, classId, week)
             : null;
 
@@ -1429,11 +1494,11 @@
     // SCHEDULE GRID VIEW MODEL
     // ============================================================
 
-    var VALID_SCHEDULE_MODES = ['student', 'instructor'];
+    var VALID_SCHEDULE_MODES = [ROLE_STUDENT, ROLE_INSTRUCTOR];
 
     function getScheduleGridViewModel(charId, options) {
         var week = null;
-        var mode = 'student';
+        var mode = ROLE_STUDENT;
         var classId = null;
 
         if (options !== undefined && options !== null) {
@@ -1487,7 +1552,7 @@
             return null;
         }
 
-        var isInstructor = mode === 'instructor';
+        var isInstructor = mode === ROLE_INSTRUCTOR;
 
         var options = {
             week: weekNum,
@@ -1566,14 +1631,12 @@
     // ============================================================
 
     function buildDisciplineHoursVM(charId, classId, week, gridVM) {
-        var enrolledIds = [];
-        try {
-            enrolledIds = AcademyEnrolments.getStudentDisciplineIds(
-                charId, classId
-            ) || [];
-        } catch (e) {
-            enrolledIds = [];
-        }
+        // Role-filtered: only student-role enrolments produce hours
+        // targets. An instructor's teaching hours are not tracked
+        // here.
+        var enrolledIds = getDisciplineIdsForRole(
+            charId, classId, ROLE_STUDENT
+        );
 
         if (!Array.isArray(enrolledIds) || enrolledIds.length === 0) {
             return [];
@@ -1616,13 +1679,6 @@
                 week
             );
 
-            // When the student is already in a group for this
-            // discipline, the picker does NOT offer other groups.
-            // It offers a "leave this group?" prompt.
-            //
-            // So `groups` stays empty in that case. The picker
-            // reads `hasCurrentGroup` and renders the leave
-            // affordance instead of the group list.
             var hasCurrentGroup = currentGroup !== null;
 
             var groups = [];
@@ -1778,10 +1834,6 @@
             var group = allGroups[i];
             if (!group || !group.id) { continue; }
 
-            // Any group the student is already a member of is
-            // skipped. The caller decides whether to show the
-            // "current group" prompt; the picker's job is only to
-            // list alternative groups.
             var isMember = false;
             try {
                 isMember = AcademyTeachingGroups.isMemberOfGroup(
@@ -1805,9 +1857,6 @@
                 continue;
             }
 
-            // Collect EVERY conflict across every active session.
-            // Each conflict is deduped by groupId; two conflicts
-            // against the same group are one entry.
             var conflictingGroups = [];
             var seenGroupIds = Object.create(null);
 
@@ -1910,34 +1959,9 @@
     // "Occupied" means: a slot descriptor exists at that (day, hour),
     // whether it is a session START or a CONTINUATION.
     //
-    // THE BUG THAT THIS FUNCTION FIXES:
-    //   The previous implementation skipped any cell with
-    //   `isContinuation: true`. Continuation cells are real
-    //   occupied time — the second and subsequent hours of a
-    //   multi-hour session. Skipping them meant a candidate whose
-    //   session overlapped only the SECOND half of an existing
-    //   session (e.g. 10:00-11:00 against a 9:00-11:00 existing
-    //   session) reported as green, and only became visibly red
-    //   after the assignment landed and the grid re-rendered.
-    //
-    // THE FIX:
-    //   Do not skip continuation cells. Every occupied cell counts.
-    //
-    // THE REPORTING:
-    //   When a conflict is found at hour H of the student's
-    //   schedule and that cell is a continuation, walk backwards
-    //   through the student's schedule until a non-continuation
-    //   cell is found. That earlier cell is the session's START.
-    //   The conflict is reported against the start (day, hour) —
-    //   the hour a reader thinks of as "when the session is" —
-    //   and carries the start cell's groupId / disciplineName.
-    //
-    // SELF-EXCLUSION:
-    //   The candidate group is never the student's own group here,
-    //   because buildDisciplineGroupsForPicker filters member
-    //   groups out before calling this function. So a candidate
-    //   cannot collide with itself, and no self-exclusion is
-    //   needed.
+    // Continuation cells are real occupied time — the second and
+    // subsequent hours of a multi-hour session. Skipping them
+    // previously produced false "green" reports.
 
     function collectConflictsForSession(sessionVM, group, studentSchedule) {
         if (!sessionVM) { return []; }
@@ -1966,15 +1990,6 @@
             var slot = daySchedule[hour];
             if (!slot || typeof slot !== 'object') { continue; }
 
-            // A candidate group cannot be the student's own group
-            // here (filtered upstream), so the cell we are looking
-            // at belongs to some other group. Any occupied cell
-            // counts as a conflict, continuation or not.
-            //
-            // Guard against double-reporting the same underlying
-            // session across consecutive hours: the key is the
-            // sessionId if present, else the groupId, else the
-            // (day, hour) pair.
             var cellKey = slot.sessionId
                 ? 'sid:' + String(slot.sessionId)
                 : (slot.groupId
@@ -1983,8 +1998,6 @@
             if (seenAtCell[cellKey]) { continue; }
             seenAtCell[cellKey] = true;
 
-            // Find the session's START cell. Walk backwards while
-            // the previous cell is a continuation.
             var startHour = hour;
             var startSlot = slot;
             var walk = hour - 1;
@@ -1992,9 +2005,6 @@
                 var prev = daySchedule[walk];
                 if (!prev || typeof prev !== 'object') { break; }
                 if (!prev.isContinuation) { break; }
-                // The continuation belongs to the same session.
-                // Prefer session-id equality; fall back to
-                // group-id equality when session ids are absent.
                 var sameSession = false;
                 if (slot.sessionId && prev.sessionId) {
                     sameSession =
@@ -2018,10 +2028,6 @@
 
             if (conflictingGroupId !== null &&
                 conflictingGroupId === groupId) {
-                // Defensive: a candidate group that somehow was not
-                // filtered upstream should not report itself. This
-                // branch is unreachable via the picker, but is
-                // correct if the caller is ever different.
                 continue;
             }
 
@@ -2043,10 +2049,6 @@
                     (isFiniteNumber(startSlot.duration)
                         ? startSlot.duration
                         : 1),
-                // Where on the candidate session the collision was
-                // first noticed. Kept for diagnostics; the UI
-                // surfaces conflictStartTime (the existing session's
-                // start), which is what the reader understands.
                 detectedAtDay: day,
                 detectedAtHour: hour,
                 detectedSessionId: sessionVM.sessionId
@@ -2063,7 +2065,12 @@
     window.AcademyCharacterDetailAggregator = Object.freeze({
         getViewModel: getViewModel,
         getScheduleGridViewModel: getScheduleGridViewModel,
-        getTeachingGroupCandidateViewModel: getTeachingGroupCandidateViewModel
+        getTeachingGroupCandidateViewModel: getTeachingGroupCandidateViewModel,
+
+        // Role helpers — exposed for callers that need the same
+        // role-scoped answer this aggregator uses.
+        resolveModeForClass: resolveModeForClass,
+        getDisciplineIdsForRole: getDisciplineIdsForRole
     });
 
 })();
