@@ -1,45 +1,75 @@
 /**
- * js/import-export/schedule-export.js - Class Schedule Export
- * Exports one week of a class's schedule as readable plain text.
+ * js/import-export/schedule-export.js - Class and Character Schedule Export
+ * Exports one week of a schedule as readable plain text.
  *
  * Path: js/import-export/schedule-export.js
  *
  * WHAT THIS MODULE OWNS:
- *   The projection + serialization of "the class's schedule for
- *   one week". Sessions and instructor commitments are the two
- *   sources. Both are filtered to the week and grouped by day.
+ *   The projection + serialization of schedule data for a single
+ *   week. Two views over the same stores:
  *
- * WHAT "THE CLASS'S SCHEDULE" MEANS HERE:
- *   - Every teaching session whose group belongs to the class,
- *     active during the target week.
- *   - Every instructor commitment attached to the class, active
- *     during the target week.
+ *     CLASS VIEW
+ *       exportClassScheduleText(classId, week)
+ *         Every session of every group in the class, plus every
+ *         instructor commitment attached to the class. A day-by-day
+ *         LIST: each session is a block with a time label, a
+ *         discipline/group header, an instructor line, and a roster.
  *
- *   Exams, tournaments, and weekly-team assignments are NOT part
- *   of this export. The export is about time slots.
+ *     CHARACTER VIEW (this revision)
+ *       exportStudentScheduleText(charId, week)
+ *         Every session the CHARACTER is in during the week, plus
+ *         every instructor commitment the character OWNS during the
+ *         week. A GRID: days across the top, hours down the left,
+ *         one cell per (day, hour) showing discipline and instructor.
  *
- * SESSION ROSTERS:
- *   Each teaching session lists the students of its group who are
- *   active at the exported week. Roster source:
- *   AcademyTeachingGroups.getActiveMembers(groupId, week), which
- *   returns the character IDs whose membership interval for the
- *   group contains the week. Names come from CharacterQueries.
+ *   The two views serve different questions:
+ *     "What is my class doing this week?"  -> class view (list)
+ *     "What is my character doing when?"   -> character view (grid)
  *
- *   The roster is printed as a header line followed by one name
- *   per line, indented under the session block. This layout never
- *   overflows regardless of roster size, at the cost of vertical
- *   space. Chosen over the comma-wrapped variant because roster
- *   sizes vary widely and vertical readability matters more than
- *   compactness for a document meant to be read by humans.
+ * CHARACTER GRID — WHAT IT SHOWS:
+ *   Days across the top (Monday..Sunday). Hours down the left, from
+ *   CalendarConstants.CALENDAR_START_HOUR to CALENDAR_END_HOUR.
  *
- *   A session whose group has no active members at the week emits
- *   no roster block at all. The absence is the answer.
+ *   Each cell is two lines:
+ *     line 1   the discipline name
+ *     line 2   the instructor name
+ *
+ *   An empty cell carries an em dash on line 1 and a blank on line 2.
+ *
+ *   A session that runs for multiple hours repeats the discipline
+ *   and instructor in every hour it occupies. A reader does not have
+ *   to know a "continuation" convention; the cell is self-contained.
+ *
+ *   Multiple sessions in one cell (a double-booking) are joined with
+ *   a semicolon on each line. This is rare; the reader sees both.
+ *
+ *   Commitments appear in the grid as well, with a kind label as the
+ *   discipline line ("Office Hours", "Tutoring"), and either the
+ *   "with <character>" name (for tutoring) or the instructor name on
+ *   line 2.
+ *
+ * CHARACTER GRID — WHAT IT DOES NOT SHOW:
+ *   Groups, classmates, session rosters, location. The character
+ *   cares about what they are doing, not what their cohort is doing.
+ *
+ * SESSION SOURCES:
+ *   The character's sessions come from
+ *   AcademyTeachingProjector.projectForStudent(charId, week), which
+ *   already returns the occurrences the character is a member of,
+ *   filtered to the week.
+ *
+ *   The character's commitments come from
+ *   AcademyInstructorCommitments.getActiveCommitmentsForInstructor(
+ *   charId, week).
+ *
+ *   Both sources are optional at the module-load level. Missing at
+ *   call time is a hard failure: an export that silently omitted
+ *   sessions would be worse than no export.
  *
  * WEEK SCOPE:
- *   One week. The caller supplies it. The Academy UI passes the
- *   display week; other callers may pass any valid week.
+ *   One week. The caller supplies it.
  *
- * READING SHAPE:
+ * CLASS VIEW READING SHAPE (unchanged):
  *
  *   Hollow Blades — Class Schedule Export
  *   Class of 1910
@@ -57,12 +87,26 @@
  *                    Aldric Blackwood
  *                    Cassia Vane
  *                    Marco Thrace
+ *   ...
  *
- *     10:00–11:00  Combat Training · Group 2
- *                  Instructor: Jane Smith · Room 3A
- *                  Students (2):
- *                    Nyla Pemberton
- *                    Osric Wren
+ * CHARACTER VIEW READING SHAPE (this revision):
+ *
+ *   Hollow Blades — Character Schedule Export
+ *   Alice Example
+ *   Week 5 — Exported 2026-09-25
+ *
+ *   Overview
+ *     6 sessions · 2 commitments
+ *
+ *   ────────────────────────────────────────────────
+ *          Mon             Tue             Wed             Thu             Fri             Sat             Sun
+ *   08:00  Maths           —               Maths           —               Maths           —               —
+ *          Mr. Reyes                       Mr. Reyes                       Mr. Reyes
+ *   09:00  Maths           History         Maths           History         Maths           —               —
+ *          Mr. Reyes       Ms. Chen        Mr. Reyes       Ms. Chen        Mr. Reyes
+ *   10:00  —               History         —               History         —               —               —
+ *                          Ms. Chen                        Ms. Chen
+ *   ...
  *
  * FAIL-CLOSED:
  *   When a mandatory dependency is unavailable, the export
@@ -80,8 +124,11 @@
  *   - window.CalendarValidation
  *   - window.ExportUtils
  *
+ * DEPENDENCIES (LAZY, mandatory at call time for the character view):
+ *   - window.AcademyTeachingProjector   (character grid — sessions)
+ *
  * DEPENDENCIES (OPTIONAL):
- *   - window.AcademyLocations   (location display name)
+ *   - window.AcademyLocations   (location display name in the class view)
  */
 
 (function() {
@@ -129,6 +176,12 @@
             'AcademyInstructorCommitments.getActiveCommitmentsForClass'
         );
     }
+    if (!AcademyInstructorCommitments ||
+        typeof AcademyInstructorCommitments.getActiveCommitmentsForInstructor !== 'function') {
+        _missing.push(
+            'AcademyInstructorCommitments.getActiveCommitmentsForInstructor'
+        );
+    }
     if (!AcademyDisciplines ||
         typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
@@ -144,6 +197,10 @@
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_DAY !== 'number' ||
         typeof CalendarConstants.MAX_DAY !== 'number' ||
+        typeof CalendarConstants.MIN_HOUR !== 'number' ||
+        typeof CalendarConstants.MAX_HOUR !== 'number' ||
+        typeof CalendarConstants.CALENDAR_START_HOUR !== 'number' ||
+        typeof CalendarConstants.CALENDAR_END_HOUR !== 'number' ||
         typeof CalendarConstants.getDayName !== 'function' ||
         typeof CalendarConstants.formatHour !== 'function') {
         _missing.push('CalendarConstants day/hour helpers');
@@ -164,6 +221,23 @@
     }
 
     // ============================================================
+    // LAZY-BUT-MANDATORY DEPENDENCIES
+    // ============================================================
+
+    function requireAcademyTeachingProjector(contextLabel) {
+        var ATP = window.AcademyTeachingProjector;
+        if (!ATP ||
+            typeof ATP.projectForStudent !== 'function') {
+            throw new Error(
+                '[ScheduleExport] AcademyTeachingProjector is required ' +
+                'by ' + contextLabel + '. Check the script load order ' +
+                'in index.html.'
+            );
+        }
+        return ATP;
+    }
+
+    // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
 
@@ -177,6 +251,10 @@
 
     var MIN_DAY = CalendarConstants.MIN_DAY;
     var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+    var START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
 
     // Fixed layout constants. The banner width matches the team
     // exporter's convention so the two exports read consistently.
@@ -189,8 +267,7 @@
     var CONTINUATION_INDENT = 13;
 
     // Roster lines indent one level deeper than the session
-    // details, so the header reads as belonging to the session and
-    // the names read as belonging to the header.
+    // details.
     var ROSTER_INDENT = 15;
 
     // Kind labels for commitments.
@@ -198,6 +275,25 @@
         officeHours: 'Office Hours',
         tutoring: 'Tutoring'
     };
+
+    // ---- Character grid layout constants ----
+
+    // Width of the hour column (the "08:00" label on the left).
+    var GRID_HOUR_COL_WIDTH = 7;
+
+    // Width of each day column. Two lines per cell: discipline then
+    // instructor. The width caps the length of a single line; longer
+    // content is truncated with an ellipsis.
+    var GRID_DAY_COL_WIDTH = 15;
+
+    // Width of the gap between day columns.
+    var GRID_COL_GAP = 1;
+
+    // The character glyph used for an empty cell's first line.
+    var EMPTY_CELL_LINE = '\u2014';
+
+    // Truncation glyph.
+    var ELLIPSIS = '\u2026';
 
     // ============================================================
     // SMALL HELPERS
@@ -227,12 +323,19 @@
         return out;
     }
 
-    function slugifyClassName(name) {
-        var s = String(name || 'class').toLowerCase();
+    function slugifyName(name, fallback) {
+        var s = String(name || fallback).toLowerCase();
         s = s.replace(/[^a-z0-9]+/g, '-');
         s = s.replace(/^-+|-+$/g, '');
-        if (s === '') { s = 'class'; }
+        if (s === '') { s = fallback; }
         return s;
+    }
+
+    function truncateForColumn(text, width) {
+        var s = String(text === undefined || text === null ? '' : text);
+        if (s.length <= width) { return s; }
+        if (width <= 1) { return s.slice(0, width); }
+        return s.slice(0, width - 1) + ELLIPSIS;
     }
 
     function formatHourRange(startTime, duration) {
@@ -252,6 +355,23 @@
         }
     }
 
+    function formatDayShort(day) {
+        var full = formatDayName(day);
+        if (full.length <= 3) { return full; }
+        return full.slice(0, 3);
+    }
+
+    function formatHourLabel(hour) {
+        try {
+            var label = CalendarConstants.formatHour(hour);
+            return isNonEmptyString(label)
+                ? label
+                : (String(hour) + ':00');
+        } catch (e) {
+            return String(hour) + ':00';
+        }
+    }
+
     // ============================================================
     // CLASS RESOLUTION
     // ============================================================
@@ -267,6 +387,13 @@
 
     function resolveWeek(week) {
         return CalendarValidation.parseWeek(week);
+    }
+
+    function resolveCharacter(charId) {
+        if (!isNonEmptyString(charId)) { return null; }
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) { return null; }
+        return char;
     }
 
     // ============================================================
@@ -318,9 +445,6 @@
         return '';
     }
 
-    /**
-     * Display label for a teaching group.
-     */
     function getGroupDisplayName(group) {
         if (!group) { return 'Unnamed Group'; }
 
@@ -339,18 +463,6 @@
         return disciplineName;
     }
 
-    /**
-     * Build the roster list for a group at a given week.
-     *
-     * Returns an array of { id, name }. Sorted alphabetically by
-     * name, with a fallback to id for stability when two students
-     * share a name.
-     *
-     * A student whose character record no longer exists is
-     * included with name '(missing character)'. The roster is a
-     * fact about the group, not about whether the character still
-     * resolves; dropping the entry would under-report the roster.
-     */
     function buildSessionRoster(groupId, weekNum) {
         var raw = [];
         try {
@@ -388,8 +500,19 @@
         return result;
     }
 
+    function weekInRange(week, startWeek, endWeek) {
+        if (!isFiniteNumber(week)) { return false; }
+        if (!isFiniteNumber(startWeek)) { return false; }
+        if (week < startWeek) { return false; }
+        if (endWeek === null || endWeek === undefined) {
+            return true;
+        }
+        if (!isFiniteNumber(endWeek)) { return true; }
+        return week <= endWeek;
+    }
+
     // ============================================================
-    // COLLECTION
+    // CLASS VIEW — COLLECTION
     // ============================================================
 
     function collectSessionsForWeek(classId, weekNum) {
@@ -508,19 +631,8 @@
         return result;
     }
 
-    function weekInRange(week, startWeek, endWeek) {
-        if (!isFiniteNumber(week)) { return false; }
-        if (!isFiniteNumber(startWeek)) { return false; }
-        if (week < startWeek) { return false; }
-        if (endWeek === null || endWeek === undefined) {
-            return true;
-        }
-        if (!isFiniteNumber(endWeek)) { return true; }
-        return week <= endWeek;
-    }
-
     // ============================================================
-    // PUBLIC PROJECTION
+    // CLASS VIEW — PUBLIC PROJECTION
     // ============================================================
 
     function getClassScheduleExport(classId, week) {
@@ -596,7 +708,7 @@
     }
 
     // ============================================================
-    // TEXT FORMAT
+    // CLASS VIEW — TEXT FORMAT
     // ============================================================
 
     function buildBanner() {
@@ -632,20 +744,6 @@
         return lines.join('\n') + '\n';
     }
 
-    /**
-     * Emit a Students block, one name per line.
-     *
-     *   <CONTINUATION_INDENT spaces>Students (N):
-     *   <ROSTER_INDENT spaces><name>
-     *   <ROSTER_INDENT spaces><name>
-     *   ...
-     *
-     * Every name occupies its own line, indented one level deeper
-     * than the header. Never wraps. Any roster size renders
-     * identically except for the number of lines.
-     *
-     * Returns '' when the roster is empty.
-     */
     function emitStudentsBlock(students) {
         if (!Array.isArray(students) || students.length === 0) {
             return '';
@@ -699,7 +797,6 @@
             return lines.join('\n');
         }
 
-        // Commitment row
         var label = row.kindLabel;
         if (row.label) {
             label += ' \u00b7 ' + row.label;
@@ -758,6 +855,364 @@
     }
 
     // ============================================================
+    // CHARACTER VIEW — COLLECTION
+    // ============================================================
+    //
+    // Sessions come from the teaching projector, filtered to
+    // occurrences whose studentIds array contains the character.
+    // The projector's projectForStudent already does the filter,
+    // so the caller does not walk groups itself.
+    //
+    // Commitments come from the commitments module's
+    // getActiveCommitmentsForInstructor.
+    //
+    // Both sources are reduced to the shape the grid renderer
+    // consumes:
+    //
+    //   {
+    //     id, day, startTime, duration,
+    //     line1,   // discipline name (or kind label for a commitment)
+    //     line2    // instructor name (or "with <name>" for a commitment)
+    //   }
+
+    function collectStudentSessionsForWeek(charId, weekNum) {
+        var Projector = requireAcademyTeachingProjector(
+            'getStudentScheduleExport'
+        );
+
+        var occurrences;
+        try {
+            occurrences = Projector.projectForStudent(
+                charId, weekNum
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[ScheduleExport] projectForStudent threw:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(occurrences)) { return []; }
+
+        var result = [];
+
+        for (var i = 0; i < occurrences.length; i++) {
+            var occ = occurrences[i];
+            if (!occ) { continue; }
+            if (!isFiniteNumber(occ.day)) { continue; }
+            if (!isFiniteNumber(occ.startTime)) { continue; }
+
+            var duration = isFiniteNumber(occ.duration) &&
+                           occ.duration > 0
+                ? occ.duration
+                : 1;
+
+            var disciplineName = getDisciplineName(occ.disciplineId);
+            var instructorName = getCharacterName(occ.instructorId);
+
+            result.push({
+                id: isNonEmptyString(occ.sessionId)
+                    ? String(occ.sessionId)
+                    : '',
+                day: occ.day,
+                startTime: occ.startTime,
+                duration: duration,
+                line1: disciplineName,
+                line2: instructorName,
+                source: 'session'
+            });
+        }
+
+        return result;
+    }
+
+    function collectStudentCommitmentsForWeek(charId, weekNum) {
+        var raw;
+        try {
+            raw = AcademyInstructorCommitments
+                .getActiveCommitmentsForInstructor(
+                    charId, weekNum
+                ) || [];
+        } catch (e) {
+            console.warn(
+                '[ScheduleExport] ' +
+                'getActiveCommitmentsForInstructor threw:', e
+            );
+            raw = [];
+        }
+
+        if (!Array.isArray(raw)) { return []; }
+
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var c = raw[i];
+            if (!c || !c.id) { continue; }
+            if (!isFiniteNumber(c.day)) { continue; }
+            if (!isFiniteNumber(c.startTime)) { continue; }
+
+            var duration = isFiniteNumber(c.duration)
+                ? c.duration
+                : 1;
+
+            var kindLabel = KIND_LABEL[c.kind] || 'Commitment';
+            if (isNonEmptyString(c.label)) {
+                kindLabel += ' \u00b7 ' + String(c.label);
+            }
+
+            var line2 = '';
+            if (isNonEmptyString(c.characterId)) {
+                var otherName = getCharacterName(c.characterId);
+                if (isNonEmptyString(otherName)) {
+                    line2 = 'with ' + otherName;
+                }
+            }
+
+            result.push({
+                id: String(c.id),
+                day: c.day,
+                startTime: c.startTime,
+                duration: duration,
+                line1: kindLabel,
+                line2: line2,
+                source: 'commitment'
+            });
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // CHARACTER VIEW — PUBLIC PROJECTION
+    // ============================================================
+
+    function getStudentScheduleExport(charId, week) {
+        var char = resolveCharacter(charId);
+        if (!char) { return null; }
+
+        var weekNum = resolveWeek(week);
+        if (weekNum === null) { return null; }
+
+        var sessions = collectStudentSessionsForWeek(
+            char.id, weekNum
+        );
+        var commitments = collectStudentCommitmentsForWeek(
+            char.id, weekNum
+        );
+
+        var allBlocks = sessions.concat(commitments);
+
+        // Group blocks by (day, hour), keeping the cell content
+        // structured for the renderer.
+        var cells = buildGridCells(allBlocks, weekNum);
+
+        return {
+            characterId: String(char.id),
+            characterName: getCharacterName(char.id) || 'Unnamed Character',
+            week: weekNum,
+            cells: cells,
+            sessionCount: sessions.length,
+            commitmentCount: commitments.length,
+            totalBlocks: allBlocks.length
+        };
+    }
+
+    /**
+     * Bucket blocks into (day, hour) cells. A block that runs for N
+     * hours appears in N cells — its start hour and each
+     * continuation hour. This makes the grid self-explanatory: a
+     * reader never has to know a continuation convention.
+     *
+     * Cells that receive more than one block collect them into an
+     * array. The renderer joins the line1s and line2s with
+     * semicolons.
+     */
+    function buildGridCells(blocks, weekNum) {
+        var cells = Object.create(null);
+
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b) { continue; }
+
+            var duration = isFiniteNumber(b.duration) && b.duration > 0
+                ? Math.round(b.duration)
+                : 1;
+
+            for (var h = 0; h < duration; h++) {
+                var hour = b.startTime + h;
+                if (hour < START_HOUR) { continue; }
+                if (hour > END_HOUR) { break; }
+
+                var key = String(b.day) + ':' + String(hour);
+                if (!cells[key]) {
+                    cells[key] = [];
+                }
+                cells[key].push(b);
+            }
+        }
+
+        // Sort each cell's blocks deterministically. Sessions before
+        // commitments; then by id.
+        var keys = Object.keys(cells);
+        for (var k = 0; k < keys.length; k++) {
+            cells[keys[k]].sort(function(a, b) {
+                if (a.source !== b.source) {
+                    return a.source === 'session' ? -1 : 1;
+                }
+                return String(a.id).localeCompare(String(b.id));
+            });
+        }
+
+        return cells;
+    }
+
+    // ============================================================
+    // CHARACTER VIEW — TEXT FORMAT
+    // ============================================================
+
+    function emitStudentHeader(vm) {
+        var today = new Date().toISOString().slice(0, 10);
+
+        var lines = [];
+        lines.push('Hollow Blades \u2014 Character Schedule Export');
+        lines.push(vm.characterName);
+        lines.push('Week ' + vm.week + ' \u2014 Exported ' + today);
+        lines.push('');
+        lines.push('Overview');
+        lines.push('  ' +
+            vm.sessionCount + ' session' +
+            (vm.sessionCount === 1 ? '' : 's') + ' \u00b7 ' +
+            vm.commitmentCount + ' commitment' +
+            (vm.commitmentCount === 1 ? '' : 's'));
+
+        return lines.join('\n') + '\n';
+    }
+
+    /**
+     * Emit one cell's two lines.
+     *
+     * The cell is a bucket of one or more blocks. Each block has a
+     * line1 (discipline or kind label) and a line2 (instructor or
+     * "with <name>"). Multiple blocks in one cell join their lines
+     * with "; ".
+     *
+     * The result is padded to GRID_DAY_COL_WIDTH. Lines longer than
+     * that width are truncated with an ellipsis.
+     */
+    function emitCell(blocks) {
+        if (!Array.isArray(blocks) || blocks.length === 0) {
+            return {
+                line1: padRight(EMPTY_CELL_LINE, GRID_DAY_COL_WIDTH),
+                line2: padRight('', GRID_DAY_COL_WIDTH)
+            };
+        }
+
+        var line1Parts = [];
+        var line2Parts = [];
+
+        for (var i = 0; i < blocks.length; i++) {
+            var b = blocks[i];
+            if (!b) { continue; }
+
+            if (isNonEmptyString(b.line1)) {
+                line1Parts.push(b.line1);
+            }
+            if (isNonEmptyString(b.line2)) {
+                line2Parts.push(b.line2);
+            }
+        }
+
+        var line1 = line1Parts.length > 0
+            ? line1Parts.join('; ')
+            : EMPTY_CELL_LINE;
+        var line2 = line2Parts.length > 0
+            ? line2Parts.join('; ')
+            : '';
+
+        return {
+            line1: padRight(
+                truncateForColumn(line1, GRID_DAY_COL_WIDTH),
+                GRID_DAY_COL_WIDTH
+            ),
+            line2: padRight(
+                truncateForColumn(line2, GRID_DAY_COL_WIDTH),
+                GRID_DAY_COL_WIDTH
+            )
+        };
+    }
+
+    /**
+     * Emit the grid.
+     *
+     * The first row is the day-name header. Subsequent rows are the
+     * hours. Each row is two physical lines (discipline line, then
+     * instructor line), because every cell is two lines tall.
+     */
+    function buildStudentScheduleText(vm) {
+        var out = '';
+
+        out += emitStudentHeader(vm);
+        out += '\n';
+
+        if (vm.totalBlocks === 0) {
+            out += buildBanner() + '\n';
+            out += 'No sessions or commitments this week.\n';
+            out += buildBanner() + '\n';
+            return out;
+        }
+
+        // ---- Day header ----
+        //
+        // The hour column is blank on the header row. Each day column
+        // carries the short day name, padded to the day column width.
+
+        var headerLine = padRight('', GRID_HOUR_COL_WIDTH);
+        for (var d = MIN_DAY; d <= MAX_DAY; d++) {
+            var dayLabel = formatDayShort(d);
+            headerLine += padRight(
+                truncateForColumn(dayLabel, GRID_DAY_COL_WIDTH),
+                GRID_DAY_COL_WIDTH
+            );
+            if (d < MAX_DAY) {
+                headerLine += repeat(' ', GRID_COL_GAP);
+            }
+        }
+        out += headerLine + '\n';
+
+        // ---- Hour rows ----
+        //
+        // One logical row per hour. Each row renders as two physical
+        // lines: line1 across all days, then line2 across all days.
+
+        for (var hour = START_HOUR; hour <= END_HOUR; hour++) {
+            var hourLabel = formatHourLabel(hour);
+            var hourCol = padRight(hourLabel, GRID_HOUR_COL_WIDTH);
+
+            var rowLine1 = hourCol;
+            var rowLine2 = padRight('', GRID_HOUR_COL_WIDTH);
+
+            for (var day = MIN_DAY; day <= MAX_DAY; day++) {
+                var key = String(day) + ':' + String(hour);
+                var blocks = vm.cells[key] || [];
+                var cell = emitCell(blocks);
+
+                rowLine1 += cell.line1;
+                rowLine2 += cell.line2;
+
+                if (day < MAX_DAY) {
+                    rowLine1 += repeat(' ', GRID_COL_GAP);
+                    rowLine2 += repeat(' ', GRID_COL_GAP);
+                }
+            }
+
+            out += rowLine1 + '\n';
+            out += rowLine2 + '\n';
+        }
+
+        return out;
+    }
+
+    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -788,10 +1243,64 @@
             type: 'text/plain;charset=utf-8'
         });
 
-        var slug = slugifyClassName(vm.className);
+        var slug = slugifyName(vm.className, 'class');
         var today = new Date().toISOString().slice(0, 10);
         var filename = options.filename ||
             'class-' + slug + '-schedule-' + today + '.txt';
+
+        try {
+            ExportUtils.downloadBlob(blob, filename);
+        } catch (e) {
+            return {
+                exported: false,
+                filename: null,
+                sessionCount: vm.sessionCount,
+                commitmentCount: vm.commitmentCount,
+                error: 'Failed to download: ' + e.message
+            };
+        }
+
+        return {
+            exported: true,
+            filename: filename,
+            sessionCount: vm.sessionCount,
+            commitmentCount: vm.commitmentCount,
+            error: null
+        };
+    }
+
+    function getStudentScheduleTextContent(charId, week) {
+        var vm = getStudentScheduleExport(charId, week);
+        if (!vm) { return ''; }
+        return buildStudentScheduleText(vm);
+    }
+
+    function exportStudentScheduleText(charId, week, options) {
+        options = options || {};
+
+        var vm = getStudentScheduleExport(charId, week);
+
+        if (!vm) {
+            return {
+                exported: false,
+                filename: null,
+                sessionCount: 0,
+                commitmentCount: 0,
+                error: 'Character or week not found.'
+            };
+        }
+
+        var content = buildStudentScheduleText(vm);
+
+        var blob = new Blob([content], {
+            type: 'text/plain;charset=utf-8'
+        });
+
+        var slug = slugifyName(vm.characterName, 'character');
+        var today = new Date().toISOString().slice(0, 10);
+        var filename = options.filename ||
+            'character-' + slug + '-schedule-week-' +
+            String(vm.week) + '.txt';
 
         try {
             ExportUtils.downloadBlob(blob, filename);
@@ -819,9 +1328,15 @@
     // ============================================================
 
     window.ScheduleExport = Object.freeze({
+        // Class view (unchanged public API)
         getClassScheduleExport: getClassScheduleExport,
         getClassScheduleTextContent: getClassScheduleTextContent,
-        exportClassScheduleText: exportClassScheduleText
+        exportClassScheduleText: exportClassScheduleText,
+
+        // Character view (this revision)
+        getStudentScheduleExport: getStudentScheduleExport,
+        getStudentScheduleTextContent: getStudentScheduleTextContent,
+        exportStudentScheduleText: exportStudentScheduleText
     });
 
     (function verify() {
@@ -831,7 +1346,10 @@
         var required = [
             'getClassScheduleExport',
             'getClassScheduleTextContent',
-            'exportClassScheduleText'
+            'exportClassScheduleText',
+            'getStudentScheduleExport',
+            'getStudentScheduleTextContent',
+            'exportStudentScheduleText'
         ];
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
