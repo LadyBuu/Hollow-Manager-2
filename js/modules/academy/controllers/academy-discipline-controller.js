@@ -52,6 +52,63 @@
  *   - The Schedule tab's free-slots actions.
  *   - The Schedule tab's group management.
  *
+ * GRADE SCHEME ROUND-TRIP (this revision):
+ *   The editor's grade scheme round-trip had two silent failure
+ *   paths that caused a user's custom scheme to revert to Numeric
+ *   on save. Both are closed here.
+ *
+ *   PATH A — empty-label band drop:
+ *     handleAddBand used to push `{ label: '', minPercent: 0 }`.
+ *     normalizeScheme's candidate pass drops bands with empty
+ *     labels. If a scheme's only minPercent: 0 band was a fresh
+ *     empty one (or became one after removing the previous 0-band),
+ *     the scheme failed validation and normalizeScheme fell back
+ *     to the numeric default wholesale.
+ *
+ *     handleAddBand now pushes a band with a generated
+ *     non-colliding label ('Band N') and a minPercent chosen to
+ *     sit below the current lowest band's value. It never creates
+ *     a second band at 0.
+ *
+ *   PATH B — raw-string minPercent:
+ *     handleBandFieldChange wrote `inputEl.value` (a string)
+ *     directly into the draft's band. If the user typed "80.5",
+ *     " 80", "80garbage", or left the field empty, that string
+ *     survived into buildDisciplinePayload. normalizeScheme's
+ *     strict parser either dropped the band (removing the only 0
+ *     band) or rejected the whole scheme, and the fallback kicked
+ *     in.
+ *
+ *     handleBandFieldChange now parses the input strictly. On
+ *     success the parsed integer is written to the draft and the
+ *     input loses its error state. On failure the input is marked
+ *     with `academy-field-has-error`, the draft keeps its prior
+ *     value, and a per-band error is recorded so the save path
+ *     can refuse with a specific message.
+ *
+ *   PATH C — removing the only 0-band:
+ *     handleRemoveBand used to splice unconditionally, allowing
+ *     the user to remove the only minPercent: 0 band. That
+ *     invalidated the scheme; on save, normalizeScheme fell back
+ *     to Numeric.
+ *
+ *     handleRemoveBand now refuses to remove a band whose
+ *     minPercent is 0 when it is the only band at 0. The user
+ *     sees an error toast and the draft is unchanged.
+ *
+ *   PATH D — silent fallback on save:
+ *     buildDisciplinePayload used to call normalizeScheme, which
+ *     silently replaces an invalid scheme with the numeric default.
+ *     saveDisciplineDraft then dispatched that normalized payload.
+ *     The user's scheme was lost with no signal.
+ *
+ *     saveDisciplineDraft now validates the draft's scheme BEFORE
+ *     building the payload. On failure it surfaces the specific
+ *     validation errors as a toast and does not dispatch. The
+ *     editor's live preview (via the file-7 diagnostic log) and
+ *     this preflight together mean a user's scheme is either saved
+ *     as they built it, or they are told exactly what is wrong.
+ *
  * CANDIDATE PICKER STATE:
  *   The Add button in the discipline sessions panel's candidate
  *   picker ships disabled. Ticking a checkbox must enable it. The
@@ -154,6 +211,10 @@
         typeof GradeSchemes.getPreset !== 'function' ||
         typeof GradeSchemes.getDefaultScheme !== 'function') {
         _missing.push('AcademyGradeSchemes API');
+    }
+    if (!GradeSchemes ||
+        typeof GradeSchemes.validateScheme !== 'function') {
+        _missing.push('AcademyGradeSchemes.validateScheme');
     }
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
@@ -2014,6 +2075,22 @@
         }
     }
 
+    /**
+     * Handle a change to a band field.
+     *
+     * MIN-PERCENT PARSING (this revision):
+     *   The input's value is parsed strictly before it is written
+     *   to the draft. A non-integer input is NOT written to the
+     *   draft: the input element is marked with the has-error class
+     *   and a per-band error is recorded, but the draft keeps its
+     *   previous value so the scheme stays valid until the user
+     *   corrects the input.
+     *
+     *   This closes the "raw-string minPercent" failure path: the
+     *   draft never carries a malformed value into save, so
+     *   normalizeScheme's fallback cannot be reached through this
+     *   route.
+     */
     function handleBandFieldChange(inputEl) {
         if (!_disciplineDraft) { return; }
 
@@ -2026,11 +2103,48 @@
 
         if (field === 'label') {
             bands[idx].label = inputEl.value;
-        } else if (field === 'minPercent') {
-            bands[idx].minPercent = inputEl.value;
+            clearBandFieldError(idx, 'label');
+            updateDisciplinePreviewInPlace();
+            return;
         }
 
-        updateDisciplinePreviewInPlace();
+        if (field === 'minPercent') {
+            var parsed = parseStrictInteger(inputEl.value);
+
+            if (parsed === null ||
+                parsed < 0 ||
+                parsed > 100) {
+                setBandFieldError(
+                    idx,
+                    'minPercent',
+                    'Min percent must be a whole number between 0 and 100.'
+                );
+                inputEl.classList.add('academy-field-has-error');
+                // Draft is NOT updated. Keep the scheme valid.
+                return;
+            }
+
+            // Reject a duplicate minPercent value within the same
+            // scheme. Duplicates make the scheme invalid and trigger
+            // normalizeScheme's fallback.
+            for (var other = 0; other < bands.length; other++) {
+                if (other === idx) { continue; }
+                if (parseStrictInteger(bands[other].minPercent) === parsed) {
+                    setBandFieldError(
+                        idx,
+                        'minPercent',
+                        'Another band already uses ' + parsed + '%.'
+                    );
+                    inputEl.classList.add('academy-field-has-error');
+                    return;
+                }
+            }
+
+            bands[idx].minPercent = parsed;
+            clearBandFieldError(idx, 'minPercent');
+            inputEl.classList.remove('academy-field-has-error');
+            updateDisciplinePreviewInPlace();
+        }
     }
 
     function handleAssessmentWeightChange(inputEl) {
@@ -2064,6 +2178,40 @@
         }
     }
 
+    // ---- Per-band error bookkeeping ----
+
+    function setBandFieldError(idx, field, message) {
+        if (!_disciplineDraftErrors) { _disciplineDraftErrors = {}; }
+        if (!_disciplineDraftErrors.bandErrors) {
+            _disciplineDraftErrors.bandErrors = {};
+        }
+        var key = String(idx);
+        if (!_disciplineDraftErrors.bandErrors[key]) {
+            _disciplineDraftErrors.bandErrors[key] = {};
+        }
+        _disciplineDraftErrors.bandErrors[key][field] = message;
+    }
+
+    function clearBandFieldError(idx, field) {
+        if (!_disciplineDraftErrors ||
+            !_disciplineDraftErrors.bandErrors) {
+            return;
+        }
+        var key = String(idx);
+        if (!_disciplineDraftErrors.bandErrors[key]) { return; }
+        delete _disciplineDraftErrors.bandErrors[key][field];
+        if (Object.keys(_disciplineDraftErrors.bandErrors[key]).length === 0) {
+            delete _disciplineDraftErrors.bandErrors[key];
+        }
+    }
+
+    function clearAllBandFieldErrors() {
+        if (_disciplineDraftErrors &&
+            _disciplineDraftErrors.bandErrors) {
+            delete _disciplineDraftErrors.bandErrors;
+        }
+    }
+
     // ============================================================
     // EDITOR ACTIONS
     // ============================================================
@@ -2092,10 +2240,33 @@
             }
         }
 
+        clearAllBandFieldErrors();
+
         var ctx = getContext();
         ctx.onChange();
     }
 
+    /**
+     * Add a band to the draft.
+     *
+     * GENERATED LABEL AND MIN-PERCENT (this revision):
+     *   The new band gets a non-colliding label ('Band N') and a
+     *   minPercent strictly below the current lowest band's value.
+     *   It does not get `{ label: '', minPercent: 0 }`, which
+     *   normalizeScheme's candidate pass silently drops.
+     *
+     *   The new band's minPercent is chosen as follows:
+     *     - if any band currently has minPercent > 0, the new band
+     *       gets one less than the smallest such value;
+     *     - if every band is at minPercent 0 (only possible with
+     *       a single band, since validation forbids two 0-bands),
+     *       the new band gets 50 so it lands above the existing 0
+     *       band and produces a two-band scheme with a clean
+     *       descending order.
+     *
+     *   Either way, the resulting scheme is valid, so
+     *   normalizeScheme does not fall back.
+     */
     function handleAddBand() {
         if (!_disciplineDraft) { return; }
 
@@ -2109,7 +2280,17 @@
             return;
         }
 
-        bands.push({ label: '', minPercent: 0 });
+        // Pick a label that does not collide with an existing label.
+        var newLabel = nextBandLabel(bands);
+
+        // Pick a minPercent strictly below the current lowest
+        // positive value, or 50 if every band is at 0.
+        var newMinPercent = nextBandMinPercent(bands);
+
+        bands.push({
+            label: newLabel,
+            minPercent: newMinPercent
+        });
 
         if (GradeSchemes) {
             _disciplineDraft.gradeScheme = GradeSchemes.normalizeScheme({
@@ -2119,10 +2300,72 @@
             });
         }
 
+        clearAllBandFieldErrors();
+
         var ctx = getContext();
         ctx.onChange();
     }
 
+    function nextBandLabel(bands) {
+        var used = Object.create(null);
+        for (var i = 0; i < bands.length; i++) {
+            if (bands[i] && isNonEmptyString(bands[i].label)) {
+                used[String(bands[i].label)] = true;
+            }
+        }
+
+        var n = bands.length + 1;
+        var candidate = 'Band ' + n;
+        var safety = 0;
+        while (used[candidate] && safety < 100) {
+            n++;
+            candidate = 'Band ' + n;
+            safety++;
+        }
+        return candidate;
+    }
+
+    function nextBandMinPercent(bands) {
+        var lowestPositive = null;
+        for (var i = 0; i < bands.length; i++) {
+            var band = bands[i];
+            if (!band) { continue; }
+            var v = parseStrictInteger(band.minPercent);
+            if (v === null) { continue; }
+            if (v <= 0) { continue; }
+            if (lowestPositive === null || v < lowestPositive) {
+                lowestPositive = v;
+            }
+        }
+
+        if (lowestPositive === null) {
+            // Every band is at 0 (or no bands). Give the new band 50
+            // so it lands above the 0-band with a clean descending
+            // order.
+            return 50;
+        }
+
+        if (lowestPositive <= 1) {
+            // No room below. Notify the caller's UI with a value
+            // that will be visible; the resulting scheme is still
+            // valid because the new band's minPercent will be
+            // unique (validated by handleBandFieldChange later).
+            return 0;
+        }
+
+        return lowestPositive - 1;
+    }
+
+    /**
+     * Remove a band from the draft.
+     *
+     * LAST ZERO-BAND GUARD (this revision):
+     *   If the band being removed is the only band whose
+     *   minPercent is 0, the removal is refused. A scheme without
+     *   a 0-band fails validation, which would cause
+     *   normalizeScheme to fall back to Numeric on save. The user
+     *   sees an error toast and the draft is unchanged.
+     */
     function handleRemoveBand(buttonEl) {
         if (!_disciplineDraft) { return; }
 
@@ -2135,6 +2378,32 @@
             return;
         }
 
+        var target = currentBands[idx];
+        if (!target) { return; }
+
+        var targetIsZero =
+            parseStrictInteger(target.minPercent) === 0;
+
+        if (targetIsZero) {
+            var otherZeros = 0;
+            for (var i = 0; i < currentBands.length; i++) {
+                if (i === idx) { continue; }
+                if (parseStrictInteger(
+                    currentBands[i].minPercent
+                ) === 0) {
+                    otherZeros++;
+                }
+            }
+            if (otherZeros === 0) {
+                notify(
+                    'One band must keep min percent 0, or the scheme ' +
+                    'cannot match every score.',
+                    'error'
+                );
+                return;
+            }
+        }
+
         currentBands.splice(idx, 1);
 
         if (GradeSchemes) {
@@ -2144,6 +2413,8 @@
                 bands: currentBands
             });
         }
+
+        clearAllBandFieldErrors();
 
         var ctx = getContext();
         ctx.onChange();
@@ -2186,8 +2457,20 @@
     // SAVE
     // ============================================================
 
+    /**
+     * Build the payload for AcademyDisciplines.create / update.
+     *
+     * NORMALISATION (this revision):
+     *   The payload carries the draft's scheme through
+     *   normalizeScheme as a last-resort canonicalisation. That is
+     *   safe because saveDisciplineDraft has already validated the
+     *   scheme; by the time this runs, normalizeScheme cannot fall
+     *   back. The call exists to guarantee the payload's bands are
+     *   sorted descending, matching what the domain layer expects.
+     */
     function buildDisciplinePayload(draft) {
         var scheme = draft.gradeScheme;
+
         if (GradeSchemes &&
             typeof GradeSchemes.normalizeScheme === 'function') {
             scheme = GradeSchemes.normalizeScheme(scheme);
@@ -2205,11 +2488,51 @@
         };
     }
 
+    /**
+     * Save the discipline draft.
+     *
+     * PREFLIGHT VALIDATION (this revision):
+     *   The draft's grade scheme is validated before the payload
+     *   is built. When validation fails, the specific errors are
+     *   surfaced as a toast and the save is refused. The draft is
+     *   unchanged, so the user can fix the problem in place.
+     *
+     *   Previously, the draft was silently normalised. If the
+     *   scheme was invalid, normalizeScheme replaced it with the
+     *   numeric default, and the user's custom scheme disappeared
+     *   with no signal.
+     */
     function saveDisciplineDraft() {
         if (!_disciplineDraft) { return; }
 
         if (!AcademyDisciplines) {
             notify('Discipline module not available.', 'error');
+            return;
+        }
+
+        // ---- Preflight scheme validation ----
+        var schemeCheck = GradeSchemes.validateScheme(
+            _disciplineDraft.gradeScheme
+        );
+
+        if (!schemeCheck.valid) {
+            var messages = [];
+            for (var i = 0; i < schemeCheck.errors.length; i++) {
+                var err = schemeCheck.errors[i];
+                if (!err) { continue; }
+                if (isNonEmptyString(err.message)) {
+                    messages.push(String(err.message));
+                }
+            }
+
+            var summary = messages.length > 0
+                ? messages.join(' ')
+                : 'The grade scheme is invalid.';
+
+            notify(
+                'Cannot save: the grade scheme is invalid. ' + summary,
+                'error'
+            );
             return;
         }
 
