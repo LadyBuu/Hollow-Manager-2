@@ -69,6 +69,37 @@
  *     data-action="character-export"
  *     data-character-id="<the character id>"
  *
+ * SOCIAL SCORE (this revision):
+ *   The Performance card's "Social Score" row carries an Edit
+ *   action. The action element emits:
+ *
+ *     data-action="edit-social-score"
+ *     data-character-id="<the character id>"
+ *
+ *   The character id is sourced from the character detail VM
+ *   (`viewModel.character.id`), NOT from `performance.characterId`.
+ *   The aggregator does not set `performance.characterId`; an
+ *   earlier revision read it and produced an action element with no
+ *   character id, which the People controller could not resolve.
+ *
+ *   The id is threaded through `renderPerformanceScores` as an
+ *   explicit argument so the renderer never has to guess where it
+ *   lives on the VM.
+ *
+ * GRADES TAB (this revision):
+ *   The Grades tab renders ONLY a host container:
+ *
+ *     <div id="academy-grades-editor-host"></div>
+ *
+ *   The grades editor mounts into that host and emits its own
+ *   header (title "Grades", week badge, "+ Add Grade" button).
+ *
+ *   An earlier revision ALSO emitted a section header
+ *   (`<h4 class="academy-character-detail-section-title">Grades
+ *   </h4>`) in this file, producing two "Grades" headers when the
+ *   tab mounted. That outer header has been removed. The editor's
+ *   header is the only one.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  *   - window.AcademyUI (for collapse state reads)
@@ -301,7 +332,7 @@
 
         html += '</div>';
 
-        html += renderModeToggle(mode, classContext);
+        html += renderModeToggle(mode, classContext, character);
 
         html += '</div>';
 
@@ -329,9 +360,10 @@
      * CharacterCRUD.setInstructorForClass(charId, classId,
      * targetRole === 'instructor') on click.
      */
-    function renderModeToggle(mode, classContext) {
+    function renderModeToggle(mode, classContext, character) {
         var isInstructor = mode === 'instructor';
         var hasClass = !!classContext && isNonEmptyString(classContext.id);
+        var charId = character && character.id ? String(character.id) : '';
 
         var className = hasClass && isNonEmptyString(classContext.name)
             ? classContext.name
@@ -356,16 +388,8 @@
                     'id="' + checkboxId + '" ' +
                     'class="academy-character-mode-checkbox" ' +
                     'data-action="character-mode-toggle" ' +
-                    'data-character-id="' + escapeAttribute(
-                        classContext && classContext.id
-                            ? // fall through: the character id is added
-                              // by the wrapper. The controller reads
-                              // data-character-id from the closest
-                              // .academy-character-detail element
-                              // if not set here.
-                              ''
-                            : ''
-                    ) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(charId) + '" ' +
                     (hasClass
                         ? 'data-class-id="' +
                             escapeAttribute(classContext.id) + '" '
@@ -466,7 +490,10 @@
         html += renderClassChips(vm.classes, vm.character);
 
         if (mode === 'student' && vm.performance) {
-            html += renderPerformanceScores(vm.performance);
+            html += renderPerformanceScores(
+                vm.performance,
+                vm.character.id
+            );
         }
 
         if (mode === 'student') {
@@ -534,8 +561,16 @@
     // ============================================================
     // PERFORMANCE SCORES
     // ============================================================
+    //
+    // The character id is passed in explicitly. It is NOT read off
+    // `performance`. The aggregator's `buildPerformance` returns
+    // { week, academicAverage, socialScore, overallScore } and does
+    // not carry a character id; an earlier revision read
+    // `performance.characterId` (undefined) and produced a Social
+    // Score edit action with no `data-character-id`, which the
+    // People controller could not resolve.
 
-    function renderPerformanceScores(performance) {
+    function renderPerformanceScores(performance, charId) {
         var html = '';
         html += '<div class="academy-character-detail-section academy-character-scores">';
         html += '<div class="academy-character-detail-section-header">';
@@ -559,7 +594,7 @@
             'social-score',
             {
                 action: 'edit-social-score',
-                characterId: performance.characterId,
+                characterId: charId,
                 label: 'Edit'
             }
         );
@@ -596,7 +631,7 @@
             html += '<div class="academy-score-actions">';
             html += '<button type="button" class="small secondary" ' +
                         'data-action="' + escapeAttribute(action.action) + '" ' +
-                        (action.characterId
+                        (isNonEmptyString(action.characterId)
                             ? 'data-character-id="' +
                                 escapeAttribute(action.characterId) + '" '
                             : '') +
@@ -869,40 +904,41 @@
     }
 
     // ============================================================
-    // GRADES TAB
+    // GRADES TAB (this revision)
     // ============================================================
+    //
+    // The Grades tab renders ONLY the host container. The grades
+    // editor mounts into it and emits its own header (title, week
+    // badge, "+ Add Grade" button).
+    //
+    // An earlier revision emitted an outer section header here too,
+    // producing two "Grades" headings when the tab mounted. That
+    // outer header is removed. Do not re-add it.
+    //
+    // When no class is selected, the tab still emits an
+    // explanatory message so the tab is not visually empty before
+    // the editor has a chance to mount. The editor's own empty
+    // state covers the "class selected but no grades" case.
 
     function renderGradesTab(vm) {
-        var html = '';
-        html += '<div class="academy-character-detail-section ' +
-                    'academy-character-grades">';
-
-        html += '<div class="academy-character-detail-section-header">';
-        html += '<h4 class="academy-character-detail-section-title">Grades</h4>';
-
         if (!vm.classContext) {
-            html += '</div>';
-            html += '<p class="empty-state small">' +
+            return (
+                '<div class="academy-character-detail-section ' +
+                        'academy-character-grades">' +
+                    '<p class="empty-state small">' +
                         'Select a class to view this student\'s grades.' +
-                    '</p>';
-            html += '</div>';
-            return html;
+                    '</p>' +
+                '</div>'
+            );
         }
 
-        if (vm.student && vm.student.grades && vm.student.grades.hasAny) {
-            html += '<span class="academy-character-detail-section-subtitle">' +
-                        'Avg ' +
-                        escapeHtml(String(vm.student.grades.average)) +
-                    '</span>';
-        }
-
-        html += '</div>';
-
-        html += '<div id="academy-grades-editor-host" ' +
-                    'class="academy-grades-editor-host"></div>';
-
-        html += '</div>';
-        return html;
+        return (
+            '<div class="academy-character-detail-section ' +
+                    'academy-character-grades">' +
+                '<div id="academy-grades-editor-host" ' +
+                    'class="academy-grades-editor-host"></div>' +
+            '</div>'
+        );
     }
 
     // ============================================================
