@@ -31,6 +31,33 @@
  *     year is provided, it is normalised to a canonical string form
  *     (no leading zeros, no whitespace).
  *
+ * DUPLICATE CHECK — SELF-EXCLUSION ON UPDATE (this revision):
+ *   The duplicate check answers "is there already a relationship of
+ *   this (char1, char2, typeId)?" That question has one answer for
+ *   a CREATE and a different answer for an UPDATE.
+ *
+ *     CREATE: "does any relationship of this triple exist?"
+ *     UPDATE: "does any OTHER relationship of this triple exist?"
+ *
+ *   The check used to answer the create question for both paths. A
+ *   user editing an existing relationship hit a false positive: the
+ *   check found the row being edited and rejected the save with
+ *   "A <type> relationship already exists between these characters."
+ *   Nothing about the update was a duplicate; the check simply could
+ *   not distinguish "a different relationship already exists" from
+ *   "the relationship being edited already exists."
+ *
+ *   validateRelationshipData now accepts an optional
+ *   `options.excludeId`. When present, the duplicate check ignores
+ *   any existing relationship whose `id` matches. updateRelationship
+ *   passes the row's own id; createRelationship passes nothing.
+ *
+ *   The check is NOT dropped for updates. A user can still edit
+ *   (Alice, Bob, friend) into (Alice, Bob, romantic); if a
+ *   different (Alice, Bob, romantic) already exists, that is a
+ *   genuine duplicate and is still rejected. Only the row being
+ *   edited is excluded from the search.
+ *
  * CASCADE SEMANTICS (stripCharacterRefs):
  *   When a character is deleted, every relationship involving that
  *   character is removed from social.relationships. Relationships are
@@ -150,6 +177,119 @@
     }
 
     // ============================================================
+    // DUPLICATE CHECK — SELF-EXCLUSION ON UPDATE
+    // ============================================================
+    //
+    // findConflictingRelationship answers "is there a relationship of
+    // this (char1, char2, typeId) other than the one being edited?"
+    //
+    // The pair (char1, char2) is UNORDERED on the record: the create
+    // path stores whatever order the caller provided, and two rows
+    // that differ only in which side is character1 are the same
+    // relationship for the purpose of this check. The walk below
+    // matches either orientation.
+    //
+    // When excludeId is null (a create), any match is a conflict.
+    // When excludeId is present (an update), a match with the same id
+    // is the row being edited and is skipped; any other match is a
+    // conflict.
+    //
+    // Returns the conflicting relationship record, or null when there
+    // is no conflict.
+    //
+    // WHY WALK getCharacterRelationships RATHER THAN ADD A NEW QUERY:
+    //   SocialQueries.relationshipExists(char1, char2, typeId) already
+    //   answers the create-time question. The self-exclusion is a
+    //   question about a specific row id, which relationshipExists
+    //   does not accept. Rather than expand the queries module's API
+    //   for one caller, this helper reuses the existing
+    //   getCharacterRelationships read (which returns every
+    //   relationship involving a given character, in either
+    //   orientation) and applies the exclusion locally.
+    //
+    //   When getCharacterRelationships is unavailable, the helper
+    //   falls back to the create-time question: any match is a
+    //   conflict. That preserves the pre-fix behaviour when the
+    //   underlying read is missing rather than silently allowing
+    //   a duplicate.
+
+    function findConflictingRelationship(char1, char2, typeId, excludeId) {
+        if (!char1 || !char2 || !typeId) {
+            return null;
+        }
+
+        var c1 = String(char1);
+        var c2 = String(char2);
+        var targetType = String(typeId);
+        var exclude = (excludeId !== null && excludeId !== undefined)
+            ? String(excludeId)
+            : null;
+
+        var pairs = [[c1, c2], [c2, c1]];
+
+        if (typeof SocialQueries.getCharacterRelationships === 'function') {
+            var seen = Object.create(null);
+            for (var p = 0; p < pairs.length; p++) {
+                var list = [];
+                try {
+                    list = SocialQueries.getCharacterRelationships(
+                        pairs[p][0]
+                    ) || [];
+                } catch (e) {
+                    list = [];
+                }
+                if (!Array.isArray(list)) { continue; }
+
+                for (var i = 0; i < list.length; i++) {
+                    var rel = list[i];
+                    if (!rel) { continue; }
+
+                    var relId = (rel.id !== null && rel.id !== undefined)
+                        ? String(rel.id)
+                        : null;
+                    if (relId !== null && seen[relId]) { continue; }
+                    if (relId !== null) { seen[relId] = true; }
+
+                    if (String(rel.typeId) !== targetType) { continue; }
+
+                    var r1 = String(rel.character1);
+                    var r2 = String(rel.character2);
+
+                    var matchesPair =
+                        (r1 === c1 && r2 === c2) ||
+                        (r1 === c2 && r2 === c1);
+                    if (!matchesPair) { continue; }
+
+                    if (exclude !== null && relId === exclude) {
+                        continue;
+                    }
+
+                    return rel;
+                }
+            }
+            return null;
+        }
+
+        // Fallback: no per-character read available. If a
+        // relationship of this triple exists at all, treat it as a
+        // conflict. This cannot exclude the row being edited, so an
+        // update in this state will falsely reject self-edits. The
+        // state is abnormal — getCharacterRelationships is a
+        // mandatory read on SocialQueries — and the fallback keeps
+        // the check conservative rather than silently allowing
+        // duplicates.
+        try {
+            if (SocialQueries.relationshipExists(c1, c2, targetType) === true) {
+                return { id: null };
+            }
+        } catch (e) {
+            return null;
+        }
+
+        return null;
+    }
+
+    // ============================================================
     // VALIDATION - Pure function
     // ============================================================
 
@@ -160,10 +300,18 @@
      * @param {object} data - Relationship data to validate
      * @param {object} options - Optional validation options
      * @param {boolean} options.checkDuplicates - Check for duplicates (default: true)
+     * @param {string|number} options.excludeId - Relationship id to exclude
+     *   from the duplicate check. Set by the update path to the row
+     *   being edited. Left unset on the create path.
      * @returns {object} { valid: boolean, errors: string[] }
      */
     function validateRelationshipData(data, options) {
-        options = options || { checkDuplicates: true };
+        options = options || {};
+        var checkDuplicates = options.checkDuplicates !== false;
+        var excludeId = (options.excludeId !== undefined)
+            ? options.excludeId
+            : null;
+
         var errors = [];
 
         var char1 = data.character1;
@@ -227,11 +375,23 @@
             }
         }
 
-        // Duplicate check
-        if (options.checkDuplicates && char1 && char2 && typeId) {
-            if (SocialQueries.relationshipExists(char1, char2, typeId)) {
+        // Duplicate check.
+        //
+        // The check answers "is there already a relationship of this
+        // (char1, char2, typeId)?" On the create path, any match is a
+        // conflict. On the update path, `excludeId` names the row
+        // being edited and a match with that id is skipped. See the
+        // file header for the full rationale.
+        if (checkDuplicates && char1 && char2 && typeId) {
+            var conflict = findConflictingRelationship(
+                char1, char2, typeId, excludeId
+            );
+            if (conflict) {
                 var label = SocialConstants.getLabel(typeId);
-                errors.push('A ' + label + ' relationship already exists between these characters.');
+                errors.push(
+                    'A ' + label + ' relationship already exists ' +
+                    'between these characters.'
+                );
             }
         }
 
@@ -470,6 +630,13 @@
     /**
      * Update an existing relationship.
      *
+     * SELF-EXCLUSION:
+     *   The duplicate check excludes the row being edited. A user
+     *   editing an existing relationship may change any field,
+     *   including the character pair and the type, and the update
+     *   is rejected only when it would collide with a DIFFERENT
+     *   relationship. See the file header.
+     *
      * @param {string|number} id - Relationship ID
      * @param {object} updates - Updates to apply
      * @param {string} updates.character1 - New character 1 ID (optional)
@@ -515,7 +682,11 @@
         var clar = updates.clarification !== undefined ? normaliseText(updates.clarification) : existing.clarification;
         var noteText = updates.notes !== undefined ? normaliseText(updates.notes) : existing.notes;
 
-        // Validate the proposed state
+        // Validate the proposed state.
+        //
+        // excludeId names the row being edited, so the duplicate
+        // check ignores it and only flags a DIFFERENT conflicting
+        // relationship.
         var validation = validateRelationshipData({
             character1: c1,
             character2: c2,
@@ -524,7 +695,7 @@
             endYear: end,
             clarification: clar,
             notes: noteText
-        }, { checkDuplicates: true });
+        }, { checkDuplicates: true, excludeId: relId });
 
         if (!validation.valid) {
             return Promise.resolve({
@@ -554,7 +725,7 @@
                     endYear: end,
                     clarification: clar,
                     notes: noteText
-                }, { checkDuplicates: true });
+                }, { checkDuplicates: true, excludeId: relId });
 
                 if (!currentValidation.valid) {
                     return {
