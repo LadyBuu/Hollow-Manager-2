@@ -46,6 +46,26 @@
  *                     May be isPairExam.
  *   - 'team_vs_team': adversarial team match. participants.length >= 2.
  *
+ * PAIR EXAM SIZE EXEMPTION:
+ *   A pair exam is a group_exam with isPairExam === true. Its
+ *   participant count is NOT governed by round.matchSize: the count
+ *   is the union of the pairs, which can be any number >= 2. The
+ *   pairing structure itself (validated by Schema.normalisePairings
+ *   and pairingsCoverParticipants) is what enforces coherent groups.
+ *
+ *   This exemption is applied in two places in this file:
+ *
+ *     1. buildProposedMatch, at the matchSizeApplies check.
+ *     2. validateProposedMatch, where the schema validator is called
+ *        with a round copy that has `matchSize` removed, so the
+ *        schema's fixed-size rule is skipped. Schema.validateMatch
+ *        already treats a missing matchSize as "no fixed-size rule
+ *        to enforce"; the round copy is what triggers that path.
+ *
+ *   Schema itself is not modified. The exemption lives at the
+ *   match-construction and match-validation layers, which is where
+ *   the pair-exam mode is known.
+ *
  * RESULT VALIDATION:
  *   buildProposedMatch validates result maps WITHOUT a participant
  *   allow-list. It passes `null` as the participants argument to
@@ -302,6 +322,21 @@
     // Private helper.
     function matchSizeApplies(type) {
         return type === 'group_exam';
+    }
+
+    /**
+     * Resolve the pair-exam flag for a proposed match.
+     *
+     * Reads the update first, then the base. Returns true only when
+     * the resolved value is strictly true.
+     *
+     * Private helper.
+     */
+    function resolveProposedIsPairExam(normalisedUpdates, base) {
+        if (normalisedUpdates.isPairExam !== undefined) {
+            return normalisedUpdates.isPairExam === true;
+        }
+        return base.isPairExam === true;
     }
 
     // ============================================================
@@ -707,13 +742,27 @@
                         : {});
         }
 
+        // ---- Fixed-size rule for group exams ----
+        //
+        // A group_exam normally requires participants.length ===
+        // round.matchSize. A pair exam is EXEMPT: its participant
+        // count is the union of the pairs, which can be any number
+        // >= 2. The pairing structure itself (validated by
+        // Schema.normalisePairings and pairingsCoverParticipants)
+        // is what enforces coherent groups.
         if (matchSizeApplies(proposed.type)) {
-            var matchSize = round && round.matchSize
-                ? round.matchSize
-                : 2;
-            if (proposed.participants.length > 0 &&
-                proposed.participants.length !== matchSize) {
-                return null;
+            var isPairExamForSize = resolveProposedIsPairExam(
+                normalisedUpdates, base
+            );
+
+            if (!isPairExamForSize) {
+                var matchSize = round && round.matchSize
+                    ? round.matchSize
+                    : 2;
+                if (proposed.participants.length > 0 &&
+                    proposed.participants.length !== matchSize) {
+                    return null;
+                }
             }
         }
 
@@ -771,7 +820,34 @@
         }
 
         if (Schema && typeof Schema.validateMatch === 'function') {
-            var schemaErrors = Schema.validateMatch(proposed, round, true);
+            // ---- Pair-exam size exemption ----
+            //
+            // Schema.validateMatch enforces
+            // participants.length === round.matchSize for group
+            // exams, whenever round.matchSize is a number. For a
+            // pair exam, that fixed-size rule does not apply: the
+            // participant count is the union of the pairs.
+            //
+            // Passing a round copy with matchSize removed makes the
+            // schema skip the fixed-size check while still running
+            // every other check (pairings coverage, per-result
+            // validation, participant ID uniqueness). Schema
+            // handles a missing matchSize as "no fixed-size rule to
+            // enforce" — see the group_exam branch in
+            // Schema.validateMatch.
+            var roundForValidation = round;
+            if (proposed.type === 'group_exam' &&
+                (proposed.isPairExam === true ||
+                 (round && round.isPairExam === true))) {
+                roundForValidation = Object.assign({}, round);
+                delete roundForValidation.matchSize;
+            }
+
+            var schemaErrors = Schema.validateMatch(
+                proposed,
+                roundForValidation,
+                true
+            );
             if (Array.isArray(schemaErrors)) {
                 for (var i = 0; i < schemaErrors.length; i++) {
                     errors.push(schemaErrors[i]);
