@@ -20,22 +20,68 @@
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
  *
- * CHARACTER CSV CONTROLS:
- *   The Import / Export / Template buttons in the character page
- *   header are bound by ImportExportUI (js/import-export/ui.js),
- *   not here. See the ONE BINDING PER CONTROL note in that
- *   module's header for the reasoning.
+ * DELETE BINDING (this revision):
+ *   The Delete button used to live in the form header and was bound
+ *   directly in init(). It now lives inside #character-form-content
+ *   (rendered by character-form.js's getCharacterFormHTML) so it
+ *   appears in the bottom form-actions row next to Cancel and
+ *   Create/Update. Because #character-form-content is re-rendered on
+ *   every CharacterForm.render() call, the Delete button must be
+ *   bound via DELEGATION:
  *
- *   This module does not touch those buttons, does not know their
- *   IDs, and does not delegate on their class. Character-events
- *   owns only the events that occur inside the character form.
+ *     bindDeleteButton() -> addSafeDelegatedListener(
+ *         '#delete-char-btn', 'click', ...)
+ *
+ *   A direct binding would be lost after the first re-render.
+ *
+ * CHARACTER REPORT EXPORT (this revision):
+ *   The character page header carries a report-export button
+ *   (#export-character-report-btn). It exports a plain-text report
+ *   of the currently-selected character via
+ *   CharacterExport.exportCharacterText.
+ *
+ *   The button is only meaningful when a character is selected. Its
+ *   enabled state is kept in sync with the current edit id by
+ *   refreshCharacterReportButton(), called from every path that
+ *   changes the edit id:
+ *
+ *     - init()                           (initial state)
+ *     - handleCharacterSelect()          (user picked a character)
+ *     - handleSave() on success          (created or updated)
+ *     - handleDelete() on success        (nothing selected)
+ *     - installCharacterEditListener()   (characterEdit CustomEvent)
+ *
+ *   The button is disabled when:
+ *     - no character is selected
+ *     - CharacterExport is not loaded
+ *
+ *   No change to the report content is made here. The report itself
+ *   is owned by CharacterExport.exportCharacterText.
+ *
+ * COLLAPSIBLE CAREER STATUS FILTER (this revision):
+ *   The Career Status checkbox group in the character list sidebar
+ *   is collapsible. The header (#career-status-filter-toggle) is a
+ *   button. Clicking it toggles the collapsed state, which:
+ *
+ *     - flips data-collapsed on #career-status-filter-group
+ *     - flips the caret glyph inside .status-filter-caret
+ *     - shows/hides #char-status-filter
+ *
+ *   The collapsed state is stored at module scope in
+ *   _careerStatusCollapsed so it survives re-renders of the list
+ *   panel. The initial value is written into the markup by
+ *   characters/index.js on mount.
+ *
+ *   The binding is delegated so it survives any re-render of the
+ *   sidebar (currently there is none, but the pattern is consistent
+ *   with the rest of the module).
  *
  * PER-FIELD RANDOM:
  *   The Physical and Personality tabs render a small ⟳ button
  *   (.field-random-btn) next to each pool-backed field. Clicking
  *   one rerolls only that field.
  *
- * SAVE RE-ENTRANCY (this revision):
+ * SAVE RE-ENTRANCY:
  *   handleSave() is guarded against re-entrant invocation by a
  *   module-level _saveInFlight flag. A single user click cannot
  *   produce two concurrent saves.
@@ -46,9 +92,7 @@
  *   from window.data creates an opportunity for a queued mutation
  *   to overwrite the freshly-saved values with a stale snapshot.
  *   This is the fix for the "rolled stats revert to previously
- *   saved values" bug: the form was being rebuilt from a record
- *   that a later mutation in the MutationPipeline queue had
- *   already clobbered.
+ *   saved values" bug.
  *
  *   refreshUI() is render-only. It must not enqueue mutations.
  *   If a read-only refresh needs a derived value, it computes it
@@ -107,12 +151,23 @@
     // file header.
     var _saveInFlight = false;
 
+    // Career Status filter collapse state. Persists across re-renders
+    // of the sidebar. Initialised to null so the first click reads
+    // the DOM's data-collapsed attribute (which characters/index.js
+    // writes on mount based on viewport). After the first toggle,
+    // this holds the authoritative value.
+    var _careerStatusCollapsed = null;
+
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
     // ============================================================
 
     function getAcademyEliminations() {
         return window.AcademyEliminations || null;
+    }
+
+    function getCharacterExport() {
+        return window.CharacterExport || null;
     }
 
     // ============================================================
@@ -253,15 +308,13 @@
     // ============================================================
     //
     // refreshUI is a RENDER-ONLY function. It must not enqueue any
-    // mutation. If any of the callees below (CharacterList.render,
-    // CharacterClassView.renderAcademicTab, updateDashboardStats)
-    // is found to enqueue a mutation, that is the re-entrant caller
-    // and it must be fixed at its source, not here.
+    // mutation.
     //
-    // Diagnostic: to find the re-entrant caller, add
-    //   console.trace('[MP] performMutation caller');
-    // at the top of MutationPipeline.enqueueMutation, then click
-    // Save once. The second and subsequent traces name the caller.
+    // After refreshUI's work, refreshCharacterReportButton() is
+    // called by the specific handlers that change the edit id, not
+    // by refreshUI itself. Keeping refreshUI read-only-only avoids
+    // the report button's enabled state being driven by an
+    // unrelated render pass.
 
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
@@ -280,6 +333,165 @@
         if (typeof window.updateDashboardStats === 'function') {
             try { window.updateDashboardStats(); } catch (e) {}
         }
+    }
+
+    // ============================================================
+    // CHARACTER REPORT EXPORT BUTTON
+    // ============================================================
+    //
+    // See the CHARACTER REPORT EXPORT note in the file header.
+
+    /**
+     * Enable/disable the report-export button to match the current
+     * edit state.
+     *
+     * - No character selected         -> disabled
+     * - CharacterExport not loaded    -> disabled
+     * - Otherwise                     -> enabled
+     *
+     * The button's data is not touched here; only its disabled
+     * state and visual opacity. The click handler reads the edit id
+     * at click time (handleCharacterReportExport), so a stale
+     * enabled button cannot export the wrong character: the handler
+     * will simply refuse and notify.
+     */
+    function refreshCharacterReportButton() {
+        var btn = document.getElementById('export-character-report-btn');
+        if (!btn) { return; }
+
+        var editId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId()
+            : null;
+
+        var Ce = getCharacterExport();
+        var available = Ce !== null &&
+            typeof Ce.exportCharacterText === 'function';
+
+        var enabled = available && editId !== null &&
+            editId !== undefined && editId !== '';
+
+        btn.disabled = !enabled;
+        btn.style.opacity = enabled ? '1' : '0.5';
+        btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    }
+
+    function handleCharacterReportExport() {
+        var editId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId()
+            : null;
+
+        if (!editId) {
+            notify('Select a character first.', 'error');
+            return;
+        }
+
+        var Ce = getCharacterExport();
+        if (!Ce || typeof Ce.exportCharacterText !== 'function') {
+            notify('Character report export not available.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Ce.exportCharacterText(editId);
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] exportCharacterText threw:', err
+            );
+            notify(
+                'Character report export failed: ' + err.message,
+                'error'
+            );
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Character report exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            'Character report export failed: ' +
+                ((result && result.error) || 'Unknown error'),
+            'error'
+        );
+    }
+
+    function bindCharacterReportExport() {
+        addSafeDelegatedListener(
+            '#export-character-report-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                handleCharacterReportExport();
+            }
+        );
+    }
+
+    // ============================================================
+    // CAREER STATUS FILTER TOGGLE
+    // ============================================================
+    //
+    // See the COLLAPSIBLE CAREER STATUS FILTER note in the file
+    // header.
+    //
+    // STATE:
+    //   _careerStatusCollapsed holds the authoritative value once
+    //   the user has toggled. Before the first toggle, it is null,
+    //   and applyCareerStatusCollapsed() derives the current state
+    //   from the DOM (data-collapsed on the group element), which
+    //   characters/index.js writes on mount.
+    //
+    //   The DOM is the source of truth for the INITIAL state. The
+    //   module variable becomes the source of truth after the first
+    //   user toggle, so re-renders do not reset a user's choice.
+
+    function readCareerStatusCollapsedFromDOM() {
+        var group = document.getElementById('career-status-filter-group');
+        if (!group) { return false; }
+        return group.dataset.collapsed === 'true';
+    }
+
+    function applyCareerStatusCollapsed(collapsed) {
+        var group = document.getElementById('career-status-filter-group');
+        var body = document.getElementById('char-status-filter');
+        var toggle = document.getElementById('career-status-filter-toggle');
+        if (!group || !body || !toggle) { return; }
+
+        group.dataset.collapsed = collapsed ? 'true' : 'false';
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+
+        body.style.display = collapsed ? 'none' : 'grid';
+
+        var caret = toggle.querySelector('.status-filter-caret');
+        if (caret) {
+            caret.textContent = collapsed ? '\u25b8' : '\u25be';
+        }
+    }
+
+    function bindCareerStatusToggle() {
+        addSafeDelegatedListener(
+            '#career-status-filter-toggle',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+
+                // First toggle in this session: read the initial
+                // state from the DOM. Afterwards, trust the module
+                // variable. The DOM is still kept in sync via
+                // applyCareerStatusCollapsed below.
+                if (_careerStatusCollapsed === null) {
+                    _careerStatusCollapsed =
+                        readCareerStatusCollapsedFromDOM();
+                }
+
+                _careerStatusCollapsed = !_careerStatusCollapsed;
+                applyCareerStatusCollapsed(_careerStatusCollapsed);
+            }
+        );
     }
 
     // ============================================================
@@ -353,6 +565,7 @@
 
             CharacterForm.render(charId);
             refreshUI(char);
+            refreshCharacterReportButton();
 
             var formContainer = document.getElementById('character-form-container');
             if (formContainer) {
@@ -415,6 +628,8 @@
         bindClassDropdown();
         bindClassTagRemoval();
         bindStandaloneElimRemoval();
+        bindCharacterReportExport();
+        bindCareerStatusToggle();
 
         // Combat tab bindings
         bindCombatRollButtons();
@@ -427,6 +642,20 @@
         bindSocialButtons();
 
         _initialized = true;
+
+        // Apply the initial state of the report-export button. On
+        // first init, no character is selected, so the button starts
+        // disabled.
+        refreshCharacterReportButton();
+
+        // Re-sync the Career Status filter to whatever the DOM says.
+        // The module variable is null on first init; applyCareerStatusCollapsed
+        // will read the DOM's data-collapsed and reflect it. This
+        // matters if init runs after a re-render of the sidebar; it
+        // ensures the DOM and the module agree.
+        if (_careerStatusCollapsed !== null) {
+            applyCareerStatusCollapsed(_careerStatusCollapsed);
+        }
     }
 
     function destroy() {
@@ -434,6 +663,7 @@
         _initialized = false;
         _socialEditId = null;
         _saveInFlight = false;
+        _careerStatusCollapsed = null;
     }
 
     // ============================================================
@@ -460,6 +690,7 @@
                     window.setCurrentEditId(null);
                 }
                 CharacterForm.render(null);
+                refreshCharacterReportButton();
                 if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
                     window.toggleCharacterList(false);
                 }
@@ -477,14 +708,24 @@
         }
     }
 
+    /**
+     * Bind Delete via delegation.
+     *
+     * The Delete button now lives inside #character-form-content,
+     * which is re-rendered on every CharacterForm.render(). A direct
+     * binding would be lost after the first re-render. Delegation on
+     * #delete-char-btn survives every re-render.
+     *
+     * See the DELETE BINDING note in the file header.
+     */
     function bindDeleteButton(container) {
-        var deleteBtn = document.getElementById('delete-char-btn');
-        if (deleteBtn) {
-            addSafeEventListener(deleteBtn, 'click', function() {
-                var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (id) { handleDelete(id); }
-            });
-        }
+        addSafeDelegatedListener('#delete-char-btn', 'click', function(e, target) {
+            e.preventDefault();
+            var id = typeof window.getCurrentEditId === 'function'
+                ? window.getCurrentEditId()
+                : null;
+            if (id) { handleDelete(id); }
+        });
     }
 
     function bindFilters(container) {
@@ -612,6 +853,7 @@
                 if (typeof window.setCurrentEditId === 'function') {
                     window.setCurrentEditId(null);
                 }
+                refreshCharacterReportButton();
             }
         });
     }
@@ -1721,26 +1963,18 @@
      *
      * RE-ENTRANCY GUARD:
      *   A module-level _saveInFlight flag prevents a second save
-     *   from starting while the first is still in flight. The
-     *   MutationPipeline queue serialises mutations, so a re-entrant
-     *   save would run its mutation AFTER the first one has already
-     *   persisted. If the re-entrant save's DTO captured pre-roll
-     *   state, it would write that stale state back. The guard
-     *   stops the second save from being issued at all.
+     *   from starting while the first is still in flight.
      *
      * NO RE-RENDER FOR EXISTING CHARACTERS:
      *   On success, the form is re-rendered ONLY when the save
-     *   CREATED a new character. For an existing character, the
-     *   form already holds the values the user submitted.
-     *   Re-rendering it from window.data creates an opportunity for
-     *   a queued mutation to have already overwritten the record
-     *   with a stale snapshot. The user would then see the
-     *   previously saved values in the form. This is the fix for
-     *   the "rolled stats revert to previously saved values" bug.
+     *   CREATED a new character.
      *
      *   When the save creates a new character, we DO need to
      *   re-render: the form must adopt the new character's id, and
      *   the "Create" button must become "Update".
+     *
+     * refreshCharacterReportButton() is called after the edit id
+     * changes so the report-export button reflects the new state.
      */
     function handleSave() {
         // ---- Re-entrancy guard ----
@@ -1773,16 +2007,14 @@
                         }
 
                         // Only re-render when we just created a new
-                        // character. For an existing character, the
-                        // form already holds the submitted values;
-                        // re-rendering it from window.data is what
-                        // lets a stale queued write surface.
+                        // character. See the file header.
                         if (!wasEditing) {
                             CharacterForm.render(savedId);
                         }
 
                         var char = CharacterQueries.getCharacterById(savedId);
                         refreshUI(char);
+                        refreshCharacterReportButton();
                     }
                 }
             })
@@ -1816,6 +2048,7 @@
                     }
                     CharacterForm.hide();
                     refreshUI(null);
+                    refreshCharacterReportButton();
                     notify('Character deleted successfully!', 'success');
                 }
             })
@@ -1839,6 +2072,7 @@
 
         CharacterForm.render(id);
         refreshUI(char);
+        refreshCharacterReportButton();
 
         var formContainer = document.getElementById('character-form-container');
         if (formContainer) {
@@ -1994,7 +2228,8 @@
         refreshUI: refreshUI,
         handleAddClassById: handleAddClassById,
         handleAddClassByName: handleAddClassByName,
-        handleRemoveClass: handleRemoveClass
+        handleRemoveClass: handleRemoveClass,
+        refreshCharacterReportButton: refreshCharacterReportButton
     };
 
 })();
