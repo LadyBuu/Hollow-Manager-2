@@ -142,6 +142,71 @@
     var _handlers = {};
 
     // ============================================================
+    // ERROR NORMALISATION
+    // ============================================================
+    //
+    // Import results can carry errors in two shapes:
+    //
+    //   - plain strings (from envelope validation, migration, etc.)
+    //   - structured objects from CrossDomainValidator:
+    //       { section, entityId, field, targetId, message }
+    //
+    // ImportPipeline.createValidationFailureResult flattens these
+    // to strings at the source, but this helper exists as a
+    // belt-and-braces guard for any other caller that hands a
+    // structured error to the UI. Without it, a structured error
+    // becomes "[object Object]" the moment it is string-concatenated
+    // into a notification.
+    //
+    // See also: import-pipeline.js normaliseErrorEntry.
+
+    function errorToDisplayString(e) {
+        if (typeof e === 'string') {
+            return e;
+        }
+
+        if (e && typeof e === 'object') {
+            var where = [];
+            if (e.section) { where.push(e.section); }
+            if (e.entityId) { where.push('entity ' + e.entityId); }
+            if (e.field) { where.push('field ' + e.field); }
+            if (e.targetId) { where.push('target ' + e.targetId); }
+
+            var msg = e.message || 'Validation error';
+            if (where.length > 0) {
+                msg += ' [' + where.join(', ') + ']';
+            }
+            return msg;
+        }
+
+        return String(e);
+    }
+
+    function logErrors(label, errors) {
+        if (!errors || errors.length === 0) {
+            return;
+        }
+        console.error(
+            '[ImportExportUI] ' + label + ' (' + errors.length + '):'
+        );
+        for (var i = 0; i < errors.length; i++) {
+            console.error('  ' + (i + 1) + '.', errors[i]);
+        }
+    }
+
+    function logWarnings(label, warnings) {
+        if (!warnings || warnings.length === 0) {
+            return;
+        }
+        console.warn(
+            '[ImportExportUI] ' + label + ' (' + warnings.length + '):'
+        );
+        for (var i = 0; i < warnings.length; i++) {
+            console.warn('  ' + (i + 1) + '.', warnings[i]);
+        }
+    }
+
+    // ============================================================
     // NOTIFICATION HELPERS
     // ============================================================
 
@@ -314,6 +379,10 @@
         JSONIO.importJSONFromFile(file)
             .then(function(result) {
                 if (!result.valid) {
+                    console.error(
+                        '[JSON import] parse/validation failed. Full result:',
+                        result
+                    );
                     notifyError('JSON import failed: ' + (result.error || 'Unknown error'));
                     return;
                 }
@@ -404,14 +473,50 @@
                     }
                     notifySuccess(message);
                     refreshUI();
-                } else if (importResult && !importResult.success) {
-                    var errors = importResult.errors || [];
-                    var errorMsg = errors.length > 0 ? errors[0] : 'Unknown error';
-                    notifyError('JSON import failed: ' + errorMsg);
+                    return;
                 }
+
+                if (importResult && !importResult.success) {
+                    var errors = importResult.errors || [];
+                    var warnings = importResult.warnings || [];
+
+                    // Dump the full result to the console. The toast
+                    // shows only the first error so the user is not
+                    // buried; the console gets everything.
+                    console.error(
+                        '[JSON import] failed. Full result:',
+                        importResult
+                    );
+                    logErrors('errors', errors);
+                    logWarnings('warnings', warnings);
+
+                    var first = errors[0];
+                    var errorMsg = errorToDisplayString(first) ||
+                        'Unknown error';
+
+                    if (errors.length > 1) {
+                        errorMsg += ' \u2014 ' + (errors.length - 1) +
+                            ' more error(s), see console';
+                    }
+
+                    notifyError('JSON import failed: ' + errorMsg);
+                    return;
+                }
+
+                // Neither success nor a structured failure. Should
+                // not happen, but say so rather than silently stop.
+                console.error(
+                    '[JSON import] unexpected result shape:',
+                    importResult
+                );
+                notifyError('JSON import failed: unexpected result.');
             })
             .catch(function(err) {
-                notifyError('JSON import failed: ' + err.message);
+                console.error('[JSON import] threw:', err);
+                notifyError(
+                    'JSON import failed: ' +
+                    (err && err.message ? err.message : String(err))
+                );
             });
     }
 
