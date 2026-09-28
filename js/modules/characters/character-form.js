@@ -36,6 +36,22 @@
  * FORM TAB BUTTONS (BUG-E12):
  *   - getTabsHTML() emits <button type="button"> for every tab.
  *
+ * FORM ACTIONS ROW:
+ *   The form-level actions row at the bottom of the form carries:
+ *
+ *     [Delete]                (only when editing an existing character)
+ *     <spacer>
+ *     [Cancel]
+ *     [Create Character]      (or "Update Character")
+ *
+ *   The Delete button was previously rendered in the form header
+ *   alongside a redundant Save button. Both have been retired from
+ *   the header. Delete now lives in the bottom row, next to the
+ *   other form actions, matching where a user expects to find it.
+ *
+ *   Delete is bound via delegation in character-events.js so it
+ *   survives every re-render of #character-form-content.
+ *
  * EDIT ID RESOLUTION:
  *   getCurrentEditId() / setCurrentEditId() prefer the global
  *   functions exposed by characters/index.js. The `window._currentEditId`
@@ -596,6 +612,20 @@
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
+        // ---- Delete button ----
+        //
+        // Rendered only when editing an existing character. A new
+        // character has no id and therefore nothing to delete.
+        //
+        // The button is bound via delegation in character-events.js
+        // (bindDeleteButton uses a delegated listener on
+        // '#delete-char-btn'), so it survives every re-render of
+        // #character-form-content.
+        var deleteButtonHTML = editId
+            ? '<button type="button" id="delete-char-btn" class="danger small" ' +
+                'style="font-size:0.75rem;padding:6px 12px;">Delete</button>'
+            : '';
+
         return `
             <div class="character-form-container">
                 <div class="form-tabs" style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;">
@@ -611,7 +641,9 @@
                     ${getSocialTabHTML(char || {})}
                     ${getNotesTabHTML(char || {})}
                 </div>
-                <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);align-items:center;">
+                    ${deleteButtonHTML}
+                    <div style="flex:1;"></div>
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
                     <button type="submit" id="save-character-btn" class="primary" style="font-size:0.75rem;padding:6px 12px;">${editId ? 'Update' : 'Create'} Character</button>
                 </div>
