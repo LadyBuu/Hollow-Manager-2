@@ -6,7 +6,7 @@
  *
  * WHAT THIS MODULE OWNS:
  *   The projection + serialization of schedule data for a single
- *   week. Two views over the same stores:
+ *   week. Three views over the same stores:
  *
  *     CLASS VIEW
  *       exportClassScheduleText(classId, week)
@@ -15,16 +15,23 @@
  *         LIST: each session is a block with a time label, a
  *         discipline/group header, an instructor line, and a roster.
  *
- *     CHARACTER VIEW (this revision)
+ *     CHARACTER WEEKLY VIEW
  *       exportStudentScheduleText(charId, week)
  *         Every session the CHARACTER is in during the week, plus
  *         every instructor commitment the character OWNS during the
  *         week. A GRID: days across the top, hours down the left,
  *         one cell per (day, hour) showing discipline and instructor.
  *
- *   The two views serve different questions:
+ *     CHARACTER DAY VIEW (this revision)
+ *       exportStudentDayScheduleText(charId, week, day)
+ *         Every session and commitment the character has on ONE day,
+ *         as a three-row strip: Time, Discipline, Instructor, one
+ *         column per meeting.
+ *
+ *   The three views serve different questions:
  *     "What is my class doing this week?"  -> class view (list)
- *     "What is my character doing when?"   -> character view (grid)
+ *     "What is my character doing when?"   -> character weekly (grid)
+ *     "What does Tuesday look like?"       -> character day (strip)
  *
  * CHARACTER GRID — WHAT IT SHOWS:
  *   Days across the top (Monday..Sunday). Hours down the left, from
@@ -52,6 +59,21 @@
  *   Groups, classmates, session rosters, location. The character
  *   cares about what they are doing, not what their cohort is doing.
  *
+ * CHARACTER DAY STRIP — WHAT IT SHOWS:
+ *   Three rows: Time, Discipline, Instructor. One column per
+ *   meeting, in chronological order.
+ *
+ *     Time        08:00 – 09:00   10:00 – 11:00   13:00 – 14:00
+ *     Discipline  Combat Training History         Office Hours
+ *     Instructor  Alice Example   Bob Smith       —
+ *
+ *   Multi-hour sessions are ONE column, not one per hour. The strip
+ *   is a schedule, not a calendar.
+ *
+ *   Column gap is three spaces. Trailing whitespace is trimmed from
+ *   each line. Empty day: three blank lines. No header, no footer,
+ *   no title.
+ *
  * SESSION SOURCES:
  *   The character's sessions come from
  *   AcademyTeachingProjector.projectForStudent(charId, week), which
@@ -69,7 +91,7 @@
  * WEEK SCOPE:
  *   One week. The caller supplies it.
  *
- * CLASS VIEW READING SHAPE (unchanged):
+ * CLASS VIEW READING SHAPE:
  *
  *   Hollow Blades — Class Schedule Export
  *   Class of 1910
@@ -89,7 +111,7 @@
  *                    Marco Thrace
  *   ...
  *
- * CHARACTER VIEW READING SHAPE (this revision):
+ * CHARACTER WEEKLY VIEW READING SHAPE:
  *
  *   Hollow Blades — Character Schedule Export
  *   Alice Example
@@ -108,6 +130,12 @@
  *                          Ms. Chen                        Ms. Chen
  *   ...
  *
+ * CHARACTER DAY VIEW READING SHAPE:
+ *
+ *   Time        08:00 – 09:00   10:00 – 11:00   13:00 – 14:00
+ *   Discipline  Combat Training History         Office Hours
+ *   Instructor  Alice Example   Bob Smith       —
+ *
  * FAIL-CLOSED:
  *   When a mandatory dependency is unavailable, the export
  *   functions return an error result. Partial output is not
@@ -124,8 +152,8 @@
  *   - window.CalendarValidation
  *   - window.ExportUtils
  *
- * DEPENDENCIES (LAZY, mandatory at call time for the character view):
- *   - window.AcademyTeachingProjector   (character grid — sessions)
+ * DEPENDENCIES (LAZY, mandatory at call time for the character views):
+ *   - window.AcademyTeachingProjector   (character grid + day — sessions)
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.AcademyLocations   (location display name in the class view)
@@ -209,6 +237,10 @@
         typeof CalendarValidation.parseWeek !== 'function') {
         _missing.push('CalendarValidation.parseWeek');
     }
+    if (!CalendarValidation ||
+        typeof CalendarValidation.parseDay !== 'function') {
+        _missing.push('CalendarValidation.parseDay');
+    }
     if (!ExportUtils || typeof ExportUtils.downloadBlob !== 'function') {
         _missing.push('ExportUtils.downloadBlob');
     }
@@ -276,7 +308,7 @@
         tutoring: 'Tutoring'
     };
 
-    // ---- Character grid layout constants ----
+    // ---- Character weekly grid layout constants ----
 
     // Width of the hour column (the "08:00" label on the left).
     var GRID_HOUR_COL_WIDTH = 7;
@@ -294,6 +326,14 @@
 
     // Truncation glyph.
     var ELLIPSIS = '\u2026';
+
+    // ---- Character day strip layout constants ----
+
+    // Width of the label column: "Discipline " padded to fit.
+    var STRIP_ROW_LABEL_WIDTH = 11;
+
+    // Gap between columns in the strip.
+    var STRIP_COLUMN_GAP = '   ';
 
     // ============================================================
     // SMALL HELPERS
@@ -866,13 +906,13 @@
     // Commitments come from the commitments module's
     // getActiveCommitmentsForInstructor.
     //
-    // Both sources are reduced to the shape the grid renderer
-    // consumes:
+    // Both sources are reduced to the shape the grid and strip
+    // renderers consume:
     //
     //   {
     //     id, day, startTime, duration,
     //     line1,   // discipline name (or kind label for a commitment)
-    //     line2    // instructor name (or "with <name>" for a commitment)
+    //     line2    // instructor name (or "with <name>" / "" for a commitment)
     //   }
 
     function collectStudentSessionsForWeek(charId, weekNum) {
@@ -983,7 +1023,7 @@
     }
 
     // ============================================================
-    // CHARACTER VIEW — PUBLIC PROJECTION
+    // CHARACTER WEEKLY VIEW — PUBLIC PROJECTION
     // ============================================================
 
     function getStudentScheduleExport(charId, week) {
@@ -1067,7 +1107,7 @@
     }
 
     // ============================================================
-    // CHARACTER VIEW — TEXT FORMAT
+    // CHARACTER WEEKLY VIEW — TEXT FORMAT
     // ============================================================
 
     function emitStudentHeader(vm) {
@@ -1213,6 +1253,163 @@
     }
 
     // ============================================================
+    // CHARACTER DAY VIEW — COLLECTION
+    // ============================================================
+    //
+    // The day strip is a narrower view of the same two sources the
+    // weekly grid reads (projector sessions + instructor
+    // commitments). It restricts to a single day and emits a
+    // chronological column list rather than a grid.
+    //
+    // The shape the strip renderer consumes:
+    //
+    //   {
+    //     startTime, endTime,
+    //     line1,   // discipline name (or kind label for a commitment)
+    //     line2    // instructor name (or "with <name>" / "" for a commitment)
+    //   }
+    //
+    // The day strip does NOT expand multi-hour blocks into one
+    // column per hour. A session that runs 08:00–10:00 is one
+    // column, not two. That is the difference between the grid and
+    // the strip: the grid is a calendar, the strip is a schedule.
+
+    function collectStudentDayBlocksForWeek(charId, weekNum, dayNum) {
+        if (!isFiniteNumber(dayNum)) { return []; }
+        if (dayNum < MIN_DAY || dayNum > MAX_DAY) { return []; }
+
+        var sessions = collectStudentSessionsForWeek(charId, weekNum);
+        var commitments = collectStudentCommitmentsForWeek(
+            charId, weekNum
+        );
+
+        var merged = sessions.concat(commitments);
+        var result = [];
+
+        for (var i = 0; i < merged.length; i++) {
+            var b = merged[i];
+            if (!b) { continue; }
+            if (b.day !== dayNum) { continue; }
+
+            var duration = isFiniteNumber(b.duration) && b.duration > 0
+                ? b.duration
+                : 1;
+
+            result.push({
+                startTime: b.startTime,
+                endTime: b.startTime + duration,
+                duration: duration,
+                line1: isNonEmptyString(b.line1)
+                    ? b.line1
+                    : EMPTY_CELL_LINE,
+                line2: isNonEmptyString(b.line2)
+                    ? b.line2
+                    : EMPTY_CELL_LINE
+            });
+        }
+
+        result.sort(function(a, b) {
+            if (a.startTime !== b.startTime) {
+                return a.startTime - b.startTime;
+            }
+            return a.line1.localeCompare(b.line1);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // CHARACTER DAY VIEW — PUBLIC PROJECTION
+    // ============================================================
+
+    function getStudentDayScheduleExport(charId, week, day) {
+        var char = resolveCharacter(charId);
+        if (!char) { return null; }
+
+        var weekNum = resolveWeek(week);
+        if (weekNum === null) { return null; }
+
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) { return null; }
+        if (dayNum < MIN_DAY || dayNum > MAX_DAY) { return null; }
+
+        var blocks = collectStudentDayBlocksForWeek(
+            char.id, weekNum, dayNum
+        );
+
+        return {
+            characterId: String(char.id),
+            characterName: getCharacterName(char.id) || 'Unnamed Character',
+            week: weekNum,
+            day: dayNum,
+            dayName: formatDayName(dayNum),
+            blocks: blocks,
+            blockCount: blocks.length
+        };
+    }
+
+    // ============================================================
+    // CHARACTER DAY VIEW — TEXT FORMAT
+    // ============================================================
+    //
+    // Three rows, no header, no footer, no title.
+    //
+    //   Time        08:00 – 09:00   10:00 – 11:00
+    //   Discipline  Combat Training History
+    //   Instructor  Alice Example   Bob Smith
+    //
+    // One column per meeting, chronological. Column gap is three
+    // spaces. Trailing whitespace is trimmed from each line. An
+    // empty day emits three blank lines.
+
+    function buildStripRow(label, values) {
+        var labelCol = padRight(label, STRIP_ROW_LABEL_WIDTH);
+        var parts = [];
+
+        for (var i = 0; i < values.length; i++) {
+            parts.push(String(values[i]));
+        }
+
+        var joined = parts.join(STRIP_COLUMN_GAP);
+        var line = labelCol + joined;
+
+        // Trim trailing spaces only. Leading spaces (the label
+        // column) are preserved.
+        return line.replace(/\s+$/, '');
+    }
+
+    function buildStudentDayScheduleText(vm) {
+        if (!vm) { return ''; }
+
+        if (!Array.isArray(vm.blocks) || vm.blocks.length === 0) {
+            return '\n\n';
+        }
+
+        var times = [];
+        var disciplines = [];
+        var instructors = [];
+
+        for (var i = 0; i < vm.blocks.length; i++) {
+            var b = vm.blocks[i];
+            if (!b) { continue; }
+
+            var startLabel = formatHourLabel(b.startTime);
+            var endLabel = formatHourLabel(b.endTime);
+            times.push(startLabel + ' \u2013 ' + endLabel);
+
+            disciplines.push(b.line1);
+            instructors.push(b.line2);
+        }
+
+        var rows = [];
+        rows.push(buildStripRow('Time', times));
+        rows.push(buildStripRow('Discipline', disciplines));
+        rows.push(buildStripRow('Instructor', instructors));
+
+        return rows.join('\n');
+    }
+
+    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -1323,20 +1520,77 @@
         };
     }
 
+    function getStudentDayScheduleTextContent(charId, week, day) {
+        var vm = getStudentDayScheduleExport(charId, week, day);
+        if (!vm) { return ''; }
+        return buildStudentDayScheduleText(vm);
+    }
+
+    function exportStudentDayScheduleText(charId, week, day, options) {
+        options = options || {};
+
+        var vm = getStudentDayScheduleExport(charId, week, day);
+
+        if (!vm) {
+            return {
+                exported: false,
+                filename: null,
+                blockCount: 0,
+                error: 'Character, week, or day not found.'
+            };
+        }
+
+        var content = buildStudentDayScheduleText(vm);
+
+        var blob = new Blob([content], {
+            type: 'text/plain;charset=utf-8'
+        });
+
+        var slug = slugifyName(vm.characterName, 'character');
+        var daySlug = slugifyName(vm.dayName, 'day');
+        var today = new Date().toISOString().slice(0, 10);
+        var filename = options.filename ||
+            'character-' + slug + '-schedule-week-' +
+            String(vm.week) + '-' + daySlug + '-' + today + '.txt';
+
+        try {
+            ExportUtils.downloadBlob(blob, filename);
+        } catch (e) {
+            return {
+                exported: false,
+                filename: null,
+                blockCount: vm.blockCount,
+                error: 'Failed to download: ' + e.message
+            };
+        }
+
+        return {
+            exported: true,
+            filename: filename,
+            blockCount: vm.blockCount,
+            error: null
+        };
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.ScheduleExport = Object.freeze({
-        // Class view (unchanged public API)
+        // Class view
         getClassScheduleExport: getClassScheduleExport,
         getClassScheduleTextContent: getClassScheduleTextContent,
         exportClassScheduleText: exportClassScheduleText,
 
-        // Character view (this revision)
+        // Character view — weekly grid
         getStudentScheduleExport: getStudentScheduleExport,
         getStudentScheduleTextContent: getStudentScheduleTextContent,
-        exportStudentScheduleText: exportStudentScheduleText
+        exportStudentScheduleText: exportStudentScheduleText,
+
+        // Character view — day strip
+        getStudentDayScheduleExport: getStudentDayScheduleExport,
+        getStudentDayScheduleTextContent: getStudentDayScheduleTextContent,
+        exportStudentDayScheduleText: exportStudentDayScheduleText
     });
 
     (function verify() {
@@ -1349,7 +1603,10 @@
             'exportClassScheduleText',
             'getStudentScheduleExport',
             'getStudentScheduleTextContent',
-            'exportStudentScheduleText'
+            'exportStudentScheduleText',
+            'getStudentDayScheduleExport',
+            'getStudentDayScheduleTextContent',
+            'exportStudentDayScheduleText'
         ];
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
