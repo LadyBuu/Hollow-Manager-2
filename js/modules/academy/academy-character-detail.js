@@ -79,29 +79,39 @@
  *   The character id is sourced from the character detail VM
  *   (`viewModel.character.id`), NOT from `performance.characterId`.
  *
+ * SCHEDULE TAB EXPORTS (this revision):
+ *   The Schedule tab header carries two export affordances:
+ *
+ *     1. An "Export Schedule" button. Emits:
+ *          data-action="character-export-schedule-text"
+ *          data-character-id="<char id>"
+ *        Routed by the People controller to
+ *        ScheduleExport.exportStudentScheduleText. Produces the
+ *        weekly grid text file.
+ *
+ *     2. Seven small day buttons (Mon–Sun). Each emits:
+ *          data-action="character-export-schedule-day"
+ *          data-character-id="<char id>"
+ *          data-day="1..7"
+ *        Routed by the People controller to
+ *        ScheduleExport.exportStudentDayScheduleText. Produces the
+ *        three-row day strip for one weekday.
+ *
+ *   The day buttons are compact and secondary-styled, matching the
+ *   Schedule tab header's visual weight. There is no day picker
+ *   modal, no dropdown, no multi-select. One click, one day.
+ *
+ *   Both affordances are pure emitters. This file never calls
+ *   ScheduleExport directly.
+ *
  * GRADES TAB:
  *   The Grades tab renders ONLY a host container:
  *
  *     <div id="academy-grades-editor-host"></div>
  *
  *   The grades editor mounts into that host and emits its own
- *   header (title "Grades", week badge, "+ Add Grade" button).
- *
- * SCHEDULE TAB — EXPORT BUTTON (this revision):
- *   The Schedule tab's section header carries a small
- *   secondary-styled "Export" button:
- *
- *     data-action="character-export-schedule-text"
- *     data-character-id="<the character id>"
- *
- *   The button triggers a plain-text export of the character's
- *   weekly schedule grid for the current display week. The export
- *   itself is built by ScheduleExport.exportStudentScheduleText;
- *   this renderer only emits the button.
- *
- *   Unlike the character report (which exports the whole character
- *   across every domain), the schedule export is week-scoped and
- *   grid-shaped. The two live in different modules for that reason.
+ *   header. The panel does NOT emit an outer "Grades" header;
+ *   that produced a double heading in an earlier revision.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -269,6 +279,11 @@
     // ============================================================
     // HEADER
     // ============================================================
+    //
+    // The title row carries:
+    //   1. the character name (h3)
+    //   2. the role badge, scoped to the currently selected class
+    //   3. the Export button
 
     function renderHeader(character, mode, classContext) {
         var displayRole = mode === 'instructor' ? 'instructor' : 'student';
@@ -332,6 +347,9 @@
         return html;
     }
 
+    /**
+     * Per-class mode toggle.
+     */
     function renderModeToggle(mode, classContext, character) {
         var isInstructor = mode === 'instructor';
         var hasClass = !!classContext && isNonEmptyString(classContext.id);
@@ -870,6 +888,10 @@
     // ============================================================
     // GRADES TAB
     // ============================================================
+    //
+    // The Grades tab renders ONLY the host container. The grades
+    // editor mounts into it and emits its own header. See the file
+    // header for the "double heading" note.
 
     function renderGradesTab(vm) {
         if (!vm.classContext) {
@@ -893,11 +915,31 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB (this revision adds the Export button)
+    // SCHEDULE TAB (this revision)
     // ============================================================
+    //
+    // The Schedule tab header carries:
+    //   - the title "Schedule"
+    //   - the week badge
+    //   - an "Export Schedule" button (weekly grid)
+    //   - seven day buttons (Mon–Sun) for the day strip
+    //
+    // Both affordances are pure emitters. The People controller
+    // routes the two action names. This file never calls
+    // ScheduleExport itself.
+
+    var DAY_BUTTONS = [
+        { day: 1, short: 'Mon' },
+        { day: 2, short: 'Tue' },
+        { day: 3, short: 'Wed' },
+        { day: 4, short: 'Thu' },
+        { day: 5, short: 'Fri' },
+        { day: 6, short: 'Sat' },
+        { day: 7, short: 'Sun' }
+    ];
 
     function renderScheduleTab(vm) {
-        var charId = getCharacterId(vm);
+        var charId = vm && vm.character ? vm.character.id : null;
 
         var html = '';
         html += '<div class="academy-character-detail-section ' +
@@ -913,23 +955,64 @@
                     '</span>';
         }
 
-        if (charId) {
-            html += '<button type="button" ' +
-                        'class="small secondary ' +
-                        'academy-character-schedule-export-btn" ' +
-                        'data-action="character-export-schedule-text" ' +
-                        'data-character-id="' +
-                            escapeAttribute(charId) + '" ' +
-                        'title="Export this week\'s schedule grid as a ' +
-                            'plain-text file">' +
-                        'Export Schedule' +
-                    '</button>';
+        if (isNonEmptyString(charId)) {
+            html += renderScheduleExportControls(charId);
         }
 
         html += '</div>';
 
         html += '<div id="academy-schedule-host" ' +
                     'class="academy-schedule-host"></div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Render the Schedule tab's export controls.
+     *
+     * Layout:
+     *   [Export Schedule]  [Mon] [Tue] [Wed] [Thu] [Fri] [Sat] [Sun]
+     *
+     * The weekly button is the primary affordance; the seven day
+     * buttons are compact and secondary. All eight are pure
+     * emitters. No modal, no dropdown.
+     */
+    function renderScheduleExportControls(charId) {
+        var html = '';
+        html += '<div class="academy-character-schedule-exports">';
+
+        // ---- Weekly export button ----
+        html += '<button type="button" ' +
+                    'class="small secondary ' +
+                    'academy-character-schedule-export-btn" ' +
+                    'data-action="character-export-schedule-text" ' +
+                    'data-character-id="' +
+                        escapeAttribute(charId) + '" ' +
+                    'title="Export the full weekly schedule grid">' +
+                    'Export Schedule' +
+                '</button>';
+
+        // ---- Seven day buttons ----
+        html += '<span class="academy-character-schedule-export-days">';
+
+        for (var i = 0; i < DAY_BUTTONS.length; i++) {
+            var entry = DAY_BUTTONS[i];
+            html += '<button type="button" ' +
+                        'class="small secondary ' +
+                        'academy-character-schedule-day-btn" ' +
+                        'data-action="character-export-schedule-day" ' +
+                        'data-character-id="' +
+                            escapeAttribute(charId) + '" ' +
+                        'data-day="' + String(entry.day) + '" ' +
+                        'title="Export ' +
+                            escapeAttribute(entry.short) +
+                            ' schedule">' +
+                        escapeHtml(entry.short) +
+                    '</button>';
+        }
+
+        html += '</span>';
 
         html += '</div>';
         return html;
@@ -1189,6 +1272,10 @@
         return html;
     }
 
+    // ============================================================
+    // TEACHING GROUP BLOCK (collapsible)
+    // ============================================================
+
     function renderTeachingGroupBlock(
         group,
         charId,
@@ -1211,6 +1298,7 @@
                     'data-expanded="' +
                         escapeAttribute(isExpanded ? 'true' : 'false') + '">';
 
+        // ---- Header (caret + name + count + actions) ----
         html += '<div class="academy-teaching-group-header">';
 
         html += '<button type="button" ' +
@@ -1273,6 +1361,7 @@
 
         html += '</div>';
 
+        // ---- Body (collapsible) ----
         html += '<div class="academy-teaching-group-body">';
 
         if (isPickerOpen) {
@@ -1337,6 +1426,10 @@
         html += '</div>';
         return html;
     }
+
+    // ============================================================
+    // CANDIDATE PICKER (multi-select)
+    // ============================================================
 
     function renderCandidatePicker(group, charId, pickerCandidates) {
         var hasVM = pickerCandidates &&
@@ -1577,6 +1670,10 @@
         return 'Conflicts with a session on ' + parts.join(' at ');
     }
 
+    // ============================================================
+    // SESSIONS LIST (inside a teaching-group block)
+    // ============================================================
+
     function renderTeachingGroupSessionsList(group) {
         if (!group || !group.groupId) { return ''; }
 
@@ -1693,6 +1790,10 @@
             '</button>'
         );
     }
+
+    // ============================================================
+    // CREATE-GROUP MODAL
+    // ============================================================
 
     function canOpenCreateGroupModal() {
         var Schedule = window.AcademySchedule;
