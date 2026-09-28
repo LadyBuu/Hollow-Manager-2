@@ -5,13 +5,15 @@
  * Path: js/modules/academy/academy-grades-editor.js
  *
  * RESPONSIBILITIES:
- *   - Render the grades table for a (character, class, week) triple
- *   - Render the Add Grade form and Edit Grade modal
- *   - Render the Delete Grade confirmation modal
- *   - Wire per-row Edit / Delete buttons via container delegation
- *   - Route every mutation through AcademyGrades (Promise-based)
+ *   - Render the character's grades for a (class, week) pair,
+ *     GROUPED BY DISCIPLINE and COLLAPSIBLE.
+ *   - Render the Add Grade form and Edit Grade modal.
+ *   - Render the Delete Grade confirmation modal.
+ *   - Wire per-row Edit / Delete buttons and per-discipline Add
+ *     buttons via container delegation.
+ *   - Route every mutation through AcademyGrades (Promise-based).
  *   - Convert percentages to the discipline's grading scheme for
- *     display (percentage remains the source of truth)
+ *     display (percentage remains the source of truth).
  *
  * NOT RESPONSIBILITIES:
  *   - Domain validation. AcademyGrades validates.
@@ -22,85 +24,74 @@
  *   The editor is WEEK-SCOPED. It mounts for a (character, class,
  *   week) triple. The displayed grades are those for that week,
  *   only. The grade form's week field is FIXED at mount time and
- *   cannot be changed. New grades are stamped with the mounted
- *   week.
+ *   cannot be changed.
+ *
+ * DISCIPLINE GROUPING (this revision):
+ *   Grades are grouped by discipline. Each discipline renders as a
+ *   collapsible block:
+ *
+ *     [▾] Combat Training   [2 grades]   [+ Add]
+ *     |   exam        85% (B)   Edit Delete
+ *     |   quiz        72% (C)   Edit Delete
+ *
+ *     [▸] History          [1 grade]    [+ Add]
+ *
+ *   The discipline name, the grade count, and a per-discipline
+ *   "+ Add" button live on the header. Clicking the header toggles
+ *   the block's body.
+ *
+ *   The per-discipline "+ Add" opens the grade form with the
+ *   discipline pre-selected. The top-level "+ Add Grade" button
+ *   stays; it opens the form with no discipline pre-selected.
+ *
+ *   Disciplines with no grades for the mounted week do not appear.
+ *
+ * COLLAPSE STATE:
+ *   Collapse state is stored in AcademyUI's expandedIds map, keyed
+ *     grades:<charId>:<classId>:<week>:<disciplineId>
+ *   The default is EXPANDED. A discipline the user has never
+ *   touched renders with its body open.
+ *
+ *   When AcademyUI is unavailable, the default is EXPANDED and
+ *   toggling is a no-op.
+ *
+ *   After a save, if the grade was added to a collapsed discipline,
+ *   the discipline is expanded so the new grade is visible. This
+ *   is done via AcademyUI.setExpanded before the re-render.
+ *
+ * SLOT PICKER (this revision):
+ *   The Add/Edit Grade form carries a slot picker instead of the
+ *   retired free-date input. Options are the class meetings the
+ *   character has for the mounted week, one option per teaching-
+ *   session occurrence:
+ *
+ *     Tuesday, 08:00
+ *     Thursday, 10:00
+ *
+ *   The option's value encodes { day, startTime } on the grade
+ *   record. The character's occurrences come from
+ *   AcademyTeachingProjector.projectForStudent, filtered to
+ *   occurrences whose classId matches the mounted class.
+ *
+ *   homeAssignment hides the slot picker entirely. The grade's
+ *   slot is null. The type drives the form's shape.
+ *
+ * OTHER ROWS:
+ *   The grade row layout (Type, Score, Actions) is unchanged from
+ *   the flat-table version. Only the discipline column moved to
+ *   the group header.
  *
  * CONTEXT VERIFICATION:
  *   Every mutation is checked against the mounted context before
  *   dispatch. A grade being edited or deleted MUST belong to the
  *   mounted (character, class) pair.
  *
- *   For edit, the update payload sends only the fields the editor
- *   actually allows the user to change. It does NOT send studentId
- *   or classId.
- *
  * ASYNC SAFETY:
  *   Every asynchronous callback captures the current `_openToken`.
- *
- * GRADE SCHEME:
- *   Grades are stored as percentages (score + maxScore). The scheme
- *   is a display layer. It is read from
- *   AcademyDisciplines.getGradeScheme.
- *
- *   NULL SCHEME HANDLING (v30):
- *     AcademyDisciplines.getGradeScheme(id) returns null when the
- *     discipline does not exist. A discipline that exists but has
- *     no stored scheme returns the numeric default.
- *
- *     This editor treats a null scheme as "no scheme available" and
- *     falls back to the numeric default. The alternative — throwing
- *     — would blank the grade row for a student whose discipline
- *     was deleted between render and open, which is worse than
- *     showing the raw percentage.
- *
- *     The fallback is applied at exactly one place:
- *     getSchemeForDiscipline. Every scheme reader in this module
- *     goes through it.
- *
- * PERCENTAGE:
- *   The editor does NOT calculate percentages itself. It calls
- *   AcademyGrades.calculatePercentage.
- *
- * ENROLLMENT (this revision):
- *   The discipline picker sources its options from the student's
- *   enrollment for the selected class via AcademyEnrolments.
- *
- *   AcademyEnrolments.getStudentDisciplines(studentId, classId)
- *   returns INTERVAL OBJECTS, not ID strings:
- *
- *     [ { disciplineId, startWeek, endWeek, role }, ... ]
- *
- *   An earlier revision treated each returned entry as a
- *   discipline id, which produced `[object Object]` for every
- *   option's `value`, matched no discipline, and rendered the
- *   picker as "not enrolled in any disciplines" for every
- *   student. This revision normalises each entry to its
- *   `disciplineId` before use.
- *
- *   The reader accepts both shapes defensively: an interval object
- *   with a `disciplineId` field, and a bare id string. If the
- *   enrolment module ever exposes a reader that returns ids, this
- *   editor will not need a second change.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal returns a bare .modal shell. The modal content
  *   helper here appends a fresh .modal-content wrapper.
- *
- * CANCEL BUTTON (this revision):
- *   The Add/Edit Grade form and the Delete Grade form both render
- *   a Cancel button with class="cancel-modal-btn". The shared
- *   bindCommonModalControls helper previously looked up
- *   '.modal-cancel-btn', which matched nothing, so the Cancel
- *   button was inert (only the X and backdrop worked).
- *
- *   The helper now matches both class names:
- *
- *     .modal-cancel-btn, .cancel-modal-btn
- *
- *   That is the canonical naming across the codebase; the modal
- *   helpers in academy-crud-modals.js and
- *   academy-weekly-teams-controller.js already use
- *   .cancel-modal-btn. This editor now agrees.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -113,8 +104,9 @@
  *   - window.AcademyEnrolments
  *   - window.CalendarConstants
  *
- * DEPENDENCIES (LAZY, optional):
- *   - window.CharacterQueries  (display only; not required)
+ * DEPENDENCIES (OPTIONAL, used if present):
+ *   - window.AcademyUI
+ *   - window.AcademyTeachingProjector
  */
 
 (function() {
@@ -182,6 +174,15 @@
     if (!AcademyGrades || typeof AcademyGrades.calculatePercentage !== 'function') {
         _missing.push('AcademyGrades.calculatePercentage');
     }
+    if (!AcademyGrades || typeof AcademyGrades.getGradeTypeLabel !== 'function') {
+        _missing.push('AcademyGrades.getGradeTypeLabel');
+    }
+    if (!AcademyGrades || !Array.isArray(AcademyGrades.VALID_GRADE_TYPES)) {
+        _missing.push('AcademyGrades.VALID_GRADE_TYPES');
+    }
+    if (!AcademyGrades || typeof AcademyGrades.isSlotlessType !== 'function') {
+        _missing.push('AcademyGrades.isSlotlessType');
+    }
     if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
         _missing.push('AcademyDisciplines.getDiscipline');
     }
@@ -199,8 +200,17 @@
     }
     if (!CalendarConstants ||
         typeof CalendarConstants.MIN_WEEK !== 'number' ||
-        typeof CalendarConstants.MAX_WEEK !== 'number') {
-        _missing.push('CalendarConstants.MIN_WEEK / MAX_WEEK');
+        typeof CalendarConstants.MAX_WEEK !== 'number' ||
+        typeof CalendarConstants.MIN_DAY !== 'number' ||
+        typeof CalendarConstants.MAX_DAY !== 'number' ||
+        typeof CalendarConstants.MIN_HOUR !== 'number' ||
+        typeof CalendarConstants.MAX_HOUR !== 'number') {
+        _missing.push('CalendarConstants bounds');
+    }
+    if (!CalendarConstants ||
+        typeof CalendarConstants.getDayName !== 'function' ||
+        typeof CalendarConstants.formatHour !== 'function') {
+        _missing.push('CalendarConstants.getDayName/formatHour');
     }
 
     if (_missing.length > 0) {
@@ -213,6 +223,18 @@
     window.__academyGradesEditorLoaded = true;
 
     // ============================================================
+    // OPTIONAL DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getAcademyUI() {
+        return window.AcademyUI || null;
+    }
+
+    function getAcademyTeachingProjector() {
+        return window.AcademyTeachingProjector || null;
+    }
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -220,7 +242,6 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     var DEFAULT_MAX_SCORE = 100;
-    var DEFAULT_GRADE_TYPE = 'assignment';
 
     // ============================================================
     // HELPERS
@@ -279,14 +300,12 @@
     /**
      * Get the normalized grade scheme for a discipline.
      *
-     * NULL HANDLING (v30):
-     *   AcademyDisciplines.getGradeScheme(id) returns null when the
-     *   discipline does not exist. A discipline that exists but has
-     *   no stored scheme returns the numeric default.
+     * NULL HANDLING: AcademyDisciplines.getGradeScheme(id) returns
+     * null when the discipline does not exist. A discipline that
+     * exists but has no stored scheme returns the numeric default.
      *
-     *   This helper converts the null case into the numeric default.
-     *   The display layer never has to branch on null; it always
-     *   receives an object with a bands array.
+     * This helper converts the null case into the numeric default.
+     * The display layer never has to branch on null.
      */
     function getSchemeForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
@@ -302,14 +321,6 @@
         return scheme;
     }
 
-    /**
-     * Get the numeric percentage of a grade.
-     *
-     * ALWAYS delegates to AcademyGrades.calculatePercentage. Does
-     * NOT prefer a stored `percentage` field.
-     *
-     * Returns null when the grade's score / maxScore are not valid.
-     */
     function getGradePercentage(grade) {
         if (!grade) { return null; }
 
@@ -346,107 +357,203 @@
         return 'academy-grade-score academy-grade-score-failing';
     }
 
-    function buildLabelPreview(score, scheme) {
-        if (!isFiniteNumber(score)) { return ''; }
-        return GradeSchemes.getGradeDisplay(scheme, score);
-    }
-
-    // ============================================================
-    // MODAL PLUMBING
-    // ============================================================
-
-    function openModalShell(className) {
-        var modal = Modal.createModal(className);
-        if (!modal) {
-            notify('Could not create modal.', 'error');
-            return null;
-        }
-        return modal;
-    }
-
-    function attachModalContent(modal, html) {
-        if (!modal) { return; }
-
-        var contentEl = modal.querySelector('.modal-content');
-        if (!contentEl) {
-            contentEl = document.createElement('div');
-            contentEl.className = 'modal-content';
-            modal.appendChild(contentEl);
-        }
-        contentEl.innerHTML = html || '';
-
-        Modal.modalSetup(modal);
-        Modal.showModal(modal);
-    }
-
-    function closeModal(modal) {
-        if (!modal) { return; }
-
-        try {
-            if (typeof Modal.hideModal === 'function') {
-                Modal.hideModal(modal);
-            } else if (typeof Modal.closeModal === 'function') {
-                Modal.closeModal(modal);
-            }
-        } catch (e) {
-            console.warn('[AcademyGradesEditor] Modal close failed:', e);
-        }
-
-        if (modal.parentNode) {
-            modal.parentNode.removeChild(modal);
-        }
+    function getTypeLabel(grade) {
+        var type = isNonEmptyString(grade.type)
+            ? grade.type
+            : AcademyGrades.DEFAULT_GRADE_TYPE;
+        return AcademyGrades.getGradeTypeLabel(type);
     }
 
     /**
-     * Bind common modal controls (X button, Cancel button, backdrop).
+     * Format a slot for display.
      *
-     * CANCEL BUTTON (this revision):
-     *   The selector matches both `.modal-cancel-btn` and
-     *   `.cancel-modal-btn`. The editor renders `.cancel-modal-btn`
-     *   (matching every other Academy modal in the codebase), and
-     *   the previous `.modal-cancel-btn` lookup found nothing.
-     *
-     *   The combined selector is the correct long-term fix: it keeps
-     *   this helper agnostic to the caller's naming choice, while
-     *   this module's own templates use the canonical
-     *   `.cancel-modal-btn`.
+     * Slots read as "Tuesday, 08:00". A null slot (or the slotless
+     * homeAssignment type) reads as "Take-home".
      */
-    function bindCommonModalControls(modal, close) {
-        if (!modal || typeof close !== 'function') { return; }
+    function formatSlotLabel(grade) {
+        if (!grade) { return '\u2014'; }
 
-        var closeBtn = modal.querySelector('.close-modal');
-        if (closeBtn) { closeBtn.addEventListener('click', close); }
+        if (AcademyGrades.isSlotlessType(grade.type)) {
+            return 'Take-home';
+        }
 
-        var cancelBtn = modal.querySelector(
-            '.modal-cancel-btn, .cancel-modal-btn'
-        );
-        if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+        if (!grade.slot ||
+            typeof grade.slot !== 'object') {
+            return '\u2014';
+        }
 
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) { close(); }
+        var day = grade.slot.day;
+        var startTime = grade.slot.startTime;
+
+        var dayLabel = '';
+        if (isFiniteNumber(day)) {
+            try {
+                dayLabel = CalendarConstants.getDayName(day) || '';
+            } catch (e) {
+                dayLabel = '';
+            }
+        }
+
+        var hourLabel = '';
+        if (isFiniteNumber(startTime)) {
+            try {
+                hourLabel = CalendarConstants.formatHour(startTime) || '';
+            } catch (e) {
+                hourLabel = '';
+            }
+        }
+
+        if (!dayLabel && !hourLabel) { return '\u2014'; }
+        if (!dayLabel) { return hourLabel; }
+        if (!hourLabel) { return dayLabel; }
+        return dayLabel + ', ' + hourLabel;
+    }
+
+    // ============================================================
+    // SLOT OPTIONS
+    // ============================================================
+    //
+    // Build the slot picker's option list for a (charId, classId,
+    // week) triple. The occurrences come from the teaching
+    // projector; the filter keeps only those whose classId matches
+    // the mounted class.
+    //
+    // When the projector is unavailable, the option list is empty
+    // and the form's slot field shows a "schedule data unavailable"
+    // note.
+
+    function buildSlotOptions(charId, classId, weekNum) {
+        var Projector = getAcademyTeachingProjector();
+        if (!Projector ||
+            typeof Projector.projectForStudent !== 'function') {
+            return [];
+        }
+
+        var occurrences = [];
+        try {
+            occurrences = Projector.projectForStudent(
+                charId, weekNum
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyGradesEditor] projectForStudent threw:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(occurrences)) { return []; }
+
+        var seen = Object.create(null);
+        var options = [];
+
+        for (var i = 0; i < occurrences.length; i++) {
+            var occ = occurrences[i];
+            if (!occ) { continue; }
+            if (String(occ.classId) !== String(classId)) {
+                continue;
+            }
+            if (!isFiniteNumber(occ.day)) { continue; }
+            if (!isFiniteNumber(occ.startTime)) { continue; }
+
+            var key = String(occ.day) + '@' + String(occ.startTime);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+
+            var dayLabel = '';
+            try {
+                dayLabel = CalendarConstants.getDayName(occ.day) || '';
+            } catch (e) {
+                dayLabel = 'Day ' + occ.day;
+            }
+
+            var hourLabel = '';
+            try {
+                hourLabel = CalendarConstants.formatHour(
+                    occ.startTime
+                ) || (occ.startTime + ':00');
+            } catch (e) {
+                hourLabel = occ.startTime + ':00';
+            }
+
+            options.push({
+                day: occ.day,
+                startTime: occ.startTime,
+                label: dayLabel + ', ' + hourLabel
+            });
+        }
+
+        options.sort(function(a, b) {
+            if (a.day !== b.day) { return a.day - b.day; }
+            return a.startTime - b.startTime;
         });
+
+        return options;
+    }
+
+    function makeSlotValue(slot) {
+        if (!slot || typeof slot !== 'object') { return ''; }
+        if (!isFiniteNumber(slot.day)) { return ''; }
+        if (!isFiniteNumber(slot.startTime)) { return ''; }
+        return String(slot.day) + '@' + String(slot.startTime);
+    }
+
+    function parseSlotValue(value) {
+        if (!isNonEmptyString(value)) { return null; }
+        var parts = String(value).split('@');
+        if (parts.length !== 2) { return null; }
+        var day = parseInt(parts[0], 10);
+        var startTime = parseInt(parts[1], 10);
+        if (!isFinite(day) || !isFinite(startTime)) { return null; }
+        return { day: day, startTime: startTime };
+    }
+
+    // ============================================================
+    // COLLAPSE STATE
+    // ============================================================
+    //
+    // Session-persistent via AcademyUI.expandedIds. Key format:
+    //
+    //   grades:<charId>:<classId>:<week>:<disciplineId>
+    //
+    // The default is EXPANDED. When AcademyUI is unavailable, the
+    // default is EXPANDED and toggling is a no-op.
+
+    function makeCollapseKey(charId, classId, weekNum, disciplineId) {
+        return 'grades:' +
+            String(charId) + ':' +
+            String(classId) + ':' +
+            String(weekNum) + ':' +
+            String(disciplineId);
+    }
+
+    function isDisciplineExpanded(charId, classId, weekNum, disciplineId) {
+        var AcademyUI = getAcademyUI();
+        if (!AcademyUI || typeof AcademyUI.isExpanded !== 'function') {
+            return true;
+        }
+        var key = makeCollapseKey(
+            charId, classId, weekNum, disciplineId
+        );
+        return AcademyUI.isExpanded(key) === true;
+    }
+
+    function setDisciplineExpanded(
+        charId, classId, weekNum, disciplineId, expanded
+    ) {
+        var AcademyUI = getAcademyUI();
+        if (!AcademyUI || typeof AcademyUI.setExpanded !== 'function') {
+            return;
+        }
+        var key = makeCollapseKey(
+            charId, classId, weekNum, disciplineId
+        );
+        AcademyUI.setExpanded(key, expanded === true);
     }
 
     // ============================================================
     // ENROLLMENT PICKER
     // ============================================================
 
-    /**
-     * Normalise one entry from AcademyEnrolments.getStudentDisciplines
-     * to a discipline id string (or null).
-     *
-     * ACCEPTED SHAPES:
-     *   - interval object:   { disciplineId, startWeek, endWeek, role }
-     *   - bare id string:    'disc_abc'
-     *
-     * Any other shape returns null and is skipped by the caller.
-     *
-     * WHY BOTH:
-     *   The v31 reader returns interval objects. A future reader
-     *   could reasonably return ids. Accepting both shapes here
-     *   means that if the reader ever changes, this editor does
-     *   not need to change with it.
-     */
     function normaliseEnrolmentEntryToDisciplineId(entry) {
         if (entry === null || entry === undefined) { return null; }
 
@@ -466,15 +573,6 @@
         return null;
     }
 
-    /**
-     * Get the discipline options from the student's enrollment for a
-     * class. Returns an array of
-     * { id, name, type, activeThisWeek, missing }.
-     *
-     * ENROLLMENT READER SHAPE (this revision):
-     *   getStudentDisciplines returns interval objects, not ids.
-     *   Each entry is normalised to its disciplineId before use.
-     */
     function getEnrolledDisciplineOptions(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return [];
@@ -496,8 +594,6 @@
             rawEntries = [];
         }
 
-        // Normalise intervals to ids, dedupe, preserve first-seen
-        // order so the caller sees a stable list across re-renders.
         var seen = Object.create(null);
         var disciplineIds = [];
 
@@ -670,7 +766,80 @@
     }
 
     // ============================================================
-    // RENDER — TABLE
+    // GROUPING
+    // ============================================================
+
+    /**
+     * Group a flat list of grades by discipline.
+     *
+     * Returns an array of groups, each shaped:
+     *   {
+     *     disciplineId,
+     *     disciplineName,
+     *     grades: [grade, ...],
+     *     expanded: boolean
+     *   }
+     *
+     * Disciplines with no grades do not appear. Groups are sorted by
+     * discipline name ascending. Grades within a group are sorted by
+     * type label, then by created date ascending.
+     */
+    function groupGradesByDiscipline(grades, charId, classId, weekNum) {
+        var byDiscipline = Object.create(null);
+        var order = [];
+
+        for (var i = 0; i < grades.length; i++) {
+            var grade = grades[i];
+            if (!grade) { continue; }
+            var did = isNonEmptyString(grade.disciplineId)
+                ? String(grade.disciplineId)
+                : '__unknown__';
+
+            if (!byDiscipline[did]) {
+                byDiscipline[did] = [];
+                order.push(did);
+            }
+            byDiscipline[did].push(grade);
+        }
+
+        var groups = [];
+
+        for (var k = 0; k < order.length; k++) {
+            var id = order[k];
+            var list = byDiscipline[id];
+
+            list.sort(function(a, b) {
+                var at = safeString(a.type);
+                var bt = safeString(b.type);
+                if (at !== bt) { return at.localeCompare(bt); }
+                return safeString(a.createdAt).localeCompare(
+                    safeString(b.createdAt)
+                );
+            });
+
+            groups.push({
+                disciplineId: id === '__unknown__' ? '' : id,
+                disciplineName: id === '__unknown__'
+                    ? 'Unknown Discipline'
+                    : getDisciplineName(id),
+                grades: list,
+                expanded: id === '__unknown__'
+                    ? true
+                    : isDisciplineExpanded(
+                        charId, classId, weekNum, id
+                    )
+            });
+        }
+
+        groups.sort(function(a, b) {
+            return a.disciplineName.localeCompare(b.disciplineName);
+        });
+
+        return groups;
+    }
+
+    // ============================================================
+    // RENDER — GROUPED TABLE
     // ============================================================
 
     function render() {
@@ -684,12 +853,9 @@
             charId, classId, weekNum
         ) || [];
 
-        grades = grades.slice().sort(function(a, b) {
-            var wa = parseStrictWeek(a.week) || 0;
-            var wb = parseStrictWeek(b.week) || 0;
-            if (wa !== wb) { return wa - wb; }
-            return String(a.date || '').localeCompare(String(b.date || ''));
-        });
+        var groups = groupGradesByDiscipline(
+            grades, charId, classId, weekNum
+        );
 
         var html = '';
         html += '<div class="academy-grades-editor">';
@@ -706,7 +872,7 @@
                 '</button>';
         html += '</div>';
 
-        if (grades.length === 0) {
+        if (groups.length === 0) {
             html += '<p class="empty-state small">' +
                         'No grades recorded for this character in this ' +
                         'class for week ' + escapeHtml(String(weekNum)) +
@@ -717,27 +883,15 @@
             return;
         }
 
-        html += '<div class="academy-grades-editor-table-wrapper">';
-        html += '<table class="academy-grades-editor-table">';
-        html += '<thead>';
-        html += '<tr>';
-        html += '<th class="discipline-col">Discipline</th>';
-        html += '<th class="type-col">Type</th>';
-        html += '<th class="score-col">Score</th>';
-        html += '<th class="actions-col">Actions</th>';
-        html += '</tr>';
-        html += '</thead>';
-        html += '<tbody>';
+        html += '<div class="academy-grades-group-list">';
 
-        for (var i = 0; i < grades.length; i++) {
-            html += renderGradeRow(grades[i]);
+        for (var g = 0; g < groups.length; g++) {
+            html += renderDisciplineGroup(groups[g]);
         }
 
-        html += '</tbody>';
-        html += '</table>';
         html += '</div>';
 
-        // Summary line
+        // Summary line, across every grade (grouped or not).
         var summary = AcademyGrades.calculateSummary(grades);
         if (summary && summary.count > 0 && isFiniteNumber(summary.average)) {
             html += '<p class="academy-grades-summary">' +
@@ -752,22 +906,109 @@
         _state.container.innerHTML = html;
     }
 
+    function renderDisciplineGroup(group) {
+        var expanded = group.expanded === true;
+        var disciplineId = group.disciplineId;
+        var grades = group.grades;
+        var gradeCount = grades.length;
+
+        var countLabel = gradeCount === 1
+            ? '1 grade'
+            : gradeCount + ' grades';
+
+        var html = '';
+        html += '<div class="academy-grades-group" ' +
+                    'data-discipline-id="' +
+                        escapeAttribute(disciplineId) + '" ' +
+                    'data-expanded="' +
+                        escapeAttribute(expanded ? 'true' : 'false') + '">';
+
+        // ---- Header ----
+        html += '<div class="academy-grades-group-header">';
+
+        html += '<button type="button" ' +
+                    'class="academy-grades-group-toggle" ' +
+                    'data-action="grades-toggle-discipline" ' +
+                    'data-discipline-id="' +
+                        escapeAttribute(disciplineId) + '" ' +
+                    'aria-expanded="' +
+                        escapeAttribute(expanded ? 'true' : 'false') + '" ' +
+                    'title="' +
+                        escapeAttribute(expanded
+                            ? 'Collapse this discipline'
+                            : 'Expand this discipline') + '">';
+        html += '<span class="academy-grades-group-caret">' +
+                    (expanded ? '\u25be' : '\u25b8') +
+                '</span>';
+        html += '<span class="academy-grades-group-name">' +
+                    escapeHtml(group.disciplineName) +
+                '</span>';
+        html += '<span class="academy-grades-group-count">' +
+                    escapeHtml(countLabel) +
+                '</span>';
+        html += '</button>';
+
+        html += '<button type="button" ' +
+                    'class="small primary ' +
+                    'academy-grades-group-add-btn" ' +
+                    'data-action="add-grade" ' +
+                    'data-discipline-id="' +
+                        escapeAttribute(disciplineId) + '" ' +
+                    'title="Add a grade to ' +
+                        escapeAttribute(group.disciplineName) + '">' +
+                    '+ Add' +
+                '</button>';
+
+        html += '</div>';
+
+        // ---- Body ----
+        html += '<div class="academy-grades-group-body" ' +
+                    'style="display:' +
+                    (expanded ? 'block' : 'none') + ';">';
+
+        html += '<table class="academy-grades-editor-table">';
+        html += '<thead>';
+        html += '<tr>';
+        html += '<th class="type-col">Type</th>';
+        html += '<th class="slot-col">Slot</th>';
+        html += '<th class="score-col">Score</th>';
+        html += '<th class="actions-col">Actions</th>';
+        html += '</tr>';
+        html += '</thead>';
+        html += '<tbody>';
+
+        for (var i = 0; i < grades.length; i++) {
+            html += renderGradeRow(grades[i]);
+        }
+
+        html += '</tbody>';
+        html += '</table>';
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
     function renderGradeRow(grade) {
         var percentage = getGradePercentage(grade);
         var scoreClass = getScoreClass(percentage);
-        var disciplineName = getDisciplineName(grade.disciplineId);
         var scheme = getSchemeForDiscipline(grade.disciplineId);
         var scoreDisplay = formatScoreDisplay(grade, scheme);
 
-        var typeLabel = isNonEmptyString(grade.type)
-            ? grade.type
-            : DEFAULT_GRADE_TYPE;
+        var typeLabel = getTypeLabel(grade);
+        var slotLabel = formatSlotLabel(grade);
 
         var html = '';
         html += '<tr class="academy-grades-editor-row" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">';
-        html += '<td class="discipline-col">' + escapeHtml(disciplineName) + '</td>';
-        html += '<td class="type-col">' + escapeHtml(typeLabel) + '</td>';
+                    'data-grade-id="' +
+                        escapeAttribute(grade.id || '') + '">';
+        html += '<td class="type-col">' +
+                    escapeHtml(typeLabel) +
+                '</td>';
+        html += '<td class="slot-col">' +
+                    escapeHtml(slotLabel) +
+                '</td>';
         html += '<td class="score-col">' +
                     '<span class="' + scoreClass + '">' +
                         escapeHtml(scoreDisplay) +
@@ -776,12 +1017,14 @@
         html += '<td class="actions-col">';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-grade" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">' +
+                    'data-grade-id="' +
+                        escapeAttribute(grade.id || '') + '">' +
                     'Edit' +
                 '</button>';
         html += '<button type="button" class="small danger" ' +
                     'data-action="delete-grade" ' +
-                    'data-grade-id="' + escapeAttribute(grade.id || '') + '">' +
+                    'data-grade-id="' +
+                        escapeAttribute(grade.id || '') + '">' +
                     'Delete' +
                 '</button>';
         html += '</td>';
@@ -800,30 +1043,61 @@
 
         var action = actionEl.dataset.action;
         var gradeId = actionEl.dataset.gradeId;
+        var disciplineId = actionEl.dataset.disciplineId;
 
         switch (action) {
             case 'add-grade':
                 e.preventDefault();
-                openGradeForm(null);
+                openGradeForm(null, disciplineId || null);
                 return;
             case 'edit-grade':
                 e.preventDefault();
-                if (gradeId) { openGradeForm(gradeId); }
+                if (gradeId) { openGradeForm(gradeId, null); }
                 return;
             case 'delete-grade':
                 e.preventDefault();
                 if (gradeId) { confirmDeleteGrade(gradeId); }
+                return;
+            case 'grades-toggle-discipline':
+                e.preventDefault();
+                if (disciplineId) {
+                    toggleDisciplineExpanded(disciplineId);
+                }
                 return;
             default:
                 return;
         }
     }
 
+    function toggleDisciplineExpanded(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) { return; }
+        if (!_state.charId || !_state.classId || _state.week === null) {
+            return;
+        }
+
+        var currentlyExpanded = isDisciplineExpanded(
+            _state.charId,
+            _state.classId,
+            _state.week,
+            disciplineId
+        );
+
+        setDisciplineExpanded(
+            _state.charId,
+            _state.classId,
+            _state.week,
+            disciplineId,
+            !currentlyExpanded
+        );
+
+        render();
+    }
+
     // ============================================================
     // ADD / EDIT GRADE FORM
     // ============================================================
 
-    function openGradeForm(gradeId) {
+    function openGradeForm(gradeId, preSelectedDisciplineId) {
         var existing = null;
         if (gradeId) {
             existing = AcademyGrades.getGrade(gradeId);
@@ -858,14 +1132,22 @@
 
         var validTypes = Array.isArray(AcademyGrades.VALID_GRADE_TYPES)
             ? AcademyGrades.VALID_GRADE_TYPES.slice()
-            : [DEFAULT_GRADE_TYPE];
+            : ['classAssignment'];
 
         var modal = openModalShell('academy-grade-form-modal');
         if (!modal) { return; }
 
         var myToken = _openToken;
 
+        // Resolve the initial discipline. Precedence:
+        //   1. The grade's own discipline (edit mode).
+        //   2. The per-discipline Add button's data-discipline-id.
+        //   3. The first active offering in the option list.
         var initialDisciplineId = g.disciplineId || null;
+        if (!initialDisciplineId &&
+            isNonEmptyString(preSelectedDisciplineId)) {
+            initialDisciplineId = preSelectedDisciplineId;
+        }
         if (!initialDisciplineId) {
             for (var i = 0; i < disciplineOptions.length; i++) {
                 if (disciplineOptions[i].activeThisWeek &&
@@ -881,11 +1163,7 @@
         var initialScore = (g.score !== undefined && g.score !== null)
             ? g.score
             : '';
-        var initialPreview = '';
         var initialScoreNum = parseFiniteNumber(initialScore);
-        if (initialScoreNum !== null) {
-            initialPreview = buildLabelPreview(initialScoreNum, initialScheme);
-        }
 
         var hasEnrollment = disciplineOptions.length > 0;
         var hasSelectable = false;
@@ -895,6 +1173,19 @@
                 break;
             }
         }
+
+        var initialType = isNonEmptyString(g.type)
+            ? g.type
+            : AcademyGrades.DEFAULT_GRADE_TYPE;
+
+        var slotlessInitial = AcademyGrades.isSlotlessType(initialType);
+
+        var slotOptions = buildSlotOptions(
+            _state.charId,
+            _state.classId,
+            _state.week
+        );
+        var initialSlotValue = makeSlotValue(g.slot);
 
         var weekDisplay = String(_state.week);
 
@@ -920,6 +1211,7 @@
                 '</p>';
         html += '</div>';
 
+        // ---- Discipline ----
         html += '<div class="form-group">';
         html += '<label for="ag-disc-select">Discipline *</label>';
         html += '<select id="ag-disc-select" class="ag-disc-select" required>';
@@ -936,7 +1228,8 @@
             html += '<option value="">Select a discipline...</option>';
             for (var d = 0; d < disciplineOptions.length; d++) {
                 var opt = disciplineOptions[d];
-                var selected = String(opt.id) === String(initialDisciplineId)
+                var selected = String(opt.id) ===
+                    String(initialDisciplineId)
                     ? ' selected'
                     : '';
                 var disabled = (opt.missing || !opt.activeThisWeek)
@@ -948,7 +1241,8 @@
                 } else if (!opt.activeThisWeek) {
                     suffix = ' (not active this week)';
                 }
-                html += '<option value="' + escapeAttribute(opt.id) + '"' +
+                html += '<option value="' +
+                            escapeAttribute(opt.id) + '"' +
                             selected + disabled + '>' +
                             escapeHtml(opt.name + suffix) +
                         '</option>';
@@ -973,14 +1267,15 @@
 
         html += '</div>';
 
+        // ---- Type ----
         html += '<div class="form-group">';
         html += '<label for="ag-type-select">Type</label>';
         html += '<select id="ag-type-select" class="ag-type-select">';
         for (var t = 0; t < validTypes.length; t++) {
             var type = validTypes[t];
-            var tSel = (g.type || DEFAULT_GRADE_TYPE) === type ? ' selected' : '';
+            var tSel = initialType === type ? ' selected' : '';
             html += '<option value="' + escapeAttribute(type) + '"' + tSel + '>' +
-                        escapeHtml(type.charAt(0).toUpperCase() + type.slice(1)) +
+                        escapeHtml(AcademyGrades.getGradeTypeLabel(type)) +
                     '</option>';
         }
         html += '</select>';
@@ -989,6 +1284,46 @@
                 '</p>';
         html += '</div>';
 
+        // ---- Slot (hidden when type is slotless) ----
+        html += '<div class="form-group ag-slot-group"' +
+                    (slotlessInitial ? ' style="display:none;"' : '') + '>';
+        html += '<label for="ag-slot-select">Slot</label>';
+
+        if (slotOptions.length === 0) {
+            html += '<select id="ag-slot-select" class="ag-slot-select" ' +
+                        'disabled>';
+            html += '<option value="">' +
+                        'No class meetings for this week' +
+                    '</option>';
+            html += '</select>';
+            html += '<p class="field-hint">' +
+                        'No scheduled classes for this character in ' +
+                        'this week. Check the Schedule tab.' +
+                    '</p>';
+        } else {
+            html += '<select id="ag-slot-select" class="ag-slot-select">';
+            html += '<option value="">No slot (optional)</option>';
+            for (var s = 0; s < slotOptions.length; s++) {
+                var slot = slotOptions[s];
+                var slotValue = makeSlotValue(slot);
+                var slotSelected = slotValue === initialSlotValue
+                    ? ' selected'
+                    : '';
+                html += '<option value="' +
+                            escapeAttribute(slotValue) + '"' +
+                            slotSelected + '>' +
+                            escapeHtml(slot.label) +
+                        '</option>';
+            }
+            html += '</select>';
+            html += '<p class="field-hint">' +
+                        'Which class meeting this grade came from.' +
+                    '</p>';
+        }
+
+        html += '</div>';
+
+        // ---- Score / Max ----
         html += '<div class="form-row" ' +
                     'style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
         html += '<div class="form-group">';
@@ -1014,16 +1349,11 @@
         html += '<div class="form-group ag-grade-preview-group">';
         html += '<span class="ag-grade-preview-label">Converted:</span> ';
         html += '<span id="ag-grade-preview" class="ag-grade-preview">' +
-                    escapeHtml(initialPreview || '\u2014') +
+                    escapeHtml('\u2014') +
                 '</span>';
         html += '</div>';
 
-        html += '<div class="form-group">';
-        html += '<label for="ag-date-input">Date</label>';
-        html += '<input type="date" id="ag-date-input" class="ag-date-input" ' +
-                    'value="' + escapeAttribute(g.date || '') + '">';
-        html += '</div>';
-
+        // ---- Notes ----
         html += '<div class="form-group">';
         html += '<label for="ag-notes-input">Notes</label>';
         html += '<textarea id="ag-notes-input" class="ag-notes-input" ' +
@@ -1048,6 +1378,16 @@
 
         attachModalContent(modal, html);
         bindGradeFormEvents(modal, existing, myToken);
+
+        // Set the initial preview from the current inputs, since the
+        // form may open with a score already filled.
+        var previewEl = modal.querySelector('#ag-grade-preview');
+        if (previewEl && initialScoreNum !== null) {
+            var preview = GradeSchemes.getGradeDisplay(
+                initialScheme, initialScoreNum
+            );
+            previewEl.textContent = preview || '\u2014';
+        }
     }
 
     function bindGradeFormEvents(modal, existing, myToken) {
@@ -1063,6 +1403,9 @@
         if (!form) { return; }
 
         var discInput = form.querySelector('.ag-disc-select');
+        var typeInput = form.querySelector('.ag-type-select');
+        var slotGroup = form.querySelector('.ag-slot-group');
+        var slotInput = form.querySelector('.ag-slot-select');
         var scoreInput = form.querySelector('.ag-score-input');
         var previewEl = form.querySelector('#ag-grade-preview');
         var submitBtn = form.querySelector('button[type="submit"]');
@@ -1081,8 +1424,15 @@
                 return;
             }
 
-            var preview = buildLabelPreview(score, scheme);
+            var preview = GradeSchemes.getGradeDisplay(scheme, score);
             previewEl.textContent = preview || '\u2014';
+        }
+
+        function updateSlotVisibility() {
+            if (!typeInput || !slotGroup) { return; }
+            var type = typeInput.value;
+            var slotless = AcademyGrades.isSlotlessType(type);
+            slotGroup.style.display = slotless ? 'none' : '';
         }
 
         if (scoreInput) {
@@ -1091,6 +1441,9 @@
         if (discInput) {
             discInput.addEventListener('change', updatePreview);
         }
+        if (typeInput) {
+            typeInput.addEventListener('change', updateSlotVisibility);
+        }
 
         form.addEventListener('submit', function(e) {
             e.preventDefault();
@@ -1098,12 +1451,11 @@
             if (busy) { return; }
             if (myToken !== _openToken) { return; }
 
-            var typeInput = form.querySelector('.ag-type-select');
             var maxInput = form.querySelector('.ag-max-score-input');
-            var dateInput = form.querySelector('.ag-date-input');
             var notesInput = form.querySelector('.ag-notes-input');
 
             var disciplineId = discInput ? discInput.value : '';
+            var type = typeInput ? typeInput.value : '';
             var score = scoreInput ? parseFiniteNumber(scoreInput.value) : null;
             var maxScore = maxInput && maxInput.value !== ''
                 ? parseFiniteNumber(maxInput.value)
@@ -1111,6 +1463,10 @@
 
             if (!disciplineId) {
                 notify('Please select a discipline.', 'error');
+                return;
+            }
+            if (!type || AcademyGrades.VALID_GRADE_TYPES.indexOf(type) === -1) {
+                notify('Please select a grade type.', 'error');
                 return;
             }
             if (score === null) {
@@ -1126,16 +1482,21 @@
                 return;
             }
 
+            var slot = null;
+            if (!AcademyGrades.isSlotlessType(type) && slotInput) {
+                slot = parseSlotValue(slotInput.value);
+            }
+
             var week = _state.week;
 
             var payload;
             if (existing && existing.id) {
                 payload = {
                     disciplineId: disciplineId,
+                    type: type,
+                    slot: slot,
                     score: score,
                     maxScore: maxScore,
-                    type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
-                    date: dateInput ? dateInput.value : undefined,
                     notes: notesInput ? notesInput.value.trim() : ''
                 };
             } else {
@@ -1144,10 +1505,10 @@
                     classId: _state.classId,
                     disciplineId: disciplineId,
                     week: week,
+                    type: type,
+                    slot: slot,
                     score: score,
                     maxScore: maxScore,
-                    type: typeInput ? typeInput.value : DEFAULT_GRADE_TYPE,
-                    date: dateInput ? dateInput.value : undefined,
                     notes: notesInput ? notesInput.value.trim() : ''
                 };
             }
@@ -1155,7 +1516,9 @@
             busy = true;
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.textContent = existing ? 'Updating\u2026' : 'Adding\u2026';
+                submitBtn.textContent = existing
+                    ? 'Updating\u2026'
+                    : 'Adding\u2026';
             }
 
             var promise = (existing && existing.id)
@@ -1168,6 +1531,18 @@
                 if (submitBtn) { submitBtn.disabled = false; }
 
                 if (result && result.success) {
+                    // Auto-expand the discipline so the new grade is
+                    // visible. Only meaningful when a discipline was
+                    // saved; the payload always carries one.
+                    if (isNonEmptyString(disciplineId)) {
+                        setDisciplineExpanded(
+                            _state.charId,
+                            _state.classId,
+                            _state.week,
+                            disciplineId,
+                            true
+                        );
+                    }
                     close();
                     refresh();
                 }
@@ -1208,6 +1583,8 @@
         var disciplineName = getDisciplineName(grade.disciplineId);
         var scheme = getSchemeForDiscipline(grade.disciplineId);
         var scoreDisplay = formatScoreDisplay(grade, scheme);
+        var slotLabel = formatSlotLabel(grade);
+        var typeLabel = getTypeLabel(grade);
 
         var modal = openModalShell('academy-grade-delete-modal');
         if (!modal) { return; }
@@ -1224,7 +1601,8 @@
         html += '<p>Delete this grade?</p>';
         html += '<p class="text-dim" style="font-size:0.8rem;">';
         html += escapeHtml(disciplineName) +
-                ' \u2014 Week ' + escapeHtml(String(grade.week)) +
+                ' \u2014 ' + escapeHtml(typeLabel) +
+                ' \u2014 ' + escapeHtml(slotLabel) +
                 ' \u2014 ' + escapeHtml(scoreDisplay);
         html += '</p>';
         html += '<div class="form-actions">';
@@ -1278,6 +1656,68 @@
                 console.warn('[AcademyGradesEditor] Delete failed:', err);
                 notify('Failed to delete grade.', 'error');
             });
+        });
+    }
+
+    // ============================================================
+    // MODAL PLUMBING
+    // ============================================================
+
+    function openModalShell(className) {
+        var modal = Modal.createModal(className);
+        if (!modal) {
+            notify('Could not create modal.', 'error');
+            return null;
+        }
+        return modal;
+    }
+
+    function attachModalContent(modal, html) {
+        if (!modal) { return; }
+
+        var contentEl = modal.querySelector('.modal-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content';
+            modal.appendChild(contentEl);
+        }
+        contentEl.innerHTML = html || '';
+
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+    }
+
+    function closeModal(modal) {
+        if (!modal) { return; }
+
+        try {
+            if (typeof Modal.hideModal === 'function') {
+                Modal.hideModal(modal);
+            } else if (typeof Modal.closeModal === 'function') {
+                Modal.closeModal(modal);
+            }
+        } catch (e) {
+            console.warn('[AcademyGradesEditor] Modal close failed:', e);
+        }
+
+        if (modal.parentNode) {
+            modal.parentNode.removeChild(modal);
+        }
+    }
+
+    function bindCommonModalControls(modal, close) {
+        if (!modal || typeof close !== 'function') { return; }
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) { closeBtn.addEventListener('click', close); }
+
+        var cancelBtn = modal.querySelector(
+            '.modal-cancel-btn, .cancel-modal-btn'
+        );
+        if (cancelBtn) { cancelBtn.addEventListener('click', close); }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) { close(); }
         });
     }
 
