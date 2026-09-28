@@ -17,6 +17,7 @@
  *   - Enrich picker entries with prior-round outcomes (C8)
  *   - Open the Edit Exam modal and route its submission (C5)
  *   - Run tolerant auto-generation and report leftovers (T5)
+ *   - Wire the pair builder inside the Add/Edit Match modals
  *
  * NOT RESPONSIBILITIES:
  *   - HTML construction. The view module builds all modal HTML.
@@ -68,6 +69,20 @@
  *   Opens a modal for name and week. On submit, updates the
  *   tournament via TournamentCore with { name, startWeek, endWeek }
  *   (both week fields set to the same value).
+ *
+ * PAIR BUILDER:
+ *   The Add/Edit Match modals for a pair exam render three
+ *   <select> slots and a "+ Add" button, plus a list container for
+ *   the pairs the user has added. This module wires both the Add
+ *   button and the per-row Remove button. The rendered pair row
+ *   (with its `data-pair` JSON payload) is produced by
+ *   AcademyTournamentView.renderPairRow; this module only mounts
+ *   the returned markup and appends it to the list.
+ *
+ *   The wiring lives here, not in the shell's delegated dispatcher,
+ *   because the pair builder lives inside a modal the shell does
+ *   not own. The shell delegates on the tab container; the modal is
+ *   appended to document.body.
  *
  * PRIOR-ROUND OUTCOMES (C8):
  *   buildEligibleForNewMatch derives the outcome map for the round
@@ -232,6 +247,9 @@
     }
     if (!View || typeof View.collectCompleteMatchForm !== 'function') {
         _missing.push('AcademyTournamentView.collectCompleteMatchForm');
+    }
+    if (!View || typeof View.renderPairRow !== 'function') {
+        _missing.push('AcademyTournamentView.renderPairRow');
     }
 
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
@@ -522,6 +540,101 @@
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 close();
+            }
+        });
+    }
+
+    // ============================================================
+    // PAIR BUILDER WIRING
+    // ============================================================
+    //
+    // The pair picker renders three <select> slots, a "+ Add"
+    // button, and an empty list container. Neither the Add action
+    // nor the per-row Remove action is wired by the shell's
+    // delegated dispatcher, because the pair builder lives inside a
+    // modal that the shell does not own (the modal is appended to
+    // document.body, not to the tab container).
+    //
+    // This helper binds both:
+    //
+    //   Add:
+    //     - reads the three selects
+    //     - requires at least 2 distinct, non-empty participant IDs
+    //     - asks the view to render one pair row (the view owns the
+    //       markup and the `data-pair` payload format)
+    //     - appends the row to the list container
+    //     - clears the selects so the next pair starts fresh
+    //
+    //   Remove (delegated on the list container):
+    //     - removes the row the button belongs to
+
+    function bindPairBuilder(modal) {
+        if (!modal) { return; }
+
+        var addBtn = modal.querySelector('.at-pair-add');
+        var listEl = modal.querySelector('.at-pair-list');
+        if (!addBtn || !listEl) { return; }
+
+        addBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+
+            var selects = modal.querySelectorAll('.at-pair-select');
+            var chosen = [];
+            var seen = Object.create(null);
+
+            for (var i = 0; i < selects.length; i++) {
+                var value = selects[i].value;
+                if (!isNonEmptyString(value)) { continue; }
+                if (seen[value]) { continue; }
+                seen[value] = true;
+
+                var optionEl = selects[i].options[
+                    selects[i].selectedIndex
+                ];
+                var displayName = optionEl && optionEl.text
+                    ? optionEl.text
+                    : value;
+
+                chosen.push({
+                    id: value,
+                    name: displayName
+                });
+            }
+
+            if (chosen.length < 2) {
+                notify(
+                    'Select at least 2 distinct participants for ' +
+                    'this pair.',
+                    'error'
+                );
+                return;
+            }
+
+            var rowHTML = View.renderPairRow(chosen);
+            if (!rowHTML) { return; }
+
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = rowHTML;
+            var rowEl = wrapper.firstElementChild;
+            if (rowEl) {
+                listEl.appendChild(rowEl);
+            }
+
+            for (var j = 0; j < selects.length; j++) {
+                selects[j].value = '';
+            }
+        });
+
+        listEl.addEventListener('click', function(e) {
+            var removeBtn = e.target.closest
+                ? e.target.closest('.at-pair-remove')
+                : null;
+            if (!removeBtn) { return; }
+            e.preventDefault();
+
+            var row = removeBtn.closest('.at-pair-row');
+            if (row && row.parentNode) {
+                row.parentNode.removeChild(row);
             }
         });
     }
@@ -1299,6 +1412,7 @@
 
         openModal('at-add-match-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
+            bindPairBuilder(modal);
 
             var form = modal.querySelector('#at-add-match-form');
             if (!form) { return; }
@@ -1385,6 +1499,7 @@
 
         openModal('at-edit-match-modal', html, function(modal, close) {
             bindCommonModalControls(modal, close);
+            bindPairBuilder(modal);
 
             var form = modal.querySelector('#at-edit-match-form');
             if (!form) { return; }
