@@ -26,13 +26,13 @@
  *   only. The grade form's week field is FIXED at mount time and
  *   cannot be changed.
  *
- * DISCIPLINE GROUPING (this revision):
+ * DISCIPLINE GROUPING:
  *   Grades are grouped by discipline. Each discipline renders as a
  *   collapsible block:
  *
  *     [▾] Combat Training   [2 grades]   [+ Add]
- *     |   exam        85% (B)   Edit Delete
- *     |   quiz        72% (C)   Edit Delete
+ *     |   Class Assignment  Tue, 08:00   85% (B)   Edit Delete
+ *     |   Quiz              Take-home    72% (C)   Edit Delete
  *
  *     [▸] History          [1 grade]    [+ Add]
  *
@@ -56,30 +56,41 @@
  *   toggling is a no-op.
  *
  *   After a save, if the grade was added to a collapsed discipline,
- *   the discipline is expanded so the new grade is visible. This
- *   is done via AcademyUI.setExpanded before the re-render.
+ *   the discipline is expanded so the new grade is visible.
  *
- * SLOT PICKER (this revision):
+ * SLOT PICKER — DISCIPLINE-SCOPED (this revision):
  *   The Add/Edit Grade form carries a slot picker instead of the
- *   retired free-date input. Options are the class meetings the
- *   character has for the mounted week, one option per teaching-
- *   session occurrence:
+ *   retired free-date input. The picker's options are the class
+ *   meetings the character has FOR THE SELECTED DISCIPLINE, at the
+ *   mounted week:
  *
- *     Tuesday, 08:00
- *     Thursday, 10:00
+ *     Tuesday, 08:00 — Combat Training A
+ *     Thursday, 10:00 — Combat Training A
  *
- *   The option's value encodes { day, startTime } on the grade
- *   record. The character's occurrences come from
+ *   Each option's value encodes
+ *     { day, startTime, groupId }
+ *   on the grade record. The character's occurrences come from
  *   AcademyTeachingProjector.projectForStudent, filtered to
- *   occurrences whose classId matches the mounted class.
+ *   occurrences whose classId matches the mounted class AND whose
+ *   disciplineId matches the selected discipline.
+ *
+ *   THE PICKER REBUILDS WHEN THE DISCIPLINE CHANGES. The selected
+ *   slot is reset to empty when the discipline changes: the old
+ *   slot belonged to the old discipline's context, even if the
+ *   (day, hour) coordinates happen to coincide with a meeting of
+ *   the new discipline.
  *
  *   homeAssignment hides the slot picker entirely. The grade's
- *   slot is null. The type drives the form's shape.
+ *   slot is null.
  *
- * OTHER ROWS:
- *   The grade row layout (Type, Score, Actions) is unchanged from
- *   the flat-table version. Only the discipline column moved to
- *   the group header.
+ *   EMPTY PICKER POLICY:
+ *     When the selected discipline has no class meetings this week
+ *     (the character is unassigned, or the discipline's group has
+ *     no sessions), the picker shows a disabled dropdown with a
+ *     message, and save is still allowed with slot: null. The slot
+ *     is descriptive metadata; forbidding save because the schedule
+ *     happens to be empty would block grading a take-home quiz
+ *     whose meeting was cancelled.
  *
  * CONTEXT VERIFICATION:
  *   Every mutation is checked against the mounted context before
@@ -234,6 +245,10 @@
         return window.AcademyTeachingProjector || null;
     }
 
+    function getAcademyTeachingGroups() {
+        return window.AcademyTeachingGroups || null;
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
@@ -297,16 +312,6 @@
         return d && d.type ? d.type : '';
     }
 
-    /**
-     * Get the normalized grade scheme for a discipline.
-     *
-     * NULL HANDLING: AcademyDisciplines.getGradeScheme(id) returns
-     * null when the discipline does not exist. A discipline that
-     * exists but has no stored scheme returns the numeric default.
-     *
-     * This helper converts the null case into the numeric default.
-     * The display layer never has to branch on null.
-     */
     function getSchemeForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
             return GradeSchemes.normalizeScheme(null);
@@ -367,8 +372,9 @@
     /**
      * Format a slot for display.
      *
-     * Slots read as "Tuesday, 08:00". A null slot (or the slotless
-     * homeAssignment type) reads as "Take-home".
+     * Slots read as "Tuesday, 08:00 — Combat Training A".
+     * A null slot on a non-slotless type reads as "—".
+     * A slotless type (homeAssignment) reads as "Take-home".
      */
     function formatSlotLabel(grade) {
         if (!grade) { return '\u2014'; }
@@ -377,13 +383,13 @@
             return 'Take-home';
         }
 
-        if (!grade.slot ||
-            typeof grade.slot !== 'object') {
+        if (!grade.slot || typeof grade.slot !== 'object') {
             return '\u2014';
         }
 
         var day = grade.slot.day;
         var startTime = grade.slot.startTime;
+        var groupId = grade.slot.groupId;
 
         var dayLabel = '';
         if (isFiniteNumber(day)) {
@@ -403,26 +409,80 @@
             }
         }
 
-        if (!dayLabel && !hourLabel) { return '\u2014'; }
-        if (!dayLabel) { return hourLabel; }
-        if (!hourLabel) { return dayLabel; }
-        return dayLabel + ', ' + hourLabel;
+        var head = '';
+        if (dayLabel && hourLabel) {
+            head = dayLabel + ', ' + hourLabel;
+        } else if (dayLabel) {
+            head = dayLabel;
+        } else if (hourLabel) {
+            head = hourLabel;
+        } else {
+            return '\u2014';
+        }
+
+        var groupLabel = '';
+        if (isNonEmptyString(groupId)) {
+            groupLabel = getGroupDisplayName(groupId);
+        }
+
+        if (groupLabel) {
+            return head + ' \u2014 ' + groupLabel;
+        }
+        return head;
+    }
+
+    function getGroupDisplayName(groupId) {
+        if (!isNonEmptyString(groupId)) { return ''; }
+        var TG = getAcademyTeachingGroups();
+        if (!TG || typeof TG.getGroup !== 'function') { return ''; }
+
+        var group = null;
+        try {
+            group = TG.getGroup(groupId);
+        } catch (e) {
+            return '';
+        }
+        if (!group) { return ''; }
+
+        if (isNonEmptyString(group.customName)) {
+            return String(group.customName).trim();
+        }
+
+        var disciplineName = getDisciplineName(group.disciplineId);
+        var num = isFiniteNumber(group.groupNumber)
+            ? group.groupNumber
+            : 0;
+        if (num > 0) {
+            return disciplineName + ' ' + num;
+        }
+        return disciplineName;
     }
 
     // ============================================================
-    // SLOT OPTIONS
+    // SLOT OPTIONS — DISCIPLINE-SCOPED
     // ============================================================
     //
     // Build the slot picker's option list for a (charId, classId,
-    // week) triple. The occurrences come from the teaching
+    // disciplineId, week) tuple. Occurrences come from the teaching
     // projector; the filter keeps only those whose classId matches
-    // the mounted class.
+    // the mounted class AND whose disciplineId matches the selected
+    // discipline.
     //
-    // When the projector is unavailable, the option list is empty
-    // and the form's slot field shows a "schedule data unavailable"
-    // note.
+    // Each option carries:
+    //   { day, startTime, groupId, label }
+    //
+    // The label reads "Tuesday, 08:00 — Combat Training A". The
+    // group label is resolved via the teaching-groups module.
+    //
+    // Deduplication is by (day, startTime, groupId): two different
+    // groups meeting at the same time produce two options, because
+    // they are different class meetings.
 
-    function buildSlotOptions(charId, classId, weekNum) {
+    function buildSlotOptions(charId, classId, disciplineId, weekNum) {
+        if (!isNonEmptyString(disciplineId)) {
+            return [];
+        }
+
         var Projector = getAcademyTeachingProjector();
         if (!Projector ||
             typeof Projector.projectForStudent !== 'function') {
@@ -452,10 +512,19 @@
             if (String(occ.classId) !== String(classId)) {
                 continue;
             }
+            if (String(occ.disciplineId) !== String(disciplineId)) {
+                continue;
+            }
             if (!isFiniteNumber(occ.day)) { continue; }
             if (!isFiniteNumber(occ.startTime)) { continue; }
 
-            var key = String(occ.day) + '@' + String(occ.startTime);
+            var groupId = isNonEmptyString(occ.groupId)
+                ? String(occ.groupId)
+                : null;
+
+            var key = String(occ.day) + '@' +
+                      String(occ.startTime) + '@' +
+                      String(groupId || '');
             if (seen[key]) { continue; }
             seen[key] = true;
 
@@ -475,16 +544,29 @@
                 hourLabel = occ.startTime + ':00';
             }
 
+            var label = dayLabel + ', ' + hourLabel;
+
+            var groupLabel = getGroupDisplayName(groupId);
+            if (groupLabel) {
+                label += ' \u2014 ' + groupLabel;
+            }
+
             options.push({
                 day: occ.day,
                 startTime: occ.startTime,
-                label: dayLabel + ', ' + hourLabel
+                groupId: groupId,
+                label: label
             });
         }
 
         options.sort(function(a, b) {
             if (a.day !== b.day) { return a.day - b.day; }
-            return a.startTime - b.startTime;
+            if (a.startTime !== b.startTime) {
+                return a.startTime - b.startTime;
+            }
+            return safeString(a.groupId).localeCompare(
+                safeString(b.groupId)
+            );
         });
 
         return options;
@@ -494,29 +576,37 @@
         if (!slot || typeof slot !== 'object') { return ''; }
         if (!isFiniteNumber(slot.day)) { return ''; }
         if (!isFiniteNumber(slot.startTime)) { return ''; }
-        return String(slot.day) + '@' + String(slot.startTime);
+        var base = String(slot.day) + '@' + String(slot.startTime);
+        if (isNonEmptyString(slot.groupId)) {
+            return base + '@' + String(slot.groupId);
+        }
+        return base;
     }
 
     function parseSlotValue(value) {
         if (!isNonEmptyString(value)) { return null; }
         var parts = String(value).split('@');
-        if (parts.length !== 2) { return null; }
+        if (parts.length < 2 || parts.length > 3) { return null; }
+
         var day = parseInt(parts[0], 10);
         var startTime = parseInt(parts[1], 10);
         if (!isFinite(day) || !isFinite(startTime)) { return null; }
-        return { day: day, startTime: startTime };
+
+        var groupId = null;
+        if (parts.length === 3 && parts[2] !== '') {
+            groupId = parts[2];
+        }
+
+        return {
+            day: day,
+            startTime: startTime,
+            groupId: groupId
+        };
     }
 
     // ============================================================
     // COLLAPSE STATE
     // ============================================================
-    //
-    // Session-persistent via AcademyUI.expandedIds. Key format:
-    //
-    //   grades:<charId>:<classId>:<week>:<disciplineId>
-    //
-    // The default is EXPANDED. When AcademyUI is unavailable, the
-    // default is EXPANDED and toggling is a no-op.
 
     function makeCollapseKey(charId, classId, weekNum, disciplineId) {
         return 'grades:' +
@@ -769,21 +859,6 @@
     // GROUPING
     // ============================================================
 
-    /**
-     * Group a flat list of grades by discipline.
-     *
-     * Returns an array of groups, each shaped:
-     *   {
-     *     disciplineId,
-     *     disciplineName,
-     *     grades: [grade, ...],
-     *     expanded: boolean
-     *   }
-     *
-     * Disciplines with no grades do not appear. Groups are sorted by
-     * discipline name ascending. Grades within a group are sorted by
-     * type label, then by created date ascending.
-     */
     function groupGradesByDiscipline(grades, charId, classId, weekNum) {
         var byDiscipline = Object.create(null);
         var order = [];
@@ -891,7 +966,6 @@
 
         html += '</div>';
 
-        // Summary line, across every grade (grouped or not).
         var summary = AcademyGrades.calculateSummary(grades);
         if (summary && summary.count > 0 && isFiniteNumber(summary.average)) {
             html += '<p class="academy-grades-summary">' +
@@ -923,7 +997,6 @@
                     'data-expanded="' +
                         escapeAttribute(expanded ? 'true' : 'false') + '">';
 
-        // ---- Header ----
         html += '<div class="academy-grades-group-header">';
 
         html += '<button type="button" ' +
@@ -961,7 +1034,6 @@
 
         html += '</div>';
 
-        // ---- Body ----
         html += '<div class="academy-grades-group-body" ' +
                     'style="display:' +
                     (expanded ? 'block' : 'none') + ';">';
@@ -1139,10 +1211,7 @@
 
         var myToken = _openToken;
 
-        // Resolve the initial discipline. Precedence:
-        //   1. The grade's own discipline (edit mode).
-        //   2. The per-discipline Add button's data-discipline-id.
-        //   3. The first active offering in the option list.
+        // Resolve the initial discipline.
         var initialDisciplineId = g.disciplineId || null;
         if (!initialDisciplineId &&
             isNonEmptyString(preSelectedDisciplineId)) {
@@ -1180,9 +1249,11 @@
 
         var slotlessInitial = AcademyGrades.isSlotlessType(initialType);
 
-        var slotOptions = buildSlotOptions(
+        // Build slot options for the INITIAL discipline.
+        var initialSlotOptions = buildSlotOptions(
             _state.charId,
             _state.classId,
+            initialDisciplineId,
             _state.week
         );
         var initialSlotValue = makeSlotValue(g.slot);
@@ -1288,39 +1359,12 @@
         html += '<div class="form-group ag-slot-group"' +
                     (slotlessInitial ? ' style="display:none;"' : '') + '>';
         html += '<label for="ag-slot-select">Slot</label>';
-
-        if (slotOptions.length === 0) {
-            html += '<select id="ag-slot-select" class="ag-slot-select" ' +
-                        'disabled>';
-            html += '<option value="">' +
-                        'No class meetings for this week' +
-                    '</option>';
-            html += '</select>';
-            html += '<p class="field-hint">' +
-                        'No scheduled classes for this character in ' +
-                        'this week. Check the Schedule tab.' +
-                    '</p>';
-        } else {
-            html += '<select id="ag-slot-select" class="ag-slot-select">';
-            html += '<option value="">No slot (optional)</option>';
-            for (var s = 0; s < slotOptions.length; s++) {
-                var slot = slotOptions[s];
-                var slotValue = makeSlotValue(slot);
-                var slotSelected = slotValue === initialSlotValue
-                    ? ' selected'
-                    : '';
-                html += '<option value="' +
-                            escapeAttribute(slotValue) + '"' +
-                            slotSelected + '>' +
-                            escapeHtml(slot.label) +
-                        '</option>';
-            }
-            html += '</select>';
-            html += '<p class="field-hint">' +
-                        'Which class meeting this grade came from.' +
-                    '</p>';
-        }
-
+        html += '<div class="ag-slot-host">';
+        html += renderSlotSelect(
+            initialSlotOptions,
+            initialSlotValue
+        );
+        html += '</div>';
         html += '</div>';
 
         // ---- Score / Max ----
@@ -1379,8 +1423,6 @@
         attachModalContent(modal, html);
         bindGradeFormEvents(modal, existing, myToken);
 
-        // Set the initial preview from the current inputs, since the
-        // form may open with a score already filled.
         var previewEl = modal.querySelector('#ag-grade-preview');
         if (previewEl && initialScoreNum !== null) {
             var preview = GradeSchemes.getGradeDisplay(
@@ -1388,6 +1430,60 @@
             );
             previewEl.textContent = preview || '\u2014';
         }
+    }
+
+    /**
+     * Render the slot <select> given a list of options and the
+     * currently-selected slot value. Used both at initial form
+     * build and on discipline change (via innerHTML replacement of
+     * the slot host).
+     *
+     * Empty-options policy (see file header):
+     *   No options at all -> disabled dropdown with an explanatory
+     *   option, plus a hint below. Save is still allowed; the grade
+     *   stores slot: null.
+     */
+    function renderSlotSelect(slotOptions, selectedValue) {
+        var html = '';
+
+        if (!Array.isArray(slotOptions) || slotOptions.length === 0) {
+            html += '<select id="ag-slot-select" ' +
+                        'class="ag-slot-select" disabled>';
+            html += '<option value="">' +
+                        'No class meetings for this discipline this week' +
+                    '</option>';
+            html += '</select>';
+            html += '<p class="field-hint">' +
+                        'No scheduled meetings of this discipline for ' +
+                        'this character this week. The grade can be ' +
+                        'saved without a slot.' +
+                    '</p>';
+            return html;
+        }
+
+        html += '<select id="ag-slot-select" class="ag-slot-select">';
+        html += '<option value="">No slot (optional)</option>';
+
+        for (var i = 0; i < slotOptions.length; i++) {
+            var slot = slotOptions[i];
+            var slotValue = makeSlotValue(slot);
+            var selected = slotValue === selectedValue
+                ? ' selected'
+                : '';
+            html += '<option value="' +
+                        escapeAttribute(slotValue) + '"' +
+                        selected + '>' +
+                        escapeHtml(slot.label) +
+                    '</option>';
+        }
+
+        html += '</select>';
+        html += '<p class="field-hint">' +
+                    'Which class meeting of this discipline this grade ' +
+                    'came from.' +
+                '</p>';
+
+        return html;
     }
 
     function bindGradeFormEvents(modal, existing, myToken) {
@@ -1405,10 +1501,14 @@
         var discInput = form.querySelector('.ag-disc-select');
         var typeInput = form.querySelector('.ag-type-select');
         var slotGroup = form.querySelector('.ag-slot-group');
-        var slotInput = form.querySelector('.ag-slot-select');
+        var slotHost = form.querySelector('.ag-slot-host');
         var scoreInput = form.querySelector('.ag-score-input');
         var previewEl = form.querySelector('#ag-grade-preview');
         var submitBtn = form.querySelector('button[type="submit"]');
+
+        function getSlotInput() {
+            return form.querySelector('.ag-slot-select');
+        }
 
         function updatePreview() {
             if (!previewEl) { return; }
@@ -1435,11 +1535,40 @@
             slotGroup.style.display = slotless ? 'none' : '';
         }
 
+        /**
+         * Rebuild the slot dropdown when the discipline changes.
+         *
+         * The currently-selected slot is DISCARDED. The old slot
+         * belonged to the old discipline's context; even if the
+         * (day, hour) coordinates happen to coincide with a meeting
+         * of the new discipline, the meeting is a different one.
+         */
+        function rebuildSlotOptionsForDiscipline() {
+            if (!slotHost) { return; }
+            var discId = discInput ? discInput.value : '';
+            if (!isNonEmptyString(discId)) {
+                slotHost.innerHTML = renderSlotSelect([], '');
+                return;
+            }
+
+            var options = buildSlotOptions(
+                _state.charId,
+                _state.classId,
+                discId,
+                _state.week
+            );
+
+            slotHost.innerHTML = renderSlotSelect(options, '');
+        }
+
         if (scoreInput) {
             scoreInput.addEventListener('input', updatePreview);
         }
         if (discInput) {
-            discInput.addEventListener('change', updatePreview);
+            discInput.addEventListener('change', function() {
+                updatePreview();
+                rebuildSlotOptionsForDiscipline();
+            });
         }
         if (typeInput) {
             typeInput.addEventListener('change', updateSlotVisibility);
@@ -1453,6 +1582,7 @@
 
             var maxInput = form.querySelector('.ag-max-score-input');
             var notesInput = form.querySelector('.ag-notes-input');
+            var slotInput = getSlotInput();
 
             var disciplineId = discInput ? discInput.value : '';
             var type = typeInput ? typeInput.value : '';
@@ -1531,9 +1661,6 @@
                 if (submitBtn) { submitBtn.disabled = false; }
 
                 if (result && result.success) {
-                    // Auto-expand the discipline so the new grade is
-                    // visible. Only meaningful when a discipline was
-                    // saved; the payload always carries one.
                     if (isNonEmptyString(disciplineId)) {
                         setDisciplineExpanded(
                             _state.charId,
