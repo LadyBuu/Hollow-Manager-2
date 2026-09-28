@@ -126,31 +126,50 @@
  *
  *   This module therefore maintains a memoized Map<id, character>
  *   keyed by the live character store. The index is rebuilt when
- *   EITHER of these is true:
+ *   ANY of these is true:
  *
  *     - window.data.characters is a different array reference
  *       than the one the index was built from
  *     - window.data.characters.length differs from the length the
  *       index was built from
+ *     - any character object at a position we have indexed no
+ *       longer matches the object the index holds (slot
+ *       replacement without invalidation)
  *
- *   ASSUMPTION: mutation paths that add or remove a character
- *   replace the array (or at least change its length). The
- *   MutationPipeline snapshot model observed elsewhere in the
- *   codebase does exactly this: mutate() operates on a cloned
- *   snapshot and the result replaces the live store. If some
- *   future path ever replaces chars[i] with a new object while
- *   keeping the same array reference and length, the index will
- *   return a stale entry for that id.
+ *   The third condition is a FRESHNESS SELF-HEAL. Slot
+ *   replacement — writing a new object into chars[i] without
+ *   changing the array reference or its length — leaves the first
+ *   two checks unable to detect the change. Without the third
+ *   check, the index would keep returning the OLD object for that
+ *   id, which produces the "edits don't persist after save"
+ *   symptom in the character form: the write lands in
+ *   window.data.characters, but every read through
+ *   getCharacterById returns the pre-edit object.
  *
- *   If that happens, call invalidateCharacterIndex() from the
- *   mutation path. It exists for exactly this case. A caller that
- *   suspects staleness can also call it unconditionally; the next
- *   getCharacterById rebuilds the index.
+ *   The check is O(n) per read in the worst case, but it only
+ *   walks when the array reference and length match — i.e. when
+ *   the index is supposed to be fresh. The comparison is object
+ *   identity, not field equality, so it is cheap. In the common
+ *   case (no mutation since the last read), the walk completes
+ *   and the memoized index is returned. In the mutated case, it
+ *   detects the mismatch on the first affected character and
+ *   falls through to a full rebuild.
+ *
+ *   This check exists so the index cannot silently return stale
+ *   data even if a future mutation path replaces a character slot
+ *   without calling invalidateCharacterIndex(). Belt and braces:
+ *   mutation paths SHOULD still call invalidateCharacterIndex()
+ *   after a slot replacement, both to skip the walk and to make
+ *   the contract explicit.
  *
  *   The index stores the SAME object reference the live store
  *   holds. It does NOT clone. Field-level edits to a character
  *   (char.mode = 'instructor') are visible immediately through
  *   the index, because the object reference is shared.
+ *
+ *   invalidateCharacterIndex() forces a rebuild on the next
+ *   lookup. It is safe to call at any time. Not called by any
+ *   code path in this module.
  *
  * DEPENDENCIES:
  *   - window.data                 (canonical state)
@@ -185,9 +204,16 @@
     // ============================================================
     //
     // Memoized Map<id, character> keyed by the live character
-    // store. Rebuilt when the array reference or its length
-    // changes. See the CHARACTER ID INDEX note in the file header
-    // for the assumption this relies on and the escape hatch.
+    // store. Rebuilt when:
+    //   - the array reference changes, or
+    //   - the array length changes, or
+    //   - any indexed character object at a position no longer
+    //     matches the object the index holds (slot replacement).
+    //
+    // The third condition is what makes the index safe against
+    // slot-replacement mutations that don't change the array
+    // reference or its length. See the CHARACTER ID INDEX note in
+    // the file header.
 
     var _idIndex = null;
     var _idIndexSourceRef = null;
@@ -199,15 +225,47 @@
         if (_idIndex !== null &&
             chars === _idIndexSourceRef &&
             chars.length === _idIndexSourceLength) {
-            return _idIndex;
+
+            // ---- Freshness self-heal ----
+            //
+            // The array reference and length both match, so the
+            // index is supposed to be fresh. Walk the array and
+            // verify that every indexed id still maps to the
+            // object currently at that position.
+            //
+            // If ANY position holds a different object than the
+            // index does, a slot was replaced without
+            // invalidation. Fall through to rebuild.
+            //
+            // The comparison is object identity (===), not field
+            // equality, so the walk is cheap. It exits on the
+            // first mismatch.
+            var fresh = true;
+            for (var s = 0; s < chars.length; s++) {
+                var c = chars[s];
+                if (!c || typeof c !== 'object' ||
+                    c.id === undefined || c.id === null) {
+                    continue;
+                }
+                var key = String(c.id);
+                var cached = _idIndex.get(key);
+                if (cached !== undefined && cached !== c) {
+                    fresh = false;
+                    break;
+                }
+            }
+            if (fresh) {
+                return _idIndex;
+            }
+            // Fall through to rebuild.
         }
 
         var map = new Map();
         for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (c && typeof c === 'object' &&
-                c.id !== undefined && c.id !== null) {
-                map.set(String(c.id), c);
+            var ch = chars[i];
+            if (ch && typeof ch === 'object' &&
+                ch.id !== undefined && ch.id !== null) {
+                map.set(String(ch.id), ch);
             }
         }
 
@@ -220,14 +278,14 @@
     /**
      * Force the id index to be rebuilt on the next lookup.
      *
-     * Exposed for mutation paths that modify window.data.characters
-     * in a way that does not change the array reference or its
-     * length (in-place field replacement of a character record).
-     * Calling this is safe at any time; the next getCharacterById
-     * rebuilds the index from scratch.
+     * Safe to call at any time. Mutation paths that replace a
+     * character slot rather than mutating it in place SHOULD call
+     * this after the change, both to skip the freshness walk and
+     * to make the contract explicit.
      *
-     * Not called by any code path in this module. It is a manual
-     * escape hatch. See the CHARACTER ID INDEX note in the header.
+     * The freshness self-heal in getIdIndex makes the call
+     * OPTIONAL, not mandatory. It exists as an optimisation and
+     * as documentation of intent.
      */
     function invalidateCharacterIndex() {
         _idIndex = null;
