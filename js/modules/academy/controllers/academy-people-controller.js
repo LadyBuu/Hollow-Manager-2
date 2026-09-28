@@ -8,63 +8,44 @@
  * rendering, its event handling, and its sub-editor lifecycle
  * (grades editor, schedule grid, teaching-group candidate picker).
  *
- * FORM CONTROLS ARE NOT CLICK-ACTIONS (this revision):
- *   handleClick used to call e.preventDefault() unconditionally
- *   on every element with a data-action attribute, then dispatch
- *   that action. The pattern is correct for buttons, whose entire
- *   purpose is to be click-driven. It is WRONG for form controls:
+ * FORM CONTROLS ARE NOT CLICK-ACTIONS:
+ *   handleClick skips preventDefault for native form controls and
+ *   for the character mode checkbox's label. The change event
+ *   drives the toggle, not the click. See the FORM CONTROLS
+ *   section below.
  *
- *     - <input type="checkbox"> must be allowed to toggle.
- *     - <input type="radio"> must be allowed to check.
- *     - <select> must be allowed to open.
- *     - <textarea>, <input type="text"> must be allowed to focus.
- *
- *   The character mode checkbox carries
- *   data-action="character-mode-toggle" purely as an identification
- *   marker. It is not a command the click handler executes; the
- *   change event is what drives the toggle's write. When
- *   preventDefault() fired on its click, the browser's default
- *   "toggle the checkbox" behaviour was cancelled, the checkbox
- *   never flipped, no change event dispatched, and the write never
- *   ran. The user saw a checkbox that did nothing.
- *
- *   handleClick now skips preventDefault for form controls and
- *   labels wrapping them. The change event paths for those
- *   controls are unchanged.
- *
- *   The check uses a small allowlist of interactive tag names, plus
- *   a class check for the mode checkbox (whose click may land on
- *   its wrapping <label>, not on the <input> itself). Any future
- *   form control in this view needs only to be a recognised tag
- *   name, or to carry a recognised class.
- *
- * CHARACTER MODE (v31):
+ * CHARACTER MODE:
  *   AcademyUI.getCharacterMode(charId, classId) takes TWO
  *   arguments. Three call sites in this controller pass both:
  *   renderCharacterDetailContent, mountScheduleGridIfPresent,
  *   handleEnrollDiscipline. A fourth site, handleCharacterModeToggle,
- *   reads classId off the checkbox's own dataset rather than
- *   re-querying AcademyUI.
- *
- *   getCharacterMode is a READ. Where the mode is needed for a
- *   class-less context, this controller coalesces a null result to
- *   'student' before handing it to the aggregator. See
- *   resolveCharacterMode below.
+ *   reads classId off the checkbox's own dataset.
  *
  * MODE TOGGLE:
  *   handleCharacterModeToggle reads three values off the checkbox's
- *   dataset:
+ *   dataset (character-id, class-id, target-role) and calls
+ *   CharacterCRUD.setInstructorForClass.
  *
- *     data-character-id    the character whose role is being set
- *     data-class-id        the class the role applies to
- *     data-target-role     'instructor' or 'student'
+ * CHARACTER SCHEDULE EXPORTS (this revision):
+ *   The character detail panel's Schedule tab emits two actions:
  *
- *   and calls CharacterCRUD.setInstructorForClass(charId, classId,
- *   isInstructor). That function rewrites every enrolment interval
- *   of the (char, class) pair to the target role in one
- *   transaction.
+ *     character-export-schedule-text
+ *       Weekly grid. Calls ScheduleExport.exportStudentScheduleText
+ *       with the current display week.
  *
- *   The retired CharacterCRUD.setMode is not called.
+ *     character-export-schedule-day
+ *       Day strip. Calls ScheduleExport.exportStudentDayScheduleText
+ *       with the current display week and the day carried on the
+ *       button's data-day attribute.
+ *
+ *   Both read the character id off the button's own dataset, matching
+ *   the class export buttons' pattern and keeping the handlers robust
+ *   to selection changes between render and click.
+ *
+ *   The export module is resolved at click time. It is not a
+ *   load-time dependency of this controller; a missing module
+ *   produces a clear error notification rather than a load-time
+ *   throw.
  *
  * DISCIPLINE-HOURS PICKER:
  *   The picker reads two new VM fields from the aggregator:
@@ -112,9 +93,7 @@
  *       Routes to AcademySchedule.removeTeachingGroup, which owns
  *       the compound operation.
  *
- *   Both are confirmed inline before dispatch. The confirmation
- *   message names the group, and for delete-group names the
- *   session and member counts.
+ *   Both are confirmed inline before dispatch.
  *
  * CLASS EXPORTS:
  *   The class detail panel action row carries three export
@@ -125,29 +104,22 @@
  *
  *     class-export-schedule
  *       Downloads a readable plain-text dump of the class's
- *       schedule for the current display week. Contents:
- *       every teaching session of every group in the class for
- *       that week, plus every instructor commitment attached to
- *       the class for that week. Routes to
+ *       schedule for the current display week. Routes to
  *       ScheduleExport.exportClassScheduleText.
  *
  *     class-export-graduates
  *       Downloads a plain-text document listing the class's
- *       graduates. A graduate is a student with no eliminations
- *       of any kind. Routes to
+ *       graduates. Routes to
  *       ClassRosterExport.exportClassGraduatesText.
  *
  *     class-export-characters
  *       Downloads a plain-text document listing every student in
- *       the class, including eliminated students. Same field set
- *       and layout as the graduates export; the elimination
- *       filter is not applied. Routes to
+ *       the class, including eliminated students. Routes to
  *       ClassRosterExport.exportClassCharactersText.
  *
  *   All three buttons carry data-class-id from the class detail
  *   panel. The handlers read it off the button rather than
- *   re-reading AcademyUI.getSelectedClassId(), so the buttons are
- *   robust to selection changes between render and click.
+ *   re-reading AcademyUI.getSelectedClassId().
  *
  * CHARACTER EXPORT:
  *   The character detail panel's header carries one Export
@@ -157,10 +129,7 @@
  *     data-character-id="<the character id>"
  *
  *   dispatchAction routes the marker to handleCharacterExport,
- *   which calls CharacterExport.exportCharacterText(charId) and
- *   reports the result via NotificationSystem. The report itself
- *   is built by the export module; this controller never walks
- *   character data.
+ *   which calls CharacterExport.exportCharacterText(charId).
  */
 
 (function() {
@@ -318,16 +287,12 @@
      *
      *   The two aggregator consumers (getViewModel and
      *   getScheduleGridViewModel) do not accept null and do not
-     *   treat it as a mode. They warn and return an empty VM,
-     *   which produced the empty Schedule tab and the
-     *   "unknown mode: null" console message.
+     *   treat it as a mode. They warn and return an empty VM.
      *
      *   This helper is the adapter: it calls getCharacterMode with
      *   both arguments and coalesces a null to 'student' when
      *   there is no class context. The 'student' default is the
-     *   correct class-less mode; its tab set is a superset of the
-     *   instructor tab set, and the panel header already tells the
-     *   user they need to select a class to change the role.
+     *   correct class-less mode.
      *
      * @param {string} charId
      * @param {string|null} classId
@@ -339,8 +304,6 @@
         }
 
         if (!isNonEmptyString(classId)) {
-            // No class context: the mode cannot be evaluated per
-            // class. 'student' is the class-less default.
             return 'student';
         }
 
@@ -354,8 +317,7 @@
     // ============================================================
     //
     // handleClick must not preventDefault a click whose target is a
-    // form control. See the file header's FORM CONTROLS section for
-    // the full rationale.
+    // form control.
     //
     // The check has two parts:
     //
@@ -364,17 +326,7 @@
     //
     //   isModeCheckboxClick(el)
     //     class check: the mode checkbox's wrapping <label>, the
-    //     checkbox itself, or its descriptive text. A user who
-    //     clicks the label text is still interacting with the
-    //     checkbox; the click must not be cancelled.
-    //
-    // Either being true means handleClick does not preventDefault
-    // on the event and does not dispatch it as an action.
-    //
-    // A future form control with a data-action attribute needs to
-    // be recognised by one of these two checks. Adding its tag name
-    // to FORM_CONTROL_TAGS is the usual answer; a class check is
-    // only needed when the click may land on a wrapping element.
+    //     checkbox itself, or its descriptive text.
 
     var FORM_CONTROL_TAGS = ['INPUT', 'SELECT', 'TEXTAREA', 'OPTION'];
 
@@ -836,19 +788,6 @@
     // EVENT HANDLERS
     // ============================================================
 
-    /**
-     * Handle a delegated click.
-     *
-     * FORM CONTROLS ARE NOT CLICK-ACTIONS:
-     *   If the click target is a native form control (input,
-     *   select, textarea) or is inside the character mode
-     *   checkbox's label, the handler returns early WITHOUT
-     *   calling preventDefault. The browser's default click
-     *   behaviour for those controls is what drives them.
-     *
-     *   See the file header's FORM CONTROLS section for the full
-     *   rationale and the bug this fixes.
-     */
     function handleClick(e) {
         var target = e.target;
         if (!target || typeof target.closest !== 'function') {
@@ -857,10 +796,6 @@
 
         // ---- Form controls: return early, do not preventDefault ----
         if (isFormControlClick(target)) {
-            // The character mode checkbox is identified by
-            // data-action="character-mode-toggle". It is a form
-            // control; its change event drives the write. Do
-            // nothing here.
             return;
         }
 
@@ -1030,6 +965,16 @@
 
             case 'character-export':
                 handleCharacterExport(el.dataset.characterId);
+                return;
+
+            case 'character-export-schedule-text':
+                handleCharacterExportScheduleText(el.dataset.characterId);
+                return;
+            case 'character-export-schedule-day':
+                handleCharacterExportScheduleDay(
+                    el.dataset.characterId,
+                    el.dataset.day
+                );
                 return;
 
             case 'edit-social-score':
@@ -1353,6 +1298,133 @@
     }
 
     // ============================================================
+    // CHARACTER SCHEDULE EXPORTS
+    // ============================================================
+    //
+    // Two buttons in the character detail panel's Schedule tab
+    // route here:
+    //
+    //   character-export-schedule-text
+    //     Weekly grid. The display week is read from AcademyUI.
+    //     The character id is read off the button's own dataset.
+    //
+    //   character-export-schedule-day
+    //     Day strip. Reads the display week and the day off the
+    //     button's data-day attribute.
+    //
+    // Both resolve ScheduleExport at click time. A missing module
+    // produces a notification, not a load-time throw.
+
+    function handleCharacterExportScheduleText(charId) {
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var Exporter = getScheduleExport();
+        if (!Exporter ||
+            typeof Exporter.exportStudentScheduleText !== 'function') {
+            notify(
+                'Schedule export module is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        if (!isFiniteNumber(week)) {
+            notify('No display week set.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportStudentScheduleText(
+                String(charId), week
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'exportStudentScheduleText threw:', e
+            );
+            notify('Schedule export failed: ' + e.message, 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Exported weekly schedule: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            (result && result.error) ||
+                'Schedule export failed.',
+            'error'
+        );
+    }
+
+    function handleCharacterExportScheduleDay(charId, dayRaw) {
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var day = parseInt(dayRaw, 10);
+        if (!isFiniteNumber(day)) {
+            notify('Invalid day.', 'error');
+            return;
+        }
+
+        var Exporter = getScheduleExport();
+        if (!Exporter ||
+            typeof Exporter.exportStudentDayScheduleText !== 'function') {
+            notify(
+                'Schedule export module is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        if (!isFiniteNumber(week)) {
+            notify('No display week set.', 'error');
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportStudentDayScheduleText(
+                String(charId), week, day
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'exportStudentDayScheduleText threw:', e
+            );
+            notify('Day schedule export failed: ' + e.message, 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Exported ' + getDayName(day) + ' schedule: ' +
+                    result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            (result && result.error) ||
+                'Day schedule export failed.',
+            'error'
+        );
+    }
+
+    // ============================================================
     // CLASS EXPORTS
     // ============================================================
 
@@ -1516,18 +1588,6 @@
     // handleClick. handleClick returns early for form controls.
     // The browser toggles the checkbox, a change event fires, and
     // handleChange routes it here.
-    //
-    // The handler:
-    //
-    //   1. Reads charId off the checkbox.
-    //   2. Reads classId off the checkbox, falling back to
-    //      AcademyUI.getSelectedClassId().
-    //   3. Reads the target role off the checkbox.
-    //   4. Refuses with a toast when no class is selected.
-    //   5. Adjusts the active tab when the target mode removes the
-    //      current tab from the tab set.
-    //   6. Calls CharacterCRUD.setInstructorForClass with the three
-    //      arguments.
 
     var STUDENT_ONLY_TABS = ['grades', 'teams'];
     var INSTRUCTOR_ONLY_TABS = ['teachingGroups'];
