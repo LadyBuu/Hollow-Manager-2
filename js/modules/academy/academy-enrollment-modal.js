@@ -24,7 +24,31 @@
  *     - Writes through AcademyEnrolments.enrol only.
  *     - Closes on Close button, backdrop click, Escape.
  *
- * WEEK SEMANTICS (this revision):
+ * ROLE SEMANTICS (v31):
+ *   Every enrolment interval carries a role: 'student' or
+ *   'instructor'. The modal passes the role to
+ *   AcademyEnrolments.enrol.
+ *
+ *   The role is decided at open time:
+ *
+ *     - When the caller supplies `title` (the instructor flow),
+ *       the role is 'instructor'. The instructor flow opens the
+ *       modal explicitly to make the character an instructor for
+ *       this class; the current mode is being changed, not read.
+ *
+ *     - When the caller supplies no `title` (the student flow),
+ *       the role is 'student'.
+ *
+ *   The role is NOT read from the character record. It is a
+ *   per-class fact, and this modal is acting on one class. The
+ *   caller knows which role it wants; the modal does not guess.
+ *
+ *   A character cannot have both roles in the same class. That
+ *   invariant is enforced upstream (see CharacterCRUD and the
+ *   repair view) — the modal assumes the caller is on the correct
+ *   side of it.
+ *
+ * WEEK SEMANTICS:
  *   Enrollment is a YEAR-LEVEL decision. The picker shows EVERY
  *   discipline the class offers, regardless of the display week.
  *   Switching the display week does NOT change the picker.
@@ -35,52 +59,36 @@
  *     enrolmentStartWeek = max(displayWeek, discipline.startWeek)
  *
  *   This keeps the enrolment interval honest: it never claims to
- *   cover weeks the discipline does not run. A discipline that
- *   starts in week 5, enrolled while the display week is 1, gets
- *   an enrolment whose startWeek is 5. AcademyEnrolments.isEnrolledInWeek
- *   returns true only from week 5 onward, matching the discipline's
- *   own window.
+ *   cover weeks the discipline does not run.
  *
  *   The matching READ side (isEnrolledInWeek) is unchanged; it
  *   already required the enrolment interval to contain the week.
  *   Clipping the startWeek on write is what makes the two agree.
  *
  *   This is the opposite treatment from the schedule-assign modal
- *   (academy-schedule-assign-modal.js), which IS week-scoped: a
- *   student cannot be scheduled into a slot for a discipline that
- *   does not run that week. Enrollment is a fact about the year;
- *   scheduling is a fact about the week.
+ *   (academy-schedule-assign-modal.js), which IS week-scoped.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The enrolment store          (AcademyEnrolments)
  *   - The class-discipline markers (AcademyClassDisciplinesQueries
- *                                   for reads;
- *                                   AcademyClassDisciplines is the
- *                                   mutation module and is NOT a
- *                                   dependency of this file. This
- *                                   modal never writes markers.)
+ *                                   for reads)
  *   - The discipline entities      (AcademyDisciplines)
  *   - The character record         (CharacterQueries)
  *   - The instructor-of-record for a student in a discipline.
  *     That relationship is a TEACHING-GROUP assignment, edited
- *     from the scheduling UI, not from this modal. See the
- *     DEFERRED-SCHEDULING section of the pinboard.
- *   - The character's mode. The modal is mode-agnostic. It writes
- *     an enrolment; whether the character is a student or an
- *     instructor is expressed by the character record and
- *     interpreted by the Academy UI. The modal does not branch on
- *     mode and does not know what mode means.
+ *     from the scheduling UI, not from this modal.
+ *   - The character's mode. The modal is mode-agnostic in the
+ *     sense that it does not read the mode; it receives the role
+ *     as an input from the caller.
  *
  * PRESENTATION OVERRIDE (title):
  *   The modal accepts an optional `title` option. When supplied,
- *   the header reads "<title> — <charName>". When absent, the
- *   header reads "Enroll <charName> in a Discipline". This lets
- *   the instructor flow say "Assign to teach a discipline —
- *   Professor Jane" without teaching the modal what an
- *   instructor is.
+ *   the header reads "<title> — <charName>" and the role is
+ *   forced to 'instructor'. When absent, the header reads "Enroll
+ *   <charName> in a Discipline" and the role is 'student'.
  *
- *   The title is purely presentation. It does not affect the
- *   options list, the write path, or the bulk actions.
+ *   The title is presentation. It also serves as the SIGNAL for
+ *   which flow opened the modal.
  *
  * MULTI-SELECT:
  *   The user can check several disciplines and enrol in all of
@@ -98,14 +106,11 @@
  *   Individual enrolments that fail do not roll back the ones
  *   that succeeded. After the sequence completes, the modal
  *   reports a per-row failure summary and refetches its state.
- *   This matches the picker's bulk-operation contract.
  *
  * OFFERING WINDOW:
  *   An offering's window is the DISCIPLINE's window
  *   (startWeek / endWeek on the discipline entity). The marker has
- *   no window. The picker shows every offering, and each row's
- *   enrolment uses the discipline's startWeek as the floor for the
- *   enrolment's startWeek. This is the v27 marker-only semantics.
+ *   no window.
  *
  * START WEEK CLIPPING:
  *   The enrolment's startWeek is max(displayWeek, discipline.startWeek).
@@ -116,20 +121,7 @@
  *   The class-discipline marker store has two modules: a mutation
  *   module (AcademyClassDisciplines) and a read module
  *   (AcademyClassDisciplinesQueries). This modal reads through
- *   the read module. It never calls the mutation module; it does
- *   not create or remove markers, and it has no business reaching
- *   for a writer to answer a read question.
- *
- *   The three reads the modal performs are:
- *     - getClassDisciplinesForClass   (offering list)
- *     - getClassDiscipline            (per-class mandatory flag)
- *     - isActiveInWeek                (NOT USED for filtering in
- *                                      this revision; the marker's
- *                                      discipline window is read
- *                                      via AcademyDisciplines, not
- *                                      via the query. The query
- *                                      method remains available to
- *                                      other callers.)
+ *   the read module. It never calls the mutation module.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -151,7 +143,8 @@
  *       }
  *   });
  *
- *   // Instructor assignment (presentation-only override)
+ *   // Instructor assignment (presentation-only override,
+ *   // forces role: 'instructor')
  *   AcademyEnrollmentModal.openModal(charId, {
  *       classId: 'class_123',
  *       week: 5,
@@ -234,6 +227,13 @@
     window.__academyEnrollmentModalLoaded = true;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var ROLE_STUDENT = 'student';
+    var ROLE_INSTRUCTOR = 'instructor';
+
+    // ============================================================
     // MODULE STATE
     // ============================================================
 
@@ -243,6 +243,7 @@
     var _classId = null;
     var _week = null;
     var _title = null;
+    var _role = ROLE_STUDENT;
     var _onClose = null;
 
     var _contentChangeHandler = null;
@@ -291,6 +292,23 @@
         return Math.max(displayWeek, disciplineStartWeek);
     }
 
+    /**
+     * Resolve the role for this modal instance.
+     *
+     * The role is decided at open time. When the caller supplies
+     * `title` (the instructor flow), the role is 'instructor'.
+     * Otherwise the role is 'student'.
+     *
+     * The role is NOT read from the character record. It is a
+     * per-class fact, and this modal is acting on one class.
+     */
+    function resolveRoleForOpen(options) {
+        if (options && isNonEmptyString(options.title)) {
+            return ROLE_INSTRUCTOR;
+        }
+        return ROLE_STUDENT;
+    }
+
     // ============================================================
     // ENTRY POINT
     // ============================================================
@@ -308,11 +326,14 @@
      *                                       enrolment's startWeek.
      * @param {string} [options.title]     - optional header title.
      *                                       When present, the header
-     *                                       reads "<title> — <name>".
-     *                                       When absent, the header
-     *                                       reads "Enroll <name> in a
-     *                                       Discipline". Purely
-     *                                       presentational.
+     *                                       reads "<title> — <name>"
+     *                                       and the enrolment role
+     *                                       is forced to
+     *                                       'instructor'. When
+     *                                       absent, the header
+     *                                       reads "Enroll <name> in
+     *                                       a Discipline" and the
+     *                                       role is 'student'.
      * @param {function} [options.onClose] - called once, when the
      *                                       modal closes for any
      *                                       reason.
@@ -349,6 +370,7 @@
         _title = isNonEmptyString(options.title)
             ? String(options.title)
             : null;
+        _role = resolveRoleForOpen(options);
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
@@ -417,6 +439,7 @@
         _classId = null;
         _week = null;
         _title = null;
+        _role = ROLE_STUDENT;
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
@@ -448,6 +471,7 @@
         _classId = null;
         _week = null;
         _title = null;
+        _role = ROLE_STUDENT;
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
@@ -462,10 +486,14 @@
     // display week. Each row carries the discipline's startWeek so
     // the write path can clip the enrolment's startWeek to it.
     //
-    // A discipline with a malformed startWeek is skipped: the
-    // modal cannot compute a valid enrolment window for it, and
-    // inventing one would silently lie about when the enrolment
-    // begins.
+    // A discipline with a malformed startWeek is skipped.
+    //
+    // "Already enrolled" is role-agnostic: if the character has any
+    // interval for this discipline in this class, the row is
+    // marked as already enrolled and hidden from selection. The
+    // role of the existing interval is not consulted; per the
+    // wider model, a character cannot have both roles in the same
+    // class, so a mixed state is not representable.
 
     function buildViewModel() {
         if (!_charId || !_classId) {
@@ -511,8 +539,6 @@
             if (!disc) { continue; }
 
             // A discipline without a valid startWeek is skipped.
-            // The enrolment window depends on it, and the modal
-            // does not invent a value.
             var disciplineStartWeek = parseInt(disc.startWeek, 10);
             if (isNaN(disciplineStartWeek) || disciplineStartWeek < 1) {
                 console.warn(
@@ -570,6 +596,7 @@
             classId: _classId,
             week: _week,
             title: _title,
+            role: _role,
             rows: rows,
             eligibleRows: eligibleRows,
             mandatoryCount: mandatoryCount
@@ -705,10 +732,10 @@
         html += '<label class="academy-enroll-checkbox-label">';
 
         if (row.enrolled) {
-            // Already enrolled: no checkbox, show a state badge
-            // instead. Clicking cannot unenroll from this modal;
-            // unenrollment is the Leave action on the character
-            // detail panel.
+            // Already enrolled (in any role): no checkbox, show a
+            // state badge instead. Clicking cannot unenroll from
+            // this modal; unenrollment is the Leave action on the
+            // character detail panel.
             html += '<span class="academy-enroll-enrolled-badge" ' +
                         'title="Already enrolled">' +
                         '\u2713' +
@@ -856,11 +883,9 @@
      *
      *   enrolmentStart = max(displayWeek, discipline.startWeek)
      *
-     * The clip is applied here, at the write boundary, so the
-     * enrolment interval never claims to cover weeks the
-     * discipline does not run. AcademyEnrolments.enrol stores
-     * whatever startWeek it is given; the modal is responsible for
-     * giving it an honest value.
+     * Each enrolment is tagged with `_role`:
+     *   - 'instructor' when the modal was opened with a title.
+     *   - 'student'    otherwise.
      *
      * While the chain runs, `_busy` is true and the rendered modal
      * shows disabled controls. `renderContent` is not called until
@@ -871,8 +896,7 @@
 
         // Resolve each id to a discipline's startWeek so we can
         // clip. A discipline that has gone missing between render
-        // and submit is recorded as a failure; the modal does not
-        // invent a value.
+        // and submit is recorded as a failure.
         var plans = [];
         for (var p = 0; p < ids.length; p++) {
             var disciplineId = ids[p];
@@ -922,6 +946,7 @@
 
         var failures = [];
         var succeeded = 0;
+        var role = _role;
         var chain = Promise.resolve();
 
         plans.forEach(function(plan) {
@@ -938,7 +963,8 @@
                     _charId,
                     _classId,
                     plan.disciplineId,
-                    plan.startWeek
+                    plan.startWeek,
+                    role
                 ).then(function(result) {
                     if (result && result.success) {
                         succeeded++;
