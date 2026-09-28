@@ -44,68 +44,91 @@
  *     normaliseCharacterData() deliberately does not accept
  *     disciplineIds.
  *   - Enrollment is CLASS-SCOPED and lives at
- *     academy.enrolments[classId][charId] = [interval, ...].
+ *     academy.enrolments[classId][charId] = [disciplineId].
  *   - Enrollment mutations live in AcademyEnrolments.
- *   - createNewCharacter() does NOT initialise disciplineIds.
+ *   - createNewCharacter() does NOT initialise disciplineIds. The
+ *     field is not part of the character record.
+ *   - updateExistingCharacter() does NOT preserve disciplineIds. If a
+ *     legacy character record still carries the field, it is left in
+ *     place by the Object.assign in updateExistingCharacter (because
+ *     `current` carries it and `normalised` does not overwrite it),
+ *     but nothing reads it. It will disappear naturally as records
+ *     are edited, or it can be pruned by a future migration.
  *
- * CHARACTER MODE / ROLE (v27, revised v31):
- *   Prior to v31, every character record carried a persisted `mode`
- *   field:
- *
- *     mode: 'student' | 'instructor'   (default 'student')
- *
- *   The mode was a character-wide fact: one value for the whole
- *   character. It could not distinguish "Alice teaches Class A"
- *   from "Alice teaches Class A AND Class B", because it had one
- *   value for all classes.
- *
- *   As of v31, the role is CLASS-SCOPED. It lives on the enrolment
- *   interval:
- *
- *     {
- *       disciplineId,
- *       startWeek,
- *       endWeek,
- *       role: 'student' | 'instructor'
- *     }
- *
- *   The class-scoped question "is Alice an instructor of Class A?"
- *   is answered by AcademyClasses.getClassInstructorIdsAllTime
- *   ('class_a'). The character-wide `mode` field is a legacy
- *   tombstone: it survives in the record for one migration cycle
- *   and then is removed. Nothing in this file reads it.
- *
- *   The mutation that changes a character's role for a class is:
- *
- *     setInstructorForClass(charId, classId, isInstructor)
- *
- *   It rewrites every enrolment interval of charId in classId to
- *   the target role, in a single MutationPipeline transaction.
- *   It does NOT touch the character record itself, teaching
- *   groups, sessions, grades, or any other store. The role is an
- *   enrolment fact; only the enrolment store changes.
- *
- *   The retired setMode() function is kept as a stub that returns
- *   a failure with a pointer to the new API. Its purpose is to
- *   surface the retirement if any caller still reaches for it,
- *   rather than silently writing a character-wide field that
- *   nothing reads.
+ * CHARACTER MODE (v27+):
+ *   - Every character record carries a persisted `mode` field:
+ *       mode: 'student' | 'instructor'   (default 'student')
+ *   - The mode is a DOMAIN FACT. It drives which tabs the Academy
+ *     character detail panel renders and how the character's
+ *     enrolments are interpreted. It is NOT session state.
+ *   - It is set through setMode(charId, mode), a dedicated mutation
+ *     that routes through MutationPipeline.
+ *   - It is NOT settable through save(). normaliseCharacterData()
+ *     does not read `mode` from the DTO, and updateExistingCharacter
+ *     preserves whatever is currently on the record. This mirrors the
+ *     classIds and disciplineIds rule: fields owned by a dedicated
+ *     mutation are not touched by the generic save path.
+ *   - createNewCharacter() initialises mode to 'student' so new
+ *     characters satisfy the invariant "every character has a valid
+ *     mode".
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
  *   - deceased is a DERIVED field: it means "is dead as of currentYear"
  *   - Consumers should prefer CharacterQueries.isDeceased(char, year)
+ *     when they need to know alive/dead at a specific point in time
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *   - deathWeek is preserved for legacy data but not actively collected
  *
  * DEATH → PROFESSIONAL TEAM CASCADE:
- *   When a save transitions deathYear from blank to a parseable
- *   year, updateExistingCharacter calls
+ *   When a save leaves the character with a parseable deathYear,
+ *   updateExistingCharacter calls
  *   TeamCore.endStintsForCharacter(data, charId, deathYear) inside
  *   the same pipeline transaction.
  *
- *   Scope, trigger, non-reversibility, failure mode, and backfill
- *   are documented inline at their call sites.
+ *   THE CASCADE RUNS ON EVERY SAVE OF A DECEASED CHARACTER, not
+ *   just on the blank → set transition. The previous behavior
+ *   gated the cascade on the transition, which missed two cases:
+ *
+ *     (a) A character whose deathYear was already set before the
+ *         cascade shipped (legacy data). The transition had
+ *         already happened; the cascade never fired.
+ *     (b) A character who is added to a team AFTER the death was
+ *         recorded. The new stint was created open, and no save
+ *         touched deathYear, so the transition check never fired
+ *         again.
+ *
+ *   endStintsForCharacter is idempotent: a stint whose leavePeriod
+ *   is already set and <= deathYear is left alone. Running it on
+ *   every save is therefore cheap and safe. The cost is one pass
+ *   over appData.teams per save of a deceased character.
+ *
+ *   SCOPE:
+ *     Professional teams only. Academic teams are managed by the
+ *     Academy module; temporary and civilian team membership does
+ *     not participate in this cascade.
+ *
+ *   NON-REVERSIBLE:
+ *     Clearing deathYear does NOT restore the ended stints. The
+ *     user reopens stints by hand from the member manager if they
+ *     want to undo a death. This matches the semantics of
+ *     TeamCore.endMemberInterval.
+ *
+ *   FAILURE MODE:
+ *     TeamCore is an OPTIONAL dependency of this module. When it
+ *     is absent, the cascade is skipped — but NOT silently. A
+ *     console.warn is emitted so the skip is visible in the
+ *     console during development.
+ *
+ *   BACKFILL:
+ *     backfillDeathCascades() exists for data that predates the
+ *     cascade. Characters marked deceased before the cascade
+ *     shipped never saw the blank → set transition, so their
+ *     professional stints may still be open. The backfill walks
+ *     every character with a parseable deathYear and runs the
+ *     cascade against the live store, in a single transaction.
+ *
+ *     Idempotent and safe to re-run.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
@@ -138,35 +161,6 @@
  *   Step 1 stays inline, because it touches the team entity roster,
  *   which is not an academy-domain concern.
  *
- * UPDATE PATH — OBJECT IDENTITY (this revision):
- *   updateExistingCharacter used to replace the character slot:
- *
- *     data.characters[index] = Object.assign({}, current, normalised, preserved);
- *
- *   That is a slot replacement: the array at that index now points
- *   at a NEW object, while every other reference to the OLD object
- *   — including the memoized id index in character-queries.js —
- *   still sees the old values.
- *
- *   CharacterQueries.getCharacterById caches a Map<id, character>
- *   keyed on window.data.characters by reference and by length.
- *   Slot replacement changes neither, so the cache is not
- *   invalidated and getCharacterById keeps returning the old
- *   object. Every read of the edited character — in the list, in
- *   the form after re-render, in the aggregator — sees the values
- *   from BEFORE the save, even though the write landed in
- *   window.data.characters.
- *
- *   This revision MERGES THE MERGED OBJECT'S KEYS BACK ONTO THE
- *   LIVE OBJECT IN PLACE. Object identity is preserved. The id
- *   index's Map entry — which already points at the live object —
- *   sees the new values immediately.
- *
- *   As a belt-and-braces measure, invalidateCharacterIndex() is
- *   ALSO called after the merge. If any future code path slips a
- *   slot replacement past review, the next read rebuilds the
- *   index rather than returning a stale object.
- *
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
  *   - No UI rendering here - rendering is in character-form.js
@@ -184,9 +178,8 @@
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY (optional)
  *   - window.TeamCore (from team-core.js) - LAZY (optional)
- *   - window.AcademyEnrolments (from academy-enrolments.js) - LAZY
- *     Required by setInstructorForClass. Load order is deferred;
- *     mandatory-ness is not.
+ *     When present, endStintsForCharacter is called on every save
+ *     of a character with a parseable deathYear.
  */
 
 (function() {
@@ -232,10 +225,8 @@
     var MAX_WEAPON_NOTES_LENGTH = CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
     var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
 
-    // Role vocabulary, used by setInstructorForClass. The two values
-    // match the role field on enrolment intervals.
-    var ROLE_STUDENT = 'student';
-    var ROLE_INSTRUCTOR = 'instructor';
+    var VALID_MODES = ['student', 'instructor'];
+    var DEFAULT_MODE = 'student';
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -294,28 +285,26 @@
     /**
      * Lazy accessor for TeamCore.
      *
-     * TeamCore is an OPTIONAL dependency of the death cascade. The
-     * cascade is skipped when the module is absent, or when it does
-     * not export endStintsForCharacter. The skip is announced with a
-     * console.warn.
+     * TeamCore is an OPTIONAL dependency. The death cascade is
+     * skipped when the module is absent, or when it does not export
+     * endStintsForCharacter (older load order). The skip is
+     * announced with a console.warn so it is visible during
+     * development.
      */
     function getTeamCore() {
         return window.TeamCore || null;
     }
 
-    /**
-     * Lazy accessor for AcademyEnrolments.
-     *
-     * AcademyEnrolments is required by setInstructorForClass. Load
-     * order is deferred; mandatory-ness is not. A missing module or
-     * a missing helper fails the mutation.
-     */
-    function getAcademyEnrolments() {
-        return window.AcademyEnrolments || null;
+    function isValidMode(mode) {
+        return mode === 'student' || mode === 'instructor';
     }
 
     /**
      * Parse a deathYear string. Returns an integer >= 1 or null.
+     * Blank, malformed, and sub-1 values all return null.
+     *
+     * Used by the death cascade trigger and by the cascade call
+     * itself, so the two agree on what "a parseable year" means.
      */
     function parseDeathYear(value) {
         if (value === undefined || value === null || value === '') {
@@ -331,6 +320,13 @@
     /**
      * Run the death cascade for a character, against the given
      * snapshot. Emits a console.warn when TeamCore is unavailable.
+     *
+     * Shared by updateExistingCharacter, createNewCharacter, and
+     * backfillDeathCascades so the three paths cannot drift.
+     *
+     * IDEMPOTENT: endStintsForCharacter leaves stints alone when
+     * their leavePeriod is already set and <= deathYear. Calling
+     * this on every save of a deceased character is safe.
      */
     function runDeathCascade(data, charId, deathYear, contextLabel) {
         var TeamCore = getTeamCore();
@@ -345,33 +341,6 @@
             return null;
         }
         return TeamCore.endStintsForCharacter(data, charId, deathYear);
-    }
-
-    /**
-     * Force the CharacterQueries id index to be rebuilt on next
-     * lookup.
-     *
-     * The index is memoized on window.data.characters by array
-     * reference and length. Anything that changes a character's
-     * fields WITHOUT changing the array reference or its length
-     * (in-place edits, slot replacement) can leave the index
-     * pointing at a stale object. Calling this after such a change
-     * makes the next read rebuild from the live array.
-     *
-     * Safe to call at any time. Never throws.
-     */
-    function invalidateCharacterIndex() {
-        if (!CharacterQueries ||
-            typeof CharacterQueries.invalidateCharacterIndex !== 'function') {
-            return;
-        }
-        try {
-            CharacterQueries.invalidateCharacterIndex();
-        } catch (e) {
-            console.warn(
-                '[CharacterCRUD] invalidateCharacterIndex threw:', e
-            );
-        }
     }
 
     // ============================================================
@@ -459,6 +428,7 @@
             return { valid: false, message: 'Last name is required.' };
         }
 
+        // Death validation
         var hasDeathYear = charData.deathYear !== undefined &&
                            charData.deathYear !== null &&
                            String(charData.deathYear).trim() !== '';
@@ -488,6 +458,7 @@
             }
         }
 
+        // ---- HP / MP validation ----
         if (charData.hp !== undefined && charData.hp !== null && charData.hp !== '') {
             var hp = Number(charData.hp);
             if (isNaN(hp) || hp < 0 || hp > HP_HARD_CAP) {
@@ -501,6 +472,7 @@
             }
         }
 
+        // ---- Weapons validation ----
         if (charData.weapons !== undefined) {
             if (!Array.isArray(charData.weapons)) {
                 return { valid: false, message: 'Weapons must be an array.' };
@@ -527,6 +499,7 @@
             }
         }
 
+        // Special moves validation
         var physicalMoves = charData.specialMoves && charData.specialMoves.physical ? charData.specialMoves.physical : [];
         var magicalMoves = charData.specialMoves && charData.specialMoves.magical ? charData.specialMoves.magical : [];
 
@@ -548,6 +521,7 @@
             }
         }
 
+        // Stats validation
         var stats = charData.stats || {};
         for (var k = 0; k < STAT_KEYS.length; k++) {
             var key = STAT_KEYS[k];
@@ -570,18 +544,30 @@
     /**
      * Normalise character data before save.
      *
+     * This function is the SINGLE boundary between form DTOs and
+     * persisted character records. It:
+     *   - Trims string fields
+     *   - Clamps stats to their allowed range
+     *   - Clamps hp/mp to their allowed range
+     *   - Normalises weapons to a canonical shape
+     *   - Ensures array fields are arrays
+     *   - Normalises displayParts into a canonical 5-boolean object
+     *   - Derives `deceased` from `deathYear` relative to current year
+     *   - Auto-fills `deathAge` from `birthYear` + `deathYear` if missing
+     *   - Does NOT touch fields it doesn't know about (those are
+     *     preserved on edit via Object.assign in updateExistingCharacter)
+     *
      * NOT NORMALISED HERE (owned by dedicated mutations):
      *   - classIds        (AcademyClasses)
      *   - disciplineIds   (AcademyEnrolments) — legacy field, dead
-     *   - mode            RETIRED. The role is per-class and lives on
-     *                     enrolment intervals. This field is not
-     *                     accepted through the generic save path.
+     *   - mode            (CharacterCRUD.setMode)
      *   - eliminations    (AcademyEliminations / TournamentEliminationCascade)
      *   - eliminatedWeeks (EliminationQueries.rebuildEliminatedWeeks)
      */
     function normaliseCharacterData(charData) {
         var data = {};
 
+        // ---- Name fields ----
         data.firstName = charData.firstName ? charData.firstName.trim() : '';
         data.lastName = charData.lastName ? charData.lastName.trim() : '';
         data.middleName = charData.middleName ? charData.middleName.trim() : '';
@@ -610,6 +596,7 @@
             data.nameFormat = charData.nameFormat || 'firstlast';
         }
 
+        // ---- Physical fields ----
         data.gender = charData.gender ? charData.gender.trim() : '';
         data.birthYear = charData.birthYear ? String(charData.birthYear).trim() : '';
         data.eyes = charData.eyes ? charData.eyes.trim() : '';
@@ -620,12 +607,14 @@
         data.build = charData.build ? charData.build.trim() : '';
         data.appearanceNotes = charData.appearanceNotes ? charData.appearanceNotes.trim() : '';
 
+        // ---- Career / professional fields ----
         data.specialty = charData.specialty ? charData.specialty.trim() : '';
         data.attraction = charData.attraction ? charData.attraction.trim() : '';
         data.sexuality = charData.sexuality ? charData.sexuality.trim() : '';
         data.notes = charData.notes ? charData.notes.trim() : '';
         data.combatNotes = charData.combatNotes ? charData.combatNotes.trim() : '';
 
+        // ---- Academic fields ----
         if (charData.graduatingClassId !== undefined) {
             data.graduatingClassId = charData.graduatingClassId || null;
         }
@@ -634,9 +623,9 @@
         }
 
         // NOTE: disciplineIds, classIds, and mode are deliberately NOT
-        // normalised here. disciplineIds and classIds are owned by
-        // dedicated mutations. mode is retired entirely.
+        // normalised here. They are owned by dedicated mutations.
 
+        // ---- Stats ----
         data.stats = {};
         for (var i = 0; i < STAT_KEYS.length; i++) {
             var key = STAT_KEYS[i];
@@ -648,6 +637,7 @@
             data.stats[key] = Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(numeric)));
         }
 
+        // ---- Magic ----
         if (charData.magic !== undefined) {
             data.magic = {};
             var MagicConstants = window.MagicConstants;
@@ -667,6 +657,7 @@
             }
         }
 
+        // ---- HP / MP ----
         var rawHP = charData.hp !== undefined && charData.hp !== null && charData.hp !== ''
             ? Number(charData.hp)
             : 0;
@@ -681,12 +672,14 @@
         if (rawMP > MP_HARD_CAP) { rawMP = MP_HARD_CAP; }
         data.mp = Math.round(rawMP);
 
+        // ---- Weapons ----
         if (charData.weapons !== undefined) {
             data.weapons = normaliseWeapons(charData.weapons);
         } else {
             data.weapons = [];
         }
 
+        // ---- Special moves ----
         if (charData.specialMoves !== undefined) {
             data.specialMoves = {
                 physical: Array.isArray(charData.specialMoves && charData.specialMoves.physical)
@@ -698,16 +691,19 @@
             };
         }
 
+        // ---- Career status ----
         if (charData.careerStatus !== undefined) {
             data.careerStatus = Array.isArray(charData.careerStatus)
                 ? charData.careerStatus.slice()
                 : [];
         }
 
+        // ---- Personality ----
         if (charData.personality !== undefined) {
             data.personality = charData.personality ? Object.assign({}, charData.personality) : {};
         }
 
+        // ---- Death fields ----
         data.deathYear = charData.deathYear ? String(charData.deathYear).trim() : '';
         data.deathCause = charData.deathCause ? charData.deathCause.trim() : '';
 
@@ -843,15 +839,18 @@
 
         // Preserve system-managed fields.
         //   - classIds:      owned by AcademyClasses.
+        //   - mode:          owned by CharacterCRUD.setMode.
         //   - eliminations / eliminatedWeeks: owned by AcademyEliminations
         //                    and TournamentEliminationCascade.
-        //   - disciplineIds: legacy field, preserved verbatim if present.
-        //   - mode:          legacy tombstone (v31). Preserved verbatim
-        //                    until a future migration removes it.
+        //   - disciplineIds: legacy field. If present on the record, it
+        //                    is preserved verbatim, but nothing reads it.
         var preserved = {
             id: current.id,
             createdAt: current.createdAt,
             classIds: Array.isArray(current.classIds) ? current.classIds.slice() : [],
+            mode: (current.mode === 'student' || current.mode === 'instructor')
+                ? current.mode
+                : DEFAULT_MODE,
             eliminations: Array.isArray(current.eliminations) ? current.eliminations.slice() : [],
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
@@ -860,57 +859,35 @@
             preserved.disciplineIds = current.disciplineIds.slice();
         }
 
-        // Preserve the legacy `mode` tombstone verbatim if present.
-        // Nothing reads it; a future migration removes it. Preserving
-        // it here keeps the record stable through a save round-trip.
-        if (current.mode !== undefined) {
-            preserved.mode = current.mode;
-        }
+        var updated = Object.assign({}, current, normalised, preserved);
 
-        // ---- Build the merged shape ----
-        var merged = Object.assign({}, current, normalised, preserved);
-
-        // ---- Apply it IN PLACE ----
-        //
-        // Merge the merged object's keys back onto the live object.
-        // Do NOT replace data.characters[index] with a new object:
-        //   - The id index in character-queries.js holds the live
-        //     object reference in its Map. Replacing the slot leaves
-        //     the Map pointing at the old object, and every read of
-        //     the edited character returns stale values until the
-        //     index is rebuilt.
-        //   - Any other holder of the character reference (aggregators,
-        //     forms that captured it before the mutation, pipelines)
-        //     sees the old values for the same reason.
-        //
-        // Mutating `current` preserves object identity. Every
-        // reference sees the new values immediately.
-        var mergeKeys = Object.keys(merged);
-        for (var mk = 0; mk < mergeKeys.length; mk++) {
-            current[mergeKeys[mk]] = merged[mergeKeys[mk]];
-        }
-
-        // ---- Belt-and-braces: force index rebuild ----
-        //
-        // The merge above is in-place, so the id index would see the
-        // new values without invalidation. The call is here to cover
-        // any future code path that replaces a character slot
-        // instead of mutating in place. invalidateCharacterIndex is
-        // safe to call at any time.
-        invalidateCharacterIndex();
+        data.characters[index] = updated;
 
         // ---- Death → professional team cascade ----
-        var previousDeathYear = parseDeathYear(existing.deathYear);
-        var nextDeathYear = parseDeathYear(current.deathYear);
+        //
+        // Runs on EVERY SAVE of a character with a parseable
+        // deathYear, not just on the blank → set transition. See
+        // the DEATH → PROFESSIONAL TEAM CASCADE note in the file
+        // header for why the transition gate was removed.
+        //
+        // endStintsForCharacter is idempotent: a stint already
+        // ended at or before deathYear is left alone. The cost of
+        // running it unconditionally is one pass over appData.teams
+        // per save of a deceased character.
+        //
+        // Scope: professional teams only.
+        // Non-reversible: clearing deathYear does not reopen stints.
+        // TeamCore is OPTIONAL. Absent → skipped with a console.warn.
+        var nextDeathYear = parseDeathYear(updated.deathYear);
 
-        if (previousDeathYear === null && nextDeathYear !== null) {
-            runDeathCascade(data, current.id, nextDeathYear, 'save');
+        if (nextDeathYear !== null) {
+            runDeathCascade(data, updated.id, nextDeathYear, 'save');
         }
 
         return {
             success: true,
-            id: current.id,
-            character: current
+            id: updated.id,
+            character: updated
         };
     }
 
@@ -920,11 +897,7 @@
         var newChar = Object.assign({}, normalised, {
             id: id,
             classIds: [],
-            // NOTE (v31): no `mode` field is written on new
-            // characters. The role is per-class and lives on
-            // enrolment intervals. The classIds field is still the
-            // character-side membership list; a separate role field
-            // is not added.
+            mode: DEFAULT_MODE,
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
             weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
@@ -936,12 +909,12 @@
 
         data.characters.push(newChar);
 
-        // A create pushes a new entry, which changes the array
-        // length. The index's rebuild check catches that on the next
-        // lookup. Calling invalidate unconditionally here is
-        // consistent with the update path and costs nothing.
-        invalidateCharacterIndex();
-
+        // Death cascade for a character created already deceased.
+        // A new character cannot be on any team yet, so this is a
+        // no-op in practice — but it keeps the cascade path
+        // symmetrical with updateExistingCharacter, and if the
+        // creation flow ever grows the ability to pre-assign teams,
+        // this stays correct.
         var nextDeathYear = parseDeathYear(newChar.deathYear);
         if (nextDeathYear !== null) {
             runDeathCascade(data, id, nextDeathYear, 'create');
@@ -962,9 +935,35 @@
      * One-time maintenance: run the death cascade for every character
      * currently marked deceased, against the live data store.
      *
-     * IDEMPOTENT and safe to re-run. See the file header.
+     * WHY THIS EXISTS:
+     *   The death cascade fires on save. Characters marked deceased
+     *   before the cascade shipped never had a save touch their
+     *   deathYear after the cascade existed, so their professional
+     *   stints may still be open. This function walks them and runs
+     *   the cascade.
+     *
+     * IDEMPOTENT:
+     *   Safe to re-run. endStintsForCharacter leaves stints alone
+     *   when their leavePeriod is already set and <= deathYear, so a
+     *   second run is a no-op on already-cascaded data.
+     *
+     * SINGLE TRANSACTION:
+     *   Every character's cascade is applied to the same snapshot,
+     *   and the snapshot is committed once. If any character's
+     *   cascade throws, the whole backfill rolls back.
+     *
+     * NO-OP WITHOUT TEAMCORE:
+     *   If TeamCore.endStintsForCharacter is unavailable, the
+     *   function returns early with a warning rather than
+     *   committing an empty transaction.
      *
      * @returns {Promise<{success, data?, message?}>}
+     *   data: {
+     *     charactersScanned: number,
+     *     charactersWithStintsEnded: number,
+     *     stintsEnded: number,
+     *     teamsTouched: number
+     *   }
      */
     function backfillDeathCascades() {
         if (!checkDependencies()) {
@@ -1039,6 +1038,17 @@
 
                     if (typeof result.teamsTouched === 'number' &&
                         result.teamsTouched > 0) {
+                        // Identify the teams that belong to this
+                        // character and had stints ended. Because
+                        // endStintsForCharacter does not return the
+                        // team IDs, we re-derive them: any team of
+                        // type 'professional' with this character in
+                        // its members list and a stint whose
+                        // leavePeriod === String(deathYear).
+                        //
+                        // The re-derivation is deterministic and
+                        // side-effect-free; it exists only to build
+                        // the summary. Do not mutate here.
                         for (var t = 0; t < data.teams.length; t++) {
                             var team = data.teams[t];
                             if (!team || typeof team !== 'object') { continue; }
@@ -1099,36 +1109,23 @@
     }
 
     // ============================================================
-    // SET INSTRUCTOR FOR CLASS - Uses MutationPipeline (v31)
+    // SET MODE - Uses MutationPipeline
     // ============================================================
     //
-    // Changes a character's role within a single class.
+    // The character mode is a DOMAIN FACT: 'student' or 'instructor'.
+    // It drives which tabs the Academy character detail panel renders
+    // and how the character's enrolments are interpreted.
     //
-    // The role is CLASS-SCOPED and lives on the enrolment interval:
+    // It is deliberately NOT settable through save(). The generic
+    // save path preserves whatever mode is on the record.
     //
-    //   academy.enrolments[classId][charId][i].role =
-    //     'student' | 'instructor'
-    //
-    // This mutation rewrites every interval of that charId in that
-    // classId to the target role. It does NOT touch:
-    //   - the character record itself
-    //   - teaching groups
-    //   - teaching sessions
-    //   - grades
-    //   - rankings
-    //   - social scores
-    //   - enrolments in any other class
-    //
-    // The mutation is delegated to AcademyEnrolments.setRoleForClass
-    // (added in this pass), which owns the enrolment store. This file
-    // only wraps it in a transaction and an activity-log entry.
-    //
-    // IDEMPOTENT:
-    //   A call that would leave the role unchanged is a successful
-    //   no-op. The mutation still runs (so a caller relying on the
-    //   success value gets it) but does not modify the store.
+    // NO SIDE EFFECTS. Flipping mode does not:
+    //   - Clear or reassign enrolments.
+    //   - Touch teaching groups.
+    //   - Touch exam sequences.
+    //   - Cascade into any other store.
 
-    function setInstructorForClass(charId, classId, isInstructor) {
+    function setMode(charId, mode) {
         if (!checkDependencies()) {
             return Promise.resolve({
                 success: false,
@@ -1143,25 +1140,16 @@
             });
         }
 
-        if (!classId) {
+        if (!isValidMode(mode)) {
             return Promise.resolve({
                 success: false,
-                message: 'Class ID is required.'
+                message: 'Invalid mode. Must be one of: ' + VALID_MODES.join(', ') + '.'
             });
         }
 
-        if (typeof isInstructor !== 'boolean') {
-            return Promise.resolve({
-                success: false,
-                message: 'isInstructor must be true or false.'
-            });
-        }
+        var targetId = String(charId);
 
-        var targetChar = String(charId);
-        var targetClass = String(classId);
-        var targetRole = isInstructor ? ROLE_INSTRUCTOR : ROLE_STUDENT;
-
-        var char = CharacterQueries.getCharacterById(targetChar);
+        var char = CharacterQueries.getCharacterById(targetId);
         if (!char) {
             return Promise.resolve({
                 success: false,
@@ -1169,126 +1157,67 @@
             });
         }
 
-        var Enrolments = getAcademyEnrolments();
-        if (!Enrolments ||
-            typeof Enrolments.setRoleForClass !== 'function') {
+        var currentMode = (char.mode === 'student' || char.mode === 'instructor')
+            ? char.mode
+            : DEFAULT_MODE;
+
+        if (currentMode === mode) {
             return Promise.resolve({
-                success: false,
-                message: 'AcademyEnrolments.setRoleForClass is ' +
-                    'unavailable. Check the script load order in index.html.'
+                success: true,
+                data: {
+                    characterId: targetId,
+                    mode: mode,
+                    changed: false
+                }
             });
         }
 
         var name = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
-            validate: function(appData) {
-                var currentChar = null;
-                if (appData && Array.isArray(appData.characters)) {
-                    for (var i = 0; i < appData.characters.length; i++) {
-                        var c = appData.characters[i];
-                        if (c && String(c.id) === targetChar) {
-                            currentChar = c;
-                            break;
-                        }
-                    }
-                }
+            validate: function() {
+                var currentChar = CharacterQueries.getCharacterById(targetId);
                 if (!currentChar) {
-                    return {
-                        valid: false,
-                        message: 'Character no longer exists.'
-                    };
+                    return { valid: false, message: 'Character no longer exists.' };
                 }
-
-                if (!appData.academy ||
-                    !appData.academy.graduatingClasses ||
-                    !appData.academy.graduatingClasses[targetClass]) {
-                    return {
-                        valid: false,
-                        message: 'Class no longer exists.'
-                    };
-                }
-
                 return { valid: true };
             },
-            mutate: function(appData) {
-                // Delegate the actual rewrite to AcademyEnrolments.
-                // setRoleForClass is pure with respect to appData:
-                // it mutates the snapshot, never touches window.data.
-                var result = Enrolments.setRoleForClass(
-                    appData,
-                    targetChar,
-                    targetClass,
-                    targetRole
-                );
-
-                if (!result || typeof result !== 'object') {
-                    throw new Error(
-                        'AcademyEnrolments.setRoleForClass returned ' +
-                        'an invalid result.'
-                    );
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is not available.');
                 }
 
+                var found = null;
+                for (var i = 0; i < data.characters.length; i++) {
+                    var c = data.characters[i];
+                    if (c && String(c.id) === targetId) {
+                        found = c;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                found.mode = mode;
+                found.updatedAt = new Date().toISOString();
+
                 return {
-                    characterId: targetChar,
-                    classId: targetClass,
-                    role: targetRole,
-                    intervalsChanged: typeof result.intervalsChanged === 'number'
-                        ? result.intervalsChanged
-                        : 0
+                    characterId: targetId,
+                    mode: mode,
+                    changed: true
                 };
             },
             logMessage: function(result) {
-                var label = targetRole === ROLE_INSTRUCTOR
-                    ? 'instructor'
-                    : 'student';
-                return 'Set ' + name + ' as ' + label +
-                    ' for class ' + targetClass +
-                    (result.intervalsChanged > 0
-                        ? ' (' + result.intervalsChanged + ' interval(s))'
-                        : ' (no change)');
+                var label = mode === 'instructor' ? 'instructor' : 'student';
+                return 'Set ' + name + ' to ' + label + ' mode';
             },
             successMessage: function(result) {
-                var label = targetRole === ROLE_INSTRUCTOR
-                    ? 'Instructor'
-                    : 'Student';
-                if (result.intervalsChanged === 0) {
-                    return label + ' role already set.';
-                }
-                return label + ' role set.';
+                var label = mode === 'instructor' ? 'Instructor' : 'Student';
+                return label + ' mode enabled.';
             },
-            failureMessage: 'Failed to set role for class.'
-        });
-    }
-
-    // ============================================================
-    // SET MODE - RETIRED (v31)
-    // ============================================================
-    //
-    // setMode used to write character.mode, a character-wide flag
-    // that expressed instructor-ness for the whole character. That
-    // model could not distinguish "Alice teaches Class A" from
-    // "Alice teaches Class A AND Class B".
-    //
-    // As of v31, the role is CLASS-SCOPED and lives on the enrolment
-    // interval. Callers that want to change a character's role in a
-    // class call setInstructorForClass(charId, classId, isInstructor).
-    //
-    // setMode is kept as a stub that returns a failure with a
-    // pointer to the new API. Its purpose is to surface the
-    // retirement if any caller still reaches for it. Writing a
-    // character-wide field that nothing reads would be silently
-    // wrong.
-
-    function setMode(charId, mode) {
-        void charId;
-        void mode;
-
-        return Promise.resolve({
-            success: false,
-            message: 'setMode is retired. The character role is now ' +
-                'class-scoped. Use setInstructorForClass(charId, classId, ' +
-                'isInstructor) instead.'
+            failureMessage: 'Failed to set character mode.'
         });
     }
 
@@ -1297,7 +1226,9 @@
     // ============================================================
     //
     // Cascade orchestration:
-    //   - Cross-domain cleanup routes through AcademyCascade.
+    //   - Cross-domain cleanup (enrolments, grades, rankings, social
+    //     scores, weekly teams, auto-groups, social, missions,
+    //     tournaments) routes through AcademyCascade.characterDeleted.
     //   - Character-side cleanup (team entity rosters) stays inline.
 
     function deleteCharacter(id) {
@@ -1375,13 +1306,6 @@
                     throw new Error('Character not found in data store.');
                 }
 
-                // The filter above reassigns data.characters, which
-                // changes the array reference. The index's rebuild
-                // check catches that on the next lookup. Calling
-                // invalidate unconditionally keeps the contract
-                // obvious: "mutate, then invalidate".
-                invalidateCharacterIndex();
-
                 return {
                     deleted: true,
                     cascade: cascade
@@ -1456,8 +1380,6 @@
 
                 data.characters = [];
 
-                invalidateCharacterIndex();
-
                 return { deletedCount: count };
             },
             logMessage: function(result) {
@@ -1479,11 +1401,6 @@
         delete: deleteCharacter,
         deleteAll: deleteAllCharacters,
 
-        // v31: class-scoped role mutation.
-        setInstructorForClass: setInstructorForClass,
-
-        // v31: retired stub. Returns a failure pointing at
-        // setInstructorForClass. See the retirement note above.
         setMode: setMode,
 
         // One-time maintenance: apply the death cascade to every
@@ -1491,7 +1408,10 @@
         backfillDeathCascades: backfillDeathCascades,
 
         validateCharacter: validateCharacter,
-        normaliseCharacterData: normaliseCharacterData
+        normaliseCharacterData: normaliseCharacterData,
+
+        VALID_MODES: Object.freeze(VALID_MODES.slice()),
+        DEFAULT_MODE: DEFAULT_MODE
     });
 
 })();
