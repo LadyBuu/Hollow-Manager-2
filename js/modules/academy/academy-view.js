@@ -29,14 +29,15 @@
  *   - Domain mutation. Those are delegated to the owning module.
  *
  * CONTROLLER MODEL:
- *   Six feature controllers, one per Academy view:
+ *   Seven feature controllers, one per Academy view:
  *
- *     people          AcademyPeopleController
- *     tournaments     AcademyExamController      (rendered as "Exams")
- *     weeklyTeams     AcademyWeeklyTeamsController
- *     rankings        AcademyRankingController
- *     disciplines     AcademyDisciplineController
- *     locations       AcademyLocationController
+ *     people            AcademyPeopleController
+ *     tournaments       AcademyExamController      (rendered as "Exams")
+ *     weeklyTeams       AcademyWeeklyTeamsController
+ *     rankings          AcademyRankingController
+ *     disciplines       AcademyDisciplineController
+ *     locations         AcademyLocationController
+ *     instructorRepair  AcademyRepairController
  *
  *   A controller is a plain object with an optional subset of:
  *     render(host, context)
@@ -200,12 +201,13 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     var VIEWS = [
-        { id: 'people',       label: 'People' },
-        { id: 'tournaments',  label: 'Exams' },
-        { id: 'weeklyTeams',  label: 'Weekly Teams' },
-        { id: 'rankings',     label: 'Rankings' },
-        { id: 'disciplines',  label: 'Disciplines' },
-        { id: 'locations',    label: 'Locations' }
+        { id: 'people',           label: 'People' },
+        { id: 'tournaments',      label: 'Exams' },
+        { id: 'weeklyTeams',      label: 'Weekly Teams' },
+        { id: 'rankings',         label: 'Rankings' },
+        { id: 'disciplines',      label: 'Disciplines' },
+        { id: 'locations',        label: 'Locations' },
+        { id: 'instructorRepair', label: 'Instructor Repair' }
     ];
 
     var VALID_VIEW_IDS = VIEWS.map(function(v) { return v.id; });
@@ -406,6 +408,8 @@
                 return renderControllerHost('academy-disciplines-host');
             case 'locations':
                 return renderControllerHost('academy-locations-host');
+            case 'instructorRepair':
+                return renderControllerHost('academy-instructor-repair-host');
             default:
                 return renderPlaceholder('Unknown view: ' + view);
         }
@@ -562,6 +566,22 @@
                     'academy-locations-host',
                     {
                         week: AcademyUI.getDisplayWeek(),
+                        onChange: function() { refreshView(); }
+                    }
+                );
+                return;
+
+            case 'instructorRepair':
+                // The repair view re-renders itself after each save
+                // and reads its own data directly from
+                // AcademyClasses. It does not need week or class
+                // context, and it does not call onChange. The
+                // controller still accepts the standard context
+                // shape for symmetry with every other controller.
+                mountControllerForView(
+                    'instructorRepair',
+                    'academy-instructor-repair-host',
+                    {
                         onChange: function() { refreshView(); }
                     }
                 );
