@@ -61,13 +61,46 @@
  *   The editor does NOT calculate percentages itself. It calls
  *   AcademyGrades.calculatePercentage.
  *
- * ENROLLMENT:
+ * ENROLLMENT (this revision):
  *   The discipline picker sources its options from the student's
  *   enrollment for the selected class via AcademyEnrolments.
+ *
+ *   AcademyEnrolments.getStudentDisciplines(studentId, classId)
+ *   returns INTERVAL OBJECTS, not ID strings:
+ *
+ *     [ { disciplineId, startWeek, endWeek, role }, ... ]
+ *
+ *   An earlier revision treated each returned entry as a
+ *   discipline id, which produced `[object Object]` for every
+ *   option's `value`, matched no discipline, and rendered the
+ *   picker as "not enrolled in any disciplines" for every
+ *   student. This revision normalises each entry to its
+ *   `disciplineId` before use.
+ *
+ *   The reader accepts both shapes defensively: an interval object
+ *   with a `disciplineId` field, and a bare id string. If the
+ *   enrolment module ever exposes a reader that returns ids, this
+ *   editor will not need a second change.
  *
  * MODAL CONTENT CONTRACT:
  *   Modal.createModal returns a bare .modal shell. The modal content
  *   helper here appends a fresh .modal-content wrapper.
+ *
+ * CANCEL BUTTON (this revision):
+ *   The Add/Edit Grade form and the Delete Grade form both render
+ *   a Cancel button with class="cancel-modal-btn". The shared
+ *   bindCommonModalControls helper previously looked up
+ *   '.modal-cancel-btn', which matched nothing, so the Cancel
+ *   button was inert (only the X and backdrop worked).
+ *
+ *   The helper now matches both class names:
+ *
+ *     .modal-cancel-btn, .cancel-modal-btn
+ *
+ *   That is the canonical naming across the codebase; the modal
+ *   helpers in academy-crud-modals.js and
+ *   academy-weekly-teams-controller.js already use
+ *   .cancel-modal-btn. This editor now agrees.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -254,10 +287,6 @@
      *   This helper converts the null case into the numeric default.
      *   The display layer never has to branch on null; it always
      *   receives an object with a bands array.
-     *
-     *   The numeric default is obtained from
-     *   GradeSchemes.normalizeScheme(null), which is the canonical
-     *   constructor for the default scheme.
      */
     function getSchemeForDiscipline(disciplineId) {
         if (!isNonEmptyString(disciplineId)) {
@@ -368,13 +397,29 @@
         }
     }
 
+    /**
+     * Bind common modal controls (X button, Cancel button, backdrop).
+     *
+     * CANCEL BUTTON (this revision):
+     *   The selector matches both `.modal-cancel-btn` and
+     *   `.cancel-modal-btn`. The editor renders `.cancel-modal-btn`
+     *   (matching every other Academy modal in the codebase), and
+     *   the previous `.modal-cancel-btn` lookup found nothing.
+     *
+     *   The combined selector is the correct long-term fix: it keeps
+     *   this helper agnostic to the caller's naming choice, while
+     *   this module's own templates use the canonical
+     *   `.cancel-modal-btn`.
+     */
     function bindCommonModalControls(modal, close) {
         if (!modal || typeof close !== 'function') { return; }
 
         var closeBtn = modal.querySelector('.close-modal');
         if (closeBtn) { closeBtn.addEventListener('click', close); }
 
-        var cancelBtn = modal.querySelector('.modal-cancel-btn');
+        var cancelBtn = modal.querySelector(
+            '.modal-cancel-btn, .cancel-modal-btn'
+        );
         if (cancelBtn) { cancelBtn.addEventListener('click', close); }
 
         modal.addEventListener('click', function(e) {
@@ -387,32 +432,97 @@
     // ============================================================
 
     /**
+     * Normalise one entry from AcademyEnrolments.getStudentDisciplines
+     * to a discipline id string (or null).
+     *
+     * ACCEPTED SHAPES:
+     *   - interval object:   { disciplineId, startWeek, endWeek, role }
+     *   - bare id string:    'disc_abc'
+     *
+     * Any other shape returns null and is skipped by the caller.
+     *
+     * WHY BOTH:
+     *   The v31 reader returns interval objects. A future reader
+     *   could reasonably return ids. Accepting both shapes here
+     *   means that if the reader ever changes, this editor does
+     *   not need to change with it.
+     */
+    function normaliseEnrolmentEntryToDisciplineId(entry) {
+        if (entry === null || entry === undefined) { return null; }
+
+        if (typeof entry === 'string') {
+            var trimmed = entry.trim();
+            return trimmed === '' ? null : trimmed;
+        }
+
+        if (typeof entry === 'object' && !Array.isArray(entry)) {
+            var id = entry.disciplineId;
+            if (typeof id === 'string' && id.trim() !== '') {
+                return id.trim();
+            }
+            return null;
+        }
+
+        return null;
+    }
+
+    /**
      * Get the discipline options from the student's enrollment for a
      * class. Returns an array of
-     * { id, name, activeThisWeek, missing }.
+     * { id, name, type, activeThisWeek, missing }.
+     *
+     * ENROLLMENT READER SHAPE (this revision):
+     *   getStudentDisciplines returns interval objects, not ids.
+     *   Each entry is normalised to its disciplineId before use.
      */
     function getEnrolledDisciplineOptions(studentId, classId, week) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(classId)) {
             return [];
         }
 
-        var enrolledIds = AcademyEnrolments.getStudentDisciplines(studentId, classId);
-        if (!Array.isArray(enrolledIds) || enrolledIds.length === 0) {
+        var rawEntries = [];
+        try {
+            rawEntries = AcademyEnrolments.getStudentDisciplines(
+                studentId, classId
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademyGradesEditor] getStudentDisciplines threw:', e
+            );
+            rawEntries = [];
+        }
+
+        if (!Array.isArray(rawEntries)) {
+            rawEntries = [];
+        }
+
+        // Normalise intervals to ids, dedupe, preserve first-seen
+        // order so the caller sees a stable list across re-renders.
+        var seen = Object.create(null);
+        var disciplineIds = [];
+
+        for (var e = 0; e < rawEntries.length; e++) {
+            var id = normaliseEnrolmentEntryToDisciplineId(rawEntries[e]);
+            if (id === null) { continue; }
+            if (seen[id]) { continue; }
+            seen[id] = true;
+            disciplineIds.push(id);
+        }
+
+        if (disciplineIds.length === 0) {
             return [];
         }
 
         var weekNum = parseStrictWeek(week);
         var options = [];
 
-        for (var i = 0; i < enrolledIds.length; i++) {
-            var id = enrolledIds[i];
-            if (!isNonEmptyString(id)) { continue; }
-
-            var discipline = AcademyDisciplines.getDiscipline(id);
+        for (var i = 0; i < disciplineIds.length; i++) {
+            var disciplineId = disciplineIds[i];
+            var discipline = AcademyDisciplines.getDiscipline(disciplineId);
 
             if (!discipline) {
                 options.push({
-                    id: String(id),
+                    id: disciplineId,
                     name: 'Unknown Discipline',
                     type: '',
                     activeThisWeek: false,
@@ -423,8 +533,12 @@
 
             var activeThisWeek = true;
             if (weekNum !== null) {
-                var startWeek = ValidationUtils.parseStrictPositiveInteger(discipline.startWeek);
-                var endWeek = ValidationUtils.parseStrictPositiveInteger(discipline.endWeek);
+                var startWeek = ValidationUtils.parseStrictPositiveInteger(
+                    discipline.startWeek
+                );
+                var endWeek = ValidationUtils.parseStrictPositiveInteger(
+                    discipline.endWeek
+                );
                 if (startWeek !== null && weekNum < startWeek) {
                     activeThisWeek = false;
                 }
