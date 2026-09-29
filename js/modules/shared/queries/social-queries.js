@@ -1,7 +1,7 @@
 /**
  * js/shared/queries/social-queries.js - Social Queries
  * Read-only queries for the social/relationship domain
- * 
+ *
  * IMPORTANT:
  *   - READ-ONLY queries - no mutations
  *   - No DOM manipulation
@@ -10,16 +10,17 @@
  *   - Uses SocialConstants for type definitions
  *   - Returns LIVE REFERENCES to relationships - do not mutate
  *   - No window.data fallbacks - data structure must exist
- * 
+ *
+ * CLARIFICATION (two-sided):
+ *   Each relationship carries clarification1 (character1's role
+ *   toward character2) and clarification2 (character2's role toward
+ *   character1). Older records carry a single legacy `clarification`
+ *   field; readClarification applies the fallback so every consumer
+ *   sees a consistent shape.
+ *
  * DEPENDENCIES:
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
  *   - window.data (must exist and have social.relationships)
- * 
- * USAGE:
- *   var SQ = window.SocialQueries;
- *   var rels = SQ.getCharacterRelationships(charId);
- *   var exists = SQ.relationshipExists(charId1, charId2, 'friendship');
- *   var connected = SQ.getConnectedCharacters(charId);
  */
 
 (function() {
@@ -30,15 +31,7 @@
     }
     window.__socialQueriesLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var SocialConstants = window.SocialConstants;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -60,51 +53,91 @@
             console.warn('[SocialQueries] Missing dependencies:', missing.join(', '));
             return false;
         }
-
         return true;
     }
 
     checkDependencies();
 
     // ============================================================
-    // DATA ACCESS - Canonical source
+    // DATA ACCESS
     // ============================================================
 
-    /**
-     * Get the canonical social data from window.data.
-     * Assumes data.social.relationships exists (guaranteed by database/schema).
-     * 
-     * @returns {object} Social data object with relationships array
-     */
     function getSocialData() {
-        // window.data must exist - no fallback
         return window.data.social;
     }
 
-    /**
-     * Get all relationships from the data store.
-     * 
-     * @returns {Array} Array of relationship objects
-     */
     function getAllRelationships() {
         var social = getSocialData();
         return social.relationships || [];
     }
 
     // ============================================================
-    // RELATIONSHIP LOOKUP
+    // CLARIFICATION HELPERS
     // ============================================================
 
     /**
-     * Get a relationship by ID.
-     * 
-     * @param {string|number} id - Relationship ID
-     * @returns {object|null} Relationship object or null
+     * Read the clarification string for one side of a relationship,
+     * applying the legacy fallback.
+     *
+     * side === 1 -> clarification1, falling back to legacy
+     *               `clarification`.
+     * side === 2 -> clarification2 (no legacy fallback).
+     *
+     * @param {object} rel
+     * @param {number} side
+     * @returns {string}
      */
-    function getRelationshipById(id) {
-        if (id === undefined || id === null) {
-            return null;
+    function readClarification(rel, side) {
+        if (!rel || typeof rel !== 'object') { return ''; }
+
+        if (side === 2) {
+            if (rel.clarification2 !== undefined && rel.clarification2 !== null) {
+                return String(rel.clarification2);
+            }
+            return '';
         }
+
+        if (rel.clarification1 !== undefined && rel.clarification1 !== null) {
+            return String(rel.clarification1);
+        }
+        if (rel.clarification !== undefined && rel.clarification !== null) {
+            return String(rel.clarification);
+        }
+        return '';
+    }
+
+    /**
+     * Read the clarification that applies to a specific character in
+     * the relationship. Returns the OTHER side's clarification when
+     * charId is character1, and the primary clarification when charId
+     * is character2 (matching the "what is this character toward
+     * that one" reading).
+     *
+     * Actually: the returned string is the role THAT charId plays
+     * toward the other. So:
+     *   - charId === character1 -> clarification1
+     *   - charId === character2 -> clarification2
+     *
+     * @param {object} rel
+     * @param {string} charId
+     * @returns {string}
+     */
+    function getClarificationForCharacter(rel, charId) {
+        if (!rel || !charId) { return ''; }
+        var c1 = String(rel.character1);
+        var target = String(charId);
+        if (c1 === target) {
+            return readClarification(rel, 1);
+        }
+        return readClarification(rel, 2);
+    }
+
+    // ============================================================
+    // RELATIONSHIP LOOKUP
+    // ============================================================
+
+    function getRelationshipById(id) {
+        if (id === undefined || id === null) { return null; }
 
         var target = String(id);
         var relationships = getAllRelationships();
@@ -115,20 +148,11 @@
                 return rel;
             }
         }
-
         return null;
     }
 
-    /**
-     * Get all relationships involving a character.
-     * 
-     * @param {string} charId - Character ID
-     * @returns {Array} Array of relationship objects
-     */
     function getCharacterRelationships(charId) {
-        if (!charId) {
-            return [];
-        }
+        if (!charId) { return []; }
 
         var target = String(charId);
         var relationships = getAllRelationships();
@@ -136,26 +160,17 @@
 
         for (var i = 0; i < relationships.length; i++) {
             var rel = relationships[i];
-            if (rel && (String(rel.character1) === target || String(rel.character2) === target)) {
+            if (rel &&
+                (String(rel.character1) === target ||
+                 String(rel.character2) === target)) {
                 result.push(rel);
             }
         }
-
         return result;
     }
 
-    /**
-     * Get all relationships between two characters regardless of direction.
-     * For directional relationships, this returns both A→B and B→A if both exist.
-     * 
-     * @param {string} charId1 - First character ID
-     * @param {string} charId2 - Second character ID
-     * @returns {Array} Array of relationship objects
-     */
     function getAllRelationshipsBetween(charId1, charId2) {
-        if (!charId1 || !charId2) {
-            return [];
-        }
+        if (!charId1 || !charId2) { return []; }
 
         var c1 = String(charId1);
         var c2 = String(charId2);
@@ -173,21 +188,11 @@
                 result.push(rel);
             }
         }
-
         return result;
     }
 
-    /**
-     * Get relationships of a specific type for a character.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} typeId - Relationship type ID
-     * @returns {Array} Array of relationship objects
-     */
     function getCharacterRelationshipsOfType(charId, typeId) {
-        if (!charId || !typeId) {
-            return [];
-        }
+        if (!charId || !typeId) { return []; }
 
         var rels = getCharacterRelationships(charId);
         var result = [];
@@ -197,7 +202,6 @@
                 result.push(rels[i]);
             }
         }
-
         return result;
     }
 
@@ -205,23 +209,8 @@
     // ROMANTIC STATUS
     // ============================================================
 
-    /**
-     * Is this character currently in an ongoing romantic relationship?
-     *
-     * A relationship counts as ongoing when its endYear is blank
-     * (undefined, null, or empty string). A past romantic relationship
-     * (endYear set) does NOT count — the character is single again.
-     *
-     * This is the filter the pairing suggestions use: "suggest only
-     * characters who are not currently romantically involved."
-     *
-     * @param {string} charId
-     * @returns {boolean} True if the character has an ongoing romantic relationship
-     */
     function isCharacterRomanticallyInvolved(charId) {
-        if (!charId) {
-            return false;
-        }
+        if (!charId) { return false; }
 
         var rels = getCharacterRelationships(charId);
         for (var i = 0; i < rels.length; i++) {
@@ -235,11 +224,8 @@
                 end === null ||
                 (typeof end === 'string' && end.trim() === '');
 
-            if (isOngoing) {
-                return true;
-            }
+            if (isOngoing) { return true; }
         }
-
         return false;
     }
 
@@ -247,19 +233,8 @@
     // RELATIONSHIP EXISTENCE
     // ============================================================
 
-    /**
-     * Check if a relationship exists between two characters.
-     * For directional relationships, direction matters.
-     * 
-     * @param {string} charId1 - First character ID
-     * @param {string} charId2 - Second character ID
-     * @param {string} typeId - Relationship type ID
-     * @returns {boolean} True if relationship exists
-     */
     function relationshipExists(charId1, charId2, typeId) {
-        if (!charId1 || !charId2 || !typeId) {
-            return false;
-        }
+        if (!charId1 || !charId2 || !typeId) { return false; }
 
         var target1 = String(charId1);
         var target2 = String(charId2);
@@ -275,30 +250,19 @@
             var r2 = String(rel.character2);
 
             if (isDirectional) {
-                if (r1 === target1 && r2 === target2) {
-                    return true;
-                }
+                if (r1 === target1 && r2 === target2) { return true; }
             } else {
-                if ((r1 === target1 && r2 === target2) || (r1 === target2 && r2 === target1)) {
+                if ((r1 === target1 && r2 === target2) ||
+                    (r1 === target2 && r2 === target1)) {
                     return true;
                 }
             }
         }
-
         return false;
     }
 
-    /**
-     * Check if any relationship exists between two characters.
-     * 
-     * @param {string} charId1 - First character ID
-     * @param {string} charId2 - Second character ID
-     * @returns {boolean} True if any relationship exists
-     */
     function hasAnyRelationship(charId1, charId2) {
-        if (!charId1 || !charId2) {
-            return false;
-        }
+        if (!charId1 || !charId2) { return false; }
 
         var c1 = String(charId1);
         var c2 = String(charId2);
@@ -315,110 +279,46 @@
                 return true;
             }
         }
-
         return false;
     }
 
-    /**
-     * Check if a character has any relationships.
-     * 
-     * @param {string} charId - Character ID
-     * @returns {boolean} True if character has relationships
-     */
     function hasRelationships(charId) {
-        if (!charId) {
-            return false;
-        }
-
-        var rels = getCharacterRelationships(charId);
-        return rels.length > 0;
+        if (!charId) { return false; }
+        return getCharacterRelationships(charId).length > 0;
     }
 
     // ============================================================
-    // RELATIONSHIP TYPE QUERIES (delegated to SocialConstants)
+    // TYPE QUERIES (delegated to SocialConstants)
     // ============================================================
 
-    /**
-     * Get all relationship type definitions.
-     * Delegated to SocialConstants.
-     * 
-     * @returns {Array} Array of relationship type objects
-     */
     function getRelationshipTypes() {
         return SocialConstants.getRelationshipTypes();
     }
 
-    /**
-     * Get a relationship type definition by ID.
-     * Delegated to SocialConstants.
-     * 
-     * @param {string} typeId - Relationship type ID
-     * @returns {object|null} Type definition or null
-     */
     function getRelationshipType(typeId) {
         return SocialConstants.getRelationshipType(typeId);
     }
 
-    /**
-     * Get the label for a relationship type.
-     * Delegated to SocialConstants.
-     * 
-     * @param {string} typeId - Relationship type ID
-     * @returns {string} Label or type ID if not found
-     */
     function getRelationshipTypeLabel(typeId) {
         return SocialConstants.getLabel(typeId);
     }
 
-    /**
-     * Get the color for a relationship type.
-     * Delegated to SocialConstants.
-     * 
-     * @param {string} typeId - Relationship type ID
-     * @returns {string} CSS color value
-     */
     function getRelationshipTypeColor(typeId) {
         return SocialConstants.getColor(typeId);
     }
 
-    /**
-     * Check if a relationship type is directional.
-     * Delegated to SocialConstants.
-     * 
-     * @param {string} typeId - Relationship type ID
-     * @returns {boolean} True if directional
-     */
     function isRelationshipDirectional(typeId) {
         return SocialConstants.isDirectional(typeId);
     }
 
-    /**
-     * Check if a relationship type ID is valid.
-     * Delegated to SocialConstants.
-     * 
-     * @param {string} typeId - Relationship type ID
-     * @returns {boolean} True if valid
-     */
     function isValidRelationshipType(typeId) {
         return SocialConstants.isValidType(typeId);
     }
 
-    /**
-     * Get valid relationship type IDs.
-     * Delegated to SocialConstants.
-     * 
-     * @returns {string[]} Array of valid type IDs
-     */
     function getValidRelationshipTypeIds() {
         return SocialConstants.getValidTypeIds();
     }
 
-    /**
-     * Get the default relationship type ID.
-     * Delegated to SocialConstants.
-     * 
-     * @returns {string} Default type ID
-     */
     function getDefaultRelationshipTypeId() {
         return SocialConstants.getDefaultTypeId();
     }
@@ -427,59 +327,25 @@
     // DISPLAY HELPERS
     // ============================================================
 
-    /**
-     * Get the other character in a relationship.
-     * 
-     * @param {object} relationship - Relationship object
-     * @param {string} charId - Character ID to exclude
-     * @returns {string|null} Other character ID or null
-     */
     function getOtherCharacterId(relationship, charId) {
-        if (!relationship || !charId) {
-            return null;
-        }
+        if (!relationship || !charId) { return null; }
 
         var c1 = String(relationship.character1);
         var c2 = String(relationship.character2);
         var target = String(charId);
 
-        if (c1 === target) {
-            return c2;
-        }
-        if (c2 === target) {
-            return c1;
-        }
-
+        if (c1 === target) { return c2; }
+        if (c2 === target) { return c1; }
         return null;
     }
 
-    /**
-     * Check if a character is the source in a directional relationship.
-     * 
-     * @param {object} relationship - Relationship object
-     * @param {string} charId - Character ID to check
-     * @returns {boolean} True if character is the source
-     */
     function isRelationshipSource(relationship, charId) {
-        if (!relationship || !charId) {
-            return false;
-        }
-
+        if (!relationship || !charId) { return false; }
         return String(relationship.character1) === String(charId);
     }
 
-    /**
-     * Check if a character is the target in a directional relationship.
-     * 
-     * @param {object} relationship - Relationship object
-     * @param {string} charId - Character ID to check
-     * @returns {boolean} True if character is the target
-     */
     function isRelationshipTarget(relationship, charId) {
-        if (!relationship || !charId) {
-            return false;
-        }
-
+        if (!relationship || !charId) { return false; }
         return String(relationship.character2) === String(charId);
     }
 
@@ -494,6 +360,10 @@
         getCharacterRelationships: getCharacterRelationships,
         getCharacterRelationshipsOfType: getCharacterRelationshipsOfType,
         getAllRelationshipsBetween: getAllRelationshipsBetween,
+
+        // Clarifications
+        readClarification: readClarification,
+        getClarificationForCharacter: getClarificationForCharacter,
 
         // Existence checks
         relationshipExists: relationshipExists,
