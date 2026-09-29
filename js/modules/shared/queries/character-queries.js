@@ -83,10 +83,40 @@
  *   after Y does not count.
  *
  * CAREER STATUS YEAR:
- *   getJuniorYear(char) and getSeniorYear(char) return the
- *   earliest startYear across entries with the matching status,
- *   or null. They exist for display: the Unassigned view in the
- *   Teams tab shows both years side by side.
+ *   getCareerStatusYear(char, statusName) returns the earliest
+ *   startYear across entries with the matching status, or null.
+ *
+ *   The named wrappers below (getJuniorYear, getSeniorYear,
+ *   getSupportYear, getInstructorYear) exist for display and for
+ *   sorting. The Unassigned view in the Teams tab shows junior
+ *   and senior years side by side; the matchmaking pool sorts
+ *   candidates by their earliest career milestone.
+ *
+ * PROFESSIONAL-TEAM ELIGIBILITY BY YEAR:
+ *   isEligibleForProfessionalTeamAtYear(char, year) is the
+ *   composed predicate answering "is this character available to
+ *   join a professional team at year Y?"
+ *
+ *   AVAILABLE when ALL of:
+ *     - junior OR senior by year Y
+ *     - NOT support by year Y
+ *     - NOT instructor by year Y
+ *
+ *   The support/instructor exclusions are year-scoped. A character
+ *   who becomes support in 1915 is available for the 1910 pool and
+ *   unavailable for the 1920 pool. Same character, two answers.
+ *
+ *   A blank startYear on a support/instructor entry is treated as
+ *   "staff from the beginning of time" and excludes the character
+ *   in every year. This matches the year-scoped convention used by
+ *   isStatusByYear: a blank year is a data-quality signal, not a
+ *   filter reason.
+ *
+ *   The composed predicate is offered here rather than at the
+ *   aggregator because it is a property of the character, not of
+ *   the team. Callers that want the raw pieces call
+ *   isJuniorOrSeniorByYear, getSupportYear, and getInstructorYear
+ *   directly.
  *
  * STATUS-AT-YEAR:
  *   getStatusAtYear(char, year) answers "what career status did
@@ -836,13 +866,17 @@
     }
 
     // ============================================================
-    // CAREER STATUS YEAR (DISPLAY)
+    // CAREER STATUS YEAR (DISPLAY AND SORTING)
     // ============================================================
     //
-    // getJuniorYear and getSeniorYear return the earliest startYear
-    // across entries with the matching status, or null. They exist
-    // for display: the Unassigned view in the Teams tab shows both
-    // years side by side.
+    // getCareerStatusYear returns the earliest startYear across
+    // entries with the matching status, or null. The named wrappers
+    // exist for display and for sorting:
+    //
+    //   - The Unassigned view in the Teams tab shows junior and
+    //     senior years side by side.
+    //   - The matchmaking pool sorts candidates by their earliest
+    //     career milestone (junior / senior / support / instructor).
 
     function getCareerStatusYear(char, statusName) {
         if (!char || typeof char !== 'object') { return null; }
@@ -883,6 +917,64 @@
 
     function getSeniorYear(char) {
         return getCareerStatusYear(char, 'senior');
+    }
+
+    function getSupportYear(char) {
+        return getCareerStatusYear(char, 'support');
+    }
+
+    function getInstructorYear(char) {
+        return getCareerStatusYear(char, 'instructor');
+    }
+
+    // ============================================================
+    // PROFESSIONAL-TEAM ELIGIBILITY BY YEAR
+    // ============================================================
+    //
+    // See the PROFESSIONAL-TEAM ELIGIBILITY BY YEAR note in the
+    // file header for the full contract.
+
+    /**
+     * Is this character available to join a professional team at
+     * year Y?
+     *
+     * AVAILABLE when ALL of:
+     *   - junior OR senior by year Y
+     *   - NOT support by year Y
+     *   - NOT instructor by year Y
+     *
+     * The support/instructor exclusions are year-scoped. A
+     * character who becomes support in 1915 is available for the
+     * 1910 pool and unavailable for the 1920 pool.
+     *
+     * Fail-closed: a malformed character or an invalid year
+     * returns false. The alternative would be to include a
+     * character whose eligibility cannot be evaluated, which is
+     * the wrong default for a pool that feeds a commit.
+     *
+     * @param {object} char
+     * @param {number|string} year
+     * @returns {boolean}
+     */
+    function isEligibleForProfessionalTeamAtYear(char, year) {
+        if (!char || typeof char !== 'object') { return false; }
+
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum) || yearNum < 1) { return false; }
+
+        if (!isJuniorOrSeniorByYear(char, yearNum)) {
+            return false;
+        }
+
+        if (isStatusByYear(char, yearNum, 'support')) {
+            return false;
+        }
+
+        if (isStatusByYear(char, yearNum, 'instructor')) {
+            return false;
+        }
+
+        return true;
     }
 
     // ============================================================
@@ -1003,6 +1095,12 @@
         getCareerStatusYear: getCareerStatusYear,
         getJuniorYear: getJuniorYear,
         getSeniorYear: getSeniorYear,
+        getSupportYear: getSupportYear,
+        getInstructorYear: getInstructorYear,
+
+        // Composed eligibility predicate
+        isEligibleForProfessionalTeamAtYear:
+            isEligibleForProfessionalTeamAtYear,
 
         // Lists
         getCharacters: getCharacters,
