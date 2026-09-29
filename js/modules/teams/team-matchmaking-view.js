@@ -37,10 +37,13 @@
  *     assignments: [ {
  *       teamId,
  *       teamName,
- *       additions: [ { id, name, status, history } ]
+ *       additions: [ { id, name, status, history,
+ *                      juniorYear, seniorYear,
+ *                      supportYear, instructorYear,
+ *                      milestoneYear, milestoneLabel } ]
  *     } ],
- *     unassigned: [ { id, name, status, history } ],
- *     candidatesById: { [id]: { id, name, status, history } }
+ *     unassigned: [ { ...same candidate shape as additions... } ],
+ *     candidatesById: { [id]: { ...same candidate shape... } }
  *   }
  *
  *   `unassigned` is the list of candidates not yet placed in
@@ -50,6 +53,31 @@
  *   `candidatesById` is a lookup for the "add to team" dropdown.
  *   The events module builds it once when entering proposal
  *   mode.
+ *
+ * CAREER MILESTONE DISPLAY (this revision):
+ *   Each candidate row shows their career milestone dates next
+ *   to the name. The renderer accepts the following fields on a
+ *   candidate:
+ *
+ *     juniorYear      1910 | null
+ *     seniorYear      1912 | null
+ *     supportYear     null | 1915
+ *     instructorYear  null
+ *     milestoneYear   1910 | null
+ *     milestoneLabel  'Junior 1910' | ''
+ *
+ *   All are optional. The renderer degrades gracefully:
+ *
+ *     - When `milestoneLabel` is present, it is used as the
+ *       primary anchor.
+ *     - When it is absent but individual years are present, the
+ *       renderer composes a label from whichever years exist
+ *       (e.g. "Junior 1910 → Senior 1912").
+ *     - When no year data is present, the renderer falls back to
+ *       the older display (status only).
+ *
+ *   The milestone label is rendered as a small monospace chip so
+ *   it reads as structured data, not prose.
  *
  * EDITABILITY:
  *   Every assignment row emits a "Remove" button for each
@@ -115,6 +143,63 @@
             return 'No professional-team history';
         }
         return 'Years: ' + history.join(', ');
+    }
+
+    /**
+     * Compose a career milestone label from the individual years
+     * on a candidate.
+     *
+     * The aggregator already computes and supplies a
+     * `milestoneLabel`. This function exists for the degraded
+     * case where only the raw years are present — an older VM
+     * shape, a future VM that drops the label, or a unit test
+     * that constructs a candidate by hand.
+     *
+     * Preference order for the label:
+     *   1. candidate.milestoneLabel when non-empty
+     *   2. composed from juniorYear → seniorYear → supportYear →
+     *      instructorYear (only non-null entries), joined with
+     *      an arrow
+     *   3. empty string when no year is present
+     *
+     * @param {object} candidate
+     * @returns {string}
+     */
+    function buildMilestoneLabel(candidate) {
+        if (!candidate || typeof candidate !== 'object') {
+            return '';
+        }
+
+        if (isNonEmptyString(candidate.milestoneLabel)) {
+            return String(candidate.milestoneLabel);
+        }
+
+        var parts = [];
+
+        if (candidate.juniorYear !== null &&
+            candidate.juniorYear !== undefined) {
+            parts.push('Junior ' + String(candidate.juniorYear));
+        }
+        if (candidate.seniorYear !== null &&
+            candidate.seniorYear !== undefined) {
+            parts.push('Senior ' + String(candidate.seniorYear));
+        }
+        if (candidate.supportYear !== null &&
+            candidate.supportYear !== undefined) {
+            parts.push('Support ' + String(candidate.supportYear));
+        }
+        if (candidate.instructorYear !== null &&
+            candidate.instructorYear !== undefined) {
+            parts.push(
+                'Instructor ' + String(candidate.instructorYear)
+            );
+        }
+
+        if (parts.length === 0) {
+            return '';
+        }
+
+        return parts.join(' \u2192 ');
     }
 
     // ============================================================
@@ -304,6 +389,11 @@
             : [];
         var hasHistory = history.length > 0;
 
+        // Career milestone chip. Composed from milestoneLabel
+        // when present, from the raw years otherwise.
+        var milestoneLabel = buildMilestoneLabel(candidate);
+        var hasMilestone = milestoneLabel !== '';
+
         var html = '';
         html += '<div class="matchmaking-addition" ' +
                     'data-character-id="' +
@@ -316,6 +406,12 @@
         if (isNonEmptyString(candidate.status)) {
             html += '<span class="matchmaking-addition-status">' +
                         escapeHtml(candidate.status) +
+                    '</span>';
+        }
+        if (hasMilestone) {
+            html += '<span class="matchmaking-addition-milestone" ' +
+                        'title="Earliest career milestone">' +
+                        escapeHtml(milestoneLabel) +
                     '</span>';
         }
         html += '</div>';
@@ -355,9 +451,21 @@
         html += '<option value="">Add unassigned...</option>';
         for (var i = 0; i < unassigned.length; i++) {
             var candidate = unassigned[i];
+
+            // Include the milestone year in the option label when
+            // present. This is the cheapest way to make the
+            // ordering legible in a native <select>, which cannot
+            // carry styled spans.
+            var optionLabel = candidate.name;
+            var milestoneLabel = buildMilestoneLabel(candidate);
+            if (milestoneLabel !== '') {
+                optionLabel = candidate.name +
+                    ' (' + milestoneLabel + ')';
+            }
+
             html += '<option value="' +
                         escapeAttribute(candidate.id) + '">' +
-                        escapeHtml(candidate.name) +
+                        escapeHtml(optionLabel) +
                     '</option>';
         }
         html += '</select>';
@@ -383,12 +491,19 @@
         html += '<div class="matchmaking-unassigned-list">';
         for (var i = 0; i < unassigned.length; i++) {
             var candidate = unassigned[i];
+            var milestoneLabel = buildMilestoneLabel(candidate);
+
             html += '<div class="matchmaking-unassigned-row" ' +
                         'data-character-id="' +
                             escapeAttribute(candidate.id) + '">';
             html += '<span class="matchmaking-unassigned-name">' +
                         escapeHtml(candidate.name) +
                     '</span>';
+            if (milestoneLabel !== '') {
+                html += '<span class="matchmaking-unassigned-milestone">' +
+                            escapeHtml(milestoneLabel) +
+                        '</span>';
+            }
             html += '</div>';
         }
         html += '</div>';
