@@ -8,7 +8,8 @@
  *   Given two parent character records and a small options object,
  *   returns a new character DTO suitable for CharacterCRUD.createChild.
  *   The DTO has:
- *     - a name (defaulting to father's surname)
+ *     - a placeholder name (Baby Boy / Baby Girl, or a user-supplied
+ *       override)
  *     - a sex (random or user-supplied)
  *     - physical traits inherited from both parents with jitter
  *     - stats as the average of both parents + jitter, clamped
@@ -21,6 +22,23 @@
  *     does that.
  *   - It does not touch window.data, the DOM, or persistence.
  *   - It does not enter MutationPipeline.
+ *
+ * NAMING:
+ *   Unless the caller supplies a firstName, the child gets a
+ *   placeholder name derived from their sex:
+ *
+ *     Male   -> 'Baby Boy'
+ *     Female -> 'Baby Girl'
+ *
+ *   The placeholder is intentional: newborns do not have names yet,
+ *   and the user renames them later through the standard character
+ *   editor. There is no name pool. Two placeholder values, one per
+ *   sex, and that is the whole convention.
+ *
+ *   The lastName still defaults to the father's surname (or the
+ *   mother's if the father's is empty), because a newborn with no
+ *   surname would be unusual even in a placeholder. The user can
+ *   override either field in the modal.
  *
  * DETERMINISM:
  *   The factory uses Math.random for every choice. Two calls with
@@ -43,6 +61,13 @@
         return;
     }
     window.__socialChildFactoryLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var PLACEHOLDER_MALE = 'Baby Boy';
+    var PLACEHOLDER_FEMALE = 'Baby Girl';
 
     // ============================================================
     // DEPENDENCY ACCESSORS
@@ -101,14 +126,6 @@
     // ============================================================
     // HEIGHT / WEIGHT PARSING
     // ============================================================
-    //
-    // Parents store height and weight as free-text strings. Common
-    // forms we try to parse:
-    //   "175cm"  "175 cm"  "175"
-    //   "72kg"   "72 kg"   "72"
-    //
-    // Anything else returns null; the field is then picked from one
-    // parent's raw string, or left blank.
 
     function parseHeightCm(str) {
         var s = safeString(str).trim().toLowerCase();
@@ -132,9 +149,6 @@
     // PARENT INSPECTION
     // ============================================================
 
-    /**
-     * Read a numeric stat from a parent, with STAT_DEFAULT fallback.
-     */
     function parentStat(parent, key) {
         var CC = getCharacterConstants();
         var fallback = CC ? CC.STAT_DEFAULT : 10;
@@ -160,13 +174,6 @@
         return safeString(v);
     }
 
-    /**
-     * Which parent is "the father" for surname purposes?
-     *
-     * Reads normalised gender. Returns 'a' when parent A is the
-     * father, 'b' when parent B is the father, and null when neither
-     * is unambiguously male.
-     */
     function fatherIsA(parentA, parentB) {
         var a = safeString(parentA && parentA.gender).trim().toLowerCase();
         var b = safeString(parentB && parentB.gender).trim().toLowerCase();
@@ -176,7 +183,6 @@
 
         if (aIsMale && !bIsMale) { return true; }
         if (bIsMale && !aIsMale) { return false; }
-        // Ambiguous — default to A.
         return true;
     }
 
@@ -198,18 +204,12 @@
         if (aPresent && !bPresent) { return a; }
         if (!aPresent && bPresent) { return b; }
 
-        // Both present: 45% A, 45% B, 10% blank.
         var roll = Math.random();
         if (roll < 0.45) { return a; }
         if (roll < 0.90) { return b; }
         return '';
     }
 
-    /**
-     * Height: parse both parents, average, jitter ±6 cm, clamp to a
-     * plausible range. If neither parent parses, fall through to the
-     * generic pick.
-     */
     function inheritHeight(parentA, parentB) {
         var ha = parseHeightCm(parentA && parentA.height);
         var hb = parseHeightCm(parentB && parentB.height);
@@ -225,8 +225,6 @@
             value = (ha !== null ? ha : hb) + randomInt(-6, 6);
         }
 
-        // Plausible range. Keeps absurd combinations out without a
-        // hard "is this realistic" test.
         value = clamp(value, 120, 220);
         return value + 'cm';
     }
@@ -254,34 +252,21 @@
     // NAME
     // ============================================================
 
-    function pickFirstName(parentA, parentB) {
-        // Try the generator's first-name pool first.
-        var Generator = getCharacterGenerator();
-        if (Generator &&
-            typeof Generator.generateCharacter === 'function') {
-            try {
-                var rolled = Generator.generateCharacter({
-                    includeStats: false,
-                    includeMagic: false,
-                    includePersonality: false,
-                    includePhysical: false
-                });
-                if (rolled && rolled.firstName) {
-                    return rolled.firstName;
-                }
-            } catch (e) {
-                // fall through
-            }
-        }
-        // Fallback pool.
-        var names = [
-            'Aria', 'Bastian', 'Celine', 'Dorian', 'Elara', 'Finn',
-            'Gwen', 'Hugo', 'Iris', 'Jasper', 'Kira', 'Liam',
-            'Mira', 'Nico', 'Orion', 'Piper', 'Quinn', 'Raven',
-            'Sage', 'Theo', 'Uma', 'Valor', 'Willow', 'Xen',
-            'Yara', 'Zane'
-        ];
-        return pickRandom(names) || 'Unnamed';
+    /**
+     * Placeholder first name for a newborn.
+     *
+     * Male   -> 'Baby Boy'
+     * Female -> 'Baby Girl'
+     *
+     * Anything else (including a missing gender, which cannot
+     * happen here because buildChildDto resolves gender first)
+     * falls back to 'Baby'.
+     */
+    function placeholderFirstName(gender) {
+        var g = safeString(gender).trim().toLowerCase();
+        if (g === 'male') { return PLACEHOLDER_MALE; }
+        if (g === 'female') { return PLACEHOLDER_FEMALE; }
+        return 'Baby';
     }
 
     function pickSurname(parentA, parentB) {
@@ -351,14 +336,6 @@
     // PERSONALITY
     // ============================================================
 
-    /**
-     * A field of the personality is picked from:
-     *   - parent A's value (35%)
-     *   - parent B's value (35%)
-     *   - a novel value from the pool (30%)
-     * When a parent's value is empty, the branch falls through to
-     * the novel pick.
-     */
     function inheritPersonalityField(parentA, parentB, field) {
         var va = parentPersonality(parentA, field);
         var vb = parentPersonality(parentB, field);
@@ -380,7 +357,6 @@
             }
         }
 
-        // If we got here, return whichever parent value exists.
         if (va !== '') { return va; }
         if (vb !== '') { return vb; }
         return '';
@@ -434,8 +410,9 @@
      * @param {object} parentB
      * @param {object} options
      * @param {number|string} options.birthYear - Required
-     * @param {string} [options.firstName] - Optional; when empty, a
-     *   random first name is generated.
+     * @param {string} [options.firstName] - Optional; when empty,
+     *   defaults to 'Baby Boy' / 'Baby Girl' based on the child's
+     *   resolved sex.
      * @param {string} [options.lastName] - Optional; when empty,
      *   defaults to the father's surname.
      * @param {string} [options.gender] - 'Male' or 'Female'; when
@@ -454,20 +431,20 @@
             throw new Error('[SocialChildFactory] a valid birthYear is required.');
         }
 
-        // Name
+        // Resolve sex FIRST, so the placeholder name can key off it.
+        var gender = safeString(options.gender).trim();
+        if (gender !== 'Male' && gender !== 'Female') {
+            gender = Math.random() < 0.5 ? 'Male' : 'Female';
+        }
+
+        // Name. Placeholder unless the caller supplies one.
         var firstName = safeString(options.firstName).trim();
         if (firstName === '') {
-            firstName = pickFirstName(parentA, parentB);
+            firstName = placeholderFirstName(gender);
         }
         var lastName = safeString(options.lastName).trim();
         if (lastName === '') {
             lastName = pickSurname(parentA, parentB);
-        }
-
-        // Sex
-        var gender = safeString(options.gender).trim();
-        if (gender !== 'Male' && gender !== 'Female') {
-            gender = Math.random() < 0.5 ? 'Male' : 'Female';
         }
 
         // Inheritances
@@ -542,12 +519,6 @@
     // PUBLIC: DISPLAY BLURB
     // ============================================================
 
-    /**
-     * A short human-readable description of the inheritance, for
-     * the child modal preview.
-     *
-     * @returns {object} { fullName, sex, statsSummary, personalitySummary }
-     */
     function previewChild(parentA, parentB, options) {
         var dto;
         try {
@@ -602,7 +573,11 @@
         buildChildDto: buildChildDto,
         previewChild: previewChild,
 
-        // Exposed for tests and future reuse
+        // Constants
+        PLACEHOLDER_MALE: PLACEHOLDER_MALE,
+        PLACEHOLDER_FEMALE: PLACEHOLDER_FEMALE,
+
+        // Exposed for tests
         normaliseGender: function(gender) {
             var s = safeString(gender).trim().toLowerCase();
             if (s === 'male' || s === 'm' || s === 'man' || s === 'boy') {
