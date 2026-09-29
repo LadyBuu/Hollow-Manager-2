@@ -202,6 +202,48 @@
     }
 
     // ============================================================
+    // ROMANTIC STATUS
+    // ============================================================
+
+    /**
+     * Is this character currently in an ongoing romantic relationship?
+     *
+     * A relationship counts as ongoing when its endYear is blank
+     * (undefined, null, or empty string). A past romantic relationship
+     * (endYear set) does NOT count — the character is single again.
+     *
+     * This is the filter the pairing suggestions use: "suggest only
+     * characters who are not currently romantically involved."
+     *
+     * @param {string} charId
+     * @returns {boolean} True if the character has an ongoing romantic relationship
+     */
+    function isCharacterRomanticallyInvolved(charId) {
+        if (!charId) {
+            return false;
+        }
+
+        var rels = getCharacterRelationships(charId);
+        for (var i = 0; i < rels.length; i++) {
+            var rel = rels[i];
+            if (!rel) { continue; }
+            if (rel.typeId !== 'romantic') { continue; }
+
+            var end = rel.endYear;
+            var isOngoing =
+                end === undefined ||
+                end === null ||
+                (typeof end === 'string' && end.trim() === '');
+
+            if (isOngoing) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ============================================================
     // RELATIONSHIP EXISTENCE
     // ============================================================
 
@@ -457,6 +499,9 @@
         relationshipExists: relationshipExists,
         hasAnyRelationship: hasAnyRelationship,
         hasRelationships: hasRelationships,
+
+        // Romantic status
+        isCharacterRomanticallyInvolved: isCharacterRomanticallyInvolved,
 
         // Type queries (delegated to SocialConstants)
         getRelationshipTypes: getRelationshipTypes,
