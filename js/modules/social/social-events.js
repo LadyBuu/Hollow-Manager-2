@@ -49,12 +49,47 @@
  *   Changing the checkbox repopulates the character selects,
  *   preserving whatever is currently selected on each side.
  *
+ * GRAPH DRILL-DOWN (this revision):
+ *   The graph is FOCUSED. One character is centered; its direct
+ *   connections sit on a ring around it. The click model is:
+ *
+ *     Click a RING node   -> push that character onto the focus
+ *                            stack; it becomes the new center.
+ *     Click the CENTER    -> pop the focus stack; go back one step.
+ *     Click the Back btn  -> same as clicking the center.
+ *     Click a breadcrumb  -> truncate the focus stack to that depth.
+ *
+ *   All four of those routes go through SocialGraph's public focus
+ *   API (pushFocus / popFocus / getFocusPath / setFocus). This file
+ *   does NOT mutate focus state directly; it calls the graph
+ *   module's functions and then re-renders the breadcrumb.
+ *
+ *   The graph SVG nodes carry class="social-graph-node" and
+ *   data-node-id / data-is-center. Delegation on that class catches
+ *   every click, including on nodes drawn after the listener was
+ *   installed (which is every node: the SVG content is replaced on
+ *   every render).
+ *
+ *   renderGraphBreadcrumb() reads SocialGraph.getFocusPath() and
+ *   rebuilds the breadcrumb DOM after every focus change. It is
+ *   also called from handleViewModeChange('graph') and from
+ *   refreshUI() while the graph is visible.
+ *
+ * CHARACTER DETAIL MODAL:
+ *   The character-detail modal is opened by a DELEGATED click on
+ *   the "View All Relationships" button rendered inside the modal
+ *   itself, and by any future caller that wants it. The graph no
+ *   longer opens the detail modal on single-click; single-click
+ *   drills in. A future revision can add a double-click gesture to
+ *   open the detail modal without disturbing the drill-down.
+ *
  * DEPENDENCIES:
  *   - window.SocialCore
  *   - window.SocialViews
  *   - window.SocialQueries
  *   - window.SocialAggregator
  *   - window.SocialGraph
+ *   - window.CharacterQueries (for breadcrumb name resolution)
  *   - window.Modal
  *   - window.NotificationSystem
  */
@@ -114,6 +149,15 @@
         }
         if (!SocialGraph || typeof SocialGraph.renderGraph !== 'function') {
             missing.push('SocialGraph.renderGraph');
+        }
+        if (!SocialGraph || typeof SocialGraph.pushFocus !== 'function') {
+            missing.push('SocialGraph.pushFocus');
+        }
+        if (!SocialGraph || typeof SocialGraph.popFocus !== 'function') {
+            missing.push('SocialGraph.popFocus');
+        }
+        if (!SocialGraph || typeof SocialGraph.getFocusPath !== 'function') {
+            missing.push('SocialGraph.getFocusPath');
         }
 
         if (!Modal || typeof Modal.showModal !== 'function') {
@@ -244,6 +288,9 @@
 
         bindSuggestPairs();
         bindCreateChild();
+
+        // Graph drill-down (focus stack, breadcrumb, back button).
+        bindGraphDrilldown();
 
         _initialized = true;
     }
@@ -589,10 +636,21 @@
         }
     }
 
+    /**
+     * Switch between list and graph views.
+     *
+     * The graph does NOT get a fresh focus on every show. It keeps
+     * whatever focus the user last had. If the user has never
+     * focused anything, the graph shows the entry prompt.
+     *
+     * When switching TO the graph, the breadcrumb is re-rendered so
+     * it reflects the preserved focus.
+     */
     function handleViewModeChange(mode) {
         if (mode === 'graph') {
             SocialGraph.setGraphVisible(true);
             SocialGraph.renderGraph();
+            renderGraphBreadcrumb();
         } else {
             SocialGraph.setGraphVisible(false);
             SocialViews.renderRelationships();
@@ -665,15 +723,191 @@
     }
 
     // ============================================================
-    // CHARACTER DETAIL
+    // GRAPH DRILL-DOWN
     // ============================================================
+    //
+    // The graph renders SVG nodes into #social-graph-transform on
+    // every render. Because the innerHTML is replaced, direct
+    // listeners on nodes would be lost. All node click handling is
+    // therefore delegated on .social-graph-node.
+    //
+    // The center node pops the stack; a ring node pushes onto it.
+    // Which one is which is decided by data-is-center, which the
+    // graph module writes onto every node circle.
 
-    function bindCharacterDetail() {
-        delegate('.graph-node', 'click', function(e, target) {
-            var id = target.dataset.id;
-            if (id) { handleGraphNodeClick(id); }
+    function bindGraphDrilldown() {
+        // ---- Graph node click ----
+        delegate('.social-graph-node', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            var nodeId = target.dataset ? target.dataset.nodeId : null;
+            var isCenter = target.dataset && target.dataset.isCenter === 'true';
+
+            if (!nodeId) { return; }
+
+            if (isCenter) {
+                SocialGraph.popFocus();
+            } else {
+                SocialGraph.pushFocus(nodeId);
+            }
+
+            renderGraphBreadcrumb();
         });
 
+        // ---- Back button ----
+        var backBtn = document.getElementById('graph-back-btn');
+        if (backBtn) {
+            addEventListener(backBtn, 'click', function(e) {
+                e.preventDefault();
+                SocialGraph.popFocus();
+                renderGraphBreadcrumb();
+            });
+        }
+
+        // ---- Breadcrumb jumps ----
+        //
+        // A breadcrumb entry truncates the stack to that character.
+        // Truncation is implemented as setFocus + successive pushes,
+        // because the graph module only exposes single-step focus
+        // operations. Walking the path bottom-up and pushing each
+        // id in order reproduces the exact path the user took,
+        // because pushFocus is idempotent for an already-top id and
+        // truncates cycles for one already-in-stack.
+        delegate('.social-graph-breadcrumb-jump', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            var charId = target.dataset ? target.dataset.charId : null;
+            if (!charId) { return; }
+
+            jumpFocusTo(charId);
+            renderGraphBreadcrumb();
+        });
+    }
+
+    /**
+     * Truncate the graph's focus stack so that charId is the top.
+     *
+     * Implementation: take the current path, find the LAST index
+     * at which charId appears, then rebuild the stack by resetting
+     * and re-pushing every id up to and including that index. This
+     * preserves the exact entry path the user took, which matters
+     * because the breadcrumb is a history, not a set.
+     */
+    function jumpFocusTo(charId) {
+        var target = String(charId);
+        var path = SocialGraph.getFocusPath();
+
+        var lastIndex = -1;
+        for (var i = 0; i < path.length; i++) {
+            if (String(path[i]) === target) {
+                lastIndex = i;
+            }
+        }
+
+        if (lastIndex === -1) {
+            // Not in the current path. Treat as a fresh focus.
+            SocialGraph.setFocus(target);
+            return;
+        }
+
+        // Rebuild the path up to and including lastIndex.
+        var truncated = path.slice(0, lastIndex + 1);
+        SocialGraph.resetFocus();
+        for (var j = 0; j < truncated.length; j++) {
+            SocialGraph.pushFocus(truncated[j]);
+        }
+    }
+
+    /**
+     * Render the focus breadcrumb above the graph.
+     *
+     * Reads SocialGraph.getFocusPath(), resolves each id to a
+     * display name via CharacterQueries, and renders a chain of
+     * clickable entries into #social-graph-breadcrumb. Hides the
+     * back button when the stack has only one entry (there is
+     * nothing to go back to).
+     *
+     * Safe to call at any time, including when the graph is hidden.
+     * Does nothing if the breadcrumb container is absent.
+     */
+    function renderGraphBreadcrumb() {
+        var container = document.getElementById('social-graph-breadcrumb');
+        var backBtn = document.getElementById('graph-back-btn');
+        if (!container) { return; }
+
+        var path = SocialGraph.getFocusPath();
+
+        if (backBtn) {
+            backBtn.style.display = path.length > 1 ? 'inline-block' : 'none';
+        }
+
+        container.textContent = '';
+
+        if (path.length === 0) {
+            // Empty path: nothing to show. The entry prompt in the
+            // SVG already explains the state.
+            return;
+        }
+
+        var CharacterQueries = window.CharacterQueries;
+
+        for (var i = 0; i < path.length; i++) {
+            if (i > 0) {
+                var sep = document.createElement('span');
+                sep.textContent = '\u203a';
+                sep.style.color = 'var(--text-dim)';
+                sep.style.fontSize = '0.75rem';
+                container.appendChild(sep);
+            }
+
+            var id = String(path[i]);
+            var name = 'Unknown';
+            if (CharacterQueries &&
+                typeof CharacterQueries.getCharacterById === 'function') {
+                var c = CharacterQueries.getCharacterById(id);
+                if (c) {
+                    name = CharacterQueries.getDisplayName(c) || 'Unknown';
+                }
+            }
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'social-graph-breadcrumb-jump';
+            btn.dataset.charId = id;
+            btn.textContent = name;
+            btn.style.cssText =
+                'background:none;border:none;color:var(--accent);' +
+                'cursor:pointer;padding:0;font-size:0.75rem;' +
+                'text-decoration:underline;';
+
+            // The last entry is the current center; disable it.
+            if (i === path.length - 1) {
+                btn.disabled = true;
+                btn.style.color = 'var(--text)';
+                btn.style.textDecoration = 'none';
+                btn.style.cursor = 'default';
+            }
+
+            container.appendChild(btn);
+        }
+    }
+
+    // ============================================================
+    // CHARACTER DETAIL
+    // ============================================================
+    //
+    // The character-detail modal is opened by:
+    //   - the "View All Relationships" button inside the modal
+    //     itself (this file's handleViewCharacterRelationships)
+    //   - any future caller that wants it
+    //
+    // It is NOT opened by the graph. Single-click on a graph node
+    // drills in. A double-click gesture to open the detail modal
+    // can be added later if desired.
+
+    function bindCharacterDetail() {
         var closeBtn = document.getElementById('close-char-detail');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
@@ -696,6 +930,13 @@
         });
     }
 
+    /**
+     * Open the character-detail modal for a specific character.
+     *
+     * Public method. Any caller (a graph double-click, a relationship
+     * row's character name, etc.) can invoke it. The graph module
+     * itself does NOT call it.
+     */
     function handleGraphNodeClick(charId) {
         if (!charId) { return; }
 
@@ -725,13 +966,13 @@
 
         handleCharacterDetailClose();
 
+        // Switch back to list mode so the filter is usable.
+        handleViewModeChange('list');
+
         var filter = document.getElementById('social-character-filter');
         if (filter) {
             filter.value = charId;
             SocialViews.renderRelationships();
-            if (SocialGraph.isGraphVisible()) {
-                SocialGraph.renderGraph();
-            }
         }
     }
 
@@ -1055,6 +1296,7 @@
         SocialViews.renderRelationships();
         if (SocialGraph.isGraphVisible()) {
             SocialGraph.renderGraph();
+            renderGraphBreadcrumb();
         }
         SocialGraph.updateLegend();
     }
@@ -1100,7 +1342,12 @@
         handleOpenCreateChild: handleOpenCreateChild,
         handleConfirmCreateChild: handleConfirmCreateChild,
 
-        refreshUI: refreshUI
+        refreshUI: refreshUI,
+
+        // Graph drill-down helpers (exposed for testing / external
+        // callers that need to force a breadcrumb rebuild)
+        renderGraphBreadcrumb: renderGraphBreadcrumb,
+        jumpFocusTo: jumpFocusTo
     };
 
     // ============================================================
