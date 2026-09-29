@@ -71,6 +71,12 @@
  *   The proposal itself lives in a plain object attached to the
  *   modal element (`modal.__matchmakingState`).
  *
+ *   The candidate rows carry the career milestone fields
+ *   (juniorYear, seniorYear, supportYear, instructorYear,
+ *   milestoneYear, milestoneLabel). This module preserves those
+ *   fields when it augments the raw matcher output with
+ *   candidate metadata, so the view can render them.
+ *
  * MEMBER MANAGER:
  *   The professional member manager is the shared
  *   window.MemberManager wired through window.MemberAdapterTeams.
@@ -984,9 +990,16 @@
             targets: vm.targets
         });
 
-        // Augment the raw proposal with candidate metadata. The
-        // matcher returns only { id, name } per addition; the
-        // modal needs status and history for display.
+        // Augment the raw proposal with candidate metadata.
+        //
+        // The matcher returns only { id, name } per addition. The
+        // modal needs the full candidate row for display: status,
+        // history, and the four career-milestone fields plus the
+        // milestone anchor. We copy the whole candidate object
+        // through by reference (it is a plain VM row produced by
+        // the aggregator, not a live entity), then override the
+        // id/name with the matcher's values so a caller that
+        // mutated either would still see the matcher's view.
         var assignments = [];
         var placedIds = Object.create(null);
 
@@ -996,12 +1009,30 @@
             for (var j = 0; j < rawAsg.additions.length; j++) {
                 var addition = rawAsg.additions[j];
                 placedIds[addition.id] = true;
+
                 var full = candidatesById[addition.id];
+
                 additions.push({
                     id: addition.id,
                     name: full ? full.name : addition.name,
                     status: full ? full.status : '',
-                    history: full ? full.history : []
+                    history: full ? full.history : [],
+
+                    // Career milestone fields. Preserved from
+                    // the VM. Null when the aggregator could not
+                    // resolve the corresponding year.
+                    juniorYear: full ? full.juniorYear : null,
+                    seniorYear: full ? full.seniorYear : null,
+                    supportYear: full ? full.supportYear : null,
+                    instructorYear: full
+                        ? full.instructorYear
+                        : null,
+                    milestoneYear: full
+                        ? full.milestoneYear
+                        : null,
+                    milestoneLabel: full
+                        ? full.milestoneLabel
+                        : ''
                 });
             }
             assignments.push({
@@ -1077,11 +1108,30 @@
             additionIndex, 1
         )[0];
 
-        // Return the candidate to the unassigned pool.
+        // Return the candidate to the unassigned pool. Push the
+        // full candidate record from candidatesById so the four
+        // career-year fields travel with it.
         var candidate = state.candidatesById[removed.id];
         if (candidate) {
             state.unassigned.push(candidate);
             state.unassigned.sort(function(a, b) {
+                // Preserve the milestone ordering the aggregator
+                // produced: milestone year ascending, then name.
+                var aYear = (a && a.milestoneYear !== undefined &&
+                             a.milestoneYear !== null)
+                    ? a.milestoneYear
+                    : null;
+                var bYear = (b && b.milestoneYear !== undefined &&
+                             b.milestoneYear !== null)
+                    ? b.milestoneYear
+                    : null;
+
+                if (aYear !== null && bYear !== null) {
+                    if (aYear !== bYear) { return aYear - bYear; }
+                    return a.name.localeCompare(b.name);
+                }
+                if (aYear !== null) { return -1; }
+                if (bYear !== null) { return 1; }
                 return a.name.localeCompare(b.name);
             });
         }
