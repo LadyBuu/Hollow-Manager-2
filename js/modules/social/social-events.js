@@ -23,6 +23,17 @@
  *   toward character1). The labels are refreshed on open and
  *   whenever either character select changes.
  *
+ * ELIMINATED CHARACTERS:
+ *   The relationship modal carries #rel-include-eliminated. When
+ *   unchecked (the default), the character selects hide characters
+ *   with any elimination on record. When the modal is opened in
+ *   EDIT mode, the current value on each side is always preserved
+ *   even if that character is eliminated, so editing a relationship
+ *   involving an eliminated character does not lose the value.
+ *
+ *   Changing the checkbox repopulates the character selects,
+ *   preserving whatever is currently selected on each side.
+ *
  * DEPENDENCIES:
  *   - window.SocialCore
  *   - window.SocialViews
@@ -70,6 +81,9 @@
         }
         if (!SocialViews || typeof SocialViews.renderCharacterDetailContent !== 'function') {
             missing.push('SocialViews.renderCharacterDetailContent');
+        }
+        if (!SocialViews || typeof SocialViews.populateFormSelectors !== 'function') {
+            missing.push('SocialViews.populateFormSelectors');
         }
 
         if (!SocialQueries || typeof SocialQueries.getRelationshipById !== 'function') {
@@ -181,7 +195,7 @@
             return;
         }
 
-        // Wipe the state that a previous init might have left behind.
+        // Wipe state a previous init may have left behind.
         _editId = null;
 
         SocialViews.renderSocialView(container);
@@ -225,9 +239,14 @@
     /**
      * Open the relationship modal.
      *
-     * `_editId` is cleared FIRST, unconditionally, before any early
-     * return. This is what prevents a failed previous edit from
-     * leaking its state into a subsequent open.
+     * _editId is cleared first, unconditionally, before any early
+     * return. This prevents a failed previous edit from leaking its
+     * state into a subsequent open.
+     *
+     * When editing, the two current character ids are read off the
+     * existing relationship and passed to populateFormSelectors as
+     * preserve1 / preserve2, so a filtered-out (eliminated) value on
+     * either side survives the initial population.
      */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
@@ -242,7 +261,32 @@
             return;
         }
 
-        SocialViews.populateFormSelectors();
+        // Look up the record being edited first, so its current
+        // values are available to the populate call below.
+        var editing = null;
+        if (_editId) {
+            editing = SocialQueries.getRelationshipById(_editId);
+            if (!editing) {
+                _editId = null;
+                notify('Relationship not found.', 'error');
+                return;
+            }
+        }
+
+        // Reset the checkbox BEFORE populating. Default is
+        // unchecked (hide eliminated characters).
+        var includeCb = document.getElementById('rel-include-eliminated');
+        if (includeCb) { includeCb.checked = false; }
+
+        // Repopulate the character selects with the filter applied.
+        // The editing values, if any, are preserved even when they
+        // are eliminated, so an edit does not lose a side.
+        SocialViews.populateFormSelectors({
+            includeEliminated: false,
+            preserve1: editing ? editing.character1 : null,
+            preserve2: editing ? editing.character2 : null
+        });
+
         SocialViews.populateTypeSelectors();
 
         form.reset();
@@ -256,28 +300,21 @@
         var endEl = document.getElementById('rel-end-year');
         var notesEl = document.getElementById('rel-notes');
 
-        if (_editId) {
+        if (editing) {
             title.textContent = 'Edit Relationship';
 
-            var rel = SocialQueries.getRelationshipById(_editId);
-            if (!rel) {
-                _editId = null;
-                notify('Relationship not found.', 'error');
-                return;
-            }
-
-            if (c1El) { c1El.value = rel.character1 || ''; }
-            if (c2El) { c2El.value = rel.character2 || ''; }
-            if (typeEl) { typeEl.value = rel.typeId || ''; }
-            if (startEl) { startEl.value = rel.startYear || ''; }
-            if (endEl) { endEl.value = rel.endYear || ''; }
-            if (notesEl) { notesEl.value = rel.notes || ''; }
+            if (c1El) { c1El.value = editing.character1 || ''; }
+            if (c2El) { c2El.value = editing.character2 || ''; }
+            if (typeEl) { typeEl.value = editing.typeId || ''; }
+            if (startEl) { startEl.value = editing.startYear || ''; }
+            if (endEl) { endEl.value = editing.endYear || ''; }
+            if (notesEl) { notesEl.value = editing.notes || ''; }
 
             if (clar1El) {
-                clar1El.value = SocialQueries.readClarification(rel, 1);
+                clar1El.value = SocialQueries.readClarification(editing, 1);
             }
             if (clar2El) {
-                clar2El.value = SocialQueries.readClarification(rel, 2);
+                clar2El.value = SocialQueries.readClarification(editing, 2);
             }
         } else {
             title.textContent = 'Add Relationship';
@@ -333,6 +370,27 @@
         }
         if (c2) {
             addEventListener(c2, 'change', function() {
+                SocialViews.refreshClarificationLabels();
+            });
+        }
+
+        // "Include eliminated characters" checkbox. When toggled,
+        // repopulate the character selects, preserving whatever is
+        // currently selected on each side.
+        var includeCb = document.getElementById('rel-include-eliminated');
+        if (includeCb) {
+            addEventListener(includeCb, 'change', function() {
+                var c1El = document.getElementById('rel-char1');
+                var c2El = document.getElementById('rel-char2');
+                var preserve1 = c1El ? String(c1El.value || '') : '';
+                var preserve2 = c2El ? String(c2El.value || '') : '';
+
+                SocialViews.populateFormSelectors({
+                    includeEliminated: includeCb.checked === true,
+                    preserve1: preserve1,
+                    preserve2: preserve2
+                });
+
                 SocialViews.refreshClarificationLabels();
             });
         }
@@ -695,6 +753,14 @@
             });
         }
 
+        var includeCb = document.getElementById('suggest-pairs-include-eliminated');
+        if (includeCb) {
+            addEventListener(includeCb, 'change', function() {
+                populateSuggestPairsSeedList();
+                renderSuggestionsFromControls();
+            });
+        }
+
         delegate('.pair-suggest-btn', 'click', function(e, target) {
             e.preventDefault();
             var char1 = target.dataset.char1;
@@ -718,31 +784,71 @@
             yearInput.value = String(currentYear);
         }
 
-        var seedSelect = document.getElementById('suggest-pairs-seed');
-        if (seedSelect) {
-            seedSelect.innerHTML = '<option value="">Select character...</option>';
-            var CharacterQueries = window.CharacterQueries;
-            if (CharacterQueries && typeof CharacterQueries.getCharacters === 'function') {
-                var chars = CharacterQueries.getCharacters() || [];
-                var sorted = chars.slice().sort(function(a, b) {
-                    var na = CharacterQueries.getDisplayName(a) || '';
-                    var nb = CharacterQueries.getDisplayName(b) || '';
-                    return na.localeCompare(nb);
-                });
-                for (var i = 0; i < sorted.length; i++) {
-                    var c = sorted[i];
-                    if (!c || !c.id) { continue; }
-                    var opt = document.createElement('option');
-                    opt.value = c.id;
-                    opt.textContent = CharacterQueries.getDisplayName(c) || 'Unknown';
-                    seedSelect.appendChild(opt);
-                }
-            }
-        }
+        var includeCb = document.getElementById('suggest-pairs-include-eliminated');
+        if (includeCb) { includeCb.checked = false; }
 
+        populateSuggestPairsSeedList();
         handleSuggestModeChange();
         renderSuggestionsFromControls();
         Modal.showModal(modal);
+    }
+
+    /**
+     * Populate the Suggest Pairs seed dropdown from the character
+     * store, honouring the "Include eliminated" checkbox.
+     */
+    function populateSuggestPairsSeedList() {
+        var seedSelect = document.getElementById('suggest-pairs-seed');
+        if (!seedSelect) { return; }
+
+        var CharacterQueries = window.CharacterQueries;
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacters !== 'function') {
+            seedSelect.innerHTML = '<option value="">Select character...</option>';
+            return;
+        }
+
+        var includeEliminated = false;
+        var cb = document.getElementById('suggest-pairs-include-eliminated');
+        if (cb && cb.checked === true) {
+            includeEliminated = true;
+        }
+
+        var previous = String(seedSelect.value || '');
+
+        seedSelect.innerHTML = '<option value="">Select character...</option>';
+
+        var all = CharacterQueries.getCharacters() || [];
+        var filtered = [];
+
+        for (var i = 0; i < all.length; i++) {
+            var c = all[i];
+            if (!c || !c.id) { continue; }
+            if (!includeEliminated) {
+                if (SocialViews.hasAnyElimination &&
+                    SocialViews.hasAnyElimination(c.id)) {
+                    continue;
+                }
+            }
+            filtered.push(c);
+        }
+
+        var sorted = filtered.slice().sort(function(a, b) {
+            var na = CharacterQueries.getDisplayName(a) || '';
+            var nb = CharacterQueries.getDisplayName(b) || '';
+            return na.localeCompare(nb);
+        });
+
+        for (var j = 0; j < sorted.length; j++) {
+            var c2 = sorted[j];
+            var opt = document.createElement('option');
+            opt.value = c2.id;
+            opt.textContent = CharacterQueries.getDisplayName(c2) || 'Unknown';
+            seedSelect.appendChild(opt);
+        }
+
+        // Preserve the previously-selected value when possible.
+        if (previous) { seedSelect.value = previous; }
     }
 
     function handleSuggestModeChange() {
@@ -756,6 +862,7 @@
         var yearInput = document.getElementById('suggest-pairs-year');
         var modeSelect = document.getElementById('suggest-pairs-mode');
         var seedSelect = document.getElementById('suggest-pairs-seed');
+        var includeCb = document.getElementById('suggest-pairs-include-eliminated');
         var results = document.getElementById('suggest-pairs-results');
 
         if (!results) { return; }
@@ -763,7 +870,8 @@
         var options = {
             year: yearInput ? yearInput.value : '',
             mode: modeSelect ? modeSelect.value : 'top',
-            seedCharId: seedSelect ? seedSelect.value : ''
+            seedCharId: seedSelect ? seedSelect.value : '',
+            includeEliminated: includeCb ? includeCb.checked === true : false
         };
 
         if (options.mode === 'seed' && !options.seedCharId) {
