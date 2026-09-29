@@ -59,6 +59,12 @@
  *   modal. Setup mode is a small form; Proposal mode is a list
  *   of per-team assignment blocks with an unassigned pool at
  *   the bottom. Both modes share the standard modal chrome.
+ *
+ *   Career milestone chips (.matchmaking-addition-milestone,
+ *   .matchmaking-unassigned-milestone) render the candidate's
+ *   earliest career milestone next to their name. They are
+ *   monospace and muted so they read as structured data, not
+ *   prose.
  */
 
 /* ============================================================
@@ -518,6 +524,11 @@
 
    The Character column carries an optional sub-line for the
    future-stint indicator ("→ TeamName from YYYY").
+
+   Rows are sorted by milestone year (the earliest of the four
+   career years), oldest first. The sort is owned by
+   TeamQueries.getProfessionalTeamEligibleRoster, not by the
+   renderer.
  */
 
 #team-list-container.unassigned,
@@ -745,6 +756,13 @@
    (max-width: 800px); we do not override it. The extra
    `.matchmaking-content` class exists so specific tweaks can be
    scoped without touching the shared rules.
+
+   CAREER MILESTONE CHIP:
+     Each candidate row shows their earliest career milestone
+     (e.g. "Junior 1910", or "Junior 1910 → Senior 1912" when
+     composed from the raw years) as a small monospace chip.
+     The chip is styled so it reads as structured data, not
+     prose: monospace, tabular numerals, muted, small.
  */
 
 /* ---------- Shared with both modes ---------- */
@@ -863,6 +881,26 @@
     border-radius: 8px;
 }
 
+/*
+ * Career milestone chip: the earliest of the candidate's
+ * junior / senior / support / instructor years.
+ *
+ * Monospace with tabular numerals so years align vertically
+ * across rows. Muted so it does not compete with the name.
+ */
+.matchmaking-addition-milestone {
+    font-size: 0.6rem;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
+                 'Roboto Mono', Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    padding: 1px 6px;
+    border-radius: 8px;
+    white-space: nowrap;
+}
+
 .matchmaking-addition-secondary {
     grid-area: second;
     font-size: 0.65rem;
@@ -942,6 +980,7 @@
 .matchmaking-unassigned-row {
     display: inline-flex;
     align-items: center;
+    gap: 6px;
     padding: 3px 10px;
     background: var(--panel-alt);
     border: 1px solid var(--border-soft);
@@ -951,6 +990,19 @@
 .matchmaking-unassigned-name {
     font-size: 0.7rem;
     color: var(--text);
+    white-space: nowrap;
+}
+
+/*
+ * Career milestone chip in the unassigned pool. Same visual
+ * vocabulary as the additions chip, sized down for the pill.
+ */
+.matchmaking-unassigned-milestone {
+    font-size: 0.58rem;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
+                 'Roboto Mono', Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
     white-space: nowrap;
 }
 
