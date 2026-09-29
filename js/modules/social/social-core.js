@@ -9,60 +9,67 @@
  *   - deleteAllRelationshipsForCharacter - Delete all relationships for a character
  *   - validateRelationshipData - Pure validation function
  *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - Transaction-local adders for use inside another module's
+ *     pipeline mutate callback (addRelationshipInTransaction,
+ *     addRelationshipsInTransaction)
  *
  * IMPORTANT:
- *   - All mutations use MutationPipeline for transactional safety
+ *   - All public mutations use MutationPipeline for transactional safety
  *   - No DOM, no UI, no notifications, no rendering
  *   - Uses SocialQueries for read operations (Social data only)
- *   - Uses injected characterProvider for character existence (tiny interface)
+ *   - Uses injected characterProvider for character existence
  *   - Uses SocialConstants for type definitions
  *   - Returns structured results { success, data?, message?, error? }
  *   - No confirm() dialogs - caller handles UI
  *   - No window.data fallbacks - data structure must exist
- *   - characterProvider is INJECTED via init() - no fallback to CharacterQueries
+ *   - characterProvider is INJECTED via init()
+ *
+ * CLARIFICATION SEMANTICS (two-sided):
+ *   Each relationship carries two clarification strings:
+ *
+ *     clarification1   character1's role toward character2
+ *     clarification2   character2's role toward character1
+ *
+ *   Examples:
+ *     { character1: 'alice', character2: 'bob',
+ *       clarification1: 'Boss', clarification2: 'Employee' }
+ *     { character1: 'alice', character2: 'bob',
+ *       clarification1: 'Best friend', clarification2: 'Best friend' }
+ *     { character1: 'alice', character2: 'bob',
+ *       clarification1: 'Mother', clarification2: 'Daughter' }
+ *
+ *   LEGACY FALLBACK:
+ *     Older records carry a single `clarification` field. On read,
+ *     the value is treated as clarification1 and clarification2 is
+ *     empty. On write, the legacy field is removed and the record
+ *     carries clarification1 and clarification2. Migration happens
+ *     naturally: the first time a relationship is edited, it is
+ *     upgraded to the two-field shape.
+ *
+ *   Read clarification1 / clarification2 via SocialQueries; do not
+ *   read the raw fields directly, because the reader must apply the
+ *   legacy fallback.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
- *   - Any integer >= 1 is a valid year.
- *   - A null, empty, or missing year is also valid (means "year not
+ *   - A null, empty, or missing year is valid (means "year not
  *     specified").
- *   - Years are stored as strings on the relationship record. When a
- *     year is provided, it is normalised to a canonical string form
- *     (no leading zeros, no whitespace).
+ *   - Years are stored as strings. When provided, a year is
+ *     normalised to its canonical string form.
  *
- * DUPLICATE CHECK — SELF-EXCLUSION ON UPDATE (this revision):
- *   The duplicate check answers "is there already a relationship of
- *   this (char1, char2, typeId)?" That question has one answer for
- *   a CREATE and a different answer for an UPDATE.
- *
- *     CREATE: "does any relationship of this triple exist?"
- *     UPDATE: "does any OTHER relationship of this triple exist?"
- *
- *   The check used to answer the create question for both paths. A
- *   user editing an existing relationship hit a false positive: the
- *   check found the row being edited and rejected the save with
- *   "A <type> relationship already exists between these characters."
- *   Nothing about the update was a duplicate; the check simply could
- *   not distinguish "a different relationship already exists" from
- *   "the relationship being edited already exists."
- *
- *   validateRelationshipData now accepts an optional
- *   `options.excludeId`. When present, the duplicate check ignores
- *   any existing relationship whose `id` matches. updateRelationship
- *   passes the row's own id; createRelationship passes nothing.
- *
- *   The check is NOT dropped for updates. A user can still edit
- *   (Alice, Bob, friend) into (Alice, Bob, romantic); if a
- *   different (Alice, Bob, romantic) already exists, that is a
- *   genuine duplicate and is still rejected. Only the row being
- *   edited is excluded from the search.
+ * DUPLICATE DETECTION:
+ *   createRelationship rejects a pair + type that already exists.
+ *   updateRelationship rejects a pair + type that already exists
+ *   EXCEPT when the match is the record being edited. The
+ *   validator takes an `excludeId` option for this purpose; without
+ *   it, every edit that keeps the same characters and type would
+ *   reject itself.
  *
  * CASCADE SEMANTICS (stripCharacterRefs):
  *   When a character is deleted, every relationship involving that
- *   character is removed from social.relationships. Relationships are
- *   stored as { character1, character2, ... }; both sides are checked.
- *   This helper is called by CharacterCRUD.deleteCharacter from inside
+ *   character is removed from social.relationships. Both sides are
+ *   checked. Called by CharacterCRUD.deleteCharacter from inside
  *   its pipeline mutate, so it runs in the same transaction as the
  *   character removal.
  *
@@ -83,7 +90,10 @@
  *       }
  *   });
  *
- *   var result = SocialCore.createRelationship('char1', 'char2', 'friendship');
+ *   var result = SocialCore.createRelationship(
+ *       'char1', 'char2', 'friendship',
+ *       '', '', 'Best friend', 'Best friend', ''
+ *   );
  *   if (result.success) {
  *       // relationship created
  *   }
@@ -111,13 +121,6 @@
 
     var _characterProvider = null;
 
-    /**
-     * Initialize SocialCore with injected dependencies.
-     * Must be called before any mutation operations.
-     *
-     * @param {object} deps - Dependency injection object
-     * @param {object} deps.characterProvider - Character provider with exists() method
-     */
     function init(deps) {
         deps = deps || {};
 
@@ -163,7 +166,6 @@
             missing.push('MutationPipeline.performMutation');
         }
 
-        // characterProvider is optional (for tests), but warn if not set
         if (!_characterProvider || typeof _characterProvider.exists !== 'function') {
             missing.push('characterProvider.exists (call SocialCore.init() first)');
         }
@@ -177,140 +179,75 @@
     }
 
     // ============================================================
-    // DUPLICATE CHECK — SELF-EXCLUSION ON UPDATE
+    // CLARIFICATION HELPERS
     // ============================================================
-    //
-    // findConflictingRelationship answers "is there a relationship of
-    // this (char1, char2, typeId) other than the one being edited?"
-    //
-    // The pair (char1, char2) is UNORDERED on the record: the create
-    // path stores whatever order the caller provided, and two rows
-    // that differ only in which side is character1 are the same
-    // relationship for the purpose of this check. The walk below
-    // matches either orientation.
-    //
-    // When excludeId is null (a create), any match is a conflict.
-    // When excludeId is present (an update), a match with the same id
-    // is the row being edited and is skipped; any other match is a
-    // conflict.
-    //
-    // Returns the conflicting relationship record, or null when there
-    // is no conflict.
-    //
-    // WHY WALK getCharacterRelationships RATHER THAN ADD A NEW QUERY:
-    //   SocialQueries.relationshipExists(char1, char2, typeId) already
-    //   answers the create-time question. The self-exclusion is a
-    //   question about a specific row id, which relationshipExists
-    //   does not accept. Rather than expand the queries module's API
-    //   for one caller, this helper reuses the existing
-    //   getCharacterRelationships read (which returns every
-    //   relationship involving a given character, in either
-    //   orientation) and applies the exclusion locally.
-    //
-    //   When getCharacterRelationships is unavailable, the helper
-    //   falls back to the create-time question: any match is a
-    //   conflict. That preserves the pre-fix behaviour when the
-    //   underlying read is missing rather than silently allowing
-    //   a duplicate.
 
-    function findConflictingRelationship(char1, char2, typeId, excludeId) {
-        if (!char1 || !char2 || !typeId) {
-            return null;
-        }
+    /**
+     * Read a relationship's clarification for one side.
+     *
+     * side === 1 → clarification1, falling back to the legacy
+     *              `clarification` field.
+     * side === 2 → clarification2 (no legacy fallback: the old
+     *              single-field model could not express a
+     *              side-specific value for character2, so pretending
+     *              it did would be a lie).
+     *
+     * @param {object} rel
+     * @param {number} side - 1 or 2
+     * @returns {string}
+     */
+    function readClarification(rel, side) {
+        if (!rel || typeof rel !== 'object') { return ''; }
 
-        var c1 = String(char1);
-        var c2 = String(char2);
-        var targetType = String(typeId);
-        var exclude = (excludeId !== null && excludeId !== undefined)
-            ? String(excludeId)
-            : null;
-
-        var pairs = [[c1, c2], [c2, c1]];
-
-        if (typeof SocialQueries.getCharacterRelationships === 'function') {
-            var seen = Object.create(null);
-            for (var p = 0; p < pairs.length; p++) {
-                var list = [];
-                try {
-                    list = SocialQueries.getCharacterRelationships(
-                        pairs[p][0]
-                    ) || [];
-                } catch (e) {
-                    list = [];
-                }
-                if (!Array.isArray(list)) { continue; }
-
-                for (var i = 0; i < list.length; i++) {
-                    var rel = list[i];
-                    if (!rel) { continue; }
-
-                    var relId = (rel.id !== null && rel.id !== undefined)
-                        ? String(rel.id)
-                        : null;
-                    if (relId !== null && seen[relId]) { continue; }
-                    if (relId !== null) { seen[relId] = true; }
-
-                    if (String(rel.typeId) !== targetType) { continue; }
-
-                    var r1 = String(rel.character1);
-                    var r2 = String(rel.character2);
-
-                    var matchesPair =
-                        (r1 === c1 && r2 === c2) ||
-                        (r1 === c2 && r2 === c1);
-                    if (!matchesPair) { continue; }
-
-                    if (exclude !== null && relId === exclude) {
-                        continue;
-                    }
-
-                    return rel;
-                }
+        if (side === 2) {
+            if (rel.clarification2 !== undefined && rel.clarification2 !== null) {
+                return String(rel.clarification2);
             }
-            return null;
+            return '';
         }
 
-        // Fallback: no per-character read available. If a
-        // relationship of this triple exists at all, treat it as a
-        // conflict. This cannot exclude the row being edited, so an
-        // update in this state will falsely reject self-edits. The
-        // state is abnormal — getCharacterRelationships is a
-        // mandatory read on SocialQueries — and the fallback keeps
-        // the check conservative rather than silently allowing
-        // duplicates.
-        try {
-            if (SocialQueries.relationshipExists(c1, c2, targetType) === true) {
-                return { id: null };
-            }
-        } catch (e) {
-            return null;
+        if (rel.clarification1 !== undefined && rel.clarification1 !== null) {
+            return String(rel.clarification1);
         }
+        if (rel.clarification !== undefined && rel.clarification !== null) {
+            return String(rel.clarification);
+        }
+        return '';
+    }
 
-        return null;
+    /**
+     * Write both clarification fields onto a relationship record,
+     * and remove the legacy `clarification` field. Called from the
+     * mutate callbacks of create and update.
+     */
+    function writeClarifications(rel, clarification1, clarification2) {
+        if (!rel) { return; }
+        rel.clarification1 = clarification1 || '';
+        rel.clarification2 = clarification2 || '';
+        if (Object.prototype.hasOwnProperty.call(rel, 'clarification')) {
+            delete rel.clarification;
+        }
     }
 
     // ============================================================
-    // VALIDATION - Pure function
+    // VALIDATION
     // ============================================================
 
     /**
      * Validate relationship data.
-     * This is a PURE function - no side effects, no state mutation.
      *
-     * @param {object} data - Relationship data to validate
-     * @param {object} options - Optional validation options
-     * @param {boolean} options.checkDuplicates - Check for duplicates (default: true)
-     * @param {string|number} options.excludeId - Relationship id to exclude
-     *   from the duplicate check. Set by the update path to the row
-     *   being edited. Left unset on the create path.
+     * @param {object} data
+     * @param {object} [options]
+     * @param {boolean} [options.checkDuplicates=true]
+     * @param {string} [options.excludeId] - When set, the duplicate
+     *   check ignores this relationship ID. Used by updateRelationship
+     *   so a record does not match itself.
      * @returns {object} { valid: boolean, errors: string[] }
      */
     function validateRelationshipData(data, options) {
         options = options || {};
         var checkDuplicates = options.checkDuplicates !== false;
-        var excludeId = (options.excludeId !== undefined)
-            ? options.excludeId
-            : null;
+        var excludeId = options.excludeId ? String(options.excludeId) : null;
 
         var errors = [];
 
@@ -318,55 +255,44 @@
         var char2 = data.character2;
         var typeId = data.typeId;
 
-        // Character 1 validation
         if (!char1 || String(char1).trim() === '') {
             errors.push('Character 1 is required.');
         }
-
-        // Character 2 validation
         if (!char2 || String(char2).trim() === '') {
             errors.push('Character 2 is required.');
         }
-
-        // Same character check
         if (char1 && char2 && String(char1) === String(char2)) {
             errors.push('Cannot create a relationship between the same character.');
         }
 
-        // Character existence validation - uses injected characterProvider
         if (char1 && _characterProvider && typeof _characterProvider.exists === 'function') {
             if (!_characterProvider.exists(char1)) {
                 errors.push('Character 1 does not exist.');
             }
         }
-
         if (char2 && _characterProvider && typeof _characterProvider.exists === 'function') {
             if (!_characterProvider.exists(char2)) {
                 errors.push('Character 2 does not exist.');
             }
         }
 
-        // Type validation
         if (!typeId) {
             errors.push('Relationship type is required.');
         } else if (!SocialConstants.isValidType(typeId)) {
             errors.push('Invalid relationship type.');
         }
 
-        // Year validation (unbounded positive integers, or empty)
         if (data.startYear !== undefined && data.startYear !== null && data.startYear !== '') {
             if (!isValidYear(data.startYear)) {
                 errors.push('Start year must be a positive integer.');
             }
         }
-
         if (data.endYear !== undefined && data.endYear !== null && data.endYear !== '') {
             if (!isValidYear(data.endYear)) {
                 errors.push('End year must be a positive integer.');
             }
         }
 
-        // Year range validation
         var startNum = Number(data.startYear);
         var endNum = Number(data.endYear);
         if (data.startYear && data.endYear && isValidYear(data.startYear) && isValidYear(data.endYear)) {
@@ -375,23 +301,10 @@
             }
         }
 
-        // Duplicate check.
-        //
-        // The check answers "is there already a relationship of this
-        // (char1, char2, typeId)?" On the create path, any match is a
-        // conflict. On the update path, `excludeId` names the row
-        // being edited and a match with that id is skipped. See the
-        // file header for the full rationale.
         if (checkDuplicates && char1 && char2 && typeId) {
-            var conflict = findConflictingRelationship(
-                char1, char2, typeId, excludeId
-            );
-            if (conflict) {
+            if (duplicateExists(char1, char2, typeId, excludeId)) {
                 var label = SocialConstants.getLabel(typeId);
-                errors.push(
-                    'A ' + label + ' relationship already exists ' +
-                    'between these characters.'
-                );
+                errors.push('A ' + label + ' relationship already exists between these characters.');
             }
         }
 
@@ -402,99 +315,78 @@
     }
 
     /**
-     * Validate a year value.
-     *
-     * Years are UNBOUNDED positive integers. Any integer >= 1 is valid.
-     * An empty, null, or undefined value is also valid (means "year not
-     * specified").
-     *
-     * @param {*} value - Year value to validate
-     * @returns {boolean} True if valid
+     * Does a relationship already exist between these two characters
+     * of this type, excluding a specific ID?
      */
+    function duplicateExists(char1, char2, typeId, excludeId) {
+        var target1 = String(char1);
+        var target2 = String(char2);
+        var isDirectional = SocialConstants.isDirectional(typeId);
+
+        var relationships = SocialQueries.getAllRelationships();
+
+        for (var i = 0; i < relationships.length; i++) {
+            var rel = relationships[i];
+            if (!rel) { continue; }
+            if (rel.typeId !== typeId) { continue; }
+            if (excludeId && String(rel.id) === excludeId) { continue; }
+
+            var r1 = String(rel.character1);
+            var r2 = String(rel.character2);
+
+            if (isDirectional) {
+                if (r1 === target1 && r2 === target2) { return true; }
+            } else {
+                if ((r1 === target1 && r2 === target2) ||
+                    (r1 === target2 && r2 === target1)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     function isValidYear(value) {
         if (value === undefined || value === null || value === '') {
             return true;
         }
-
         var num = Number(value);
         return Number.isInteger(num) && num >= 1;
     }
 
-    /**
-     * Normalise a year value for storage.
-     *
-     * Years are stored as strings. A valid year is normalised to its
-     * canonical string form. An invalid year is normalised to an empty
-     * string (the caller's validator is responsible for rejecting it
-     * before normalisation runs; this function is forgiving).
-     *
-     * @param {*} value - Year value to normalise
-     * @returns {string} Normalised year string or empty string
-     */
     function normaliseYear(value) {
         if (value === undefined || value === null || value === '') {
             return '';
         }
-
         var num = Number(value);
         if (Number.isInteger(num) && num >= 1) {
             return String(num);
         }
-
         return '';
     }
 
-    /**
-     * Normalise a text value.
-     *
-     * @param {*} value - Text value to normalise
-     * @returns {string} Normalised text string
-     */
     function normaliseText(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
+        if (value === undefined || value === null) { return ''; }
         return String(value).trim();
     }
 
-    /**
-     * Normalise a character ID.
-     *
-     * @param {*} value - ID value to normalise
-     * @returns {string} Normalised ID string or empty string
-     */
     function normaliseId(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
+        if (value === undefined || value === null) { return ''; }
         return String(value);
     }
 
     // ============================================================
-    // MUTATION HELPERS
+    // ID ALLOCATION
     // ============================================================
 
-    /**
-     * Get the next relationship ID.
-     * Uses the social.nextId counter.
-     *
-     * @param {object} data - Application data object
-     * @returns {number} Next relationship ID
-     */
     function getNextId(data) {
-        if (!data.social) {
-            data.social = {};
-        }
-
-        if (!data.social.relationships) {
-            data.social.relationships = [];
-        }
-
+        if (!data.social) { data.social = {}; }
+        if (!data.social.relationships) { data.social.relationships = []; }
         if (typeof data.social.nextId !== 'number' || data.social.nextId < 1) {
             data.social.nextId = 1;
         }
 
-        // Ensure no collisions with existing IDs
         var existingIds = Object.create(null);
         data.social.relationships.forEach(function(rel) {
             if (rel && rel.id !== undefined && rel.id !== null) {
@@ -503,31 +395,125 @@
         });
 
         var nextId = data.social.nextId;
-        while (existingIds[String(nextId)]) {
-            nextId++;
-        }
+        while (existingIds[String(nextId)]) { nextId++; }
 
         data.social.nextId = nextId + 1;
         return nextId;
     }
 
     // ============================================================
-    // CORE MUTATIONS - Using MutationPipeline
+    // TRANSACTION-LOCAL ADDERS
+    // ============================================================
+    //
+    // These helpers add relationships to appData.social.relationships
+    // without entering MutationPipeline. They are designed to be
+    // called from inside another module's pipeline mutate() callback,
+    // where the enclosing transaction owns validation and rollback.
+    //
+    // They never touch window.data. They mutate only the appData
+    // argument. They never throw on malformed input; they skip
+    // malformed records and continue, because the caller's job is
+    // already done by the time these run.
+
+    function ensureSocialStructure(appData) {
+        if (!appData.social || typeof appData.social !== 'object') {
+            appData.social = {};
+        }
+        if (!Array.isArray(appData.social.relationships)) {
+            appData.social.relationships = [];
+        }
+        if (typeof appData.social.nextId !== 'number' || appData.social.nextId < 1) {
+            appData.social.nextId = 1;
+        }
+    }
+
+    function allocateId(appData) {
+        ensureSocialStructure(appData);
+
+        var existingIds = Object.create(null);
+        for (var i = 0; i < appData.social.relationships.length; i++) {
+            var rel = appData.social.relationships[i];
+            if (rel && rel.id !== undefined && rel.id !== null) {
+                existingIds[String(rel.id)] = true;
+            }
+        }
+
+        var id = appData.social.nextId;
+        while (existingIds[String(id)]) { id++; }
+        appData.social.nextId = id + 1;
+        return id;
+    }
+
+    function addRelationshipInTransaction(appData, relationship) {
+        if (!appData || typeof appData !== 'object') { return null; }
+        if (!relationship || typeof relationship !== 'object') { return null; }
+
+        var typeId = String(relationship.typeId || '').trim();
+        if (typeId === '') { return null; }
+
+        var character1 = String(relationship.character1 || '').trim();
+        var character2 = String(relationship.character2 || '').trim();
+        if (character1 === '' || character2 === '') { return null; }
+        if (character1 === character2) { return null; }
+
+        ensureSocialStructure(appData);
+
+        var record = {
+            id: allocateId(appData),
+            character1: character1,
+            character2: character2,
+            typeId: typeId,
+            startYear: (relationship.startYear === undefined || relationship.startYear === null)
+                ? '' : String(relationship.startYear),
+            endYear: (relationship.endYear === undefined || relationship.endYear === null)
+                ? '' : String(relationship.endYear),
+            clarification1: (relationship.clarification1 === undefined || relationship.clarification1 === null)
+                ? '' : String(relationship.clarification1),
+            clarification2: (relationship.clarification2 === undefined || relationship.clarification2 === null)
+                ? '' : String(relationship.clarification2),
+            notes: (relationship.notes === undefined || relationship.notes === null)
+                ? '' : String(relationship.notes),
+            createdAt: new Date().toISOString()
+        };
+
+        appData.social.relationships.push(record);
+        return record;
+    }
+
+    function addRelationshipsInTransaction(appData, relationships) {
+        var result = { added: 0, records: [] };
+
+        if (!appData || typeof appData !== 'object') { return result; }
+        if (!Array.isArray(relationships)) { return result; }
+
+        for (var i = 0; i < relationships.length; i++) {
+            var record = addRelationshipInTransaction(appData, relationships[i]);
+            if (record) {
+                result.added++;
+                result.records.push(record);
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // MUTATIONS
     // ============================================================
 
     /**
      * Create a new relationship.
      *
-     * @param {string} charId1 - First character ID
-     * @param {string} charId2 - Second character ID
-     * @param {string} typeId - Relationship type ID
-     * @param {string|number} startYear - Start year (optional)
-     * @param {string|number} endYear - End year (optional)
-     * @param {string} clarification - Clarification text (optional)
-     * @param {string} notes - Notes (optional)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * @param {string} charId1
+     * @param {string} charId2
+     * @param {string} typeId
+     * @param {string|number} startYear
+     * @param {string|number} endYear
+     * @param {string} clarification1 - character1's role toward character2
+     * @param {string} clarification2 - character2's role toward character1
+     * @param {string} notes
      */
-    function createRelationship(charId1, charId2, typeId, startYear, endYear, clarification, notes) {
+    function createRelationship(charId1, charId2, typeId, startYear, endYear, clarification1, clarification2, notes) {
         if (!checkDependencies()) {
             return Promise.resolve({
                 success: false,
@@ -535,25 +521,25 @@
             });
         }
 
-        // Normalise inputs
         var c1 = normaliseId(charId1);
         var c2 = normaliseId(charId2);
         var type = normaliseText(typeId);
         var start = normaliseYear(startYear);
         var end = normaliseYear(endYear);
-        var clar = normaliseText(clarification);
+        var clar1 = normaliseText(clarification1);
+        var clar2 = normaliseText(clarification2);
         var noteText = normaliseText(notes);
 
-        // Validate
         var validation = validateRelationshipData({
             character1: c1,
             character2: c2,
             typeId: type,
             startYear: start,
             endYear: end,
-            clarification: clar,
+            clarification1: clar1,
+            clarification2: clar2,
             notes: noteText
-        });
+        }, { checkDuplicates: true });
 
         if (!validation.valid) {
             return Promise.resolve({
@@ -566,15 +552,15 @@
         var label = SocialConstants.getLabel(type);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                // Re-validate within the transaction
+            validate: function() {
                 var currentValidation = validateRelationshipData({
                     character1: c1,
                     character2: c2,
                     typeId: type,
                     startYear: start,
                     endYear: end,
-                    clarification: clar,
+                    clarification1: clar1,
+                    clarification2: clar2,
                     notes: noteText
                 }, { checkDuplicates: true });
 
@@ -584,23 +570,17 @@
                         message: currentValidation.errors.join(' ')
                     };
                 }
-
                 return { valid: true };
             },
 
             mutate: function(data) {
-                // Ensure social structure exists
-                if (!data.social) {
-                    data.social = {};
-                }
+                if (!data.social) { data.social = {}; }
                 if (!Array.isArray(data.social.relationships)) {
                     data.social.relationships = [];
                 }
 
-                // Get next ID
                 var id = getNextId(data);
 
-                // Create relationship object
                 var relationship = {
                     id: id,
                     character1: c1,
@@ -608,7 +588,8 @@
                     typeId: type,
                     startYear: start,
                     endYear: end,
-                    clarification: clar,
+                    clarification1: clar1,
+                    clarification2: clar2,
                     notes: noteText,
                     createdAt: new Date().toISOString()
                 };
@@ -621,7 +602,6 @@
             logMessage: function() {
                 return 'Created ' + label + ' relationship';
             },
-
             successMessage: 'Relationship created successfully!',
             failureMessage: 'Failed to create relationship.'
         });
@@ -630,23 +610,11 @@
     /**
      * Update an existing relationship.
      *
-     * SELF-EXCLUSION:
-     *   The duplicate check excludes the row being edited. A user
-     *   editing an existing relationship may change any field,
-     *   including the character pair and the type, and the update
-     *   is rejected only when it would collide with a DIFFERENT
-     *   relationship. See the file header.
+     * The duplicate check ignores the record being edited, so saving
+     * with the same characters and type succeeds.
      *
-     * @param {string|number} id - Relationship ID
-     * @param {object} updates - Updates to apply
-     * @param {string} updates.character1 - New character 1 ID (optional)
-     * @param {string} updates.character2 - New character 2 ID (optional)
-     * @param {string} updates.typeId - New relationship type ID (optional)
-     * @param {string|number} updates.startYear - New start year (optional)
-     * @param {string|number} updates.endYear - New end year (optional)
-     * @param {string} updates.clarification - New clarification (optional)
-     * @param {string} updates.notes - New notes (optional)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     * @param {string|number} id
+     * @param {object} updates
      */
     function updateRelationship(id, updates) {
         if (!checkDependencies()) {
@@ -673,27 +641,26 @@
             });
         }
 
-        // Normalise updates
+        var existingClar1 = readClarification(existing, 1);
+        var existingClar2 = readClarification(existing, 2);
+
         var c1 = updates.character1 !== undefined ? normaliseId(updates.character1) : existing.character1;
         var c2 = updates.character2 !== undefined ? normaliseId(updates.character2) : existing.character2;
         var type = updates.typeId !== undefined ? normaliseText(updates.typeId) : existing.typeId;
         var start = updates.startYear !== undefined ? normaliseYear(updates.startYear) : existing.startYear;
         var end = updates.endYear !== undefined ? normaliseYear(updates.endYear) : existing.endYear;
-        var clar = updates.clarification !== undefined ? normaliseText(updates.clarification) : existing.clarification;
+        var clar1 = updates.clarification1 !== undefined ? normaliseText(updates.clarification1) : existingClar1;
+        var clar2 = updates.clarification2 !== undefined ? normaliseText(updates.clarification2) : existingClar2;
         var noteText = updates.notes !== undefined ? normaliseText(updates.notes) : existing.notes;
 
-        // Validate the proposed state.
-        //
-        // excludeId names the row being edited, so the duplicate
-        // check ignores it and only flags a DIFFERENT conflicting
-        // relationship.
         var validation = validateRelationshipData({
             character1: c1,
             character2: c2,
             typeId: type,
             startYear: start,
             endYear: end,
-            clarification: clar,
+            clarification1: clar1,
+            clarification2: clar2,
             notes: noteText
         }, { checkDuplicates: true, excludeId: relId });
 
@@ -708,7 +675,7 @@
         var label = SocialConstants.getLabel(type);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
+            validate: function() {
                 var currentRel = SocialQueries.getRelationshipById(relId);
                 if (!currentRel) {
                     return {
@@ -723,7 +690,8 @@
                     typeId: type,
                     startYear: start,
                     endYear: end,
-                    clarification: clar,
+                    clarification1: clar1,
+                    clarification2: clar2,
                     notes: noteText
                 }, { checkDuplicates: true, excludeId: relId });
 
@@ -733,19 +701,17 @@
                         message: currentValidation.errors.join(' ')
                     };
                 }
-
                 return { valid: true };
             },
 
             mutate: function(data) {
                 var rel = null;
-                var index = -1;
 
                 if (data.social && Array.isArray(data.social.relationships)) {
                     for (var i = 0; i < data.social.relationships.length; i++) {
-                        if (data.social.relationships[i] && String(data.social.relationships[i].id) === relId) {
+                        if (data.social.relationships[i] &&
+                            String(data.social.relationships[i].id) === relId) {
                             rel = data.social.relationships[i];
-                            index = i;
                             break;
                         }
                     }
@@ -760,7 +726,7 @@
                 rel.typeId = type;
                 rel.startYear = start;
                 rel.endYear = end;
-                rel.clarification = clar;
+                writeClarifications(rel, clar1, clar2);
                 rel.notes = noteText;
 
                 return { relationship: rel };
@@ -769,18 +735,11 @@
             logMessage: function() {
                 return 'Updated ' + label + ' relationship';
             },
-
             successMessage: 'Relationship updated successfully!',
             failureMessage: 'Failed to update relationship.'
         });
     }
 
-    /**
-     * Delete a relationship.
-     *
-     * @param {string|number} id - Relationship ID
-     * @returns {Promise<{ success: boolean, message?: string }>}
-     */
     function deleteRelationship(id) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -809,7 +768,7 @@
         var label = SocialConstants.getLabel(existing.typeId);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
+            validate: function() {
                 var currentRel = SocialQueries.getRelationshipById(relId);
                 if (!currentRel) {
                     return {
@@ -817,7 +776,6 @@
                         message: 'Relationship no longer exists.'
                     };
                 }
-
                 return { valid: true };
             },
 
@@ -845,18 +803,11 @@
             logMessage: function() {
                 return 'Deleted ' + label + ' relationship';
             },
-
             successMessage: 'Relationship deleted successfully!',
             failureMessage: 'Failed to delete relationship.'
         });
     }
 
-    /**
-     * Delete all relationships involving a character.
-     *
-     * @param {string} charId - Character ID
-     * @returns {Promise<{ success: boolean, count?: number, message?: string }>}
-     */
     function deleteAllRelationshipsForCharacter(charId) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -874,7 +825,6 @@
 
         var target = String(charId);
 
-        // Check character exists via injected provider
         if (_characterProvider && typeof _characterProvider.exists === 'function') {
             if (!_characterProvider.exists(target)) {
                 return Promise.resolve({
@@ -893,12 +843,8 @@
             });
         }
 
-        var relIds = rels.map(function(rel) { return String(rel.id); });
-
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                return { valid: true };
-            },
+            validate: function() { return { valid: true }; },
 
             mutate: function(data) {
                 if (!data.social || !Array.isArray(data.social.relationships)) {
@@ -908,10 +854,8 @@
                 var count = 0;
                 data.social.relationships = data.social.relationships.filter(function(rel) {
                     if (!rel) { return true; }
-
                     var c1 = String(rel.character1);
                     var c2 = String(rel.character2);
-
                     if (c1 === target || c2 === target) {
                         count++;
                         return false;
@@ -925,7 +869,6 @@
             logMessage: function(result) {
                 return 'Deleted ' + result.deletedCount + ' relationships for character';
             },
-
             successMessage: function(result) {
                 return 'Deleted ' + result.deletedCount + ' relationships.';
             },
@@ -934,49 +877,25 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS - Remove all references to a character ID
+    // CASCADE HELPERS
     // ============================================================
 
-    /**
-     * Strip all social relationships involving a character.
-     *
-     * Relationships are stored as { character1, character2, ... }.
-     * Whether the type is directional or not, any relationship where
-     * either side matches the deleted character is unreachable and is
-     * removed.
-     *
-     * This helper is PURE with respect to `appData`: it mutates the
-     * store, but it does not touch `window.data`. It is designed to be
-     * called from inside a pipeline mutate() callback in another
-     * module's transaction. It never throws.
-     *
-     * @param {object} appData - The pipeline's appData snapshot
-     * @param {string} charId - Character ID to strip
-     * @returns {object} { relationshipsRemoved }
-     */
     function stripCharacterRefs(appData, charId) {
         var result = { relationshipsRemoved: 0 };
 
-        if (!appData || !charId) {
-            return result;
-        }
-
+        if (!appData || !charId) { return result; }
         if (!appData.social || typeof appData.social !== 'object') {
             return result;
         }
 
         var relationships = appData.social.relationships;
-        if (!Array.isArray(relationships)) {
-            return result;
-        }
+        if (!Array.isArray(relationships)) { return result; }
 
         var target = String(charId);
         var before = relationships.length;
 
         appData.social.relationships = relationships.filter(function(rel) {
-            if (!rel) {
-                return true;
-            }
+            if (!rel) { return true; }
             return String(rel.character1) !== target &&
                    String(rel.character2) !== target;
         });
@@ -990,26 +909,28 @@
     // ============================================================
 
     window.SocialCore = {
-        // Initialization
         init: init,
 
-        // Mutations
         createRelationship: createRelationship,
         updateRelationship: updateRelationship,
         deleteRelationship: deleteRelationship,
         deleteAllRelationshipsForCharacter: deleteAllRelationshipsForCharacter,
 
-        // Cascade helpers (for cross-domain cleanup)
         stripCharacterRefs: stripCharacterRefs,
 
-        // Validation (pure, for external use)
+        addRelationshipInTransaction: addRelationshipInTransaction,
+        addRelationshipsInTransaction: addRelationshipsInTransaction,
+
         validateRelationshipData: validateRelationshipData,
         isValidYear: isValidYear,
 
-        // Normalisation (for external use)
         normaliseYear: normaliseYear,
         normaliseText: normaliseText,
-        normaliseId: normaliseId
+        normaliseId: normaliseId,
+
+        // Exposed for callers that need to read clarifications with
+        // the legacy fallback applied.
+        readClarification: readClarification
     };
 
 })();
