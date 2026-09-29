@@ -1,37 +1,35 @@
 /**
  * modules/social/social-views.js - Social Views
  * Rendering functions for the standalone Social tab
- * 
- * This module provides:
- *   - renderSocialView - Main render entry point
- *   - getSocialHTML - Static HTML shell
- *   - populateSocialSelectors - Filter dropdowns
- *   - populateFormSelectors - Form dropdowns
- *   - populateTypeSelectors - Type dropdowns
- *   - renderRelationships - Grouped, collapsible relationship list
- *   - renderCharacterDetailContent - Detail modal content
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
  *   - No direct window.data access - uses SocialQueries + SocialAggregator
  *   - Uses SocialConstants for type definitions
- *   - Uses SocialAggregator for character data (names, status, etc.)
+ *   - Uses SocialAggregator for character data
  *   - Uses DomUtils for safe DOM operations
- *   - All user-controlled content uses textContent
  *   - No inline event binding here (delegated to SocialEvents)
- * 
- * COLOR FALLBACKS:
- *   Relationship colors come from SocialQueries / SocialConstants,
- *   which return var(--relationship-*) strings. The fallback for a
- *   missing color is var(--relationship-other), a CSS custom
- *   property reference — NOT a hex literal. Do NOT reintroduce hex
- *   fallbacks here; the tokens handle dark and light variants.
- * 
+ *
+ * CLARIFICATIONS (two-sided):
+ *   Each row shows:
+ *     - One chip with `displayClarification` when the two sides are
+ *       equal or only one is set.
+ *     - Two chips ("A / B") when the two sides differ.
+ *
+ *   The relationship form carries two clarification inputs:
+ *     #rel-clarification-1   character1's role toward character2
+ *     #rel-clarification-2   character2's role toward character1
+ *
+ * CHILD BUTTON:
+ *   A ☘ button appears on every relationship row between two
+ *   opposite-sex characters. Clicking it opens the child modal.
+ *
  * DEPENDENCIES:
- *   - window.SocialQueries (from social-queries.js) - MANDATORY
- *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
- *   - window.SocialConstants (from social-constants.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ *   - window.SocialQueries
+ *   - window.SocialAggregator
+ *   - window.SocialConstants
+ *   - window.CharacterQueries
+ *   - window.DomUtils
  */
 
 (function() {
@@ -42,17 +40,14 @@
     }
     window.__socialViewsLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY
-    // ============================================================
-
     var SocialQueries = window.SocialQueries;
     var SocialAggregator = window.SocialAggregator;
     var SocialConstants = window.SocialConstants;
+    var CharacterQueries = window.CharacterQueries;
     var DomUtils = window.DomUtils;
 
     // ============================================================
-    // STATE - collapse state per typeId
+    // STATE
     // ============================================================
 
     var _collapsedTypes = Object.create(null);
@@ -116,20 +111,37 @@
             console.warn('[SocialViews] Missing dependencies:', missing.join(', '));
             return false;
         }
-
         return true;
     }
 
     // ============================================================
-    // HTML ESCAPING
+    // HELPERS
     // ============================================================
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
 
+    function isOppositeSex(genderA, genderB) {
+        function norm(g) {
+            if (!g) { return null; }
+            var s = String(g).trim().toLowerCase();
+            if (s === 'male' || s === 'm' || s === 'man' || s === 'boy') {
+                return 'male';
+            }
+            if (s === 'female' || s === 'f' || s === 'woman' || s === 'girl') {
+                return 'female';
+            }
+            return null;
+        }
+        var a = norm(genderA);
+        var b = norm(genderB);
+        if (!a || !b) { return false; }
+        return a !== b;
+    }
+
     // ============================================================
-    // MAIN RENDER ENTRY
+    // MAIN RENDER
     // ============================================================
 
     function renderSocialView(container) {
@@ -153,15 +165,12 @@
         populateSocialSelectors();
         renderRelationships();
 
-        // Graph view hidden by default
         var graphView = document.getElementById('social-graph-view');
-        if (graphView) {
-            graphView.style.display = 'none';
-        }
+        if (graphView) { graphView.style.display = 'none'; }
     }
 
     // ============================================================
-    // SOCIAL HTML SHELL
+    // HTML SHELL
     // ============================================================
 
     function getSocialHTML() {
@@ -170,8 +179,9 @@
                 <h2>Social Network</h2>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                     <button id="add-relationship-btn" class="primary">+ Add Relationship</button>
-                    <button id="view-graph-btn" class="secondary">◊ View Network</button>
-                    <button id="view-list-btn" class="secondary">☰ View List</button>
+                    <button id="suggest-pairs-btn" class="secondary" title="Suggest Pairs">\u2665 Suggest Pairs</button>
+                    <button id="view-graph-btn" class="secondary">\u25ca View Network</button>
+                    <button id="view-list-btn" class="secondary">\u2630 View List</button>
                 </div>
             </div>
             <div id="social-content">
@@ -185,7 +195,7 @@
                         <select id="social-type-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
                             <option value="all">All Types</option>
                         </select>
-                        <button id="clear-social-filters" class="small secondary">✕ Clear</button>
+                        <button id="clear-social-filters" class="small secondary">\u2715 Clear</button>
                         <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Relationships: <span id="relationship-count">0</span></span>
                     </div>
                     <div id="relationships-container">
@@ -197,7 +207,7 @@
                         <span style="font-size:0.75rem;color:var(--text-dim);">Zoom: <span id="zoom-display">100%</span></span>
                         <button id="zoom-in-btn" class="small secondary">+</button>
                         <button id="zoom-out-btn" class="small secondary">-</button>
-                        <button id="reset-zoom-btn" class="small secondary">⟲</button>
+                        <button id="reset-zoom-btn" class="small secondary">\u27f2</button>
                         <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Click a node to view character details</span>
                     </div>
                     <div id="graph-container" style="width:100%;height:600px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative;cursor:grab;">
@@ -241,8 +251,12 @@
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label>Title (e.g., mother, best friend, boss)</label>
-                                    <input type="text" id="rel-clarification" placeholder="e.g., mother, sibling, boss" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                    <label id="rel-clarification-1-label">Character 1's role toward Character 2</label>
+                                    <input type="text" id="rel-clarification-1" placeholder="e.g., mother, boss, best friend" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                </div>
+                                <div class="form-group">
+                                    <label id="rel-clarification-2-label">Character 2's role toward Character 1</label>
+                                    <input type="text" id="rel-clarification-2" placeholder="e.g., daughter, employee, best friend" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
                                 </div>
                                 <div class="form-group">
                                     <label>Start Year</label>
@@ -278,11 +292,17 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Suggest Pairs Modal -->
+            ${getSuggestPairsModalHTML()}
+
+            <!-- Create Child Modal -->
+            ${getChildModalHTML()}
         `;
     }
 
     // ============================================================
-    // POPULATE SELECTORS
+    // SELECTORS
     // ============================================================
 
     function populateSocialSelectors() {
@@ -309,9 +329,7 @@
             filterSelect.appendChild(option);
         });
 
-        if (currentValue) {
-            filterSelect.value = currentValue;
-        }
+        if (currentValue) { filterSelect.value = currentValue; }
     }
 
     function populateTypeFilter() {
@@ -326,13 +344,11 @@
         types.forEach(function(t) {
             var option = document.createElement('option');
             option.value = t.id;
-            option.textContent = t.label + (t.directional ? ' (→)' : '');
+            option.textContent = t.label + (t.directional ? ' (\u2192)' : '');
             typeFilter.appendChild(option);
         });
 
-        if (currentValue) {
-            typeFilter.value = currentValue;
-        }
+        if (currentValue) { typeFilter.value = currentValue; }
     }
 
     function populateFormSelectors() {
@@ -354,6 +370,7 @@
 
         characters.forEach(function(c) {
             var name = c.name || 'Unknown';
+
             var option1 = document.createElement('option');
             option1.value = c.id;
             option1.textContent = name;
@@ -381,17 +398,42 @@
         types.forEach(function(t) {
             var option = document.createElement('option');
             option.value = t.id;
-            option.textContent = t.label + (t.directional ? ' (→)' : '');
+            option.textContent = t.label + (t.directional ? ' (\u2192)' : '');
             typeSelect.appendChild(option);
         });
 
-        if (currentValue) {
-            typeSelect.value = currentValue;
+        if (currentValue) { typeSelect.value = currentValue; }
+    }
+
+    /**
+     * Update the two clarification labels to name the currently
+     * selected characters.
+     */
+    function refreshClarificationLabels() {
+        var c1 = document.getElementById('rel-char1');
+        var c2 = document.getElementById('rel-char2');
+        var label1 = document.getElementById('rel-clarification-1-label');
+        var label2 = document.getElementById('rel-clarification-2-label');
+
+        if (!label1 || !label2) { return; }
+
+        function nameFor(sel) {
+            if (!sel || !sel.value) { return 'Character'; }
+            if (!CharacterQueries) { return 'Character'; }
+            var c = CharacterQueries.getCharacterById(sel.value);
+            if (!c) { return 'Character'; }
+            return CharacterQueries.getDisplayName(c) || 'Character';
         }
+
+        var n1 = nameFor(c1);
+        var n2 = nameFor(c2);
+
+        label1.textContent = n1 + "'s role toward " + n2;
+        label2.textContent = n2 + "'s role toward " + n1;
     }
 
     // ============================================================
-    // RELATIONSHIP LIST RENDER (grouped + collapsible)
+    // RELATIONSHIP LIST
     // ============================================================
 
     function renderRelationships() {
@@ -405,19 +447,15 @@
         var charId = charFilter ? charFilter.value : 'all';
         var typeId = typeFilter ? typeFilter.value : 'all';
 
-        // Use grouped aggregator
         var groups = SocialAggregator.getAllGroupedRelationshipsViewModel({
             characterFilter: charId,
             typeFilter: typeId
         }) || [];
 
-        // Count total relationships
         var totalCount = 0;
         groups.forEach(function(g) { totalCount += g.total; });
 
-        if (countDisplay) {
-            countDisplay.textContent = totalCount;
-        }
+        if (countDisplay) { countDisplay.textContent = totalCount; }
 
         if (totalCount === 0) {
             container.innerHTML = '<p class="empty-state">No relationships found. Add your first relationship!</p>';
@@ -435,29 +473,24 @@
         container.innerHTML = html;
     }
 
-    /**
-     * Render one relationship type group (collapsible).
-     */
     function renderTypeGroup(group, contextCharId) {
         var typeId = group.typeId;
         var label = group.typeLabel;
         var color = group.typeColor || 'var(--relationship-other)';
 
         var isCollapsed = isTypeCollapsed(typeId);
-        var caret = isCollapsed ? '▸' : '▾';
+        var caret = isCollapsed ? '\u25b8' : '\u25be';
         var bodyDisplay = isCollapsed ? 'none' : 'block';
 
         var html = '';
         html += '<div class="relationship-group" data-type="' + escapeHtml(typeId) + '" style="background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;overflow:hidden;">';
 
-        // Header
         html += '<div class="relationship-group-header" data-type="' + escapeHtml(typeId) + '" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border-left:3px solid ' + escapeHtml(color) + ';">';
         html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
         html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeHtml(color) + ';">' + escapeHtml(label) + '</span>';
         html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + group.total + ')</span>';
         html += '</div>';
 
-        // Body
         html += '<div class="relationship-group-body" style="display:' + bodyDisplay + ';padding:6px 10px;">';
 
         if (group.ongoing.length > 0) {
@@ -474,50 +507,64 @@
             });
         }
 
-        html += '</div>'; // body
-        html += '</div>'; // group
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
 
-    /**
-     * Render a single relationship row (from view model).
-     * 
-     * Displays:
-     *   name1 →/↔/← name2   [Title]     period     [Edit] [Delete]
-     * 
-     * The Title chip's background is a theme token, not a
-     * dark-mode-specific white wash.
-     */
     function renderRelationshipRow(vm, color, contextCharId) {
         if (!vm) { return ''; }
 
-        var title = vm.clarification ? String(vm.clarification) : '';
-        var arrow = vm.isDirectional ? (vm.directionText || ' → ').trim() : '↔';
+        var arrow = vm.isDirectional ? (vm.directionText || ' \u2192 ').trim() : '\u2194';
         var period = vm.period || '';
+
+        // Clarification chips.
+        var chipsHtml = '';
+        var clar1 = vm.clarification1 || '';
+        var clar2 = vm.clarification2 || '';
+
+        if (clar1 && clar2 && clar1.toLowerCase() !== clar2.toLowerCase()) {
+            chipsHtml += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(clar1) + '</span>';
+            chipsHtml += '<span style="color:var(--text-dim);font-size:0.7rem;">/</span>';
+            chipsHtml += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(clar2) + '</span>';
+        } else if (vm.displayClarification) {
+            chipsHtml += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(vm.displayClarification) + '</span>';
+        }
+
+        // Child button: only when both characters exist and are of
+        // opposite sex.
+        var childBtnHtml = '';
+        if (CharacterQueries) {
+            var c1 = CharacterQueries.getCharacterById(vm.character1);
+            var c2 = CharacterQueries.getCharacterById(vm.character2);
+            if (c1 && c2 && isOppositeSex(c1.gender, c2.gender)) {
+                childBtnHtml = '<button type="button" class="create-child-btn small" ' +
+                    'data-char1="' + escapeHtml(vm.character1) + '" ' +
+                    'data-char2="' + escapeHtml(vm.character2) + '" ' +
+                    'style="font-size:0.55rem;padding:1px 6px;" ' +
+                    'title="Create Child">\u2618</button>';
+            }
+        }
 
         var html = '';
         html += '<div class="relationship-row" data-rel-id="' + escapeHtml(vm.id) + '" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
 
-        // Names + arrow + title
         html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
         html += '<span style="font-weight:600;">' + escapeHtml(vm.name1) + '</span>';
         html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + escapeHtml(arrow) + '</span>';
         html += '<span style="font-weight:600;">' + escapeHtml(vm.name2) + '</span>';
-        if (title) {
-            html += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(title) + '</span>';
-        }
+        html += chipsHtml;
         html += '</span>';
 
-        // Period
         if (period) {
             html += '<span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(period) + '</span>';
         }
 
-        // Actions
         html += '<span style="display:flex;gap:4px;">';
-        html += '<button type="button" class="edit-relationship small" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">✎</button>';
-        html += '<button type="button" class="delete-relationship small danger" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">✕</button>';
+        html += childBtnHtml;
+        html += '<button type="button" class="edit-relationship small" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">\u270e</button>';
+        html += '<button type="button" class="delete-relationship small danger" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">\u2715</button>';
         html += '</span>';
 
         html += '</div>';
@@ -526,7 +573,7 @@
     }
 
     // ============================================================
-    // CHARACTER DETAIL CONTENT (graph node click)
+    // CHARACTER DETAIL MODAL CONTENT
     // ============================================================
 
     function renderCharacterDetailContent(charId, container) {
@@ -545,13 +592,10 @@
 
         var name = connectedVM.characterName || 'Unknown';
         var title = document.getElementById('detail-char-name');
-        if (title) {
-            title.textContent = name;
-        }
+        if (title) { title.textContent = name; }
 
         container.textContent = '';
 
-        // ---- Info block ----
         var infoDiv = document.createElement('div');
         infoDiv.style.cssText = 'margin-bottom:12px;';
 
@@ -563,7 +607,7 @@
         statusLabel.style.cssText = 'color:var(--text-dim);font-size:0.8rem;';
         statusLabel.textContent = 'Status:';
         var statusValue = document.createElement('span');
-        statusValue.textContent = connectedVM.characterStatus || '—';
+        statusValue.textContent = connectedVM.characterStatus || '\u2014';
         statusRow.appendChild(statusLabel);
         statusRow.appendChild(statusValue);
         infoDiv.appendChild(statusRow);
@@ -576,7 +620,7 @@
         ageLabel.style.cssText = 'color:var(--text-dim);font-size:0.8rem;';
         ageLabel.textContent = 'Age:';
         var ageValue = document.createElement('span');
-        ageValue.textContent = connectedVM.characterAge || '—';
+        ageValue.textContent = connectedVM.characterAge || '\u2014';
         ageRow.appendChild(ageLabel);
         ageRow.appendChild(ageValue);
         infoDiv.appendChild(ageRow);
@@ -599,7 +643,6 @@
 
         container.appendChild(infoDiv);
 
-        // ---- Connections ----
         var connections = connectedVM.connections || [];
         if (connections.length > 0) {
             var connHeading = document.createElement('h4');
@@ -624,8 +667,6 @@
                 (conn.relationships || []).forEach(function(rel) {
                     if (!rel) { return; }
 
-                    // Fallback for a missing type color is a token
-                    // reference, not a hex literal.
                     var relColor = rel.typeColor || 'var(--relationship-other)';
 
                     var relDiv = document.createElement('div');
@@ -633,8 +674,9 @@
 
                     var relText = document.createElement('span');
                     relText.style.cssText = 'color:' + relColor + ';';
-                    var dirText = rel.isDirectional ? (rel.directionText || ' → ') : ' ↔ ';
-                    relText.textContent = dirText + rel.typeLabel + (rel.clarification ? ' (' + rel.clarification + ')' : '');
+                    var dirText = rel.isDirectional ? (rel.directionText || ' \u2192 ') : ' \u2194 ';
+                    var clarText = rel.displayClarification ? ' (' + rel.displayClarification + ')' : '';
+                    relText.textContent = dirText + rel.typeLabel + clarText;
                     relDiv.appendChild(relText);
 
                     var relPeriod = document.createElement('span');
@@ -657,7 +699,6 @@
             container.appendChild(empty);
         }
 
-        // ---- View all relationships button ----
         var buttonDiv = document.createElement('div');
         buttonDiv.style.cssText = 'margin-top:12px;';
 
@@ -672,6 +713,265 @@
     }
 
     // ============================================================
+    // SUGGEST PAIRS MODAL
+    // ============================================================
+
+    function getSuggestPairsModalHTML() {
+        return `
+            <div id="suggest-pairs-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:720px;">
+                    <div class="modal-header">
+                        <h3>Suggest Pairs</h3>
+                        <button class="close-modal" id="close-suggest-pairs">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label for="suggest-pairs-year">Target Year</label>
+                            <input type="number" id="suggest-pairs-year" min="1" value=""
+                                style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
+                            <p class="field-hint" style="font-size:0.7rem;color:var(--text-dim);margin-top:4px;">
+                                Ages are computed at this year. Suggestions are filtered to males and females within six years, both alive at that year, neither currently in an ongoing romantic relationship, neither closely related.
+                            </p>
+                        </div>
+
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label for="suggest-pairs-mode">Suggestions</label>
+                            <select id="suggest-pairs-mode"
+                                style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
+                                <option value="top">Top pairs across the pool</option>
+                                <option value="seed">Suggest for a specific character</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="suggest-pairs-seed-group" style="margin-bottom:12px;display:none;">
+                            <label for="suggest-pairs-seed">Character</label>
+                            <select id="suggest-pairs-seed"
+                                style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
+                                <option value="">Select character...</option>
+                            </select>
+                        </div>
+
+                        <div id="suggest-pairs-results">
+                            <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderSuggestPairsContent(container, options) {
+        if (!container) { return; }
+        options = options || {};
+
+        var Matcher = window.SocialMatcher;
+        if (!Matcher || typeof Matcher.suggestTopPairs !== 'function') {
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Matcher not available.</p>';
+            return;
+        }
+
+        var year = parseInt(options.year, 10);
+        if (isNaN(year) || year < 1) {
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Enter a valid year.</p>';
+            return;
+        }
+
+        var results;
+        if (options.mode === 'seed' && options.seedCharId) {
+            results = Matcher.suggestForCharacter(options.seedCharId, year, { limit: 30 });
+        } else {
+            results = Matcher.suggestTopPairs(year, { limit: 40 });
+        }
+
+        if (!results || results.length === 0) {
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No eligible pairs found for that year.</p>';
+            return;
+        }
+
+        var html = '';
+        html += '<div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:6px;">';
+        html += results.length + ' suggestion' + (results.length === 1 ? '' : 's');
+        html += '</div>';
+
+        html += '<div style="display:flex;flex-direction:column;gap:4px;max-height:400px;overflow-y:auto;">';
+
+        results.forEach(function(sug) {
+            var a = sug.a;
+            var b = sug.b;
+
+            var aName = escapeHtml(a.name || 'Unknown');
+            var bName = escapeHtml(b.name || 'Unknown');
+            var gap = escapeHtml(String(sug.ageGap));
+            var classBadge = sug.sameClass
+                ? '<span style="color:var(--accent);font-size:0.6rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">same class</span>'
+                : '';
+
+            html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);font-size:0.75rem;">';
+            html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+            html += '<strong>' + aName + '</strong>';
+            html += '<span style="color:var(--text-dim);">(' + a.age + ')</span>';
+            html += '<span style="color:var(--text-dim);">+</span>';
+            html += '<strong>' + bName + '</strong>';
+            html += '<span style="color:var(--text-dim);">(' + b.age + ')</span>';
+            html += classBadge;
+            html += '<span style="color:var(--text-dim);font-size:0.65rem;">gap ' + gap + '</span>';
+            html += '</span>';
+            html += '<button type="button" class="small primary pair-suggest-btn"';
+            html += ' data-char1="' + escapeHtml(a.id) + '"';
+            html += ' data-char2="' + escapeHtml(b.id) + '"';
+            html += ' style="font-size:0.65rem;padding:2px 10px;">Pair</button>';
+            html += '</div>';
+        });
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // CHILD MODAL
+    // ============================================================
+
+    function getChildModalHTML() {
+        return `
+            <div id="create-child-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:640px;">
+                    <div class="modal-header">
+                        <h3 id="create-child-title">Create Child</h3>
+                        <button class="close-modal" id="close-create-child">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="create-child-parents-info" style="font-size:0.8rem;color:var(--text-dim);margin-bottom:12px;"></div>
+                        <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                            <div class="form-group">
+                                <label for="child-birth-year">Birth Year *</label>
+                                <input type="number" id="child-birth-year" min="1"
+                                    style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            </div>
+                            <div class="form-group">
+                                <label for="child-sex">Sex</label>
+                                <select id="child-sex"
+                                    style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                                    <option value="">Random</option>
+                                    <option value="Male">Male</option>
+                                    <option value="Female">Female</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="child-first-name">First Name</label>
+                                <input type="text" id="child-first-name" placeholder="(auto)"
+                                    style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            </div>
+                            <div class="form-group">
+                                <label for="child-last-name">Last Name</label>
+                                <input type="text" id="child-last-name" placeholder="(father's surname)"
+                                    style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            </div>
+                        </div>
+
+                        <div id="child-preview" style="margin-top:12px;padding:10px;background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;font-size:0.75rem;"></div>
+
+                        <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+                            <button type="button" id="cancel-create-child" class="secondary">Cancel</button>
+                            <button type="button" id="confirm-create-child" class="primary">Create Child</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderChildModalContent(container, parentAId, parentBId) {
+        if (!container) { return; }
+
+        if (!CharacterQueries) { return; }
+
+        var a = CharacterQueries.getCharacterById(parentAId);
+        var b = CharacterQueries.getCharacterById(parentBId);
+        if (!a || !b) { return; }
+
+        var aName = CharacterQueries.getDisplayName(a) || 'Unknown';
+        var bName = CharacterQueries.getDisplayName(b) || 'Unknown';
+
+        var titleEl = container.querySelector('#create-child-title');
+        if (titleEl) {
+            titleEl.textContent = 'Create Child \u2014 ' + aName + ' + ' + bName;
+        }
+
+        var infoEl = container.querySelector('#create-child-parents-info');
+        if (infoEl) {
+            var currentYear = (window.data && typeof window.data.currentYear === 'number')
+                ? window.data.currentYear : new Date().getFullYear();
+            infoEl.textContent = 'Birth year defaults to the current application year (' + currentYear + ').';
+        }
+
+        var yearInput = container.querySelector('#child-birth-year');
+        if (yearInput) {
+            var currentYear2 = (window.data && typeof window.data.currentYear === 'number')
+                ? window.data.currentYear : new Date().getFullYear();
+            yearInput.value = String(currentYear2);
+        }
+
+        container.dataset.parentAId = String(a.id);
+        container.dataset.parentBId = String(b.id);
+
+        refreshChildPreview(container);
+    }
+
+    function refreshChildPreview(container) {
+        if (!container) { return; }
+
+        var previewEl = container.querySelector('#child-preview');
+        if (!previewEl) { return; }
+
+        var ChildFactory = window.SocialChildFactory;
+        if (!CharacterQueries || !ChildFactory) { return; }
+
+        var aId = container.dataset.parentAId;
+        var bId = container.dataset.parentBId;
+        if (!aId || !bId) { return; }
+
+        var a = CharacterQueries.getCharacterById(aId);
+        var b = CharacterQueries.getCharacterById(bId);
+        if (!a || !b) { return; }
+
+        var yearVal = container.querySelector('#child-birth-year').value;
+        var sexVal = container.querySelector('#child-sex').value;
+        var firstVal = container.querySelector('#child-first-name').value;
+        var lastVal = container.querySelector('#child-last-name').value;
+
+        var preview = ChildFactory.previewChild(a, b, {
+            birthYear: yearVal,
+            gender: sexVal,
+            firstName: firstVal,
+            lastName: lastVal
+        });
+
+        if (!preview) {
+            previewEl.innerHTML = '<span style="color:var(--danger);">Enter a birth year to preview.</span>';
+            return;
+        }
+
+        var html = '';
+        html += '<div style="font-weight:600;color:var(--accent);margin-bottom:4px;">' + escapeHtml(preview.fullName) + '</div>';
+        html += '<div style="color:var(--text-dim);font-size:0.7rem;margin-bottom:6px;">';
+        html += 'Born ' + escapeHtml(preview.birthYear) + ' \u00b7 ' + escapeHtml(preview.sex);
+        html += '</div>';
+
+        if (preview.physical) {
+            html += '<div style="color:var(--text-dim);font-size:0.7rem;margin-bottom:4px;">' + escapeHtml(preview.physical) + '</div>';
+        }
+        if (preview.statsSummary) {
+            html += '<div style="font-size:0.7rem;margin-bottom:4px;"><strong>Stats:</strong> ' + escapeHtml(preview.statsSummary) + '</div>';
+        }
+        if (preview.personalitySummary) {
+            html += '<div style="font-size:0.7rem;margin-bottom:4px;"><strong>Personality:</strong> ' + escapeHtml(preview.personalitySummary) + '</div>';
+        }
+        html += '<div style="color:var(--text-dim);font-size:0.7rem;">HP ' + preview.hp + ' \u00b7 MP ' + preview.mp + '</div>';
+
+        previewEl.innerHTML = html;
+    }
+
+    // ============================================================
     // HELPERS
     // ============================================================
 
@@ -679,12 +979,8 @@
         if (rel.startYear && rel.endYear) {
             return rel.startYear + ' - ' + rel.endYear;
         }
-        if (rel.startYear) {
-            return 'From ' + rel.startYear;
-        }
-        if (rel.endYear) {
-            return 'Until ' + rel.endYear;
-        }
+        if (rel.startYear) { return 'From ' + rel.startYear; }
+        if (rel.endYear) { return 'Until ' + rel.endYear; }
         return '';
     }
 
@@ -693,26 +989,26 @@
     // ============================================================
 
     window.SocialViews = {
-        // Main render
         renderSocialView: renderSocialView,
-
-        // HTML
         getSocialHTML: getSocialHTML,
 
-        // Selectors
         populateSocialSelectors: populateSocialSelectors,
         populateCharacterFilter: populateCharacterFilter,
         populateTypeFilter: populateTypeFilter,
         populateFormSelectors: populateFormSelectors,
         populateTypeSelectors: populateTypeSelectors,
+        refreshClarificationLabels: refreshClarificationLabels,
 
-        // Relationship list
         renderRelationships: renderRelationships,
-
-        // Character detail
         renderCharacterDetailContent: renderCharacterDetailContent,
 
-        // Helpers
+        getSuggestPairsModalHTML: getSuggestPairsModalHTML,
+        renderSuggestPairsContent: renderSuggestPairsContent,
+
+        getChildModalHTML: getChildModalHTML,
+        renderChildModalContent: renderChildModalContent,
+        refreshChildPreview: refreshChildPreview,
+
         getRelationshipPeriod: getRelationshipPeriod
     };
 
