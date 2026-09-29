@@ -30,100 +30,60 @@
  * CLASS MEMBERSHIP (v15+):
  *   - CharacterCRUD does NOT own or originate character.classIds.
  *     normaliseCharacterData() deliberately does not accept classIds.
- *     This makes the CRUD/membership split structural: no caller can
- *     replace the membership list by passing classIds through the
- *     generic save path.
  *   - createNewCharacter() initialises classIds to [] so new characters
  *     satisfy the invariant "every character has a classIds array".
  *   - Membership mutations live in AcademyClasses.
- *   - Academy roster queries derive from character.classIds; there is
- *     no separate academy.classStudents store after v15.
+ *
+ * PARENT LINKS:
+ *   - character.parentIds is an array of character IDs. It records
+ *     who the character's parents are. It is written ONLY by
+ *     createChild; the generic save path preserves whatever is on
+ *     the record. Same rule as classIds.
+ *   - createNewCharacter() initialises parentIds to [] so new
+ *     characters satisfy the invariant "every character has a
+ *     parentIds array".
+ *   - deleteCharacter() strips the deleted ID from every remaining
+ *     character's parentIds, in the same transaction as the
+ *     character removal. A child whose parent is deleted simply
+ *     loses that parent.
  *
  * DISCIPLINE ENROLLMENT (v16+):
  *   - CharacterCRUD does NOT own or originate discipline enrollment.
- *     normaliseCharacterData() deliberately does not accept
- *     disciplineIds.
  *   - Enrollment is CLASS-SCOPED and lives at
  *     academy.enrolments[classId][charId] = [interval, ...].
- *   - Enrollment mutations live in AcademyEnrolments.
- *   - createNewCharacter() does NOT initialise disciplineIds.
  *
  * CHARACTER MODE / ROLE (v27, revised v31):
  *   Prior to v31, every character record carried a persisted `mode`
- *   field:
+ *   field ('student' | 'instructor'). As of v31, the role is
+ *   CLASS-SCOPED and lives on the enrolment interval:
  *
- *     mode: 'student' | 'instructor'   (default 'student')
- *
- *   The mode was a character-wide fact: one value for the whole
- *   character. It could not distinguish "Alice teaches Class A"
- *   from "Alice teaches Class A AND Class B", because it had one
- *   value for all classes.
- *
- *   As of v31, the role is CLASS-SCOPED. It lives on the enrolment
- *   interval:
- *
- *     {
- *       disciplineId,
- *       startWeek,
- *       endWeek,
- *       role: 'student' | 'instructor'
- *     }
+ *     { disciplineId, startWeek, endWeek,
+ *       role: 'student' | 'instructor' }
  *
  *   The class-scoped question "is Alice an instructor of Class A?"
  *   is answered by AcademyClasses.getClassInstructorIdsAllTime
- *   ('class_a'). The character-wide `mode` field is a legacy
- *   tombstone: it survives in the record for one migration cycle
- *   and then is removed. Nothing in this file reads it.
+ *   ('class_a').
  *
- *   The mutation that changes a character's role for a class is:
+ *   The mutation that changes a character's role for a class is
+ *   setInstructorForClass(charId, classId, isInstructor). It
+ *   rewrites every enrolment interval of charId in classId to the
+ *   target role, in a single MutationPipeline transaction. It does
+ *   NOT touch the character record itself.
  *
- *     setInstructorForClass(charId, classId, isInstructor)
- *
- *   It rewrites every enrolment interval of charId in classId to
- *   the target role, in a single MutationPipeline transaction.
- *   It does NOT touch the character record itself, teaching
- *   groups, sessions, grades, or any other store. The role is an
- *   enrolment fact; only the enrolment store changes.
- *
- *   The retired setMode() function is kept as a stub that returns
- *   a failure with a pointer to the new API. Its purpose is to
- *   surface the retirement if any caller still reaches for it,
- *   rather than silently writing a character-wide field that
- *   nothing reads.
+ *   setMode() is retained as a stub that returns a failure with a
+ *   pointer to the new API.
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
  *   - deceased is a DERIVED field: it means "is dead as of currentYear"
- *   - Consumers should prefer CharacterQueries.isDeceased(char, year)
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
- *   - deathWeek is preserved for legacy data but not actively collected
  *
  * DEATH → PROFESSIONAL TEAM CASCADE:
  *   When a save leaves the character with a parseable deathYear,
  *   updateExistingCharacter calls
  *   TeamCore.endStintsForCharacter(data, charId, deathYear) inside
- *   the same pipeline transaction.
- *
- *   It runs on EVERY save of a deceased character, not just on
- *   the blank → set transition, because the transition-only
- *   trigger missed two cases:
- *     (a) legacy data whose deathYear predates the cascade;
- *     (b) a character added to a team after death.
- *   endStintsForCharacter is idempotent, so the wider trigger is
- *   safe.
- *
- * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
- *   - deathYear must be an integer >= 1 (no upper bound).
- *   - birthYear is stored as a string and is not bounded here.
- *
- * COMBAT MODEL (v14):
- *   - hp: number, 0–999, manual or rolled
- *   - mp: number, 0–999, manual or rolled
- *   - weapons: array of { id, name, type, notes }
- *   - combatNotes: string, Combat-tab-specific notes (SEPARATE from notes)
- *   - Physical/magical classes are DERIVED from stats, never stored
+ *   the same pipeline transaction. Runs on EVERY save of a deceased
+ *   character (idempotent), not just on the transition.
  *
  * DELETE CASCADE SEMANTICS:
  *   Deleting a character is a CASCADE. In a single transaction it:
@@ -137,50 +97,45 @@
  *     8. Removes mission support-personnel references.
  *     9. Removes tournament participant / elimination / winner /
  *        match references.
- *    10. Deletes the character entity itself.
+ *    10. Strips the deleted ID from every remaining character's
+ *        parentIds array.
+ *    11. Deletes the character entity itself.
  *
  *   Steps 2–9 are delegated to AcademyCascade.characterDeleted.
- *   Step 1 stays inline, because it touches the team entity roster,
- *   which is not an academy-domain concern.
+ *   Steps 1 and 10 stay inline.
  *
- * UPDATE PATH — OBJECT IDENTITY (this revision):
- *   updateExistingCharacter used to replace the character slot:
+ * CHILD CREATION:
+ *   createChild(parentAId, parentBId, options) is the DEDICATED
+ *   mutation for producing a child from two parents. It:
+ *     - Validates both parents exist and are distinct.
+ *     - Builds a child DTO via SocialChildFactory.buildChildDto,
+ *       which inherits stats, magic, physical traits, and
+ *       personality from both parents.
+ *     - In one transaction:
+ *         . Pushes the child onto data.characters.
+ *         . Sets child.parentIds.
+ *         . Creates two 'familial' relationships (parent ↔ child)
+ *           with two-sided clarifications ('Mother'/'Father' on the
+ *           parent side, 'Daughter'/'Son' on the child side).
+ *         . Creates 'familial' sibling relationships between the
+ *           new child and every existing child of either parent.
+ *     - Returns the new child record.
  *
- *     data.characters[index] = Object.assign({}, current, normalised, preserved);
+ *   Relationship creation is done transaction-locally via
+ *   SocialCore.addRelationshipsInTransaction, which pushes records
+ *   onto appData.social.relationships without re-entering the
+ *   pipeline.
  *
- *   That is a slot replacement: the array at that index now points
- *   at a NEW object, while every other reference to the OLD object
- *   — including the memoized id index in character-queries.js —
- *   still sees the old values.
- *
- *   CharacterQueries.getCharacterById caches a Map<id, character>
- *   keyed on window.data.characters by reference and by length.
- *   Slot replacement changes neither, so the cache is not
- *   invalidated and getCharacterById keeps returning the old
- *   object. Every read of the edited character — in the list, in
- *   the form after re-render, in the aggregator — sees the values
- *   from BEFORE the save, even though the write landed in
- *   window.data.characters.
- *
- *   This revision MERGES THE MERGED OBJECT'S KEYS BACK ONTO THE
- *   LIVE OBJECT IN PLACE. Object identity is preserved. The id
- *   index's Map entry — which already points at the live object —
- *   sees the new values immediately.
+ * UPDATE PATH — OBJECT IDENTITY:
+ *   updateExistingCharacter MERGES THE MERGED OBJECT'S KEYS BACK
+ *   ONTO THE LIVE OBJECT IN PLACE. Object identity is preserved.
+ *   The CharacterQueries id index — which holds the live object
+ *   reference in its Map — sees the new values immediately.
  *
  *   As a belt-and-braces measure, invalidateCharacterIndex() is
  *   ALSO called after the merge. If any future code path slips a
  *   slot replacement past review, the next read rebuilds the
  *   index rather than returning a stale object.
- *
- * IMPORTANT:
- *   - No DOM extraction here - form extraction is in character-form.js
- *   - No UI rendering here - rendering is in character-form.js
- *   - This module only handles CRUD operations and persistence
- *   - USES CharacterQueries for character data and display names
- *   - USES MutationPipeline for transaction management
- *   - USES IdUtils for ID generation
- *   - USES CharacterConstants for domain constants
- *   - Returns structured results (caller handles notifications)
  *
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
@@ -190,14 +145,16 @@
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY (optional)
  *   - window.TeamCore (from team-core.js) - LAZY (optional)
  *   - window.AcademyEnrolments (from academy-enrolments.js) - LAZY
- *     Required by setInstructorForClass. Load order is deferred;
- *     mandatory-ness is not.
+ *     Required by setInstructorForClass.
+ *   - window.SocialCore (from social-core.js) - LAZY, required by
+ *     createChild for the transaction-local relationship adder.
+ *   - window.SocialChildFactory (from social-child-factory.js) -
+ *     LAZY, required by createChild for the DTO builder.
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterCrudLoaded) {
         return;
     }
@@ -213,7 +170,7 @@
     var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
-    // CONSTANTS - From CharacterConstants (MANDATORY)
+    // CONSTANTS
     // ============================================================
 
     var STAT_KEYS = CharacterConstants.STAT_KEYS;
@@ -224,12 +181,7 @@
     var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
     var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
 
-    var HP_MIN = CharacterConstants.HP_MIN;
-    var HP_MAX = CharacterConstants.HP_MAX;
     var HP_HARD_CAP = 999;
-
-    var MP_MIN = CharacterConstants.MP_MIN;
-    var MP_MAX = CharacterConstants.MP_MAX;
     var MP_HARD_CAP = 999;
 
     var MAX_WEAPONS = CharacterConstants.MAX_WEAPONS;
@@ -237,8 +189,6 @@
     var MAX_WEAPON_NOTES_LENGTH = CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
     var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
 
-    // Role vocabulary, used by setInstructorForClass. The two values
-    // match the role field on enrolment intervals.
     var ROLE_STUDENT = 'student';
     var ROLE_INSTRUCTOR = 'instructor';
 
@@ -255,15 +205,12 @@
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
-
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
-
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
-
         if (!CharacterConstants) {
             missing.push('CharacterConstants');
         }
@@ -296,32 +243,22 @@
         return window.AcademyCascade || null;
     }
 
-    /**
-     * Lazy accessor for TeamCore.
-     *
-     * TeamCore is an OPTIONAL dependency of the death cascade. The
-     * cascade is skipped when the module is absent, or when it does
-     * not export endStintsForCharacter. The skip is announced with a
-     * console.warn.
-     */
     function getTeamCore() {
         return window.TeamCore || null;
     }
 
-    /**
-     * Lazy accessor for AcademyEnrolments.
-     *
-     * AcademyEnrolments is required by setInstructorForClass. Load
-     * order is deferred; mandatory-ness is not. A missing module or
-     * a missing helper fails the mutation.
-     */
     function getAcademyEnrolments() {
         return window.AcademyEnrolments || null;
     }
 
-    /**
-     * Parse a deathYear string. Returns an integer >= 1 or null.
-     */
+    function getSocialCore() {
+        return window.SocialCore || null;
+    }
+
+    function getSocialChildFactory() {
+        return window.SocialChildFactory || null;
+    }
+
     function parseDeathYear(value) {
         if (value === undefined || value === null || value === '') {
             return null;
@@ -333,10 +270,6 @@
         return n;
     }
 
-    /**
-     * Run the death cascade for a character, against the given
-     * snapshot. Emits a console.warn when TeamCore is unavailable.
-     */
     function runDeathCascade(data, charId, deathYear, contextLabel) {
         var TeamCore = getTeamCore();
         if (!TeamCore ||
@@ -352,19 +285,6 @@
         return TeamCore.endStintsForCharacter(data, charId, deathYear);
     }
 
-    /**
-     * Force the CharacterQueries id index to be rebuilt on next
-     * lookup.
-     *
-     * The index is memoized on window.data.characters by array
-     * reference and length. Anything that changes a character's
-     * fields WITHOUT changing the array reference or its length
-     * (in-place edits, slot replacement) can leave the index
-     * pointing at a stale object. Calling this after such a change
-     * makes the next read rebuild from the live array.
-     *
-     * Safe to call at any time. Never throws.
-     */
     function invalidateCharacterIndex() {
         if (!CharacterQueries ||
             typeof CharacterQueries.invalidateCharacterIndex !== 'function') {
@@ -414,18 +334,11 @@
             notes = notes.slice(0, MAX_WEAPON_NOTES_LENGTH);
         }
 
-        return {
-            id: id,
-            name: name,
-            type: type,
-            notes: notes
-        };
+        return { id: id, name: name, type: type, notes: notes };
     }
 
     function normaliseWeapons(weapons) {
-        if (!Array.isArray(weapons)) {
-            return [];
-        }
+        if (!Array.isArray(weapons)) { return []; }
 
         var result = [];
         var seenIds = Object.create(null);
@@ -443,17 +356,14 @@
             seenIds[w.id] = true;
 
             result.push(w);
-
-            if (result.length >= MAX_WEAPONS) {
-                break;
-            }
+            if (result.length >= MAX_WEAPONS) { break; }
         }
 
         return result;
     }
 
     // ============================================================
-    // CHARACTER VALIDATION - Pure domain validation
+    // CHARACTER VALIDATION
     // ============================================================
 
     function validateCharacter(charData) {
@@ -557,9 +467,7 @@
         for (var k = 0; k < STAT_KEYS.length; k++) {
             var key = STAT_KEYS[k];
             var val = stats[key];
-            if (val === undefined || val === null) {
-                continue;
-            }
+            if (val === undefined || val === null) { continue; }
             if (typeof val !== 'number' || isNaN(val) || val < STAT_MIN || val > STAT_MAX) {
                 return { valid: false, message: 'Stat "' + key + '" must be between ' + STAT_MIN + ' and ' + STAT_MAX + '.' };
             }
@@ -569,21 +477,9 @@
     }
 
     // ============================================================
-    // NORMALISATION HELPERS
+    // NORMALISATION
     // ============================================================
 
-    /**
-     * Normalise character data before save.
-     *
-     * NOT NORMALISED HERE (owned by dedicated mutations):
-     *   - classIds        (AcademyClasses)
-     *   - disciplineIds   (AcademyEnrolments) — legacy field, dead
-     *   - mode            RETIRED. The role is per-class and lives on
-     *                     enrolment intervals. This field is not
-     *                     accepted through the generic save path.
-     *   - eliminations    (AcademyEliminations / TournamentEliminationCascade)
-     *   - eliminatedWeeks (EliminationQueries.rebuildEliminatedWeeks)
-     */
     function normaliseCharacterData(charData) {
         var data = {};
 
@@ -638,9 +534,9 @@
             data.graduatingClassInstructor = charData.graduatingClassInstructor === true;
         }
 
-        // NOTE: disciplineIds, classIds, and mode are deliberately NOT
-        // normalised here. disciplineIds and classIds are owned by
-        // dedicated mutations. mode is retired entirely.
+        // NOTE: disciplineIds, classIds, parentIds, and mode are
+        // deliberately NOT normalised here. They are owned by
+        // dedicated mutations.
 
         data.stats = {};
         for (var i = 0; i < STAT_KEYS.length; i++) {
@@ -742,7 +638,7 @@
     }
 
     // ============================================================
-    // SAVE CHARACTER - Uses MutationPipeline
+    // SAVE
     // ============================================================
 
     function save(formData) {
@@ -832,7 +728,7 @@
     }
 
     // ============================================================
-    // MUTATION HELPERS - Called within pipeline
+    // UPDATE / CREATE
     // ============================================================
 
     function updateExistingCharacter(existing, normalised, data) {
@@ -846,17 +742,11 @@
 
         var current = data.characters[index];
 
-        // Preserve system-managed fields.
-        //   - classIds:      owned by AcademyClasses.
-        //   - eliminations / eliminatedWeeks: owned by AcademyEliminations
-        //                    and TournamentEliminationCascade.
-        //   - disciplineIds: legacy field, preserved verbatim if present.
-        //   - mode:          legacy tombstone (v31). Preserved verbatim
-        //                    until a future migration removes it.
         var preserved = {
             id: current.id,
             createdAt: current.createdAt,
             classIds: Array.isArray(current.classIds) ? current.classIds.slice() : [],
+            parentIds: Array.isArray(current.parentIds) ? current.parentIds.slice() : [],
             eliminations: Array.isArray(current.eliminations) ? current.eliminations.slice() : [],
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
@@ -866,51 +756,22 @@
         }
 
         // Preserve the legacy `mode` tombstone verbatim if present.
-        // Nothing reads it; a future migration removes it. Preserving
-        // it here keeps the record stable through a save round-trip.
         if (current.mode !== undefined) {
             preserved.mode = current.mode;
         }
 
-        // ---- Build the merged shape ----
         var merged = Object.assign({}, current, normalised, preserved);
 
-        // ---- Apply it IN PLACE ----
-        //
-        // Merge the merged object's keys back onto the live object.
-        // Do NOT replace data.characters[index] with a new object:
-        //   - The id index in character-queries.js holds the live
-        //     object reference in its Map. Replacing the slot leaves
-        //     the Map pointing at the old object, and every read of
-        //     the edited character returns stale values until the
-        //     index is rebuilt.
-        //   - Any other holder of the character reference (aggregators,
-        //     forms that captured it before the mutation, pipelines)
-        //     sees the old values for the same reason.
-        //
-        // Mutating `current` preserves object identity. Every
-        // reference sees the new values immediately.
+        // Apply IN PLACE — preserve object identity so the id index
+        // sees the new values immediately.
         var mergeKeys = Object.keys(merged);
         for (var mk = 0; mk < mergeKeys.length; mk++) {
             current[mergeKeys[mk]] = merged[mergeKeys[mk]];
         }
 
-        // ---- Belt-and-braces: force index rebuild ----
-        //
-        // The merge above is in-place, so the id index would see the
-        // new values without invalidation. The call is here to cover
-        // any future code path that replaces a character slot
-        // instead of mutating in place. invalidateCharacterIndex is
-        // safe to call at any time.
         invalidateCharacterIndex();
 
-        // ---- Death → professional team cascade ----
-        //
-        // Runs on every save of a character with a parseable
-        // deathYear. endStintsForCharacter is idempotent, so the
-        // wider trigger is safe.
         var nextDeathYear = parseDeathYear(current.deathYear);
-
         if (nextDeathYear !== null) {
             runDeathCascade(data, current.id, nextDeathYear, 'save');
         }
@@ -928,11 +789,7 @@
         var newChar = Object.assign({}, normalised, {
             id: id,
             classIds: [],
-            // NOTE (v31): no `mode` field is written on new
-            // characters. The role is per-class and lives on
-            // enrolment intervals. The classIds field is still the
-            // character-side membership list; a separate role field
-            // is not added.
+            parentIds: [],
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
             weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
@@ -943,11 +800,6 @@
         });
 
         data.characters.push(newChar);
-
-        // A create pushes a new entry, which changes the array
-        // length. The index's rebuild check catches that on the next
-        // lookup. Calling invalidate unconditionally here is
-        // consistent with the update path and costs nothing.
         invalidateCharacterIndex();
 
         var nextDeathYear = parseDeathYear(newChar.deathYear);
@@ -955,25 +807,299 @@
             runDeathCascade(data, id, nextDeathYear, 'create');
         }
 
-        return {
-            success: true,
-            id: id,
-            character: newChar
-        };
+        return { success: true, id: id, character: newChar };
     }
 
     // ============================================================
-    // BACKFILL - one-time maintenance for pre-cascade data
+    // CREATE CHILD
     // ============================================================
 
+    function createChild(parentAId, parentBId, options) {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        options = options || {};
+
+        if (!parentAId || !parentBId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Both parent IDs are required.'
+            });
+        }
+
+        if (String(parentAId) === String(parentBId)) {
+            return Promise.resolve({
+                success: false,
+                message: 'A character cannot be their own parent.'
+            });
+        }
+
+        var parentA = CharacterQueries.getCharacterById(parentAId);
+        var parentB = CharacterQueries.getCharacterById(parentBId);
+        if (!parentA || !parentB) {
+            return Promise.resolve({
+                success: false,
+                message: 'One or both parents not found.'
+            });
+        }
+
+        var SocialChildFactory = getSocialChildFactory();
+        if (!SocialChildFactory ||
+            typeof SocialChildFactory.buildChildDto !== 'function') {
+            return Promise.resolve({
+                success: false,
+                message: 'SocialChildFactory is not available.'
+            });
+        }
+
+        var childDto;
+        try {
+            childDto = SocialChildFactory.buildChildDto(
+                parentA, parentB, options
+            );
+        } catch (e) {
+            return Promise.resolve({
+                success: false,
+                message: 'Failed to build child: ' + e.message
+            });
+        }
+
+        var normalised = normaliseCharacterData(childDto);
+        var validation = validateCharacter(normalised);
+        if (!validation.valid) {
+            return Promise.resolve({
+                success: false,
+                message: 'Generated child is invalid: ' + validation.message
+            });
+        }
+
+        var parentAIdStr = String(parentAId);
+        var parentBIdStr = String(parentBId);
+        var parentAName = CharacterQueries.getDisplayName(parentA);
+        var parentBName = CharacterQueries.getDisplayName(parentB);
+
+        var childId = IdUtils.generateId('char');
+        var now = new Date().toISOString();
+
+        var childRecord = Object.assign({}, normalised, {
+            id: childId,
+            classIds: [],
+            parentIds: [parentAIdStr, parentBIdStr],
+            hp: normalised.hp || 0,
+            mp: normalised.mp || 0,
+            weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
+            combatNotes: normalised.combatNotes || '',
+            eliminations: [],
+            eliminatedWeeks: [],
+            createdAt: now
+        });
+
+        return MutationPipeline.performMutation({
+            validate: function() {
+                var a = CharacterQueries.getCharacterById(parentAIdStr);
+                var b = CharacterQueries.getCharacterById(parentBIdStr);
+                if (!a || !b) {
+                    return {
+                        valid: false,
+                        message: 'One or both parents no longer exist.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is malformed.');
+                }
+
+                data.characters.push(childRecord);
+                invalidateCharacterIndex();
+
+                var SocialCore = getSocialCore();
+                if (SocialCore &&
+                    typeof SocialCore.addRelationshipsInTransaction === 'function') {
+                    var relationships = buildChildRelationships(
+                        data,
+                        childRecord,
+                        parentA,
+                        parentB
+                    );
+                    SocialCore.addRelationshipsInTransaction(
+                        data,
+                        relationships
+                    );
+                } else {
+                    console.warn(
+                        '[CharacterCRUD] SocialCore.' +
+                        'addRelationshipsInTransaction is unavailable; ' +
+                        'child was created without social links.'
+                    );
+                }
+
+                return { child: childRecord, childId: childId };
+            },
+            logMessage: function() {
+                return 'Created child of ' + parentAName +
+                    ' and ' + parentBName + ': ' +
+                    childRecord.firstName + ' ' + childRecord.lastName;
+            },
+            successMessage: 'Child created successfully!',
+            failureMessage: 'Failed to create child.'
+        });
+    }
+
     /**
-     * One-time maintenance: run the death cascade for every character
-     * currently marked deceased, against the live data store.
+     * Build the list of social relationships the child gets on
+     * creation. Two-sided clarifications:
      *
-     * IDEMPOTENT and safe to re-run. See the file header.
+     *   parent -> child:
+     *     clarification1 = parent's role toward child
+     *                     ('Mother' | 'Father' | 'Parent')
+     *     clarification2 = child's role toward parent
+     *                     ('Daughter' | 'Son' | 'Child')
      *
-     * @returns {Promise<{success, data?, message?}>}
+     *   child -> parent: mirrored.
+     *
+     *   sibling -> child and child -> sibling:
+     *     clarification1 and clarification2 are the sibling term
+     *     from each side's own perspective.
      */
+    function buildChildRelationships(data, childRecord, parentA, parentB) {
+        var list = [];
+
+        function normalisedSexOf(char) {
+            if (!char) { return null; }
+            var g = String(char.gender || '').trim().toLowerCase();
+            if (g === 'female' || g === 'f' || g === 'woman' || g === 'girl') {
+                return 'female';
+            }
+            if (g === 'male' || g === 'm' || g === 'man' || g === 'boy') {
+                return 'male';
+            }
+            return null;
+        }
+
+        function parentTermFor(char) {
+            var sex = normalisedSexOf(char);
+            if (sex === 'female') { return 'Mother'; }
+            if (sex === 'male') { return 'Father'; }
+            return 'Parent';
+        }
+
+        function childTermFor(char) {
+            var sex = normalisedSexOf(char);
+            if (sex === 'female') { return 'Daughter'; }
+            if (sex === 'male') { return 'Son'; }
+            return 'Child';
+        }
+
+        function siblingTermFor(char) {
+            var sex = normalisedSexOf(char);
+            if (sex === 'female') { return 'Sister'; }
+            if (sex === 'male') { return 'Brother'; }
+            return 'Sibling';
+        }
+
+        // Parent A <-> child
+        list.push({
+            character1: String(parentA.id),
+            character2: String(childRecord.id),
+            typeId: 'familial',
+            clarification1: parentTermFor(parentA),
+            clarification2: childTermFor(childRecord),
+            startYear: '',
+            endYear: '',
+            notes: ''
+        });
+        list.push({
+            character1: String(childRecord.id),
+            character2: String(parentA.id),
+            typeId: 'familial',
+            clarification1: childTermFor(childRecord),
+            clarification2: parentTermFor(parentA),
+            startYear: '',
+            endYear: '',
+            notes: ''
+        });
+
+        // Parent B <-> child
+        list.push({
+            character1: String(parentB.id),
+            character2: String(childRecord.id),
+            typeId: 'familial',
+            clarification1: parentTermFor(parentB),
+            clarification2: childTermFor(childRecord),
+            startYear: '',
+            endYear: '',
+            notes: ''
+        });
+        list.push({
+            character1: String(childRecord.id),
+            character2: String(parentB.id),
+            typeId: 'familial',
+            clarification1: childTermFor(childRecord),
+            clarification2: parentTermFor(parentB),
+            startYear: '',
+            endYear: '',
+            notes: ''
+        });
+
+        // Siblings: any existing character sharing a parent with
+        // the new child.
+        var parentIdSet = Object.create(null);
+        parentIdSet[String(parentA.id)] = true;
+        parentIdSet[String(parentB.id)] = true;
+
+        var siblings = [];
+        for (var i = 0; i < data.characters.length; i++) {
+            var c = data.characters[i];
+            if (!c || !c.id) { continue; }
+            if (String(c.id) === String(childRecord.id)) { continue; }
+            if (!Array.isArray(c.parentIds)) { continue; }
+            for (var j = 0; j < c.parentIds.length; j++) {
+                if (parentIdSet[String(c.parentIds[j])]) {
+                    siblings.push(c);
+                    break;
+                }
+            }
+        }
+
+        for (var s = 0; s < siblings.length; s++) {
+            var sib = siblings[s];
+
+            list.push({
+                character1: String(childRecord.id),
+                character2: String(sib.id),
+                typeId: 'familial',
+                clarification1: siblingTermFor(sib),
+                clarification2: siblingTermFor(childRecord),
+                startYear: '',
+                endYear: '',
+                notes: ''
+            });
+
+            list.push({
+                character1: String(sib.id),
+                character2: String(childRecord.id),
+                typeId: 'familial',
+                clarification1: siblingTermFor(childRecord),
+                clarification2: siblingTermFor(sib),
+                startYear: '',
+                endYear: '',
+                notes: ''
+            });
+        }
+
+        return list;
+    }
+
+    // ============================================================
+    // BACKFILL DEATH CASCADES
+    // ============================================================
+
     function backfillDeathCascades() {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -1032,11 +1158,8 @@
                     charactersScanned++;
 
                     var result = TeamCore.endStintsForCharacter(
-                        data,
-                        String(char.id),
-                        deathYear
+                        data, String(char.id), deathYear
                     );
-
                     if (!result) { continue; }
 
                     if (typeof result.stintsEnded === 'number' &&
@@ -1060,16 +1183,12 @@
                             for (var m = 0; m < team.members.length; m++) {
                                 var member = team.members[m];
                                 if (!member || typeof member !== 'object') { continue; }
-                                if (String(member.characterId) !== targetId) {
-                                    continue;
-                                }
+                                if (String(member.characterId) !== targetId) { continue; }
                                 if (!Array.isArray(member.intervals)) { continue; }
 
                                 for (var iv = 0; iv < member.intervals.length; iv++) {
                                     var interval = member.intervals[iv];
-                                    if (!interval || typeof interval !== 'object') {
-                                        continue;
-                                    }
+                                    if (!interval || typeof interval !== 'object') { continue; }
                                     if (String(interval.leavePeriod) === deathStr) {
                                         teamsTouchedSet[String(team.id)] = true;
                                         break;
@@ -1107,34 +1226,8 @@
     }
 
     // ============================================================
-    // SET INSTRUCTOR FOR CLASS - Uses MutationPipeline (v31)
+    // SET INSTRUCTOR FOR CLASS (v31)
     // ============================================================
-    //
-    // Changes a character's role within a single class.
-    //
-    // The role is CLASS-SCOPED and lives on the enrolment interval:
-    //
-    //   academy.enrolments[classId][charId][i].role =
-    //     'student' | 'instructor'
-    //
-    // This mutation rewrites every interval of that charId in that
-    // classId to the target role. It does NOT touch:
-    //   - the character record itself
-    //   - teaching groups
-    //   - teaching sessions
-    //   - grades
-    //   - rankings
-    //   - social scores
-    //   - enrolments in any other class
-    //
-    // The mutation is delegated to AcademyEnrolments.setRoleForClass,
-    // which owns the enrolment store. This file only wraps it in a
-    // transaction and an activity-log entry.
-    //
-    // IDEMPOTENT:
-    //   A call that would leave the role unchanged is a successful
-    //   no-op. The mutation still runs (so a caller relying on the
-    //   success value gets it) but does not modify the store.
 
     function setInstructorForClass(charId, classId, isInstructor) {
         if (!checkDependencies()) {
@@ -1220,9 +1313,6 @@
                 return { valid: true };
             },
             mutate: function(appData) {
-                // Delegate the actual rewrite to AcademyEnrolments.
-                // setRoleForClass is pure with respect to appData:
-                // it mutates the snapshot, never touches window.data.
                 var result = Enrolments.setRoleForClass(
                     appData,
                     targetChar,
@@ -1272,21 +1362,6 @@
     // ============================================================
     // SET MODE - RETIRED (v31)
     // ============================================================
-    //
-    // setMode used to write character.mode, a character-wide flag
-    // that expressed instructor-ness for the whole character. That
-    // model could not distinguish "Alice teaches Class A" from
-    // "Alice teaches Class A AND Class B".
-    //
-    // As of v31, the role is CLASS-SCOPED and lives on the enrolment
-    // interval. Callers that want to change a character's role in a
-    // class call setInstructorForClass(charId, classId, isInstructor).
-    //
-    // setMode is kept as a stub that returns a failure with a
-    // pointer to the new API. Its purpose is to surface the
-    // retirement if any caller still reaches for it. Writing a
-    // character-wide field that nothing reads would be silently
-    // wrong.
 
     function setMode(charId, mode) {
         void charId;
@@ -1301,12 +1376,8 @@
     }
 
     // ============================================================
-    // DELETE CHARACTER - Uses MutationPipeline
+    // DELETE CHARACTER
     // ============================================================
-    //
-    // Cascade orchestration:
-    //   - Cross-domain cleanup routes through AcademyCascade.
-    //   - Character-side cleanup (team entity rosters) stays inline.
 
     function deleteCharacter(id) {
         if (!checkDependencies()) {
@@ -1346,10 +1417,10 @@
             mutate: function(data) {
                 var cascade = {
                     teamMembershipsRemoved: 0,
+                    parentRefsStripped: 0,
                     academyCascade: null
                 };
 
-                // ---- Character-side: team entity rosters ----
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (!team || !Array.isArray(team.members)) {
@@ -1363,13 +1434,25 @@
                     });
                 }
 
-                // ---- Cross-domain: academy cascade ----
+                // Strip the deleted ID from every remaining
+                // character's parentIds.
+                if (Array.isArray(data.characters)) {
+                    for (var ci = 0; ci < data.characters.length; ci++) {
+                        var c = data.characters[ci];
+                        if (!c || !Array.isArray(c.parentIds)) { continue; }
+                        var before2 = c.parentIds.length;
+                        c.parentIds = c.parentIds.filter(function(pid) {
+                            return String(pid) !== targetId;
+                        });
+                        cascade.parentRefsStripped += before2 - c.parentIds.length;
+                    }
+                }
+
                 var Cascade = getAcademyCascade();
                 if (Cascade && typeof Cascade.characterDeleted === 'function') {
                     cascade.academyCascade = Cascade.characterDeleted(data, targetId);
                 }
 
-                // ---- Remove the character entity itself ----
                 var found = false;
                 data.characters = data.characters.filter(function(c) {
                     if (c && String(c.id) === targetId) {
@@ -1383,17 +1466,9 @@
                     throw new Error('Character not found in data store.');
                 }
 
-                // The filter above reassigns data.characters, which
-                // changes the array reference. The index's rebuild
-                // check catches that on the next lookup. Calling
-                // invalidate unconditionally keeps the contract
-                // obvious: "mutate, then invalidate".
                 invalidateCharacterIndex();
 
-                return {
-                    deleted: true,
-                    cascade: cascade
-                };
+                return { deleted: true, cascade: cascade };
             },
             logMessage: function(result) {
                 var c = result.cascade || {};
@@ -1401,6 +1476,9 @@
 
                 if (c.teamMembershipsRemoved > 0) {
                     details.push(c.teamMembershipsRemoved + ' team membership(s)');
+                }
+                if (c.parentRefsStripped > 0) {
+                    details.push(c.parentRefsStripped + ' parent reference(s)');
                 }
 
                 if (c.academyCascade) {
@@ -1463,7 +1541,6 @@
                 }
 
                 data.characters = [];
-
                 invalidateCharacterIndex();
 
                 return { deletedCount: count };
@@ -1490,12 +1567,13 @@
         // v31: class-scoped role mutation.
         setInstructorForClass: setInstructorForClass,
 
-        // v31: retired stub. Returns a failure pointing at
-        // setInstructorForClass. See the retirement note above.
+        // v31: retired stub.
         setMode: setMode,
 
-        // One-time maintenance: apply the death cascade to every
-        // character currently marked deceased. Idempotent.
+        // Breeding-program: dedicated child creation.
+        createChild: createChild,
+
+        // One-time maintenance.
         backfillDeathCascades: backfillDeathCascades,
 
         validateCharacter: validateCharacter,
