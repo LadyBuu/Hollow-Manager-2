@@ -18,13 +18,35 @@
  *   - gender normalises to 'male' or 'female'
  *   - birthYear is parseable
  *   - alive at the target year (no deathYear, or deathYear >= year)
- *   - age at the target year is between MIN_PARENT_AGE and MAX_PARENT_AGE
+ *   - age at the target year is between MIN_PARENT_AGE and
+ *     MAX_PARENT_AGE
  *   - not currently in an ongoing romantic relationship
+ *   - NO ELIMINATION ON RECORD (default; see ELIMINATION below)
  *
  * PAIR ELIGIBILITY (a pool pair is suggested when ALL hold):
  *   - one is male, one is female
  *   - |ageA - ageB| at the target year <= MAX_AGE_GAP
  *   - neither is the other's parent, child, or sibling (per parentIds)
+ *
+ * ELIMINATION FILTER:
+ *   A character with any elimination record — tournament-driven,
+ *   standalone, any year, any cause — is excluded from the pool by
+ *   default. The filter is PRESENCE-based, not year-scoped: once a
+ *   character has been eliminated, they stay out of the breeding
+ *   pool forever.
+ *
+ *   The read routes through EliminationQueries. The canonical
+ *   presence check is a non-null return from
+ *   EliminationQueries.getEliminationWeek (or getEliminationYear,
+ *   whichever the module exposes). When EliminationQueries is
+ *   unavailable, the filter is skipped rather than failing closed:
+ *   the pool includes everyone, and the caller can decide whether
+ *   to warn.
+ *
+ *   Callers that want eliminated characters included pass
+ *   `{ includeEliminated: true }` in options. Both
+ *   suggestForCharacter and suggestTopPairs accept the flag, and
+ *   it threads through to buildPool.
  *
  * SCORING:
  *   Lower score is better.
@@ -39,7 +61,14 @@
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
  *   - window.SocialQueries
- *   - window.AcademyClasses (optional but recommended for the class bonus)
+ *
+ * DEPENDENCIES (OPTIONAL):
+ *   - window.AcademyClasses  (used for the same-class scoring bonus;
+ *                             falls back to a local classIds
+ *                             comparison when unavailable)
+ *   - window.EliminationQueries
+ *                             (used for the elimination filter;
+ *                             filter is skipped when unavailable)
  */
 
 (function() {
@@ -83,20 +112,16 @@
         return window.AcademyClasses || null;
     }
 
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
+
     // ============================================================
     // GENDER NORMALISATION
     // ============================================================
 
     /**
      * Normalise a free-text gender string to 'male', 'female', or null.
-     *
-     * The character record's `gender` field is free-text; users can
-     * type anything. This maps a small vocabulary of common spellings
-     * to a binary, and returns null for anything else. A null result
-     * excludes the character from the pool.
-     *
-     * @param {string} gender
-     * @returns {'male'|'female'|null}
      */
     function normaliseGender(gender) {
         if (!gender || typeof gender !== 'string') {
@@ -114,10 +139,6 @@
     // AGE AT YEAR
     // ============================================================
 
-    /**
-     * Age of a character at a given year. Returns null when birthYear
-     * is missing or unparseable.
-     */
     function ageAtYear(char, year) {
         if (!char || !char.birthYear) { return null; }
         var by = parseInt(char.birthYear, 10);
@@ -125,11 +146,6 @@
         return year - by;
     }
 
-    /**
-     * Is the character alive at the given year?
-     *
-     * Alive means: no parseable deathYear, OR deathYear >= year.
-     */
     function isAliveAtYear(char, year) {
         if (!char) { return false; }
         if (char.deathYear === undefined ||
@@ -143,13 +159,63 @@
     }
 
     // ============================================================
+    // ELIMINATION
+    // ============================================================
+    //
+    // Presence-based check. A character with any elimination record
+    // — tournament-driven or standalone, any year, any cause — is
+    // eliminated.
+    //
+    // The read routes through EliminationQueries. The canonical
+    // presence check is a non-null return from getEliminationWeek
+    // or getEliminationYear (whichever the module exposes). When
+    // EliminationQueries is unavailable, the check returns false
+    // and the caller's includeEliminated flag decides what to do
+    // with the character.
+    //
+    // The check is intentionally NOT year-scoped. Once a character
+    // has been eliminated, they stay out of the pool regardless of
+    // which year the pairing runs in.
+
+    function hasAnyElimination(charId) {
+        if (!charId) { return false; }
+
+        var EQ = getEliminationQueries();
+        if (!EQ) { return false; }
+
+        var target = String(charId);
+
+        // Prefer the week query. If it's not present, try the year
+        // query. Both are canonical existence checks.
+        if (typeof EQ.getEliminationWeek === 'function') {
+            try {
+                var week = EQ.getEliminationWeek(target);
+                if (week !== null && week !== undefined) {
+                    return true;
+                }
+            } catch (e) {
+                // Fall through to the year check.
+            }
+        }
+
+        if (typeof EQ.getEliminationYear === 'function') {
+            try {
+                var year = EQ.getEliminationYear(target);
+                if (year !== null && year !== undefined) {
+                    return true;
+                }
+            } catch (e) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    // ============================================================
     // PARENT / SIBLING DETECTION
     // ============================================================
 
-    /**
-     * Read a character's parentIds as a set of strings.
-     * Returns an empty object when the field is missing.
-     */
     function readParentSet(char) {
         var set = Object.create(null);
         if (!char || !Array.isArray(char.parentIds)) {
@@ -164,17 +230,6 @@
         return set;
     }
 
-    /**
-     * Are these two characters related by parent / child / sibling?
-     * Uses parentIds on both records.
-     *
-     *   Parent: A.parentIds contains B.id, or B.parentIds contains A.id
-     *   Sibling: A.parentIds and B.parentIds share at least one id
-     *
-     * Uncles, aunts, cousins, grandparents, and every other
-     * relationship depth are NOT detected here. The user is the
-     * authority on those.
-     */
     function areCloselyRelated(charA, charB) {
         if (!charA || !charB) { return false; }
 
@@ -184,12 +239,9 @@
         var aParents = readParentSet(charA);
         var bParents = readParentSet(charB);
 
-        // A is B's parent?
         if (bParents[aId]) { return true; }
-        // B is A's parent?
         if (aParents[bId]) { return true; }
 
-        // Shared parent -> siblings
         var aKeys = Object.keys(aParents);
         for (var i = 0; i < aKeys.length; i++) {
             if (bParents[aKeys[i]]) { return true; }
@@ -201,10 +253,6 @@
     // CLASS MEMBERSHIP
     // ============================================================
 
-    /**
-     * Get the set of classIds for a character as a string set.
-     * Returns an empty object when the field is missing.
-     */
     function readClassSet(char) {
         var set = Object.create(null);
         if (!char || !Array.isArray(char.classIds)) {
@@ -238,12 +286,17 @@
     /**
      * Build the eligible pool for the given year.
      *
-     * Returns an array of { char, id, name, gender, age, classIds }
-     * entries. Errors on missing dependencies produce an empty array,
-     * not a throw: the caller is expected to render a friendly
-     * message.
+     * @param {number} year
+     * @param {object} [options]
+     * @param {boolean} [options.includeEliminated] - When true, do
+     *   not filter out characters with eliminations on record.
+     *   Default false.
+     * @returns {Array} [{ char, id, name, gender, age, status, eliminated }]
      */
-    function buildPool(year) {
+    function buildPool(year, options) {
+        options = options || {};
+        var includeEliminated = options.includeEliminated === true;
+
         var CharacterQueries = getCharacterQueries();
         var SocialQueries = getSocialQueries();
 
@@ -272,6 +325,9 @@
                 continue;
             }
 
+            var eliminated = hasAnyElimination(char.id);
+            if (eliminated && !includeEliminated) { continue; }
+
             var name = 'Unknown';
             try {
                 name = CharacterQueries.getDisplayName(char) || 'Unknown';
@@ -287,7 +343,8 @@
                 age: age,
                 status: (typeof CharacterQueries.getCurrentStatus === 'function')
                     ? CharacterQueries.getCurrentStatus(char)
-                    : ''
+                    : '',
+                eliminated: eliminated
             });
         }
 
@@ -341,18 +398,21 @@
      * @param {number} year
      * @param {object} [options]
      * @param {number} [options.limit] - Max candidates (default 20)
+     * @param {boolean} [options.includeEliminated] - Default false
      * @returns {Array} [{ a, b, score, ageGap, sameClass }, ...]
-     *                   a is the seed; b is the candidate.
      */
     function suggestForCharacter(charId, year, options) {
         options = options || {};
         var limit = options.limit || 20;
+        var includeEliminated = options.includeEliminated === true;
 
         if (!charId) { return []; }
         var yearNum = parseInt(year, 10);
         if (isNaN(yearNum) || yearNum < 1) { return []; }
 
-        var pool = buildPool(yearNum);
+        var pool = buildPool(yearNum, {
+            includeEliminated: includeEliminated
+        });
         var seed = null;
         for (var i = 0; i < pool.length; i++) {
             if (pool[i].id === String(charId)) {
@@ -392,16 +452,20 @@
      * @param {number} year
      * @param {object} [options]
      * @param {number} [options.limit] - Max pairs (default 40)
+     * @param {boolean} [options.includeEliminated] - Default false
      * @returns {Array} [{ a, b, score, ageGap, sameClass }, ...]
      */
     function suggestTopPairs(year, options) {
         options = options || {};
         var limit = options.limit || 40;
+        var includeEliminated = options.includeEliminated === true;
 
         var yearNum = parseInt(year, 10);
         if (isNaN(yearNum) || yearNum < 1) { return []; }
 
-        var pool = buildPool(yearNum);
+        var pool = buildPool(yearNum, {
+            includeEliminated: includeEliminated
+        });
 
         var scored = [];
         for (var i = 0; i < pool.length; i++) {
@@ -441,6 +505,7 @@
         isAliveAtYear: isAliveAtYear,
         areCloselyRelated: areCloselyRelated,
         shareAnyClass: shareAnyClass,
+        hasAnyElimination: hasAnyElimination,
 
         // Pool and suggestions
         buildPool: buildPool,
