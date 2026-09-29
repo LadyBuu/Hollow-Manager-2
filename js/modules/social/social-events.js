@@ -11,6 +11,21 @@
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
  *
+ * MODAL LIFECYCLE:
+ *   Every modal in this file uses Modal.hideModal for teardown,
+ *   not Modal.closeModal. closeModal DESTROYS the modal element;
+ *   the shells are rendered once by SocialViews.getSocialHTML() and
+ *   are never re-mounted, so a destroyed shell means the next open
+ *   fails with "Relationship form is not available" (or silently
+ *   does nothing for Suggest Pairs).
+ *
+ *   This matches the pattern used by character-events.js: modals
+ *   are hidden so they can be reused.
+ *
+ *   Do not reintroduce Modal.closeModal anywhere in this file. If
+ *   a future modal genuinely needs full teardown, it should be
+ *   re-mounted by the caller after closing.
+ *
  * EDIT STATE:
  *   _editId is set only inside handleAddRelationship and cleared
  *   inside handleCloseRelationshipForm. It is cleared FIRST, at the
@@ -104,8 +119,8 @@
         if (!Modal || typeof Modal.showModal !== 'function') {
             missing.push('Modal.showModal');
         }
-        if (!Modal || typeof Modal.closeModal !== 'function') {
-            missing.push('Modal.closeModal');
+        if (!Modal || typeof Modal.hideModal !== 'function') {
+            missing.push('Modal.hideModal');
         }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
@@ -122,6 +137,22 @@
     function notify(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
+    }
+
+    /**
+     * Hide a modal safely.
+     *
+     * Every teardown in this file funnels through here. Uses
+     * hideModal, not closeModal — see the MODAL LIFECYCLE note in
+     * the file header.
+     */
+    function hideModal(modal) {
+        if (!modal) { return; }
+        try {
+            Modal.hideModal(modal);
+        } catch (e) {
+            console.warn('[SocialEvents] hideModal threw:', e);
+        }
     }
 
     // ============================================================
@@ -453,7 +484,7 @@
 
     function handleCloseRelationshipForm() {
         var modal = document.getElementById('relationship-form-modal');
-        if (modal) { Modal.closeModal(modal); }
+        hideModal(modal);
         _editId = null;
     }
 
@@ -686,7 +717,7 @@
 
     function handleCharacterDetailClose() {
         var modal = document.getElementById('character-detail-modal');
-        if (modal) { Modal.closeModal(modal); }
+        hideModal(modal);
     }
 
     function handleViewCharacterRelationships(charId) {
@@ -721,12 +752,12 @@
             var closeBtn = document.getElementById('close-suggest-pairs');
             if (closeBtn) {
                 addEventListener(closeBtn, 'click', function() {
-                    Modal.closeModal(modal);
+                    hideModal(modal);
                 });
             }
             addEventListener(modal, 'click', function(e) {
                 if (e.target === modal) {
-                    Modal.closeModal(modal);
+                    hideModal(modal);
                 }
             });
         }
@@ -773,7 +804,10 @@
 
     function handleOpenSuggestPairs() {
         var modal = document.getElementById('suggest-pairs-modal');
-        if (!modal) { return; }
+        if (!modal) {
+            notify('Suggest Pairs modal is not available.', 'error');
+            return;
+        }
 
         var yearInput = document.getElementById('suggest-pairs-year');
         var currentYear = (window.data && typeof window.data.currentYear === 'number')
@@ -884,7 +918,7 @@
 
     function handlePairSuggestion(char1, char2) {
         var suggestModal = document.getElementById('suggest-pairs-modal');
-        if (suggestModal) { Modal.closeModal(suggestModal); }
+        hideModal(suggestModal);
 
         handleAddRelationship();
 
@@ -907,18 +941,18 @@
         var closeBtn = document.getElementById('close-create-child');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
-                Modal.closeModal(modal);
+                hideModal(modal);
             });
         }
         var cancelBtn = document.getElementById('cancel-create-child');
         if (cancelBtn) {
             addEventListener(cancelBtn, 'click', function() {
-                Modal.closeModal(modal);
+                hideModal(modal);
             });
         }
         addEventListener(modal, 'click', function(e) {
             if (e.target === modal) {
-                Modal.closeModal(modal);
+                hideModal(modal);
             }
         });
 
@@ -954,7 +988,10 @@
 
     function handleOpenCreateChild(parentAId, parentBId) {
         var modal = document.getElementById('create-child-modal');
-        if (!modal) { return; }
+        if (!modal) {
+            notify('Create Child modal is not available.', 'error');
+            return;
+        }
 
         SocialViews.renderChildModalContent(modal, parentAId, parentBId);
         Modal.showModal(modal);
@@ -997,7 +1034,7 @@
         window.CharacterCRUD.createChild(aId, bId, options)
             .then(function(result) {
                 if (result && result.success) {
-                    Modal.closeModal(modal);
+                    hideModal(modal);
                     refreshUI();
                     notify('Child created successfully!', 'success');
                 } else {
