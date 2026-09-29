@@ -20,8 +20,32 @@
  *     #rel-clarification-1   character1's role toward character2
  *     #rel-clarification-2   character2's role toward character1
  *
+ * ELIMINATED CHARACTERS:
+ *   Two modal surfaces hide eliminated characters by default:
+ *
+ *     Relationship form  #rel-include-eliminated (unchecked)
+ *     Suggest Pairs      #suggest-pairs-include-eliminated
+ *                        (unchecked)
+ *
+ *   When a checkbox is unchecked, characters with any elimination
+ *   on record are excluded from the character selects (relationship
+ *   form) or from the pool and seed list (Suggest Pairs).
+ *
+ *   The relationship form carries a per-side exception: on edit,
+ *   the currently-selected value of each side is always offered,
+ *   even if that character is eliminated. This lets the user edit
+ *   a relationship involving an eliminated character without
+ *   losing the value. The exception is per-side, not global.
+ *
+ *   When a checkbox is checked, the filter is off entirely and
+ *   every character is offered.
+ *
+ *   The elimination read routes through SocialMatcher.hasAnyElimination
+ *   when available, and falls back to a direct EliminationQueries
+ *   read. Both are presence-based, not year-scoped.
+ *
  * CHILD BUTTON:
- *   A ☘ button appears on every relationship row between two
+ *   A clover button appears on every relationship row between two
  *   opposite-sex characters. Clicking it opens the child modal.
  *
  * DEPENDENCIES:
@@ -30,6 +54,10 @@
  *   - window.SocialConstants
  *   - window.CharacterQueries
  *   - window.DomUtils
+ *
+ * DEPENDENCIES (OPTIONAL):
+ *   - window.SocialMatcher       (elimination read)
+ *   - window.EliminationQueries  (fallback elimination read)
  */
 
 (function() {
@@ -103,6 +131,16 @@
             missing.push('SocialConstants.isDirectional');
         }
 
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
+            missing.push('CharacterQueries.getCharacters');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
@@ -138,6 +176,62 @@
         var b = norm(genderB);
         if (!a || !b) { return false; }
         return a !== b;
+    }
+
+    /**
+     * Does this character have any elimination on record?
+     *
+     * Delegates to SocialMatcher.hasAnyElimination when available;
+     * falls back to a direct EliminationQueries read. Returns false
+     * when neither is available.
+     */
+    function hasAnyElimination(charId) {
+        if (!charId) { return false; }
+
+        var Matcher = window.SocialMatcher;
+        if (Matcher && typeof Matcher.hasAnyElimination === 'function') {
+            return Matcher.hasAnyElimination(charId);
+        }
+
+        var EQ = window.EliminationQueries;
+        if (!EQ) { return false; }
+
+        try {
+            if (typeof EQ.getEliminationWeek === 'function') {
+                var week = EQ.getEliminationWeek(charId);
+                if (week !== null && week !== undefined) {
+                    return true;
+                }
+            }
+            if (typeof EQ.getEliminationYear === 'function') {
+                var year = EQ.getEliminationYear(charId);
+                if (year !== null && year !== undefined) {
+                    return true;
+                }
+            }
+        } catch (e) {
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * Read the "include eliminated" checkbox in the relationship
+     * modal. Returns false when the checkbox is absent.
+     */
+    function isRelIncludeEliminatedChecked() {
+        var cb = document.getElementById('rel-include-eliminated');
+        return cb ? cb.checked === true : false;
+    }
+
+    /**
+     * Read the "include eliminated" checkbox in the Suggest Pairs
+     * modal. Returns false when the checkbox is absent.
+     */
+    function isSuggestIncludeEliminatedChecked() {
+        var cb = document.getElementById('suggest-pairs-include-eliminated');
+        return cb ? cb.checked === true : false;
     }
 
     // ============================================================
@@ -270,6 +364,15 @@
                                     <label>Notes</label>
                                     <textarea id="rel-notes" rows="3" placeholder="Additional notes about this relationship..." style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical;"></textarea>
                                 </div>
+                                <div class="form-group full-width">
+                                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
+                                        <input type="checkbox" id="rel-include-eliminated">
+                                        <span>Include eliminated characters</span>
+                                    </label>
+                                    <p class="field-hint" style="font-size:0.7rem;color:var(--text-dim);margin-top:4px;">
+                                        When unchecked, characters with any elimination on record are hidden from the selects, except the current value on each side.
+                                    </p>
+                                </div>
                             </div>
                             <div class="form-actions">
                                 <button type="button" id="cancel-relationship-form" class="secondary">Cancel</button>
@@ -351,39 +454,80 @@
         if (currentValue) { typeFilter.value = currentValue; }
     }
 
-    function populateFormSelectors() {
+    /**
+     * Populate the relationship form's two character selects.
+     *
+     * Options:
+     *   includeEliminated  when true, no filter is applied.
+     *   preserve1          character id to keep on side 1 even if
+     *                      eliminated. Read from the current select
+     *                      value when not supplied.
+     *   preserve2          same for side 2.
+     *
+     * On a create flow, the caller passes no options and the current
+     * select values (usually empty) are read off the DOM.
+     *
+     * On an edit flow, the caller passes preserve1 / preserve2 so the
+     * current values on each side survive the filter even when they
+     * are eliminated. This lets the user edit a relationship
+     * involving an eliminated character without losing the value.
+     */
+    function populateFormSelectors(options) {
+        options = options || {};
+
         var select1 = document.getElementById('rel-char1');
         var select2 = document.getElementById('rel-char2');
         if (!select1 || !select2) { return; }
 
-        var pageVM = SocialAggregator.getSocialPageViewModel({});
-        var characters = pageVM.characters || [];
-        var current1 = select1.value;
-        var current2 = select2.value;
+        var includeEliminated = options.includeEliminated === true;
+
+        var preserve1 = (options.preserve1 !== undefined && options.preserve1 !== null)
+            ? String(options.preserve1)
+            : String(select1.value || '');
+        var preserve2 = (options.preserve2 !== undefined && options.preserve2 !== null)
+            ? String(options.preserve2)
+            : String(select2.value || '');
+
+        var all = CharacterQueries.getCharacters() || [];
+
+        var sorted = all.slice().sort(function(a, b) {
+            var na = CharacterQueries.getDisplayName(a) || '';
+            var nb = CharacterQueries.getDisplayName(b) || '';
+            return na.localeCompare(nb);
+        });
 
         select1.innerHTML = '<option value="">Select character...</option>';
         select2.innerHTML = '<option value="">Select character...</option>';
 
-        characters.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
+        for (var i = 0; i < sorted.length; i++) {
+            var c = sorted[i];
+            if (!c || !c.id) { continue; }
 
-        characters.forEach(function(c) {
-            var name = c.name || 'Unknown';
+            var charIdStr = String(c.id);
+            var name = CharacterQueries.getDisplayName(c) || 'Unknown';
+            var isEliminated = hasAnyElimination(charIdStr);
 
-            var option1 = document.createElement('option');
-            option1.value = c.id;
-            option1.textContent = name;
-            select1.appendChild(option1);
+            // Side 1
+            if (includeEliminated || !isEliminated || charIdStr === preserve1) {
+                var opt1 = document.createElement('option');
+                opt1.value = charIdStr;
+                opt1.textContent = name;
+                if (charIdStr === preserve1) { opt1.selected = true; }
+                select1.appendChild(opt1);
+            }
 
-            var option2 = document.createElement('option');
-            option2.value = c.id;
-            option2.textContent = name;
-            select2.appendChild(option2);
-        });
+            // Side 2
+            if (includeEliminated || !isEliminated || charIdStr === preserve2) {
+                var opt2 = document.createElement('option');
+                opt2.value = charIdStr;
+                opt2.textContent = name;
+                if (charIdStr === preserve2) { opt2.selected = true; }
+                select2.appendChild(opt2);
+            }
+        }
 
-        if (current1) { select1.value = current1; }
-        if (current2) { select2.value = current2; }
+        if (preserve1) { select1.value = preserve1; }
+        if (preserve2) { select2.value = preserve2; }
     }
 
     function populateTypeSelectors() {
@@ -405,10 +549,6 @@
         if (currentValue) { typeSelect.value = currentValue; }
     }
 
-    /**
-     * Update the two clarification labels to name the currently
-     * selected characters.
-     */
     function refreshClarificationLabels() {
         var c1 = document.getElementById('rel-char1');
         var c2 = document.getElementById('rel-char2');
@@ -519,7 +659,6 @@
         var arrow = vm.isDirectional ? (vm.directionText || ' \u2192 ').trim() : '\u2194';
         var period = vm.period || '';
 
-        // Clarification chips.
         var chipsHtml = '';
         var clar1 = vm.clarification1 || '';
         var clar2 = vm.clarification2 || '';
@@ -532,8 +671,6 @@
             chipsHtml += '<span style="color:' + escapeHtml(color) + ';font-size:0.7rem;background:var(--chip-bg-subtle);padding:1px 6px;border-radius:4px;">' + escapeHtml(vm.displayClarification) + '</span>';
         }
 
-        // Child button: only when both characters exist and are of
-        // opposite sex.
         var childBtnHtml = '';
         if (CharacterQueries) {
             var c1 = CharacterQueries.getCharacterById(vm.character1);
@@ -743,6 +880,16 @@
                             </select>
                         </div>
 
+                        <div class="form-group" style="margin-bottom:12px;">
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
+                                <input type="checkbox" id="suggest-pairs-include-eliminated">
+                                <span>Include eliminated characters</span>
+                            </label>
+                            <p class="field-hint" style="font-size:0.7rem;color:var(--text-dim);margin-top:4px;">
+                                When unchecked, characters with any elimination on record are excluded from the pool and from the seed list.
+                            </p>
+                        </div>
+
                         <div class="form-group" id="suggest-pairs-seed-group" style="margin-bottom:12px;display:none;">
                             <label for="suggest-pairs-seed">Character</label>
                             <select id="suggest-pairs-seed"
@@ -776,11 +923,19 @@
             return;
         }
 
+        var includeEliminated = options.includeEliminated === true;
+
         var results;
         if (options.mode === 'seed' && options.seedCharId) {
-            results = Matcher.suggestForCharacter(options.seedCharId, year, { limit: 30 });
+            results = Matcher.suggestForCharacter(options.seedCharId, year, {
+                limit: 30,
+                includeEliminated: includeEliminated
+            });
         } else {
-            results = Matcher.suggestTopPairs(year, { limit: 40 });
+            results = Matcher.suggestTopPairs(year, {
+                limit: 40,
+                includeEliminated: includeEliminated
+            });
         }
 
         if (!results || results.length === 0) {
@@ -1009,7 +1164,11 @@
         renderChildModalContent: renderChildModalContent,
         refreshChildPreview: refreshChildPreview,
 
-        getRelationshipPeriod: getRelationshipPeriod
+        getRelationshipPeriod: getRelationshipPeriod,
+
+        // Exposed for use by SocialEvents
+        hasAnyElimination: hasAnyElimination,
+        isRelIncludeEliminatedChecked: isRelIncludeEliminatedChecked
     };
 
 })();
