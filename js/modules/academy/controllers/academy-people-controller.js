@@ -8,51 +8,26 @@
  * rendering, its event handling, and its sub-editor lifecycle
  * (grades editor, schedule grid, teaching-group candidate picker).
  *
- * FORM CONTROLS ARE NOT CLICK-ACTIONS:
- *   handleClick skips preventDefault for native form controls and
- *   for the character mode checkbox's label. The change event
- *   drives the toggle, not the click. See the FORM CONTROLS
- *   section below.
+ * ROLE MODEL (v31):
+ *   The character role is CLASS-SCOPED. It lives on the enrolment
+ *   interval, not on the character record. The old character-wide
+ *   `mode` field is a legacy tombstone and is not read anywhere in
+ *   this file.
  *
- * CHARACTER MODE:
- *   AcademyUI.getCharacterMode(charId, classId) takes TWO
- *   arguments. Three call sites in this controller pass both:
- *   renderCharacterDetailContent, mountScheduleGridIfPresent,
- *   handleEnrollDiscipline. A fourth site, handleCharacterModeToggle,
- *   reads classId off the checkbox's own dataset.
+ *   The class-scoped question "is Alice an instructor of this
+ *   class?" is answered by AcademyClasses.getClassInstructorIdsAllTime
+ *   (classId). The mutation that flips the role is
+ *   CharacterCRUD.setInstructorForClass(charId, classId, isInstructor).
  *
- * MODE TOGGLE:
- *   handleCharacterModeToggle reads three values off the checkbox's
- *   dataset (character-id, class-id, target-role) and calls
- *   CharacterCRUD.setInstructorForClass.
- *
- * CHARACTER SCHEDULE EXPORTS (this revision):
- *   The character detail panel's Schedule tab emits two actions:
- *
- *     character-export-schedule-text
- *       Weekly grid. Calls ScheduleExport.exportStudentScheduleText
- *       with the current display week.
- *
- *     character-export-schedule-day
- *       Day strip. Calls ScheduleExport.exportStudentDayScheduleText
- *       with the current display week and the day carried on the
- *       button's data-day attribute.
- *
- *   Both read the character id off the button's own dataset, matching
- *   the class export buttons' pattern and keeping the handlers robust
- *   to selection changes between render and click.
- *
- *   The export module is resolved at click time. It is not a
- *   load-time dependency of this controller; a missing module
- *   produces a clear error notification rather than a load-time
- *   throw.
+ *   The People view always has a class selected — that is the whole
+ *   scope of the view — so every role read and write carries the
+ *   class id.
  *
  * DISCIPLINE-HOURS PICKER:
- *   The picker reads two new VM fields from the aggregator:
+ *   The picker reads two VM fields from the aggregator:
  *
  *     entry.hasCurrentGroup   true when the student is already a
- *                             member of a group for this
- *                             discipline.
+ *                             member of a group for this discipline.
  *     entry.groups[].conflictingGroups
  *                             the list of existing groups of the
  *                             student that collide with this
@@ -68,68 +43,29 @@
  *
  *   The "Leave this group" action calls
  *   AcademySchedule.dropStudentFromGroup, which ends ONLY the
- *   membership of the student in the named group. Enrolments and
- *   other groups are untouched. The student remains in the class.
+ *   membership of the student in the named group.
  *
  * TEACHING GROUP BULK ACTIONS:
  *   The group block header carries two bulk actions, in addition
- *   to the existing per-student Remove button in the roster and
- *   the per-session Edit / Delete buttons in the sessions list.
+ *   to the per-student Remove button in the roster and the
+ *   per-session Edit / Delete buttons in the sessions list.
  *
  *     teaching-groups-clear-roster
- *       Remove every member entry from a group. HARD DELETE, same
- *       semantic as the per-student Remove button: the member
- *       records are deleted, no history survives. The group and
- *       its sessions are untouched.
- *
- *       Routes to AcademyTeachingGroups.clearGroupRoster.
- *
  *     teaching-groups-delete-group
- *       Delete the group and every session on it. Members are
- *       removed from the roster as a side effect of the group
- *       record going away. Students enrolled in the discipline
- *       are not affected.
- *
- *       Routes to AcademySchedule.removeTeachingGroup, which owns
- *       the compound operation.
- *
- *   Both are confirmed inline before dispatch.
  *
  * CLASS EXPORTS:
  *   The class detail panel action row carries three export
- *   buttons. All three are class-scoped, all three produce a
- *   plain-text file, all three are wired by the People controller
- *   because the class detail panel is the People view's right
- *   pane.
+ *   buttons, all class-scoped, all wired here because the class
+ *   detail panel is the People view's right pane.
  *
  *     class-export-schedule
- *       Downloads a readable plain-text dump of the class's
- *       schedule for the current display week. Routes to
- *       ScheduleExport.exportClassScheduleText.
- *
  *     class-export-graduates
- *       Downloads a plain-text document listing the class's
- *       graduates. Routes to
- *       ClassRosterExport.exportClassGraduatesText.
- *
  *     class-export-characters
- *       Downloads a plain-text document listing every student in
- *       the class, including eliminated students. Routes to
- *       ClassRosterExport.exportClassCharactersText.
- *
- *   All three buttons carry data-class-id from the class detail
- *   panel. The handlers read it off the button rather than
- *   re-reading AcademyUI.getSelectedClassId().
  *
  * CHARACTER EXPORT:
- *   The character detail panel's header carries one Export
- *   button. It emits:
- *
- *     data-action="character-export"
- *     data-character-id="<the character id>"
- *
- *   dispatchAction routes the marker to handleCharacterExport,
- *   which calls CharacterExport.exportCharacterText(charId).
+ *   The character detail panel's header carries one Export button
+ *   that emits `data-action="character-export"` with the character
+ *   id in its own dataset. The handler reads the id off the button.
  */
 
 (function() {
@@ -159,12 +95,12 @@
         typeof AcademyUI.getDisplayWeek !== 'function' ||
         typeof AcademyUI.selectClass !== 'function' ||
         typeof AcademyUI.selectCharacter !== 'function' ||
-        typeof AcademyUI.getCharacterMode !== 'function' ||
         typeof AcademyUI.getPeopleFilter !== 'function' ||
         typeof AcademyUI.setPeopleFilter !== 'function' ||
         typeof AcademyUI.setPeopleSearch !== 'function') {
         _missing.push('AcademyUI typed API');
     }
+
     if (!AcademyAggregator ||
         typeof AcademyAggregator.getClassListViewModel !== 'function' ||
         typeof AcademyAggregator.getClassViewModel !== 'function' ||
@@ -172,16 +108,22 @@
         typeof AcademyAggregator.getPeopleViewModel !== 'function') {
         _missing.push('AcademyAggregator People VMs');
     }
+
     if (!AcademyCharacterDetailAggregator ||
         typeof AcademyCharacterDetailAggregator.getViewModel !== 'function' ||
         typeof AcademyCharacterDetailAggregator.getScheduleGridViewModel !== 'function' ||
         typeof AcademyCharacterDetailAggregator.getTeachingGroupCandidateViewModel !== 'function') {
         _missing.push('AcademyCharacterDetailAggregator API');
     }
+
+    // v31: the class-scoped role mutation. setMode is retired and
+    // is not required here; a caller that reaches for it gets a
+    // failure from the stub. This controller uses the new API only.
     if (!CharacterCRUD ||
         typeof CharacterCRUD.setInstructorForClass !== 'function') {
         _missing.push('CharacterCRUD.setInstructorForClass');
     }
+
     if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
     }
@@ -191,8 +133,9 @@
         _missing.push('DomUtils.escapeHtml/escapeAttribute');
     }
     if (!AcademyClasses ||
-        typeof AcademyClasses.getClassInstructorIds !== 'function') {
-        _missing.push('AcademyClasses.getClassInstructorIds');
+        typeof AcademyClasses.getClassInstructorIds !== 'function' ||
+        typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+        _missing.push('AcademyClasses instructor queries');
     }
 
     if (_missing.length > 0) {
@@ -275,88 +218,43 @@
     }
 
     /**
-     * Resolve the effective mode for the character detail panel and
-     * the schedule grid.
+     * Is the given character an instructor of the given class?
      *
-     * READ SEMANTICS:
-     *   AcademyUI.getCharacterMode(charId, classId) returns null
-     *   when either id is missing, when the character does not
-     *   exist, or when there is no class context. That null is
-     *   correct at the AcademyUI layer: it is a genuine "I cannot
-     *   answer" signal.
+     * Class-scoped read. Delegates to AcademyClasses.
+     * getClassInstructorIdsAllTime, which walks the class's
+     * instructor-mode enrolments and returns the set of ids.
      *
-     *   The two aggregator consumers (getViewModel and
-     *   getScheduleGridViewModel) do not accept null and do not
-     *   treat it as a mode. They warn and return an empty VM.
+     * All-time, not week-scoped: a character who taught this class
+     * at any point is an instructor of it.
      *
-     *   This helper is the adapter: it calls getCharacterMode with
-     *   both arguments and coalesces a null to 'student' when
-     *   there is no class context. The 'student' default is the
-     *   correct class-less mode.
-     *
-     * @param {string} charId
-     * @param {string|null} classId
-     * @returns {'student'|'instructor'}
+     * Returns false when the class id or character id is missing,
+     * or when the query is unavailable.
      */
-    function resolveCharacterMode(charId, classId) {
-        if (!isNonEmptyString(charId)) {
-            return 'student';
+    function isInstructorForClass(charId, classId) {
+        if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
+            return false;
+        }
+        if (!AcademyClasses ||
+            typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+            return false;
         }
 
-        if (!isNonEmptyString(classId)) {
-            return 'student';
+        var instructorIds = [];
+        try {
+            instructorIds = AcademyClasses.getClassInstructorIdsAllTime(
+                String(classId)
+            );
+        } catch (e) {
+            instructorIds = [];
         }
+        if (!Array.isArray(instructorIds)) { return false; }
 
-        var mode = AcademyUI.getCharacterMode(charId, classId);
-        if (mode === 'instructor') { return 'instructor'; }
-        return 'student';
-    }
-
-    // ============================================================
-    // FORM CONTROLS — NOT CLICK-ACTIONS
-    // ============================================================
-    //
-    // handleClick must not preventDefault a click whose target is a
-    // form control.
-    //
-    // The check has two parts:
-    //
-    //   isNativeFormControl(el)
-    //     tag-name check: input, select, textarea, option
-    //
-    //   isModeCheckboxClick(el)
-    //     class check: the mode checkbox's wrapping <label>, the
-    //     checkbox itself, or its descriptive text.
-
-    var FORM_CONTROL_TAGS = ['INPUT', 'SELECT', 'TEXTAREA', 'OPTION'];
-
-    var MODE_TOGGLE_CLASSES = [
-        'academy-character-mode-checkbox',
-        'academy-mode-checkbox-label',
-        'academy-mode-checkbox-text',
-        'academy-character-mode-toggle'
-    ];
-
-    function isNativeFormControl(el) {
-        if (!el || typeof el.tagName !== 'string') { return false; }
-        return FORM_CONTROL_TAGS.indexOf(el.tagName.toUpperCase()) !== -1;
-    }
-
-    function isModeCheckboxClick(el) {
-        if (!el || typeof el.closest !== 'function') { return false; }
-
-        for (var i = 0; i < MODE_TOGGLE_CLASSES.length; i++) {
-            if (el.closest('.' + MODE_TOGGLE_CLASSES[i])) {
+        var target = String(charId);
+        for (var i = 0; i < instructorIds.length; i++) {
+            if (String(instructorIds[i]) === target) {
                 return true;
             }
         }
-        return false;
-    }
-
-    function isFormControlClick(el) {
-        if (!el) { return false; }
-        if (isNativeFormControl(el)) { return true; }
-        if (isModeCheckboxClick(el)) { return true; }
         return false;
     }
 
@@ -717,7 +615,13 @@
     function renderCharacterDetailContent(classVM, charId) {
         var classId = classVM ? classVM.id : null;
         var week = AcademyUI.getDisplayWeek();
-        var mode = resolveCharacterMode(charId, classId);
+
+        // v31: the role is class-scoped. Compute it from the class
+        // id and the character id. There is no character-wide mode
+        // to read.
+        var mode = isInstructorForClass(charId, classId)
+            ? 'instructor'
+            : 'student';
 
         var vm = null;
         try {
@@ -794,11 +698,6 @@
             return;
         }
 
-        // ---- Form controls: return early, do not preventDefault ----
-        if (isFormControlClick(target)) {
-            return;
-        }
-
         var charRow = target.closest(
             '.academy-character-row, .academy-student-row'
         );
@@ -825,7 +724,6 @@
             return;
         }
 
-        // ---- Bulk actions inside the candidate picker ----
         var bulkBtn = target.closest('[data-bulk-action]');
         if (bulkBtn && bulkBtn.dataset) {
             var bulkAction = bulkBtn.dataset.bulkAction;
@@ -866,7 +764,7 @@
         if (!target) { return; }
 
         if (target.id === 'academy-character-mode-checkbox') {
-            handleCharacterModeToggle(target);
+            handleCharacterModeToggle(target.checked);
             return;
         }
 
@@ -894,7 +792,6 @@
             return;
         }
 
-        // ---- Candidate picker checkbox ----
         if (target.classList &&
             target.classList.contains(
                 'academy-teaching-group-candidate-checkbox'
@@ -965,16 +862,6 @@
 
             case 'character-export':
                 handleCharacterExport(el.dataset.characterId);
-                return;
-
-            case 'character-export-schedule-text':
-                handleCharacterExportScheduleText(el.dataset.characterId);
-                return;
-            case 'character-export-schedule-day':
-                handleCharacterExportScheduleDay(
-                    el.dataset.characterId,
-                    el.dataset.day
-                );
                 return;
 
             case 'edit-social-score':
@@ -1143,8 +1030,7 @@
         }
 
         var students = AcademyAggregator.getClassStudentsViewModel(
-            classVM.id,
-            week
+            classVM.id, week
         ) || [];
         for (var i = 0; i < students.length; i++) {
             if (students[i] && String(students[i].id) === target) {
@@ -1293,133 +1179,6 @@
 
         notify(
             'Character export failed: ' + (err || 'Unknown error'),
-            'error'
-        );
-    }
-
-    // ============================================================
-    // CHARACTER SCHEDULE EXPORTS
-    // ============================================================
-    //
-    // Two buttons in the character detail panel's Schedule tab
-    // route here:
-    //
-    //   character-export-schedule-text
-    //     Weekly grid. The display week is read from AcademyUI.
-    //     The character id is read off the button's own dataset.
-    //
-    //   character-export-schedule-day
-    //     Day strip. Reads the display week and the day off the
-    //     button's data-day attribute.
-    //
-    // Both resolve ScheduleExport at click time. A missing module
-    // produces a notification, not a load-time throw.
-
-    function handleCharacterExportScheduleText(charId) {
-        if (!isNonEmptyString(charId)) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        var Exporter = getScheduleExport();
-        if (!Exporter ||
-            typeof Exporter.exportStudentScheduleText !== 'function') {
-            notify(
-                'Schedule export module is not loaded.',
-                'error'
-            );
-            return;
-        }
-
-        var week = AcademyUI.getDisplayWeek();
-        if (!isFiniteNumber(week)) {
-            notify('No display week set.', 'error');
-            return;
-        }
-
-        var result;
-        try {
-            result = Exporter.exportStudentScheduleText(
-                String(charId), week
-            );
-        } catch (e) {
-            console.warn(
-                '[AcademyPeopleController] ' +
-                'exportStudentScheduleText threw:', e
-            );
-            notify('Schedule export failed: ' + e.message, 'error');
-            return;
-        }
-
-        if (result && result.exported) {
-            notify(
-                'Exported weekly schedule: ' + result.filename,
-                'success'
-            );
-            return;
-        }
-
-        notify(
-            (result && result.error) ||
-                'Schedule export failed.',
-            'error'
-        );
-    }
-
-    function handleCharacterExportScheduleDay(charId, dayRaw) {
-        if (!isNonEmptyString(charId)) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        var day = parseInt(dayRaw, 10);
-        if (!isFiniteNumber(day)) {
-            notify('Invalid day.', 'error');
-            return;
-        }
-
-        var Exporter = getScheduleExport();
-        if (!Exporter ||
-            typeof Exporter.exportStudentDayScheduleText !== 'function') {
-            notify(
-                'Schedule export module is not loaded.',
-                'error'
-            );
-            return;
-        }
-
-        var week = AcademyUI.getDisplayWeek();
-        if (!isFiniteNumber(week)) {
-            notify('No display week set.', 'error');
-            return;
-        }
-
-        var result;
-        try {
-            result = Exporter.exportStudentDayScheduleText(
-                String(charId), week, day
-            );
-        } catch (e) {
-            console.warn(
-                '[AcademyPeopleController] ' +
-                'exportStudentDayScheduleText threw:', e
-            );
-            notify('Day schedule export failed: ' + e.message, 'error');
-            return;
-        }
-
-        if (result && result.exported) {
-            notify(
-                'Exported ' + getDayName(day) + ' schedule: ' +
-                    result.filename,
-                'success'
-            );
-            return;
-        }
-
-        notify(
-            (result && result.error) ||
-                'Day schedule export failed.',
             'error'
         );
     }
@@ -1574,125 +1333,82 @@
     }
 
     // ============================================================
-    // CHARACTER MODE — PER-CLASS TOGGLE
+    // CHARACTER ROLE (v31)
     // ============================================================
     //
-    // The mode checkbox in the character detail panel emits:
+    // The role is class-scoped. Changing it means flipping the role
+    // on every enrolment interval of this character in this class.
     //
-    //   data-action="character-mode-toggle"
-    //   data-character-id="<charId>"
-    //   data-class-id="<classId>"
-    //   data-target-role="instructor"|"student"
+    // The old character-wide `mode` toggle is gone. The checkbox in
+    // the character detail panel now means "is this character an
+    // instructor of the currently selected class?", and toggling it
+    // calls setInstructorForClass with the selected class id.
     //
-    // The click on the checkbox (or its label) is NOT handled by
-    // handleClick. handleClick returns early for form controls.
-    // The browser toggles the checkbox, a change event fires, and
-    // handleChange routes it here.
+    // The People view always has a class selected — the class
+    // selector in the top bar is required for the view to render
+    // at all — so the class id is always available here.
 
-    var STUDENT_ONLY_TABS = ['grades', 'teams'];
-    var INSTRUCTOR_ONLY_TABS = ['teachingGroups'];
-
-    function handleCharacterModeToggle(checkboxEl) {
-        if (!checkboxEl || !checkboxEl.dataset) { return; }
-
-        var charId = isNonEmptyString(checkboxEl.dataset.characterId)
-            ? String(checkboxEl.dataset.characterId)
-            : null;
-
+    function handleCharacterModeToggle(checked) {
+        var charId = AcademyUI.getSelectedCharacterId();
         if (!charId) {
-            charId = AcademyUI.getSelectedCharacterId();
-        }
-
-        if (!isNonEmptyString(charId)) {
-            notify('No character selected.', 'error');
-            restoreCheckboxState(checkboxEl);
             return;
         }
 
-        var classId = isNonEmptyString(checkboxEl.dataset.classId)
-            ? String(checkboxEl.dataset.classId)
-            : null;
-
-        if (!classId) {
-            var selectedClass = AcademyUI.getSelectedClassId();
-            if (isNonEmptyString(selectedClass)) {
-                classId = String(selectedClass);
-            }
-        }
-
+        var classId = AcademyUI.getSelectedClassId();
         if (!classId) {
             notify(
-                'Select a class to change this character\'s role for ' +
-                'that class.',
+                'Select a class before changing this character\'s role.',
                 'error'
             );
-            restoreCheckboxState(checkboxEl);
             return;
         }
 
-        var targetRole = isNonEmptyString(checkboxEl.dataset.targetRole)
-            ? String(checkboxEl.dataset.targetRole)
-            : (checkboxEl.checked ? 'instructor' : 'student');
+        var isInstructor = checked === true;
 
-        if (targetRole !== 'instructor' && targetRole !== 'student') {
-            console.warn(
-                '[AcademyPeopleController] mode toggle emitted an ' +
-                'unexpected target role:',
-                targetRole
-            );
-            restoreCheckboxState(checkboxEl);
-            return;
-        }
-
-        var isInstructor = targetRole === 'instructor';
-
+        // Tab hygiene. The teaching-groups tab is meaningful only
+        // for instructors of the current class; the grades and
+        // teams tabs are meaningful only for students. If the
+        // target role invalidates the currently open tab, fall
+        // back to the main tab.
         if (isInstructor &&
-            STUDENT_ONLY_TABS.indexOf(_activeCharacterTab) !== -1) {
+            (_activeCharacterTab === 'grades' ||
+                _activeCharacterTab === 'teams')) {
             _activeCharacterTab = 'main';
         }
         if (!isInstructor &&
-            INSTRUCTOR_ONLY_TABS.indexOf(_activeCharacterTab) !== -1) {
+            _activeCharacterTab === 'teachingGroups') {
             _activeCharacterTab = 'main';
         }
 
         clearPickerState();
         _openDisciplinePicker = null;
 
-        checkboxEl.disabled = true;
-
-        CharacterCRUD.setInstructorForClass(
-            charId, classId, isInstructor
-        ).then(function(result) {
-            checkboxEl.disabled = false;
-
-            if (result && result.success) {
-                var ctx = getContext();
-                ctx.onChange();
-                return;
-            }
-
-            if (result && result.message) {
-                notify(result.message, 'error');
-            } else {
-                notify('Failed to change the character role.', 'error');
-            }
-
-            restoreCheckboxState(checkboxEl);
-        }).catch(function(err) {
-            checkboxEl.disabled = false;
-            console.warn(
-                '[AcademyPeopleController] setInstructorForClass ' +
-                'failed:', err
-            );
-            notify('Failed to change the character role.', 'error');
-            restoreCheckboxState(checkboxEl);
-        });
-    }
-
-    function restoreCheckboxState(checkboxEl) {
-        if (!checkboxEl) { return; }
-        checkboxEl.checked = !checkboxEl.checked;
-        checkboxEl.disabled = false;
+        CharacterCRUD.setInstructorForClass(charId, classId, isInstructor)
+            .then(function(result) {
+                if (result && result.success) {
+                    var ctx = getContext();
+                    ctx.onChange();
+                    return;
+                }
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                } else {
+                    notify(
+                        'Failed to change character role.',
+                        'error'
+                    );
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] ' +
+                    'setInstructorForClass failed:', err
+                );
+                notify(
+                    'Failed to change character role.',
+                    'error'
+                );
+            });
     }
 
     // ============================================================
@@ -1819,7 +1535,9 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        var mode = resolveCharacterMode(charId, classId);
+        var mode = isInstructorForClass(charId, classId)
+            ? 'instructor'
+            : 'student';
         var title = mode === 'instructor'
             ? 'Assign to teach a discipline'
             : null;
@@ -1940,7 +1658,9 @@
             return;
         }
 
-        var mode = resolveCharacterMode(charId, classId);
+        var mode = isInstructorForClass(charId, classId)
+            ? 'instructor'
+            : 'student';
 
         var gridVM = null;
         if (typeof AcademyCharacterDetailAggregator
