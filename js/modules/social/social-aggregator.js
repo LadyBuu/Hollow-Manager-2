@@ -2,9 +2,6 @@
  * modules/social/social-aggregator.js - Social Aggregator
  * Social's integration boundary with external domains
  *
- * This module provides Social-specific projections by composing
- * data from SocialQueries and CharacterQueries.
- *
  * IMPORTANT:
  *   - Projection builder, not a query registry
  *   - Composes SocialQueries + CharacterQueries
@@ -12,46 +9,34 @@
  *   - Never exposes CharacterQueries API directly
  *   - Never mutates data
  *   - No UI dependencies
- *   - No passthrough methods
  *
  * IMMUTABILITY OF SOURCE DATA:
- *   - SocialQueries.getAllRelationships() returns the LIVE array
- *     (window.data.social.relationships), not a copy. Any code that
- *     sorts, splices, or reorders it mutates the persisted store.
- *   - This module treats source arrays as read-only. Where ordering
- *     is needed for a projection, a shallow copy is taken first.
- *   - The slice-before-sort pattern in getSocialPageViewModel is
- *     load-bearing: without it, calling the Social tab with the
- *     default 'all'/'all' filters reorders the store on every render.
+ *   SocialQueries.getAllRelationships() returns the LIVE array.
+ *   Any code that sorts or reorders it mutates the store. This
+ *   module treats source arrays as read-only; where ordering is
+ *   needed, a shallow copy is taken first.
+ *
+ * CLARIFICATION (two-sided):
+ *   Each relationship carries clarification1 (character1's role
+ *   toward character2) and clarification2 (character2's role toward
+ *   character1). The view model carries:
+ *     - clarification1      raw
+ *     - clarification2      raw
+ *     - clarification (deprecated alias; equals clarification1)
+ *     - displayClarification      collapsed single-chip value for
+ *                                 rows
+ *     - contextClarification      the value to show from
+ *                                 contextCharId's side, when a
+ *                                 context is provided
+ *     - otherClarification        the value to show for the other
+ *                                 side
  *
  * ELIMINATION ENRICHMENT:
- *   The character VMs produced by this module carry both:
- *     - `everEliminated`  : boolean. True when the character has any
- *                            elimination record at all, any year,
- *                            any kind. Presence-based.
- *     - `eliminationYear` : number | null. The earliest elimination
- *                            year, for display.
- *     - `eliminationWeek` : number | null. The earliest elimination
- *                            week, for display.
- *     - `eliminationReason` : string. Reason from the earliest
- *                            elimination, or '' when none.
- *
- *   This is enrichment, not a re-implementation. The reads route
- *   through EliminationQueries, which owns the semantics. When that
- *   module is unavailable, all four fields fall back to the
- *   non-eliminated shape and the projection proceeds.
- *
- *   Consumers that just need "is this character eliminated?" should
- *   check `everEliminated`. It is a fact about the character record,
- *   not about the current application year.
- *
- * API:
- *   - getRelationshipViewModel(relationship, contextCharId)
- *   - getCharacterRelationshipsViewModel(characterId)
- *   - getConnectedCharactersViewModel(characterId)
- *   - getSocialPageViewModel(options)
- *   - getGroupedCharacterRelationshipsViewModel(characterId)
- *   - getAllGroupedRelationshipsViewModel(options)
+ *   The character VMs carry everEliminated / eliminationYear /
+ *   eliminationWeek / eliminationReason, sourced from
+ *   EliminationQueries. When that module is unavailable the fields
+ *   fall back to their non-eliminated shape and the projection
+ *   proceeds.
  *
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
@@ -59,14 +44,7 @@
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
  *
  * DEPENDENCIES (LAZY):
- *   - window.EliminationQueries (from elimination-queries.js)
- *     Missing -> elimination fields stay in their non-eliminated
- *     shape; the projection proceeds.
- *
- * USAGE:
- *   var vm = SocialAggregator.getCharacterRelationshipsViewModel('char_123');
- *   var rel = SocialAggregator.getRelationshipViewModel(relationship);
- *   var grouped = SocialAggregator.getGroupedCharacterRelationshipsViewModel('char_123');
+ *   - window.EliminationQueries
  */
 
 (function() {
@@ -77,25 +55,13 @@
     }
     window.__socialAggregatorLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var SocialQueries = window.SocialQueries;
     var CharacterQueries = window.CharacterQueries;
     var SocialConstants = window.SocialConstants;
 
-    // ============================================================
-    // LAZY DEPENDENCY ACCESSORS
-    // ============================================================
-
     function getEliminationQueries() {
         return window.EliminationQueries || null;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -149,7 +115,6 @@
             console.warn('[SocialAggregator] Missing dependencies:', missing.join(', '));
             return false;
         }
-
         return true;
     }
 
@@ -187,27 +152,6 @@
         return char.deceased || false;
     }
 
-    /**
-     * Read elimination facts for a character.
-     *
-     * Returns a plain object with four fields. When
-     * EliminationQueries is unavailable, all fields fall back to
-     * their non-eliminated shape. When the character has no
-     * eliminations, the same shape is returned.
-     *
-     * This function is the SINGLE place in the aggregator that
-     * reads EliminationQueries. Consumers use the returned fields
-     * directly; they do not reach for the query module themselves.
-     *
-     * @param {string|object} charIdOrObject
-     * @returns {{
-     *   eliminated: boolean,
-     *   everEliminated: boolean,
-     *   eliminationYear: number|null,
-     *   eliminationWeek: number|null,
-     *   eliminationReason: string
-     * }}
-     */
     function readEliminationFacts(charIdOrObject) {
         var result = {
             eliminated: false,
@@ -230,50 +174,35 @@
                     result.everEliminated = true;
                 }
             }
-
             if (typeof EQ.getEliminationWeek === 'function') {
                 var week = EQ.getEliminationWeek(charIdOrObject);
                 if (week !== null && week !== undefined) {
                     result.eliminationWeek = week;
-                    // A week without a year is unusual but
-                    // possible on legacy data. Treat it as an
-                    // elimination for the "ever" flag.
                     if (!result.everEliminated) {
                         result.everEliminated = true;
                     }
                 }
             }
-
             if (typeof EQ.getEliminationReason === 'function') {
                 var reason = EQ.getEliminationReason(charIdOrObject);
                 if (typeof reason === 'string' && reason !== 'Unknown') {
                     result.eliminationReason = reason;
                 }
             }
-
-            // `eliminated` is year-scoped: is the character eliminated
-            // as of the current application year? This is distinct
-            // from `everEliminated` (presence-based). Callers that
-            // need the year-scoped answer check `eliminated`.
             if (typeof EQ.isCharacterEliminatedByYear === 'function') {
                 var data = window.data || {};
                 var currentYear = null;
                 if (typeof data.currentYear === 'number' &&
-                    isFinite(data.currentYear) &&
-                    data.currentYear > 0) {
+                    isFinite(data.currentYear) && data.currentYear > 0) {
                     currentYear = Math.floor(data.currentYear);
                 }
                 if (currentYear !== null) {
                     result.eliminated = EQ.isCharacterEliminatedByYear(
-                        charIdOrObject,
-                        currentYear
+                        charIdOrObject, currentYear
                     ) === true;
                 }
             }
-        } catch (e) {
-            // Fail-open: leave the default shape. Elimination is
-            // enrichment, not a required fact for the projection.
-        }
+        } catch (e) { /* fail-open */ }
 
         return result;
     }
@@ -289,35 +218,23 @@
     }
 
     function formatPeriod(startYear, endYear) {
-        if (startYear && endYear) {
-            return startYear + ' - ' + endYear;
-        }
-        if (startYear) {
-            return 'From ' + startYear;
-        }
-        if (endYear) {
-            return 'Until ' + endYear;
-        }
+        if (startYear && endYear) { return startYear + ' - ' + endYear; }
+        if (startYear) { return 'From ' + startYear; }
+        if (endYear) { return 'Until ' + endYear; }
         return '';
     }
 
     function getDirectionText(relationship, charId) {
         if (!relationship) { return ''; }
         var isDirectional = SocialConstants.isDirectional(relationship.typeId);
-        if (!isDirectional) { return ' ↔ '; }
-
-        if (!charId) {
-            return ' → ';
-        }
+        if (!isDirectional) { return ' \u2194 '; }
+        if (!charId) { return ' \u2192 '; }
 
         var target = String(charId);
         var isSource = String(relationship.character1) === target;
-        return isSource ? ' → ' : ' ← ';
+        return isSource ? ' \u2192 ' : ' \u2190 ';
     }
 
-    /**
-     * Is this relationship ongoing (no endYear) or ended?
-     */
     function isOngoing(relationship) {
         if (!relationship) { return true; }
         var end = relationship.endYear;
@@ -326,21 +243,57 @@
         return false;
     }
 
-    // ============================================================
-    // PUBLIC API - Single relationship view model
-    // ============================================================
+    /**
+     * Plural-collapse map for symmetric clarification labels.
+     *
+     * When both sides carry the same clarification string, the row
+     * shows the plural form if it is in this map, or the value
+     * unchanged if it is not.
+     */
+    var COLLAPSE_MAP = {
+        'best friend': 'Best friends',
+        'friend': 'Friends',
+        'boyfriend': 'Boyfriends',
+        'girlfriend': 'Girlfriends',
+        'sibling': 'Siblings',
+        'cousin': 'Cousins',
+        'spouse': 'Spouses',
+        'partner': 'Partners',
+        'lover': 'Lovers',
+        'parent': 'Parents'
+    };
 
     /**
-     * Get a view model for a single relationship.
+     * Collapse two clarification strings into a single display value.
      *
-     * @param {object} relationship - Relationship object from SocialQueries
-     * @param {string} contextCharId - Optional character ID for context
-     * @returns {object} Relationship view model
+     *   both empty           -> ''
+     *   only one set         -> that one
+     *   both set and equal   -> plural form when known, else the value
+     *   both set and differ  -> "A / B"
      */
-    function getRelationshipViewModel(relationship, contextCharId) {
-        if (!relationship) {
-            return null;
+    function collapseClarifications(clar1, clar2) {
+        var a = (clar1 || '').trim();
+        var b = (clar2 || '').trim();
+
+        if (a === '' && b === '') { return ''; }
+        if (a === '' && b !== '') { return b; }
+        if (a !== '' && b === '') { return a; }
+
+        if (a.toLowerCase() === b.toLowerCase()) {
+            var key = a.toLowerCase();
+            if (COLLAPSE_MAP[key]) { return COLLAPSE_MAP[key]; }
+            return a;
         }
+
+        return a + ' / ' + b;
+    }
+
+    // ============================================================
+    // RELATIONSHIP VIEW MODEL
+    // ============================================================
+
+    function getRelationshipViewModel(relationship, contextCharId) {
+        if (!relationship) { return null; }
 
         var char1 = CharacterQueries.getCharacterById(relationship.character1);
         var char2 = CharacterQueries.getCharacterById(relationship.character2);
@@ -361,18 +314,52 @@
             ? getOtherCharacterId(relationship, contextCharId)
             : null;
 
+        // Clarifications with legacy fallback
+        var clar1 = SocialQueries.readClarification(relationship, 1);
+        var clar2 = SocialQueries.readClarification(relationship, 2);
+
+        // Per-context view
+        var contextClarification = '';
+        var otherClarification = '';
+        if (contextCharId) {
+            if (String(relationship.character1) === String(contextCharId)) {
+                contextClarification = clar1;
+                otherClarification = clar2;
+            } else if (String(relationship.character2) === String(contextCharId)) {
+                contextClarification = clar2;
+                otherClarification = clar1;
+            }
+        }
+
         return {
             id: relationship.id,
             character1: relationship.character1,
             character2: relationship.character2,
             name1: name1,
             name2: name2,
+
             typeId: relationship.typeId,
             typeLabel: typeLabel,
             typeColor: typeColor,
             isDirectional: isDirectional,
             directionText: directionText,
-            clarification: relationship.clarification || '',
+
+            // Two-sided clarifications
+            clarification1: clar1,
+            clarification2: clar2,
+
+            // Deprecated single-field alias, kept for older callers
+            // that still read vm.clarification. Equals clarification1
+            // with the legacy fallback applied.
+            clarification: clar1,
+
+            // Collapsed value for a row chip.
+            displayClarification: collapseClarifications(clar1, clar2),
+
+            // Per-context view (populated when a context is given).
+            contextClarification: contextClarification,
+            otherClarification: otherClarification,
+
             startYear: relationship.startYear || '',
             endYear: relationship.endYear || '',
             period: period,
@@ -380,12 +367,10 @@
             notes: relationship.notes || '',
             createdAt: relationship.createdAt || '',
 
-            // Computed display helpers
             displayName: name1 + directionText + name2,
-            displayType: typeLabel + (relationship.clarification ? ' (' + relationship.clarification + ')' : ''),
+            displayType: typeLabel,
             displayPeriod: period,
 
-            // Context character (when a perspective is provided)
             contextCharId: contextCharId || null,
             otherCharId: otherCharId,
             otherCharName: otherCharId ? getCharacterDisplayName(otherCharId) : null
@@ -393,15 +378,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - Character relationships view model
+    // CHARACTER-SCOPED VIEW MODELS
     // ============================================================
 
-    /**
-     * Get a view model for all relationships of a character.
-     *
-     * @param {string} characterId - Character ID
-     * @returns {object} Character relationships view model
-     */
     function getCharacterRelationshipsViewModel(characterId) {
         if (!characterId) {
             return {
@@ -424,7 +403,6 @@
             return getRelationshipViewModel(rel, characterId);
         });
 
-        // Group by type
         var byTypeMap = Object.create(null);
         viewModels.forEach(function(vm) {
             if (!vm) { return; }
@@ -440,14 +418,12 @@
             byTypeMap[key].relationships.push(vm);
         });
 
-        // Sort by type label
         var sortedByType = Object.keys(byTypeMap).map(function(k) {
             return byTypeMap[k];
         }).sort(function(a, b) {
             return a.typeLabel.localeCompare(b.typeLabel);
         });
 
-        // Sort relationships by creation date (newest first)
         viewModels.sort(function(a, b) {
             if (!a || !b) { return 0; }
             return new Date(b.createdAt) - new Date(a.createdAt);
@@ -465,20 +441,6 @@
         };
     }
 
-    // ============================================================
-    // PUBLIC API - Connected characters view model
-    // ============================================================
-
-    /**
-     * Get a view model for all characters connected to a character.
-     *
-     * Each connection record carries the same character facts the
-     * social page VM carries, under the `character*` prefix:
-     * name, status, age, deceased, and the elimination fields.
-     *
-     * @param {string} characterId - Character ID
-     * @returns {object} Connected characters view model
-     */
     function getConnectedCharactersViewModel(characterId) {
         if (!characterId) {
             return {
@@ -518,8 +480,6 @@
                     characterAge: getCharacterAge(otherId),
                     characterDeceased: getCharacterDeceased(otherId),
 
-                    // Elimination enrichment, prefixed to match the
-                    // character* naming convention on this VM.
                     characterEliminated: elimFacts.eliminated,
                     characterEverEliminated: elimFacts.everEliminated,
                     characterEliminationYear: elimFacts.eliminationYear,
@@ -530,7 +490,9 @@
                 };
             }
 
-            connectionMap[otherId].relationships.push(getRelationshipViewModel(rel, characterId));
+            connectionMap[otherId].relationships.push(
+                getRelationshipViewModel(rel, characterId)
+            );
         });
 
         var connections = Object.keys(connectionMap).map(function(k) {
@@ -550,38 +512,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - Full social page view model
+    // FULL SOCIAL PAGE VIEW MODEL
     // ============================================================
 
-    /**
-     * Get a complete social page view model.
-     * Combines all Social data into a single projection for the main page.
-     *
-     * SOURCE-DATA SAFETY:
-     *   SocialQueries.getAllRelationships() returns the LIVE array. The
-     *   `filtered` variable starts as a shallow copy (slice()) so the
-     *   final .sort() reorders the copy, not the store. Without this,
-     *   the default 'all'/'all' filter path would reorder
-     *   window.data.social.relationships on every render.
-     *
-     * CHARACTER VM SHAPE:
-     *   Each character in the `characters` array carries:
-     *     id, name, status, age, deceased,                       // original
-     *     eliminated, everEliminated,                            // v2 addition
-     *     eliminationYear, eliminationWeek, eliminationReason    // v2 addition
-     *
-     *   Consumers building pickers or lists check `everEliminated`
-     *   for "has this character ever been eliminated?" — a fact
-     *   about the record. They check `eliminated` for "is this
-     *   character eliminated as of the current year?" — a fact
-     *   about the current state.
-     *
-     * @param {object} options - Options
-     * @param {string} options.characterFilter - Filter by character ID
-     * @param {string} options.typeFilter - Filter by type ID
-     * @param {boolean} options.includeConnectedCharacters - Include connected characters
-     * @returns {object} Social page view model
-     */
     function getSocialPageViewModel(options) {
         options = options || {};
         var charFilter = options.characterFilter || 'all';
@@ -589,13 +522,8 @@
         var includeConnected = options.includeConnectedCharacters !== false;
 
         var allRelationships = SocialQueries.getAllRelationships();
-
-        // ---- FIX: shallow copy before filtering/sorting ----
-        // Without this, when both filters are 'all', `filtered` aliases
-        // the live store and the .sort() below mutates it in place.
         var filtered = allRelationships.slice();
 
-        // Apply filters
         if (charFilter !== 'all') {
             filtered = filtered.filter(function(r) {
                 return String(r.character1) === String(charFilter) ||
@@ -608,7 +536,6 @@
             });
         }
 
-        // Sort by creation date (newest first)
         filtered.sort(function(a, b) {
             return new Date(b.createdAt) - new Date(a.createdAt);
         });
@@ -617,7 +544,6 @@
             return getRelationshipViewModel(rel, charFilter !== 'all' ? charFilter : null);
         });
 
-        // Get all characters with relationships
         var characterIds = Object.create(null);
         allRelationships.forEach(function(r) {
             if (r && r.character1) { characterIds[String(r.character1)] = true; }
@@ -626,9 +552,6 @@
 
         var characters = Object.keys(characterIds).map(function(id) {
             var char = CharacterQueries.getCharacterById(id);
-
-            // Elimination enrichment. When the character record is
-            // missing, we skip the query and return the default shape.
             var elimFacts = char
                 ? readEliminationFacts(char)
                 : {
@@ -646,7 +569,6 @@
                 age: char ? CharacterQueries.getCharacterAge(char) : '',
                 deceased: char ? (char.deceased || false) : false,
 
-                // Elimination enrichment
                 eliminated: elimFacts.eliminated,
                 everEliminated: elimFacts.everEliminated,
                 eliminationYear: elimFacts.eliminationYear,
@@ -657,13 +579,11 @@
             return a.name.localeCompare(b.name);
         });
 
-        // Connected characters for the selected character
         var connected = null;
         if (includeConnected && charFilter !== 'all') {
             connected = getConnectedCharactersViewModel(charFilter);
         }
 
-        // Types with counts
         var typeCounts = Object.create(null);
         allRelationships.forEach(function(r) {
             if (!r || !r.typeId) { return; }
@@ -699,39 +619,19 @@
     }
 
     // ============================================================
-    // PUBLIC API - Grouped relationships
+    // GROUPED RELATIONSHIPS
     // ============================================================
 
-    /**
-     * Get the character's relationships grouped by type.
-     * Each group has:
-     *   - typeId, typeLabel, typeColor
-     *   - ongoing: [] of relationship view models
-     *   - ended:   [] of relationship view models
-     *   - total:   number
-     *
-     * Groups sorted alphabetically by type label.
-     * Ongoing and ended sorted by start year (ascending, empty last).
-     *
-     * @param {string} characterId - Character ID
-     * @returns {array} Array of type-group view models
-     */
     function getGroupedCharacterRelationshipsViewModel(characterId) {
-        if (!characterId) {
-            return [];
-        }
+        if (!characterId) { return []; }
 
         var relationships = SocialQueries.getCharacterRelationships(characterId);
-        if (!relationships || relationships.length === 0) {
-            return [];
-        }
+        if (!relationships || relationships.length === 0) { return []; }
 
-        // Map view models
         var viewModels = relationships.map(function(rel) {
             return getRelationshipViewModel(rel, characterId);
         }).filter(function(vm) { return vm !== null; });
 
-        // Group by type
         var groupMap = Object.create(null);
         viewModels.forEach(function(vm) {
             var key = vm.typeId;
@@ -745,15 +645,11 @@
                     total: 0
                 };
             }
-            if (vm.ongoing) {
-                groupMap[key].ongoing.push(vm);
-            } else {
-                groupMap[key].ended.push(vm);
-            }
+            if (vm.ongoing) { groupMap[key].ongoing.push(vm); }
+            else { groupMap[key].ended.push(vm); }
             groupMap[key].total++;
         });
 
-        // Sort each group's relationships by start year
         function sortByStartYear(a, b) {
             var aY = parseInt(a.startYear, 10);
             var bY = parseInt(b.startYear, 10);
@@ -762,7 +658,6 @@
             if (aHas && bHas) { return aY - bY; }
             if (aHas && !bHas) { return -1; }
             if (!aHas && bHas) { return 1; }
-            // Tiebreak on other char name
             return String(a.otherCharName || '').localeCompare(String(b.otherCharName || ''));
         }
 
@@ -773,7 +668,6 @@
             return g;
         });
 
-        // Sort groups alphabetically by type label
         groups.sort(function(a, b) {
             return a.typeLabel.localeCompare(b.typeLabel);
         });
@@ -781,22 +675,6 @@
         return groups;
     }
 
-    /**
-     * Get ALL relationships grouped by type across the whole social graph.
-     * Used by the top-level Social tab for the grouped view.
-     *
-     * SOURCE-DATA SAFETY:
-     *   The `relationships` variable is reassigned to fresh arrays by
-     *   the .filter() calls, so no in-place mutation of the store can
-     *   occur here. The .sort() below sorts the freshly-built group
-     *   arrays, not the source array. This function was already safe;
-     *   the sibling getSocialPageViewModel was not.
-     *
-     * @param {object} options - Options
-     * @param {string} options.characterFilter - Restrict to relationships involving this character
-     * @param {string} options.typeFilter - Restrict to a single type
-     * @returns {array} Array of type-group view models
-     */
     function getAllGroupedRelationshipsViewModel(options) {
         options = options || {};
         var charFilter = options.characterFilter || 'all';
@@ -835,11 +713,8 @@
                     total: 0
                 };
             }
-            if (vm.ongoing) {
-                groupMap[key].ongoing.push(vm);
-            } else {
-                groupMap[key].ended.push(vm);
-            }
+            if (vm.ongoing) { groupMap[key].ongoing.push(vm); }
+            else { groupMap[key].ended.push(vm); }
             groupMap[key].total++;
         });
 
@@ -873,17 +748,17 @@
     // ============================================================
 
     window.SocialAggregator = {
-        // Single relationship
         getRelationshipViewModel: getRelationshipViewModel,
 
-        // Character-scoped
         getCharacterRelationshipsViewModel: getCharacterRelationshipsViewModel,
         getConnectedCharactersViewModel: getConnectedCharactersViewModel,
         getGroupedCharacterRelationshipsViewModel: getGroupedCharacterRelationshipsViewModel,
 
-        // Global
         getSocialPageViewModel: getSocialPageViewModel,
-        getAllGroupedRelationshipsViewModel: getAllGroupedRelationshipsViewModel
+        getAllGroupedRelationshipsViewModel: getAllGroupedRelationshipsViewModel,
+
+        // Exposed for tests and reuse
+        collapseClarifications: collapseClarifications
     };
 
 })();
