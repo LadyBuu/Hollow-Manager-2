@@ -1,44 +1,36 @@
 /**
  * modules/social/social-events.js - Social Events
  * Event orchestration for the standalone Social tab
- * 
- * This module provides:
- *   - init - Bind all event listeners
- *   - destroy - Clean up all event listeners
- *   - handleAddRelationship - Open relationship form
- *   - handleSaveRelationship - Save relationship (create/update)
- *   - handleDeleteRelationship - Delete relationship with confirmation
- *   - handleFilterChange - Refresh view on filter change
- *   - handleViewModeChange - Switch between list and graph views
- *   - handleGraphNodeClick - Show character detail
- *   - handleCharacterDetailClose - Close detail modal
- *   - handleGroupToggle - Collapse/expand a relationship type group
- * 
+ *
  * IMPORTANT:
  *   - Orchestrates UI interactions for the STANDALONE Social tab
  *   - Calls SocialCore for mutations
  *   - Calls SocialViews for rendering
  *   - Calls SocialGraph for graph rendering
- *   - Uses SocialAggregator for character names (display only)
  *   - Uses Modal for modal lifecycle
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
- *   - No direct DOM manipulation (delegates to Views)
- * 
+ *
+ * EDIT STATE:
+ *   _editId is set only inside handleAddRelationship and cleared
+ *   inside handleCloseRelationshipForm. It is cleared FIRST, at the
+ *   top of handleAddRelationship, before any early-return path, so
+ *   a previous failed edit cannot leak into the next one.
+ *
+ * CLARIFICATIONS (two-sided):
+ *   The form carries #rel-clarification-1 (character1's role
+ *   toward character2) and #rel-clarification-2 (character2's role
+ *   toward character1). The labels are refreshed on open and
+ *   whenever either character select changes.
+ *
  * DEPENDENCIES:
- *   - window.SocialCore (from social-core.js) - MANDATORY
- *   - window.SocialViews (from social-views.js) - MANDATORY
- *   - window.SocialQueries (from social-queries.js) - MANDATORY
- *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
- *   - window.SocialGraph (from social-graph.js) - MANDATORY
- *   - window.Modal (from modal.js) - MANDATORY
- *   - window.NotificationSystem (from notification.js) - MANDATORY
- * 
- * USAGE:
- *   var SE = window.SocialEvents;
- *   SE.init(container);
- *   // Later:
- *   SE.destroy();
+ *   - window.SocialCore
+ *   - window.SocialViews
+ *   - window.SocialQueries
+ *   - window.SocialAggregator
+ *   - window.SocialGraph
+ *   - window.Modal
+ *   - window.NotificationSystem
  */
 
 (function() {
@@ -49,10 +41,6 @@
     }
     window.__socialEventsLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY
-    // ============================================================
-
     var SocialCore = window.SocialCore;
     var SocialViews = window.SocialViews;
     var SocialQueries = window.SocialQueries;
@@ -60,10 +48,6 @@
     var SocialGraph = window.SocialGraph;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -95,12 +79,6 @@
         if (!SocialAggregator || typeof SocialAggregator.getConnectedCharactersViewModel !== 'function') {
             missing.push('SocialAggregator.getConnectedCharactersViewModel');
         }
-        if (!SocialAggregator || typeof SocialAggregator.getCharacterRelationshipsViewModel !== 'function') {
-            missing.push('SocialAggregator.getCharacterRelationshipsViewModel');
-        }
-        if (!SocialAggregator || typeof SocialAggregator.getRelationshipViewModel !== 'function') {
-            missing.push('SocialAggregator.getRelationshipViewModel');
-        }
 
         if (!SocialGraph || typeof SocialGraph.setGraphVisible !== 'function') {
             missing.push('SocialGraph.setGraphVisible');
@@ -124,13 +102,8 @@
             console.warn('[SocialEvents] Missing dependencies:', missing.join(', '));
             return false;
         }
-
         return true;
     }
-
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
 
     function notify(message, type) {
         type = type || 'info';
@@ -150,12 +123,8 @@
     // ============================================================
 
     function addEventListener(element, eventName, handler, options) {
-        if (!element) {
-            return;
-        }
-
+        if (!element) { return; }
         element.addEventListener(eventName, handler, options || false);
-
         _eventListeners.push({
             element: element,
             eventName: eventName,
@@ -168,9 +137,7 @@
         _eventListeners.forEach(function(item) {
             try {
                 item.element.removeEventListener(item.eventName, item.handler, item.options);
-            } catch (e) {
-                // Ignore cleanup errors
-            }
+            } catch (e) { /* ignore */ }
         });
         _eventListeners = [];
     }
@@ -178,9 +145,7 @@
     function delegate(selector, eventName, handler) {
         function wrappedHandler(e) {
             var target = e.target.closest ? e.target.closest(selector) : null;
-            if (!target) {
-                return;
-            }
+            if (!target) { return; }
             handler(e, target);
         }
 
@@ -201,9 +166,7 @@
     // ============================================================
 
     function init(container) {
-        if (_initialized) {
-            destroy();
-        }
+        if (_initialized) { destroy(); }
 
         if (!checkDependencies()) {
             console.warn('[SocialEvents] Dependencies not met, skipping initialization');
@@ -218,9 +181,11 @@
             return;
         }
 
+        // Wipe the state that a previous init might have left behind.
+        _editId = null;
+
         SocialViews.renderSocialView(container);
 
-        // Static / direct bindings
         bindAddRelationship();
         bindViewModeButtons();
         bindRelationshipForm();
@@ -228,13 +193,14 @@
         bindZoomControls();
         bindCharacterDetail();
 
-        // Delegated bindings (survive re-renders)
         bindDeleteRelationship();
         bindEditRelationship();
         bindGroupToggle();
 
+        bindSuggestPairs();
+        bindCreateChild();
+
         _initialized = true;
-        _editId = null;
     }
 
     function destroy() {
@@ -244,7 +210,7 @@
     }
 
     // ============================================================
-    // ADD RELATIONSHIP
+    // ADD / EDIT RELATIONSHIP
     // ============================================================
 
     function bindAddRelationship() {
@@ -256,13 +222,23 @@
         }
     }
 
+    /**
+     * Open the relationship modal.
+     *
+     * `_editId` is cleared FIRST, unconditionally, before any early
+     * return. This is what prevents a failed previous edit from
+     * leaking its state into a subsequent open.
+     */
     function handleAddRelationship(editId) {
-        _editId = editId || null;
+        _editId = editId ? String(editId) : null;
 
         var title = document.getElementById('relationship-form-title');
         var form = document.getElementById('relationship-form-inner');
+        var modal = document.getElementById('relationship-form-modal');
 
-        if (!title || !form) {
+        if (!title || !form || !modal) {
+            _editId = null;
+            notify('Relationship form is not available.', 'error');
             return;
         }
 
@@ -271,30 +247,44 @@
 
         form.reset();
 
+        var c1El = document.getElementById('rel-char1');
+        var c2El = document.getElementById('rel-char2');
+        var typeEl = document.getElementById('rel-type');
+        var clar1El = document.getElementById('rel-clarification-1');
+        var clar2El = document.getElementById('rel-clarification-2');
+        var startEl = document.getElementById('rel-start-year');
+        var endEl = document.getElementById('rel-end-year');
+        var notesEl = document.getElementById('rel-notes');
+
         if (_editId) {
             title.textContent = 'Edit Relationship';
 
             var rel = SocialQueries.getRelationshipById(_editId);
-            if (rel) {
-                document.getElementById('rel-char1').value = rel.character1 || '';
-                document.getElementById('rel-char2').value = rel.character2 || '';
-                document.getElementById('rel-type').value = rel.typeId || '';
-                document.getElementById('rel-clarification').value = rel.clarification || '';
-                document.getElementById('rel-start-year').value = rel.startYear || '';
-                document.getElementById('rel-end-year').value = rel.endYear || '';
-                document.getElementById('rel-notes').value = rel.notes || '';
-            } else {
+            if (!rel) {
+                _editId = null;
                 notify('Relationship not found.', 'error');
                 return;
+            }
+
+            if (c1El) { c1El.value = rel.character1 || ''; }
+            if (c2El) { c2El.value = rel.character2 || ''; }
+            if (typeEl) { typeEl.value = rel.typeId || ''; }
+            if (startEl) { startEl.value = rel.startYear || ''; }
+            if (endEl) { endEl.value = rel.endYear || ''; }
+            if (notesEl) { notesEl.value = rel.notes || ''; }
+
+            if (clar1El) {
+                clar1El.value = SocialQueries.readClarification(rel, 1);
+            }
+            if (clar2El) {
+                clar2El.value = SocialQueries.readClarification(rel, 2);
             }
         } else {
             title.textContent = 'Add Relationship';
         }
 
-        var modal = document.getElementById('relationship-form-modal');
-        if (modal) {
-            Modal.showModal(modal);
-        }
+        SocialViews.refreshClarificationLabels();
+        Modal.showModal(modal);
     }
 
     // ============================================================
@@ -332,13 +322,28 @@
                 }
             });
         }
+
+        // Live label refresh when the character selects change.
+        var c1 = document.getElementById('rel-char1');
+        var c2 = document.getElementById('rel-char2');
+        if (c1) {
+            addEventListener(c1, 'change', function() {
+                SocialViews.refreshClarificationLabels();
+            });
+        }
+        if (c2) {
+            addEventListener(c2, 'change', function() {
+                SocialViews.refreshClarificationLabels();
+            });
+        }
     }
 
     function handleSaveRelationship() {
         var char1 = document.getElementById('rel-char1').value;
         var char2 = document.getElementById('rel-char2').value;
         var typeId = document.getElementById('rel-type').value;
-        var title = document.getElementById('rel-clarification').value.trim();
+        var clar1 = document.getElementById('rel-clarification-1').value.trim();
+        var clar2 = document.getElementById('rel-clarification-2').value.trim();
         var startYear = document.getElementById('rel-start-year').value;
         var endYear = document.getElementById('rel-end-year').value;
         var notes = document.getElementById('rel-notes').value.trim();
@@ -360,7 +365,8 @@
                 character1: char1,
                 character2: char2,
                 typeId: typeId,
-                clarification: title,
+                clarification1: clar1,
+                clarification2: clar2,
                 startYear: startYear,
                 endYear: endYear,
                 notes: notes
@@ -369,7 +375,8 @@
             promise = SocialCore.createRelationship(
                 char1, char2, typeId,
                 startYear, endYear,
-                title, notes
+                clar1, clar2,
+                notes
             );
         }
 
@@ -381,35 +388,30 @@
                 notify(result.message || 'Failed to save relationship.', 'error');
             }
         }).catch(function(err) {
+            console.warn('[SocialEvents] save relationship threw:', err);
             notify('An error occurred while saving.', 'error');
         });
     }
 
     function handleCloseRelationshipForm() {
         var modal = document.getElementById('relationship-form-modal');
-        if (modal) {
-            Modal.closeModal(modal);
-        }
+        if (modal) { Modal.closeModal(modal); }
         _editId = null;
     }
 
     // ============================================================
-    // DELETE RELATIONSHIP
+    // DELETE / EDIT ROW BINDINGS
     // ============================================================
 
     function bindDeleteRelationship() {
         delegate('.delete-relationship', 'click', function(e, target) {
             var id = target.dataset.id;
-            if (id) {
-                handleDeleteRelationship(id);
-            }
+            if (id) { handleDeleteRelationship(id); }
         });
     }
 
     function handleDeleteRelationship(id) {
-        if (!id) {
-            return;
-        }
+        if (!id) { return; }
 
         var rel = SocialQueries.getRelationshipById(id);
         if (!rel) {
@@ -434,27 +436,22 @@
                 notify(result.message || 'Failed to delete relationship.', 'error');
             }
         }).catch(function(err) {
+            console.warn('[SocialEvents] delete relationship threw:', err);
             notify('An error occurred while deleting.', 'error');
         });
     }
 
-    // ============================================================
-    // EDIT RELATIONSHIP
-    // ============================================================
-
     function bindEditRelationship() {
         delegate('.edit-relationship', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
             var id = target.dataset.id;
-            if (id) {
-                handleEditRelationship(id);
-            }
+            if (id) { handleEditRelationship(id); }
         });
     }
 
     function handleEditRelationship(id) {
-        if (!id) {
-            return;
-        }
+        if (!id) { return; }
 
         var rel = SocialQueries.getRelationshipById(id);
         if (!rel) {
@@ -466,7 +463,7 @@
     }
 
     // ============================================================
-    // GROUP COLLAPSE / EXPAND
+    // GROUP COLLAPSE
     // ============================================================
 
     function bindGroupToggle() {
@@ -480,9 +477,7 @@
 
             var isHidden = body.style.display === 'none';
             body.style.display = isHidden ? 'block' : 'none';
-            if (caret) {
-                caret.textContent = isHidden ? '▾' : '▸';
-            }
+            if (caret) { caret.textContent = isHidden ? '\u25be' : '\u25b8'; }
         });
     }
 
@@ -497,7 +492,6 @@
                 handleViewModeChange('graph');
             });
         }
-
         var listBtn = document.getElementById('view-list-btn');
         if (listBtn) {
             addEventListener(listBtn, 'click', function() {
@@ -546,14 +540,8 @@
             addEventListener(clearBtn, 'click', function() {
                 var charFilterEl = document.getElementById('social-character-filter');
                 var typeFilterEl = document.getElementById('social-type-filter');
-
-                if (charFilterEl) {
-                    charFilterEl.value = 'all';
-                }
-                if (typeFilterEl) {
-                    typeFilterEl.value = 'all';
-                }
-
+                if (charFilterEl) { charFilterEl.value = 'all'; }
+                if (typeFilterEl) { typeFilterEl.value = 'all'; }
                 SocialViews.renderRelationships();
                 if (SocialGraph.isGraphVisible()) {
                     SocialGraph.renderGraph();
@@ -573,14 +561,12 @@
                 SocialGraph.zoomIn();
             });
         }
-
         var zoomOutBtn = document.getElementById('zoom-out-btn');
         if (zoomOutBtn) {
             addEventListener(zoomOutBtn, 'click', function() {
                 SocialGraph.zoomOut();
             });
         }
-
         var resetZoomBtn = document.getElementById('reset-zoom-btn');
         if (resetZoomBtn) {
             addEventListener(resetZoomBtn, 'click', function() {
@@ -590,15 +576,13 @@
     }
 
     // ============================================================
-    // CHARACTER DETAIL (graph node click)
+    // CHARACTER DETAIL
     // ============================================================
 
     function bindCharacterDetail() {
         delegate('.graph-node', 'click', function(e, target) {
             var id = target.dataset.id;
-            if (id) {
-                handleGraphNodeClick(id);
-            }
+            if (id) { handleGraphNodeClick(id); }
         });
 
         var closeBtn = document.getElementById('close-char-detail');
@@ -619,16 +603,12 @@
 
         delegate('#view-char-relationships', 'click', function(e, target) {
             var id = target.dataset.id;
-            if (id) {
-                handleViewCharacterRelationships(id);
-            }
+            if (id) { handleViewCharacterRelationships(id); }
         });
     }
 
     function handleGraphNodeClick(charId) {
-        if (!charId) {
-            return;
-        }
+        if (!charId) { return; }
 
         var vm = SocialAggregator.getConnectedCharactersViewModel(charId);
         if (!vm || !vm.characterName) {
@@ -637,14 +617,10 @@
         }
 
         var modal = document.getElementById('character-detail-modal');
-        if (!modal) {
-            return;
-        }
+        if (!modal) { return; }
 
         var content = document.getElementById('char-detail-content');
-        if (!content) {
-            return;
-        }
+        if (!content) { return; }
 
         SocialViews.renderCharacterDetailContent(charId, content);
         Modal.showModal(modal);
@@ -652,15 +628,11 @@
 
     function handleCharacterDetailClose() {
         var modal = document.getElementById('character-detail-modal');
-        if (modal) {
-            Modal.closeModal(modal);
-        }
+        if (modal) { Modal.closeModal(modal); }
     }
 
     function handleViewCharacterRelationships(charId) {
-        if (!charId) {
-            return;
-        }
+        if (!charId) { return; }
 
         handleCharacterDetailClose();
 
@@ -672,6 +644,262 @@
                 SocialGraph.renderGraph();
             }
         }
+    }
+
+    // ============================================================
+    // SUGGEST PAIRS
+    // ============================================================
+
+    function bindSuggestPairs() {
+        var openBtn = document.getElementById('suggest-pairs-btn');
+        if (openBtn) {
+            addEventListener(openBtn, 'click', function() {
+                handleOpenSuggestPairs();
+            });
+        }
+
+        var modal = document.getElementById('suggest-pairs-modal');
+        if (modal) {
+            var closeBtn = document.getElementById('close-suggest-pairs');
+            if (closeBtn) {
+                addEventListener(closeBtn, 'click', function() {
+                    Modal.closeModal(modal);
+                });
+            }
+            addEventListener(modal, 'click', function(e) {
+                if (e.target === modal) {
+                    Modal.closeModal(modal);
+                }
+            });
+        }
+
+        var yearInput = document.getElementById('suggest-pairs-year');
+        if (yearInput) {
+            addEventListener(yearInput, 'input', function() {
+                renderSuggestionsFromControls();
+            });
+        }
+
+        var modeSelect = document.getElementById('suggest-pairs-mode');
+        if (modeSelect) {
+            addEventListener(modeSelect, 'change', function() {
+                handleSuggestModeChange();
+                renderSuggestionsFromControls();
+            });
+        }
+
+        var seedSelect = document.getElementById('suggest-pairs-seed');
+        if (seedSelect) {
+            addEventListener(seedSelect, 'change', function() {
+                renderSuggestionsFromControls();
+            });
+        }
+
+        delegate('.pair-suggest-btn', 'click', function(e, target) {
+            e.preventDefault();
+            var char1 = target.dataset.char1;
+            var char2 = target.dataset.char2;
+            if (char1 && char2) {
+                handlePairSuggestion(char1, char2);
+            }
+        });
+    }
+
+    function handleOpenSuggestPairs() {
+        var modal = document.getElementById('suggest-pairs-modal');
+        if (!modal) { return; }
+
+        var yearInput = document.getElementById('suggest-pairs-year');
+        var currentYear = (window.data && typeof window.data.currentYear === 'number')
+            ? window.data.currentYear
+            : new Date().getFullYear();
+
+        if (yearInput && (!yearInput.value || yearInput.value === '')) {
+            yearInput.value = String(currentYear);
+        }
+
+        var seedSelect = document.getElementById('suggest-pairs-seed');
+        if (seedSelect) {
+            seedSelect.innerHTML = '<option value="">Select character...</option>';
+            var CharacterQueries = window.CharacterQueries;
+            if (CharacterQueries && typeof CharacterQueries.getCharacters === 'function') {
+                var chars = CharacterQueries.getCharacters() || [];
+                var sorted = chars.slice().sort(function(a, b) {
+                    var na = CharacterQueries.getDisplayName(a) || '';
+                    var nb = CharacterQueries.getDisplayName(b) || '';
+                    return na.localeCompare(nb);
+                });
+                for (var i = 0; i < sorted.length; i++) {
+                    var c = sorted[i];
+                    if (!c || !c.id) { continue; }
+                    var opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = CharacterQueries.getDisplayName(c) || 'Unknown';
+                    seedSelect.appendChild(opt);
+                }
+            }
+        }
+
+        handleSuggestModeChange();
+        renderSuggestionsFromControls();
+        Modal.showModal(modal);
+    }
+
+    function handleSuggestModeChange() {
+        var modeSelect = document.getElementById('suggest-pairs-mode');
+        var seedGroup = document.getElementById('suggest-pairs-seed-group');
+        if (!modeSelect || !seedGroup) { return; }
+        seedGroup.style.display = modeSelect.value === 'seed' ? 'block' : 'none';
+    }
+
+    function renderSuggestionsFromControls() {
+        var yearInput = document.getElementById('suggest-pairs-year');
+        var modeSelect = document.getElementById('suggest-pairs-mode');
+        var seedSelect = document.getElementById('suggest-pairs-seed');
+        var results = document.getElementById('suggest-pairs-results');
+
+        if (!results) { return; }
+
+        var options = {
+            year: yearInput ? yearInput.value : '',
+            mode: modeSelect ? modeSelect.value : 'top',
+            seedCharId: seedSelect ? seedSelect.value : ''
+        };
+
+        if (options.mode === 'seed' && !options.seedCharId) {
+            results.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Select a character to see suggestions.</p>';
+            return;
+        }
+
+        SocialViews.renderSuggestPairsContent(results, options);
+    }
+
+    function handlePairSuggestion(char1, char2) {
+        var suggestModal = document.getElementById('suggest-pairs-modal');
+        if (suggestModal) { Modal.closeModal(suggestModal); }
+
+        handleAddRelationship();
+
+        var c1 = document.getElementById('rel-char1');
+        var c2 = document.getElementById('rel-char2');
+        if (c1) { c1.value = char1; }
+        if (c2) { c2.value = char2; }
+
+        SocialViews.refreshClarificationLabels();
+    }
+
+    // ============================================================
+    // CREATE CHILD
+    // ============================================================
+
+    function bindCreateChild() {
+        var modal = document.getElementById('create-child-modal');
+        if (!modal) { return; }
+
+        var closeBtn = document.getElementById('close-create-child');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+        var cancelBtn = document.getElementById('cancel-create-child');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+        addEventListener(modal, 'click', function(e) {
+            if (e.target === modal) {
+                Modal.closeModal(modal);
+            }
+        });
+
+        ['child-birth-year', 'child-sex', 'child-first-name', 'child-last-name'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) {
+                addEventListener(el, 'input', function() {
+                    SocialViews.refreshChildPreview(modal);
+                });
+                addEventListener(el, 'change', function() {
+                    SocialViews.refreshChildPreview(modal);
+                });
+            }
+        });
+
+        var confirmBtn = document.getElementById('confirm-create-child');
+        if (confirmBtn) {
+            addEventListener(confirmBtn, 'click', function() {
+                handleConfirmCreateChild();
+            });
+        }
+
+        delegate('.create-child-btn', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+            var aId = target.dataset.char1;
+            var bId = target.dataset.char2;
+            if (aId && bId) {
+                handleOpenCreateChild(aId, bId);
+            }
+        });
+    }
+
+    function handleOpenCreateChild(parentAId, parentBId) {
+        var modal = document.getElementById('create-child-modal');
+        if (!modal) { return; }
+
+        SocialViews.renderChildModalContent(modal, parentAId, parentBId);
+        Modal.showModal(modal);
+    }
+
+    function handleConfirmCreateChild() {
+        var modal = document.getElementById('create-child-modal');
+        if (!modal) { return; }
+
+        var aId = modal.dataset.parentAId;
+        var bId = modal.dataset.parentBId;
+        if (!aId || !bId) {
+            notify('Parent IDs missing.', 'error');
+            return;
+        }
+
+        var yearInput = modal.querySelector('#child-birth-year');
+        var sexSelect = modal.querySelector('#child-sex');
+        var firstInput = modal.querySelector('#child-first-name');
+        var lastInput = modal.querySelector('#child-last-name');
+
+        var options = {
+            birthYear: yearInput ? yearInput.value : '',
+            gender: sexSelect ? sexSelect.value : '',
+            firstName: firstInput ? firstInput.value : '',
+            lastName: lastInput ? lastInput.value : ''
+        };
+
+        if (!options.birthYear) {
+            notify('Birth year is required.', 'error');
+            return;
+        }
+
+        if (!window.CharacterCRUD ||
+            typeof window.CharacterCRUD.createChild !== 'function') {
+            notify('CharacterCRUD.createChild is not available.', 'error');
+            return;
+        }
+
+        window.CharacterCRUD.createChild(aId, bId, options)
+            .then(function(result) {
+                if (result && result.success) {
+                    Modal.closeModal(modal);
+                    refreshUI();
+                    notify('Child created successfully!', 'success');
+                } else {
+                    notify((result && result.message) || 'Failed to create child.', 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn('[SocialEvents] createChild threw:', err);
+                notify('Failed to create child: ' + err.message, 'error');
+            });
     }
 
     // ============================================================
@@ -687,12 +915,11 @@
     }
 
     // ============================================================
-    // RESIZE HANDLING
+    // RESIZE
     // ============================================================
 
     function bindResize() {
         var timeoutId = null;
-
         var debouncedHandler = function() {
             if (timeoutId) {
                 clearTimeout(timeoutId);
@@ -704,7 +931,6 @@
                 }
             }, 200);
         };
-
         addEventListener(window, 'resize', debouncedHandler);
     }
 
@@ -716,7 +942,6 @@
         init: init,
         destroy: destroy,
 
-        // Handlers (exposed for testing)
         handleAddRelationship: handleAddRelationship,
         handleSaveRelationship: handleSaveRelationship,
         handleDeleteRelationship: handleDeleteRelationship,
@@ -725,7 +950,11 @@
         handleGraphNodeClick: handleGraphNodeClick,
         handleCharacterDetailClose: handleCharacterDetailClose,
 
-        // Refresh
+        handleOpenSuggestPairs: handleOpenSuggestPairs,
+        handlePairSuggestion: handlePairSuggestion,
+        handleOpenCreateChild: handleOpenCreateChild,
+        handleConfirmCreateChild: handleConfirmCreateChild,
+
         refreshUI: refreshUI
     };
 
@@ -736,15 +965,11 @@
     function autoInit() {
         if (document.readyState === 'complete' || document.readyState === 'interactive') {
             var container = document.getElementById('tab-social');
-            if (container) {
-                init(container);
-            }
+            if (container) { init(container); }
         } else {
             document.addEventListener('DOMContentLoaded', function() {
                 var container = document.getElementById('tab-social');
-                if (container) {
-                    init(container);
-                }
+                if (container) { init(container); }
             });
         }
     }
