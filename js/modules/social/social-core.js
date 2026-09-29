@@ -8,7 +8,7 @@
  *   - deleteRelationship - Delete a relationship
  *   - deleteAllRelationshipsForCharacter - Delete all relationships for a character
  *   - validateRelationshipData - Pure validation function
- *   - Cross-domain cascade helper (stripCharacterRefs)
+ *   - Cross-domain cascade helpers (stripCharacterRefs, endRelationshipsForCharacter)
  *   - Transaction-local adders for use inside another module's
  *     pipeline mutate callback (addRelationshipInTransaction,
  *     addRelationshipsInTransaction)
@@ -66,12 +66,31 @@
  *   it, every edit that keeps the same characters and type would
  *   reject itself.
  *
- * CASCADE SEMANTICS (stripCharacterRefs):
- *   When a character is deleted, every relationship involving that
- *   character is removed from social.relationships. Both sides are
- *   checked. Called by CharacterCRUD.deleteCharacter from inside
- *   its pipeline mutate, so it runs in the same transaction as the
- *   character removal.
+ * CASCADE SEMANTICS:
+ *   Two cascades are exported. They are DIFFERENT operations on
+ *   DIFFERENT triggers, and the distinction matters.
+ *
+ *   stripCharacterRefs(appData, charId):
+ *     Called when a character is DELETED. Removes every relationship
+ *     involving the character from social.relationships. The
+ *     relationship record ceases to exist. This is correct for
+ *     deletion: the character is gone, so a record that references
+ *     the character by id would be a dangling reference.
+ *
+ *   endRelationshipsForCharacter(appData, charId, deathYear):
+ *     Called when a character DIES. Does NOT remove relationships.
+ *     Stamps endYear onto every ONGOING relationship involving the
+ *     character, so the record reflects that the relationship
+ *     existed and ended at the death year. Relationships that
+ *     already carry an endYear are left alone: they ended for their
+ *     own reasons (a breakup, a falling-out, a job change) and
+ *     death does not overwrite that. This is correct for death: the
+ *     relationship was real, and it ended when one party died.
+ *
+ *   Deletion is a cascade that ERASES. Death is a cascade that
+ *   CLOSES. Both are called from inside CharacterCRUD's pipeline
+ *   mutate, in the same transaction as the character write, so a
+ *   failed save rolls back the cascade too.
  *
  * CHARACTER PROVIDER INTERFACE:
  *   {
@@ -877,9 +896,27 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS
+    // CASCADE HELPERS - DELETION
     // ============================================================
 
+    /**
+     * Remove every relationship involving a character from appData.
+     *
+     * DELETION CASCADE. Called by CharacterCRUD.deleteCharacter from
+     * inside its pipeline mutate, so the relationship removal runs in
+     * the same transaction as the character removal.
+     *
+     * Deletion ERASES. The relationship record ceases to exist. A
+     * record that referenced a deleted character by id would be a
+     * dangling reference, which is why this is a filter, not an
+     * endYear stamp.
+     *
+     * For the DEATH cascade, see endRelationshipsForCharacter.
+     *
+     * @param {object} appData
+     * @param {string} charId
+     * @returns {object} { relationshipsRemoved: number }
+     */
     function stripCharacterRefs(appData, charId) {
         var result = { relationshipsRemoved: 0 };
 
@@ -905,6 +942,83 @@
     }
 
     // ============================================================
+    // CASCADE HELPERS - DEATH
+    // ============================================================
+
+    /**
+     * End every ONGOING relationship involving a character by
+     * stamping the death year onto endYear.
+     *
+     * DEATH CASCADE. Called by CharacterCRUD from inside its pipeline
+     * mutate, in the same transaction as the character save.
+     *
+     * Death CLOSES. The relationship existed; it ended when one party
+     * died. The record keeps both ids, keeps its type, keeps its
+     * clarifications, and gains an endYear. Subsequent reads (the
+     * relationship list, the character social tab, the graph) will
+     * show it in the "Ended" group rather than the "Ongoing" group.
+     *
+     * RELATIONSHIPS THAT ALREADY HAVE AN endYear ARE LEFT ALONE.
+     * A relationship that ended for its own reasons (a breakup, a
+     * falling-out, a job change) is not retroactively re-dated to the
+     * character's death. The endYear already on the record is the
+     * truth about when that relationship ended.
+     *
+     * IDEMPOTENT. Re-running on a character whose relationships are
+     * already ended is a no-op: every record already has an endYear,
+     * so none are touched. This matters because the death cascade
+     * runs on EVERY save of a deceased character, not just the
+     * transition into death.
+     *
+     * Does NOT touch window.data. Mutates the appData argument only.
+     *
+     * @param {object} appData
+     * @param {string} charId
+     * @param {number|string} deathYear
+     * @returns {object} { relationshipsEnded: number }
+     */
+    function endRelationshipsForCharacter(appData, charId, deathYear) {
+        var result = { relationshipsEnded: 0 };
+
+        if (!appData || !charId) { return result; }
+
+        var yearNum = parseInt(deathYear, 10);
+        if (isNaN(yearNum) || yearNum < 1) { return result; }
+
+        if (!appData.social || typeof appData.social !== 'object') {
+            return result;
+        }
+
+        var relationships = appData.social.relationships;
+        if (!Array.isArray(relationships)) { return result; }
+
+        var target = String(charId);
+        var yearStr = String(yearNum);
+
+        for (var i = 0; i < relationships.length; i++) {
+            var rel = relationships[i];
+            if (!rel) { continue; }
+
+            var c1 = String(rel.character1);
+            var c2 = String(rel.character2);
+            if (c1 !== target && c2 !== target) { continue; }
+
+            // Only stamp ongoing relationships. A relationship that
+            // already carries an endYear ended for its own reasons.
+            var existingEnd = rel.endYear;
+            var isOngoing = existingEnd === undefined ||
+                            existingEnd === null ||
+                            String(existingEnd).trim() === '';
+            if (!isOngoing) { continue; }
+
+            rel.endYear = yearStr;
+            result.relationshipsEnded++;
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -916,11 +1030,15 @@
         deleteRelationship: deleteRelationship,
         deleteAllRelationshipsForCharacter: deleteAllRelationshipsForCharacter,
 
+        // Cascades
         stripCharacterRefs: stripCharacterRefs,
+        endRelationshipsForCharacter: endRelationshipsForCharacter,
 
+        // Transaction-local adders
         addRelationshipInTransaction: addRelationshipInTransaction,
         addRelationshipsInTransaction: addRelationshipsInTransaction,
 
+        // Validation and normalisation
         validateRelationshipData: validateRelationshipData,
         isValidYear: isValidYear,
 
