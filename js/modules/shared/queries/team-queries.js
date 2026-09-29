@@ -127,6 +127,36 @@
  *   that a character is already committed to a professional team
  *   at a later year. This is the "future stint" indicator.
  *
+ * SORT ORDER:
+ *   The roster is sorted by MILESTONE YEAR ASCENDING, then name.
+ *
+ *   The milestone is the EARLIEST of whichever of these career
+ *   years the character has:
+ *
+ *     - juniorYear
+ *     - seniorYear
+ *     - supportYear
+ *     - instructorYear
+ *
+ *   It answers "when did this character first become relevant to
+ *   a professional team?" Characters who became relevant earlier
+ *   sort first.
+ *
+ *   Characters with a milestone year sort before characters
+ *   without one. Ties break alphabetically. Characters with no
+ *   career status at all (no junior, senior, support, or
+ *   instructor year — a data-quality signal) sort last,
+ *   alphabetically among themselves.
+ *
+ *   Each row therefore carries the four raw year fields, plus:
+ *
+ *     milestoneYear:  1910 | null
+ *     milestoneLabel: 'Junior 1910' | ''
+ *
+ *   The milestone fields are the sort anchor and the display
+ *   anchor. The raw years are available for callers that want to
+ *   render the full career timeline ("Junior 1910 → Senior 1912").
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.data          (canonical state)
  *   - window.TeamConstants (mandatory)
@@ -1279,10 +1309,15 @@
      *   - staffRole:  'instructor' | 'support' | null
      *   - staffSince: year | null
      *
-     * See the file header for the full contract.
+     * SORT:
+     *   Milestone year ascending, then name. The milestone is the
+     *   earliest of whichever career years the character has
+     *   (junior / senior / support / instructor). Characters with
+     *   no milestone sort last, alphabetically. See the SORT ORDER
+     *   block in the file header.
      *
      * @param {number|string} year
-     * @returns {array} Sorted by name ascending
+     * @returns {array} Sorted by milestone year ascending, then name
      */
     function getProfessionalTeamEligibleRoster(year) {
         var yearNum = parsePeriod(year);
@@ -1308,6 +1343,10 @@
             typeof CharacterQueries.getJuniorYear === 'function';
         var canGetSeniorYear =
             typeof CharacterQueries.getSeniorYear === 'function';
+        var canGetSupportYear =
+            typeof CharacterQueries.getSupportYear === 'function';
+        var canGetInstructorYear =
+            typeof CharacterQueries.getInstructorYear === 'function';
         var canGetDisplayName =
             typeof CharacterQueries.getDisplayName === 'function';
         var canGetCurrentStatus =
@@ -1374,6 +1413,11 @@
             //    consumer decides whether to split the list.
             var staffInfo = getStaffInfoAtYear(char, yearNum);
 
+            // 6. Career milestone years.
+            //
+            //    Each is optional. A character who never became a
+            //    senior has no seniorYear; a character who never
+            //    became support has no supportYear.
             var juniorYear = null;
             if (canGetJuniorYear) {
                 try { juniorYear = CharacterQueries.getJuniorYear(char); }
@@ -1384,6 +1428,52 @@
             if (canGetSeniorYear) {
                 try { seniorYear = CharacterQueries.getSeniorYear(char); }
                 catch (e) { seniorYear = null; }
+            }
+
+            var supportYear = null;
+            if (canGetSupportYear) {
+                try { supportYear = CharacterQueries.getSupportYear(char); }
+                catch (e) { supportYear = null; }
+            }
+
+            var instructorYear = null;
+            if (canGetInstructorYear) {
+                try {
+                    instructorYear =
+                        CharacterQueries.getInstructorYear(char);
+                } catch (e) { instructorYear = null; }
+            }
+
+            // ---- Milestone: the earliest career year. ----
+            //
+            // Evaluated in declaration order so ties resolve
+            // predictably: junior beats senior beats support
+            // beats instructor. This matches the natural reading
+            // order of a candidate row.
+            var milestoneYear = null;
+            var milestoneLabel = '';
+
+            if (juniorYear !== null) {
+                milestoneYear = juniorYear;
+                milestoneLabel = 'Junior ' + juniorYear;
+            }
+            if (seniorYear !== null &&
+                (milestoneYear === null ||
+                 seniorYear < milestoneYear)) {
+                milestoneYear = seniorYear;
+                milestoneLabel = 'Senior ' + seniorYear;
+            }
+            if (supportYear !== null &&
+                (milestoneYear === null ||
+                 supportYear < milestoneYear)) {
+                milestoneYear = supportYear;
+                milestoneLabel = 'Support ' + supportYear;
+            }
+            if (instructorYear !== null &&
+                (milestoneYear === null ||
+                 instructorYear < milestoneYear)) {
+                milestoneYear = instructorYear;
+                milestoneLabel = 'Instructor ' + instructorYear;
             }
 
             var displayName = 'Unknown';
@@ -1404,6 +1494,10 @@
                 status: status,
                 juniorYear: juniorYear,
                 seniorYear: seniorYear,
+                supportYear: supportYear,
+                instructorYear: instructorYear,
+                milestoneYear: milestoneYear,
+                milestoneLabel: milestoneLabel,
                 classification: state.classification,
                 activeTeamName: state.activeTeamName,
                 futureTeamName: state.futureTeamName,
@@ -1417,7 +1511,25 @@
             });
         }
 
+        // ---- Sort: milestone year ascending, then name. ----
+        //
+        // The roster is ordered by when each character first
+        // became relevant to a professional team — earliest
+        // career milestone first. Characters with a milestone
+        // sort before characters without one; ties break
+        // alphabetically. Characters with no career status at
+        // all (no junior, senior, support, or instructor year)
+        // sort last, alphabetically among themselves.
         rows.sort(function(a, b) {
+            var aYear = a.milestoneYear;
+            var bYear = b.milestoneYear;
+
+            if (aYear !== null && bYear !== null) {
+                if (aYear !== bYear) { return aYear - bYear; }
+                return a.name.localeCompare(b.name);
+            }
+            if (aYear !== null) { return -1; }
+            if (bYear !== null) { return 1; }
             return a.name.localeCompare(b.name);
         });
 
