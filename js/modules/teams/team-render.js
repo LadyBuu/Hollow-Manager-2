@@ -27,12 +27,29 @@
  *     arrive on the VM. The renderer does not derive them.
  *
  * PAGE HEADER ACTIONS:
- *   The page header carries three actions on the professional tab:
+ *   The page header carries a different action set per tab:
  *
- *     [Export] [Matchmaking] [+ Add Team]
+ *     Professional (Teams mode):
+ *       [Export] [Matchmaking] [+ Add Team]
  *
- *   All three are hidden while the Unassigned view is active, and
- *   on the Temporary and Civilian tabs.
+ *     Professional (Unassigned mode):
+ *       (no actions — the list is a read-only roster)
+ *
+ *     Temporary:
+ *       [+ Add Team]
+ *
+ *     Civilian:
+ *       [+ Add Team]
+ *
+ *   Export and Matchmaking are professional-only concepts and stay
+ *   scoped to the professional Teams mode. The + Add Team button
+ *   appears on every tab that can hold a team, so the user can
+ *   create a temporary or civilian team from the same place they
+ *   view the list.
+ *
+ *   The "start the form on the current tab's type" behaviour is
+ *   handled by team-events.js in showTeamForm, not by this
+ *   renderer. The renderer only emits the button.
  *
  * UNASSIGNED VIEW:
  *   The Unassigned view has TWO sections:
@@ -1148,9 +1165,33 @@
         var html = '';
 
         // ---- Page header ----
+        //
+        // Action set per tab:
+        //
+        //   Professional (Teams mode):
+        //     [Export] [Matchmaking] [+ Add Team]
+        //
+        //   Professional (Unassigned mode):
+        //     (no actions)
+        //
+        //   Temporary:
+        //     [+ Add Team]
+        //
+        //   Civilian:
+        //     [+ Add Team]
+        //
+        // Export and Matchmaking are professional-only concepts.
+        // + Add Team is available on every tab that can hold a
+        // team, so the user can create a temporary or civilian
+        // team from the same place they view the list.
+        //
+        // The "start the form on the current tab's type" behaviour
+        // lives in team-events.js's showTeamForm. This renderer
+        // only emits the button.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
+
         if (activeTab === 'professional' && !showUnassigned) {
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
@@ -1158,9 +1199,15 @@
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
+        }
+
+        // + Add Team is available on every non-unassigned view.
+        // (There is nothing to add to the Unassigned roster.)
+        if (!(activeTab === 'professional' && showUnassigned)) {
             html += '<button type="button" id="add-team-btn" ' +
                         'class="primary">+ Add Team</button>';
         }
+
         html += '</div>';
         html += '</div>';
 
