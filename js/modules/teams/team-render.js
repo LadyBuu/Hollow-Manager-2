@@ -31,58 +31,33 @@
  *
  *     [Export] [Matchmaking] [+ Add Team]
  *
- *   All three are hidden while the Unassigned view is active, and
- *   on the Temporary and Civilian tabs.
+ *   All three are hidden while the Unassigned or Timeline view is
+ *   active, and on the Temporary and Civilian tabs.
+ *
+ * VIEW MODES:
+ *   The professional tab carries a mode toggle:
+ *
+ *     [ Teams | Unassigned | Timeline ]
+ *
+ *   `pageVM.viewMode` is one of 'teams' | 'unassigned' | 'timeline'.
+ *   The renderer branches on it:
+ *
+ *     'teams'       normal team list
+ *     'unassigned'  the unassigned-character view
+ *     'timeline'    the timeline view (rendered by TimelineView)
+ *
+ *   The timeline content is delegated to TimelineView
+ *   (window.TimelineView.renderTimeline). If that module is
+ *   unavailable, the renderer falls back to an error message.
  *
  * UNASSIGNED VIEW:
- *   The Unassigned view has TWO sections:
- *
- *     - Candidates: characters eligible for a professional team
- *       at the current year, not already on one. Four columns:
- *       Character | Status | Junior Since | Senior Since.
- *
- *       Each candidate row carries an age chip next to the name,
- *       in parentheses, e.g. "Jane Doe (28)". The chip is muted
- *       so it reads as metadata, not as part of the name.
- *
- *       A candidate who is ALSO support (supportClass
- *       'support-unassigned') carries a small "Staff" tag next to
- *       the name, so the user knows they hold a support role and
- *       still need placing.
- *
- *     - Staff: instructors and support at the current year, not
- *       already on a professional team. Five columns:
- *       Character | Status | Role | Since | Class.
- *
- *       Each staff row carries an age chip next to the name, in
- *       parentheses.
- *
- *       The Role column shows the raw role ('Instructor' or
- *       'Support') plus a subtype tag when the character is
- *       support:
- *
- *         Support  [Pure]        never a student, no team history
- *         Support  [Staff]       student phase, no team history
- *                                (same character also appears in
- *                                 the candidate section)
- *         (Retired support never appears here: the roster query
- *          has already excluded them.)
- *
- *   The staff section is only rendered when staffRows is non-empty.
- *
- *   The 'future' classification on a candidate row renders a
- *   sub-line under the name: "→ TeamName from YYYY".
+ *   Four columns: Character | Status | Junior Since | Senior Since.
+ *   Each row carries an age chip next to the name and, for staff,
+ *   a small tag. See the previous revisions of this file for the
+ *   full contract.
  *
  * MEMBER VM:
- *   A member VM carries:
- *     { characterId, memberId, displayName, status, age, deceased,
- *       role,
- *       intervals: [{ joinPeriod, leavePeriod, periodDisplay,
- *                     activeAtPeriod }],
- *       joinPeriod, leavePeriod, activeAtPeriod }
- *
- *   renderExpandedMembers iterates `intervals` to produce one line
- *   per stint.
+ *   Unchanged from the previous revision.
  *
  * NO INLINE STYLES:
  *   Layout lives in CSS classes where possible. The renderer emits
@@ -92,6 +67,9 @@
  * DEPENDENCIES:
  *   - window.DomUtils      (escaping)
  *   - window.TeamConstants (type/status vocabulary for the form)
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.TimelineView  (timeline renderer)
  */
 
 (function() {
@@ -216,15 +194,6 @@
         return html;
     }
 
-    /**
-     * Render the age chip that sits next to a character name.
-     *
-     * The chip is a small muted span in parentheses, e.g. "(28)".
-     * The em-dash placeholder is emitted for a missing age. The
-     * chip is skipped entirely when ageDisplay is empty, so a
-     * caller that forgot to populate it does not get a dangling
-     * "()".
-     */
     function renderAgeChip(ageDisplay) {
         if (!isNonEmptyString(ageDisplay)) { return ''; }
         return '<span class="unassigned-age">(' +
@@ -330,13 +299,6 @@
     // ============================================================
     // UNASSIGNED VIEW
     // ============================================================
-    //
-    // Two sections. The renderer delegates each to its own
-    // sub-function and concatenates the result.
-    //
-    // The staff section is only emitted when staffRows is a
-    // non-empty array. When the roster has no staff at the current
-    // year, only the candidate section appears.
 
     function renderUnassigned(vm) {
         if (!vm || !Array.isArray(vm.rows)) {
@@ -397,11 +359,6 @@
                 rowClass += ' has-future';
             }
 
-            // Staff tag: only rendered when the candidate is also
-            // support (supportClass === 'support-unassigned').
-            // This tells the user why a support member is in the
-            // candidate pool: they have a student phase and no
-            // team history yet, so they still need placing.
             var staffTagHtml = '';
             if (row.supportClass === 'support-unassigned') {
                 staffTagHtml = ' <span class="unassigned-staff-tag" ' +
@@ -482,12 +439,6 @@
                 ? 'Support'
                 : 'Instructor';
 
-            // Subtype tag for support rows. Instructors get no
-            // tag (there is only one kind of instructor).
-            //   supportClass 'support-pure'       -> [Pure]
-            //   supportClass 'support-unassigned' -> [Staff]
-            //   supportClass 'support-retired'    -> (never here;
-            //                                        roster excludes)
             var subtypeTagHtml = '';
             if (row.staffRole === 'support') {
                 if (row.supportClass === 'support-pure') {
@@ -546,6 +497,40 @@
         }
 
         return html;
+    }
+
+    // ============================================================
+    // TIMELINE (delegated)
+    // ============================================================
+
+    function renderTimelineContent(pageVM) {
+        var TV = window.TimelineView;
+        if (!TV || typeof TV.renderTimeline !== 'function') {
+            return '<p class="empty-state">' +
+                        'Timeline view module not loaded.' +
+                    '</p>';
+        }
+
+        var timelineVM = pageVM.timelineVM || null;
+        var expandedYears = pageVM.timelineExpandedYears ||
+                            Object.create(null);
+
+        if (!timelineVM) {
+            return '<p class="empty-state">' +
+                        'Timeline data is unavailable.' +
+                    '</p>';
+        }
+
+        try {
+            return TV.renderTimeline(timelineVM, expandedYears);
+        } catch (e) {
+            console.warn(
+                '[TeamRender] renderTimeline threw:', e
+            );
+            return '<p class="empty-state">' +
+                        'Failed to render the timeline.' +
+                    '</p>';
+        }
     }
 
     // ============================================================
@@ -793,7 +778,9 @@
 
         // ---- Professional tab: mode toggle + filters ----
         if (tab === 'professional') {
-            var showUnassigned = filterVM.showUnassigned === true;
+            var viewMode = filterVM.viewMode || 'teams';
+            var isUnassigned = viewMode === 'unassigned';
+            var isTimeline = viewMode === 'timeline';
 
             html += '<div class="filter-row filter-row-professional">';
 
@@ -801,26 +788,37 @@
             html += '<div class="mode-toggle" role="tablist">';
             html += '<button type="button" ' +
                         'class="mode-btn' +
-                            (showUnassigned ? '' : ' active') + '" ' +
+                            (viewMode === 'teams' ? ' active' : '') +
+                        '" ' +
                         'data-mode="teams" ' +
                         'role="tab" ' +
                         'aria-selected="' +
-                            (showUnassigned ? 'false' : 'true') + '">' +
-                        'Teams' +
-                    '</button>';
+                            (viewMode === 'teams' ? 'true' : 'false') +
+                        '">Teams</button>';
             html += '<button type="button" ' +
                         'class="mode-btn' +
-                            (showUnassigned ? ' active' : '') + '" ' +
+                            (isUnassigned ? ' active' : '') +
+                        '" ' +
                         'data-mode="unassigned" ' +
                         'role="tab" ' +
                         'aria-selected="' +
-                            (showUnassigned ? 'true' : 'false') + '">' +
-                        'Unassigned' +
-                    '</button>';
+                            (isUnassigned ? 'true' : 'false') +
+                        '">Unassigned</button>';
+            html += '<button type="button" ' +
+                        'class="mode-btn' +
+                            (isTimeline ? ' active' : '') +
+                        '" ' +
+                        'data-mode="timeline" ' +
+                        'role="tab" ' +
+                        'aria-selected="' +
+                            (isTimeline ? 'true' : 'false') +
+                        '">Timeline</button>';
             html += '</div>';
 
-            // Filters are only meaningful in Teams mode.
-            if (!showUnassigned) {
+            // Year and status filters: only meaningful in Teams mode.
+            // The timeline has its own range controls inside its
+            // header. The unassigned view has no filters.
+            if (viewMode === 'teams') {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
                             escapeHtml(periodLabel) + ':' +
@@ -1210,6 +1208,7 @@
         }
 
         var activeTab = pageVM.activeTab || 'professional';
+        var viewMode = pageVM.viewMode || 'teams';
         var counts = pageVM.counts || {
             professional: 0,
             temporary: 0,
@@ -1221,8 +1220,12 @@
         var expandedTeamId = pageVM.expandedTeamId || null;
         var expandedTeam = pageVM.expandedTeam || null;
         var period = pageVM.period;
-        var showUnassigned = pageVM.showUnassigned === true;
         var unassignedVM = pageVM.unassignedVM || null;
+
+        var isUnassigned =
+            activeTab === 'professional' && viewMode === 'unassigned';
+        var isTimeline =
+            activeTab === 'professional' && viewMode === 'timeline';
 
         var expandedMembersVM = null;
         if (expandedTeam && Array.isArray(expandedTeam.members)) {
@@ -1240,7 +1243,9 @@
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
-        if (activeTab === 'professional' && !showUnassigned) {
+        if (activeTab === 'professional' &&
+            !isUnassigned &&
+            !isTimeline) {
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
                         'class="secondary">Export</button>';
@@ -1261,10 +1266,14 @@
                     'class="filter-container"></div>';
 
         html += '<div id="team-list-container" ' +
-                    'class="team-list-container">';
+                    'class="team-list-container' +
+                    (isTimeline ? ' timeline-container' : '') +
+                    '">';
 
-        // ---- Body: either the team list or the unassigned list ----
-        if (activeTab === 'professional' && showUnassigned) {
+        // ---- Body: team list, unassigned, or timeline ----
+        if (isTimeline) {
+            html += renderTimelineContent(pageVM);
+        } else if (isUnassigned) {
             html += renderUnassigned(unassignedVM);
         } else {
             html += renderList(teams, {
@@ -1329,20 +1338,16 @@
     // ============================================================
 
     window.TeamRender = Object.freeze({
-        // Container
         renderContainer: renderContainer,
 
-        // Lists / detail
         renderList: renderList,
         renderUnassigned: renderUnassigned,
         renderExpandedMembers: renderExpandedMembers,
         renderTeamCard: renderTeamCard,
         renderTeamSummary: renderTeamSummary,
 
-        // Filter bar
         renderFilterBar: renderFilterBar,
 
-        // Modal contents
         renderRankingList: renderRankingList,
         renderTeamForm: renderTeamForm,
         renderRankingForm: renderRankingForm,
