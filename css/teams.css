@@ -1,8 +1,9 @@
 /**
  * css/teams.css - Hollow Blades Manager
  *
- * The Teams tab (Professional / Temporary / Civilian) plus the
- * professional tab's Unassigned view.
+ * The Teams tab (Professional / Temporary / Civilian), the
+ * professional tab's Unassigned view, and the professional tab's
+ * Timeline view.
  *
  * Covers:
  *   - Team list header + rows (#team-list-container,
@@ -12,59 +13,16 @@
  *   - Team form modal contents (.name-history-entry)
  *   - Team tab nav (.tab-nav, .tab-btn)
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
- *     including the professional tab's Teams | Unassigned mode
- *     toggle (.mode-toggle, .mode-btn)
+ *     including the professional tab's three-way mode toggle
+ *     (.mode-toggle, .mode-btn)
  *   - Unassigned view (.unassigned-*)
+ *   - Timeline view (.timeline-*)
  *   - Stats row (.stats-grid, .stat-card)
- *   - Shared member manager (.member-*) — used by BOTH the Teams
- *     tab and Academy Weekly Teams via the shared manager.
+ *   - Shared member manager (.member-*)
  *   - Team Matchmaking modal (.matchmaking-*)
  *   - Page header actions wrapper (.page-header-actions)
  *
  * Load order: shared.css → teams.css
- *
- * GRID MODEL (team list):
- *   The desktop layout is a five-column grid:
- *     Name | Period | Rank | Members | Actions
- *
- *   The grid template is declared ONCE, on the container that
- *   actually renders (#team-list-container). Both the header row
- *   and the team rows read --team-columns from that container
- *   through the cascade.
- *
- * GRID MODEL (unassigned view):
- *   The desktop layout is a four-column grid:
- *     Character | Status | Junior Since | Senior Since
- *
- *   Same pattern: the container declares --unassigned-columns,
- *   and both the header row and the item rows read it. The
- *   unassigned view shares the container with the team list —
- *   only one of the two renders at a time, chosen by
- *   TeamEvents based on the professional tab's mode toggle.
- *
- * MOBILE MODEL:
- *   Below 600px the team list becomes a card list and the
- *   unassigned header hides (rows keep their four labels as
- *   inline prefixes). The desktop grids are untouched.
- *
- * MEMBER MANAGER:
- *   The .member-* block at the bottom styles the shared member
- *   manager (js/modules/shared/member-manager.js). Both the Teams
- *   tab and Academy Weekly Teams render the same markup, so this
- *   block serves both. The academic side has no additional
- *   member-manager CSS; the rules here are the whole story.
- *
- * MATCHMAKING MODAL:
- *   The .matchmaking-* block styles the two-mode matchmaking
- *   modal. Setup mode is a small form; Proposal mode is a list
- *   of per-team assignment blocks with an unassigned pool at
- *   the bottom. Both modes share the standard modal chrome.
- *
- *   Career milestone chips (.matchmaking-addition-milestone,
- *   .matchmaking-unassigned-milestone) render the candidate's
- *   earliest career milestone next to their name. They are
- *   monospace and muted so they read as structured data, not
- *   prose.
  */
 
 /* ============================================================
@@ -73,12 +31,6 @@
 
 #team-list-container,
 .team-list-container {
-    /* Column template for the 5-column layout:
-       Name, Period, Rank, Members, Actions.
-
-       Declared on the container that renderContainer() actually
-       emits. Both .list-header.team-header and .list-item.team-item
-       inherit it through the cascade. */
     --team-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
 }
 
@@ -120,8 +72,6 @@
     flex-wrap: wrap;
 }
 
-/* ---------- Team row cell styling ---------- */
-
 .team-status-inactive {
     color: var(--text-dim);
     font-size: 0.65rem;
@@ -157,12 +107,7 @@
 
 /* ============================================================
    PAGE HEADER ACTIONS
-   ============================================================
-   The Teams page header carries up to two actions:
-     + Add Team
-     Matchmaking   (only on the Professional tab)
-   They sit in a flex wrapper inside the existing .page-header.
- */
+   ============================================================ */
 
 .page-header-actions {
     display: flex;
@@ -438,29 +383,13 @@
     padding: 4px 14px;
 }
 
-/*
- * The professional tab's filter row carries the mode toggle plus
- * the year and status filters. The mode toggle is the first
- * element; the filters follow. The base .filter-row already
- * provides flex-wrap and gap, so this class only exists so a
- * future change can narrow the row's behaviour without touching
- * the other tabs' filter bars.
- *
- * Deliberately empty of layout rules — the base rule covers
- * everything today. Kept as a named hook.
- */
 .filter-row-professional {
-    /* intentionally empty; see comment */
+    /* intentionally empty; see the mode-toggle block below */
 }
 
 /* ============================================================
-   MODE TOGGLE (Professional tab: Teams | Unassigned)
-   ============================================================
-   Two buttons side by side. The active one carries the accent
-   colour; the inactive one is muted. The toggle drives a
-   module-level boolean in team-events.js (not a persisted
-   filter), so this is presentation only.
- */
+   MODE TOGGLE (Professional tab: Teams | Unassigned | Timeline)
+   ============================================================ */
 
 .mode-toggle {
     display: inline-flex;
@@ -510,46 +439,17 @@
 
 /* ============================================================
    UNASSIGNED VIEW
-   ============================================================
-   The professional tab's alternate roster: characters who are
-   eligible for a professional team at the current year but are
-   not active on one.
-
-   Rendered by team-render.js's renderUnassigned. Shares the
-   list container with the team list — only one of the two
-   renders at a time.
-
-   Layout is a four-column grid:
-     Character | Status | Junior Since | Senior Since
-
-   The Character column carries an optional sub-line for the
-   future-stint indicator ("→ TeamName from YYYY").
-
-   Rows are sorted by milestone year (the earliest of the four
-   career years), oldest first. The sort is owned by
-   TeamQueries.getProfessionalTeamEligibleRoster, not by the
-   renderer.
- */
+   ============================================================ */
 
 #team-list-container.unassigned,
 .team-list-container.unassigned {
-    /* Same hook pattern as the team list. Declared here for
-       completeness; the renderer emits this class on the
-       container when the unassigned view is active, so a future
-       change can narrow behaviour without touching the team
-       list's container. */
     --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
 }
 
-/* Fallback: the renderer may not add a modifier class to the
-   container. Declare the columns on the header and rows
-   directly so the grid works either way. */
 .list-header.unassigned-header,
 .list-item.unassigned-item {
     --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
 }
-
-/* ---------- Summary line ---------- */
 
 .unassigned-summary {
     padding: 6px 12px;
@@ -566,8 +466,6 @@
     font-weight: 600;
 }
 
-/* ---------- Header row ---------- */
-
 .list-header.unassigned-header {
     display: grid;
     grid-template-columns: var(--unassigned-columns);
@@ -581,8 +479,6 @@
     font-size: 0.7rem;
     color: var(--text-dim);
 }
-
-/* ---------- Item row ---------- */
 
 .list-item.unassigned-item {
     display: grid;
@@ -604,22 +500,23 @@
     background: var(--panel-alt);
 }
 
-/*
- * A row with a future stint carries .has-future. The indicator
- * itself is styled below; this class exists so a future change
- * can give the row a subtle tint or a left border without
- * touching the indicator's own rules.
- */
 .list-item.unassigned-item.has-future {
-    /* intentionally empty; see comment */
+    /* intentionally empty; hook */
 }
-
-/* ---------- Character cell ---------- */
 
 .unassigned-name-cell {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+}
+
+/* === NEW === Name line holds name + age + optional tag on one row */
+.unassigned-name-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
     min-width: 0;
 }
 
@@ -632,18 +529,29 @@
     white-space: nowrap;
 }
 
-/*
- * The future-stint indicator. Rendered beneath the character
- * name when the row's classification is 'future': the character
- * is not currently active on a professional team but has a
- * stint on some other team whose joinPeriod is later than the
- * current year.
- *
- * Example text: "→ Team Ravens from 1926"
- *
- * The arrow is emitted as an HTML entity (&rarr;) by the
- * renderer; the class only handles layout and colour.
- */
+/* === NEW === Age chip in parentheses after the name */
+.unassigned-age {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* === NEW === "Staff" tag on unassigned-staff candidates */
+.unassigned-staff-tag {
+    font-size: 0.55rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--info);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 0 6px;
+    line-height: 1.4;
+    cursor: help;
+}
+
 .unassigned-future {
     font-size: 0.65rem;
     color: var(--warning);
@@ -654,8 +562,6 @@
     cursor: help;
 }
 
-/* ---------- Status cell ---------- */
-
 .unassigned-status {
     font-size: 0.7rem;
     color: var(--text-dim);
@@ -663,8 +569,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-
-/* ---------- Year cells ---------- */
 
 .unassigned-junior,
 .unassigned-senior {
@@ -675,14 +579,389 @@
     white-space: nowrap;
 }
 
+/* === NEW === Role cell (staff section) */
+.unassigned-role {
+    font-size: 0.7rem;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+/* === NEW === "Since" cell (staff section) */
+.unassigned-since {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* === NEW === Subtype tags in the staff section */
+.unassigned-subtype-tag {
+    font-size: 0.55rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 8px;
+    padding: 0 6px;
+    line-height: 1.4;
+    margin-left: 4px;
+    cursor: help;
+}
+
+.unassigned-subtype-pure {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+}
+
+.unassigned-subtype-staff {
+    color: var(--info);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+}
+
+/* ============================================================
+   TIMELINE VIEW
+   ============================================================
+   Layout model:
+
+     .timeline-view
+       .timeline-header              range inputs + buttons
+       .timeline-rows                the scrollable body
+         .timeline-spine             absolute vertical line
+         .timeline-year              one row per year
+           .timeline-left            left-side events
+           .timeline-center          the year circle
+           .timeline-right           right-side events
+
+   Each .timeline-year is a three-column grid:
+     [1fr] [auto] [1fr]
+   Left column right-aligns its content, right column left-
+   aligns. The circle sits in the middle. Events stack
+   vertically next to the circle.
+   ============================================================ */
+
+.timeline-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ---------- Header ---------- */
+
+.timeline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.timeline-header-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.timeline-header-group label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.timeline-year-input {
+    width: 72px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.timeline-year-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.timeline-range-sep {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+.timeline-event-count {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    margin-right: 8px;
+}
+
+/* ---------- Empty state ---------- */
+
+.timeline-empty {
+    padding: 24px 12px;
+    text-align: center;
+}
+
+.timeline-empty-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+}
+
+/* ---------- Rows container + spine ---------- */
+
+.timeline-rows {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 0;
+}
+
 /*
- * Em-dash placeholder when a year is missing. The renderer emits
- * the em-dash as a text node (U+2014). We do not add a distinct
- * class for the placeholder; the font-size and colour above are
- * the same for a year and a dash. If you later want the dash
- * muted relative to a real year, wrap the dash in a span and add
- * a class here.
+ * The spine runs the full vertical extent of .timeline-rows.
+ * Positioned absolutely so it never affects layout; the
+ * circles have an opaque background that covers the spine
+ * behind them.
  */
+.timeline-spine {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    background: var(--border);
+    z-index: 0;
+    pointer-events: none;
+}
+
+/* ---------- One year row ---------- */
+
+.timeline-year {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    grid-template-areas: "left center right";
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    position: relative;
+    z-index: 1;
+}
+
+.timeline-year.collapsed {
+    /* Collapsed rows are shorter. */
+}
+
+.timeline-year.expanded {
+    align-items: flex-start;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.timeline-left {
+    grid-area: left;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    text-align: right;
+    min-width: 0;
+}
+
+.timeline-center {
+    grid-area: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.timeline-right {
+    grid-area: right;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    min-width: 0;
+}
+
+/* ---------- Year circle ---------- */
+
+.timeline-circle {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--panel);
+    color: var(--accent);
+    font-family: 'Fraunces', serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+.timeline-circle:hover {
+    background: var(--accent-soft);
+    transform: scale(1.05);
+}
+
+.timeline-circle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ---------- Event rows ---------- */
+
+.timeline-event {
+    font-size: 0.72rem;
+    color: var(--text);
+    line-height: 1.35;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    max-width: 100%;
+    word-wrap: break-word;
+}
+
+.timeline-event-junior {
+    border-left: 3px solid var(--info);
+}
+
+.timeline-event-senior {
+    border-left: 3px solid var(--accent);
+}
+
+.timeline-event-support {
+    border-left: 3px solid var(--warning);
+}
+
+.timeline-event-instructor {
+    border-left: 3px solid var(--danger);
+}
+
+.timeline-event-leave {
+    border-left: 3px solid var(--text-dim);
+}
+
+.timeline-event-died {
+    border-left: 3px solid var(--danger);
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ---------- Team group ---------- */
+
+.timeline-team-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px dashed var(--border-soft);
+}
+
+.timeline-team-group:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+.timeline-composition {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    padding: 2px 8px;
+    line-height: 1.35;
+    word-wrap: break-word;
+    max-width: 100%;
+}
+
+.timeline-team-name {
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+    font-weight: 600;
+}
+
+.timeline-team-name:hover {
+    color: var(--accent-hover);
+}
+
+.timeline-composition-members {
+    color: var(--text);
+}
+
+/* ---------- Empty side placeholder ---------- */
+
+.timeline-empty-side {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    opacity: 0.5;
+    padding: 2px 8px;
+}
+
+/* ---------- Timeline mobile ---------- */
+
+@media (max-width: 600px) {
+    .timeline-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .timeline-header-group {
+        width: 100%;
+    }
+
+    .timeline-header-group button {
+        flex: 1 1 auto;
+    }
+
+    .timeline-event-count {
+        display: block;
+        width: 100%;
+        margin-right: 0;
+        margin-bottom: 4px;
+    }
+
+    .timeline-year {
+        gap: 6px;
+        padding: 6px 4px;
+    }
+
+    .timeline-circle {
+        width: 44px;
+        height: 44px;
+        font-size: 0.7rem;
+    }
+
+    .timeline-event {
+        font-size: 0.68rem;
+        padding: 2px 6px;
+    }
+
+    .timeline-composition {
+        font-size: 0.62rem;
+        padding: 2px 6px;
+    }
+}
 
 /* ============================================================
    TEAM MODAL OVERRIDES
@@ -744,44 +1023,18 @@
 
 /* ============================================================
    TEAM MATCHMAKING MODAL
-   ============================================================
-   Two modes:
-     Setup    — a small form (year, target size), one Build button.
-     Proposal — per-team assignment blocks, an unassigned pool,
-                Commit and Back buttons.
-
-   The modal shell comes from Modal.createModal('...'). The
-   content wrapper is `.modal-content.wide.matchmaking-content`.
-   The `wide` class comes from the shared modal stylesheet
-   (max-width: 800px); we do not override it. The extra
-   `.matchmaking-content` class exists so specific tweaks can be
-   scoped without touching the shared rules.
-
-   CAREER MILESTONE CHIP:
-     Each candidate row shows their earliest career milestone
-     (e.g. "Junior 1910", or "Junior 1910 → Senior 1912" when
-     composed from the raw years) as a small monospace chip.
-     The chip is styled so it reads as structured data, not
-     prose: monospace, tabular numerals, muted, small.
- */
-
-/* ---------- Shared with both modes ---------- */
+   ============================================================ */
 
 .matchmaking-content {
-    /* Deliberately no max-width override here. The wide modal
-       is 800px, which is right for the proposal list. */
+    /* wide modal is 800px */
 }
 
 .matchmaking-body {
-    /* The proposal list can be long. Cap its height and let it
-       scroll, keeping the footer actions reachable. */
     max-height: 60vh;
     overflow-y: auto;
 }
 
 .matchmaking-summary {
-    /* The top hint line. Slightly larger than the default
-       field-hint so it reads as a status line. */
     font-size: 0.75rem;
     color: var(--text-dim);
     margin-bottom: 12px;
@@ -791,8 +1044,6 @@
     color: var(--text);
     font-weight: 600;
 }
-
-/* ---------- Proposal mode: assignment blocks ---------- */
 
 .matchmaking-assignments {
     display: flex;
@@ -833,8 +1084,6 @@
     font-weight: 600;
     white-space: nowrap;
 }
-
-/* ---------- Additions inside an assignment ---------- */
 
 .matchmaking-additions {
     display: flex;
@@ -881,13 +1130,6 @@
     border-radius: 8px;
 }
 
-/*
- * Career milestone chip: the earliest of the candidate's
- * junior / senior / support / instructor years.
- *
- * Monospace with tabular numerals so years align vertically
- * across rows. Muted so it does not compete with the name.
- */
 .matchmaking-addition-milestone {
     font-size: 0.6rem;
     font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
@@ -920,8 +1162,6 @@
     white-space: nowrap;
 }
 
-/* ---------- Add mini-form under each assignment ---------- */
-
 .matchmaking-add-form {
     display: flex;
     gap: 4px;
@@ -953,8 +1193,6 @@
     padding: 4px 12px;
     white-space: nowrap;
 }
-
-/* ---------- Unassigned pool panel ---------- */
 
 .matchmaking-unassigned {
     margin-top: 12px;
@@ -993,10 +1231,6 @@
     white-space: nowrap;
 }
 
-/*
- * Career milestone chip in the unassigned pool. Same visual
- * vocabulary as the additions chip, sized down for the pill.
- */
 .matchmaking-unassigned-milestone {
     font-size: 0.58rem;
     font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
@@ -1005,8 +1239,6 @@
     color: var(--text-dim);
     white-space: nowrap;
 }
-
-/* ---------- Mobile adjustments ---------- */
 
 @media (max-width: 600px) {
     .page-header-actions {
@@ -1036,42 +1268,7 @@
 
 /* ============================================================
    SHARED MEMBER MANAGER
-   ============================================================
-   Used by BOTH the Teams tab (via MemberAdapterTeams) and
-   Academy Weekly Teams (via MemberAdapterAcademy). Both call
-   MemberManager.open() with the same markup contract, so
-   these rules serve both surfaces.
-
-   Markup emitted by the manager:
-     .member-form                   add-member flex row
-       .member-form-select
-       .member-form-role
-       .member-form-join
-       .member-form-leave
-       .member-form-add
-
-     .member-manager-list
-       .member-stint-row            one per stint, flex row
-         .member-stint-name
-         .member-stint-role         inline role input
-         .member-stint-bounds
-           .member-join             click-to-edit span
-           .member-leave            click-to-edit span
-         .member-stint-actions
-           .member-stint-rejoin
-           .member-stint-remove
-       .member-manager-former-header
-       .member-stint-row.is-former
-
-     .member-manager-footer
-       [Revert] [Save] [Close]
-
-   Transient states:
-     .member-join-editing           a span that currently holds an input
-     .member-inline-input           the input inserted during editing
    ============================================================ */
-
-/* ---------- Add member row ---------- */
 
 .member-form {
     display: flex;
@@ -1128,8 +1325,6 @@
     white-space: nowrap;
 }
 
-/* ---------- Members list ---------- */
-
 .member-manager-list {
     display: flex;
     flex-direction: column;
@@ -1152,8 +1347,6 @@
     letter-spacing: 0.04em;
 }
 
-/* ---------- One stint row ---------- */
-
 .member-stint-row {
     display: flex;
     align-items: center;
@@ -1170,7 +1363,6 @@
     margin-top: 2px;
 }
 
-/* Former stints: muted. Same layout, different tone. */
 .member-stint-row.is-former {
     font-style: italic;
     opacity: 0.72;
@@ -1180,7 +1372,6 @@
     color: var(--text-dim);
 }
 
-/* Continuation stints (second and later for a member). */
 .member-stint-row.is-continuation .member-stint-name {
     color: var(--text-dim);
     font-size: 0.75rem;
@@ -1189,7 +1380,6 @@
     text-align: center;
 }
 
-/* Placeholder row (a member with zero stints). */
 .member-stint-row-placeholder {
     opacity: 0.7;
 }
@@ -1199,8 +1389,6 @@
     color: var(--text-dim);
     font-size: 0.7rem;
 }
-
-/* ---------- Row cells ---------- */
 
 .member-stint-name {
     font-weight: 600;
@@ -1247,7 +1435,6 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* Click-to-edit period spans. */
 .member-join,
 .member-leave {
     display: inline-block;
@@ -1274,7 +1461,6 @@
     background: transparent;
 }
 
-/* The input inserted during click-to-edit. */
 .member-inline-input {
     width: 70px;
     padding: 3px 6px;
@@ -1292,8 +1478,6 @@
     outline: none;
     border-color: var(--accent);
 }
-
-/* ---------- Row actions ---------- */
 
 .member-stint-actions {
     display: flex;
@@ -1322,8 +1506,6 @@
     padding: 3px 8px;
 }
 
-/* ---------- Footer ---------- */
-
 .member-manager-footer {
     display: flex;
     gap: 8px;
@@ -1344,22 +1526,15 @@
    ============================================================ */
 
 @media (max-width: 600px) {
-    /* =========================================================
-       TEAM LIST — CARD LAYOUT
-       ========================================================= */
-
-    /* ---- Hide the column header — cards don't need it ---- */
     .list-header.team-header {
         display: none;
     }
 
-    /* ---- The container that wraps the rows ---- */
     #team-list-container,
     .team-list-container {
         display: block;
     }
 
-    /* ---- One card per team ---- */
     .list-item.team-item {
         display: flex;
         flex-direction: column;
@@ -1380,7 +1555,6 @@
         opacity: 0.6;
     }
 
-    /* ---- Row 1: name + badges ---- */
     .list-item.team-item > .team-name-cell {
         display: flex;
         align-items: baseline;
@@ -1414,7 +1588,6 @@
         font-style: italic;
     }
 
-    /* ---- Row 2: meta line ---- */
     .list-item.team-item > .team-period,
     .list-item.team-item > .team-rank,
     .list-item.team-item > .team-member-count {
@@ -1431,7 +1604,6 @@
         content: "Members: ";
     }
 
-    /* ---- Row 3: actions ---- */
     .list-item.team-item > .actions {
         display: flex;
         flex-wrap: wrap;
@@ -1454,7 +1626,6 @@
         min-width: 32px;
     }
 
-    /* ---- Expanded members inside a card ---- */
     .team-members-expanded {
         grid-column: auto;
         margin-top: 8px;
@@ -1468,15 +1639,6 @@
     .members-expanded-header {
         font-size: 0.68rem;
     }
-
-    /* =========================================================
-       UNASSIGNED VIEW — CARD LAYOUT
-       =========================================================
-       Same treatment as the team list: hide the four-column
-       header, stack each row as a card, and prefix the year
-       values with their column labels so the meaning survives
-       without the header row.
-       */
 
     .list-header.unassigned-header {
         display: none;
@@ -1498,7 +1660,6 @@
         border-radius: var(--radius);
     }
 
-    /* ---- Row 1: name + future indicator ---- */
     .unassigned-name-cell {
         gap: 3px;
     }
@@ -1514,7 +1675,6 @@
         white-space: normal;
     }
 
-    /* ---- Row 2: status + year inline ---- */
     .list-item.unassigned-item > .unassigned-status,
     .list-item.unassigned-item > .unassigned-junior,
     .list-item.unassigned-item > .unassigned-senior {
@@ -1550,11 +1710,6 @@
         padding: 5px 10px;
     }
 
-    /* =========================================================
-       OTHER MOBILE RULES
-       ========================================================= */
-
-    /* ---- Stats row ---- */
     .stats-grid {
         grid-template-columns: repeat(3, 1fr);
         gap: 6px;
@@ -1572,7 +1727,6 @@
         font-size: 1.2rem;
     }
 
-    /* ---- Filter row stacks ---- */
     .filter-row {
         flex-direction: column;
         align-items: stretch;
@@ -1588,16 +1742,11 @@
         width: 100%;
     }
 
-    /* The mode toggle already has its own mobile rule above
-       (full-width, flex-1 buttons). No override needed here. */
-
-    /* ---- Tab nav wraps and shrinks ---- */
     .tab-btn {
         font-size: 0.68rem;
         padding: 5px 10px;
     }
 
-    /* ---- Member manager: stack the add row, keep rows inline ---- */
     .member-form {
         flex-direction: column;
         align-items: stretch;
