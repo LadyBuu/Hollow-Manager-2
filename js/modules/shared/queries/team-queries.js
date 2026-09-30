@@ -90,36 +90,73 @@
  *
  * PROFESSIONAL-TEAM-ELIGIBLE ROSTER:
  *   getProfessionalTeamEligibleRoster(year) is the read behind the
- *   Teams tab's Unassigned view. It answers "who is a candidate for
- *   a professional team at year Y, and who is staff instead?"
+ *   Teams tab's Unassigned view. It answers "who is a candidate
+ *   for a professional team at year Y, and who is staff instead?"
  *
- *   A character is a CANDIDATE when all of:
- *     - They have reached junior OR senior status by year Y.
- *       (isJuniorOrSeniorByYear)
- *     - They are not deceased as of year Y. (isDeceased)
- *     - They have no elimination record of any kind, any year, any
- *       week. Presence-based. (getEliminationWeek returns non-null)
+ *   A character is a CANDIDATE at year Y when ALL of:
+ *     - isProfessionallyEligiblePhaseAtYear(char, Y):
+ *         junior OR senior by year Y, NOT instructor by year Y.
+ *     - Not deceased as of year Y.
+ *     - No elimination record of any kind, any year, any week.
+ *     - If support at year Y: NOT already placed on a professional
+ *       team at any point.
  *
- *   A character is STAFF when they are an instructor or support
- *   member AT YEAR Y. This is evaluated via getStatusAtYear, so it
- *   is year-scoped: a character who becomes an instructor in 1910
- *   is a candidate for the 1905 roster and staff for the 1915
- *   roster. Same character, two answers.
+ *   The last condition is the team-history refinement. It is what
+ *   distinguishes the three kinds of support:
  *
- *   Every character who passes the candidate filters is returned,
- *   with exactly ONE of:
+ *     PURE SUPPORT
+ *       No junior year, no senior year. Excluded by the
+ *       phase-eligibility clause. Never a candidate.
+ *
+ *     RETIRED
+ *       Has a junior and/or senior year. Has been placed on a
+ *       professional team. Support at Y. Excluded by the
+ *       already-placed clause. Never a candidate at any year
+ *       after their retirement.
+ *
+ *     UNASSIGNED STAFF (missing data)
+ *       Has a junior and/or senior year. Support at Y. Has NO
+ *       team history. INCLUDED. This is the case the previous
+ *       predicate got wrong and the roster now handles.
+ *
+ *   The roster also returns STAFF. A character is staff at year Y
+ *   when their status at Y classifies as 'instructor' or 'support'
+ *   via CharacterQueries.getStatusAtYear + CharacterConstants
+ *   .classifyStatus.
+ *
+ *   Staff rows carry `supportClass`, a classification string:
+ *
+ *     'none'        not staff at year Y
+ *     'instructor'  instructor at year Y
+ *     'support-pure'
+ *                   support, no student phase, no team history
+ *     'support-retired'
+ *                   support, has a student phase, has team history
+ *     'support-unassigned'
+ *                   support, has a student phase, no team history
+ *
+ *   The 'support-unassigned' subclass is the one that also appears
+ *   as a candidate. The other two support subclasses appear only
+ *   in the staff section.
+ *
+ *   Every character returned by the roster has exactly one of
+ *   `classification` set:
  *
  *     classification:  'active' | 'future' | 'former' | 'available'
  *
  *   And OPTIONALLY a staff tag:
  *
- *     staffRole:  'instructor' | 'support' | null
- *     staffSince: year | null  (earliest year the character held
- *                               the staff role; may predate year Y)
+ *     staffRole:   'instructor' | 'support' | null
+ *     staffSince:  year | null
  *
- *   The consumer decides whether to split the roster into
- *   candidates and staff. The Unassigned view does; other callers
- *   may not.
+ *   Plus:
+ *
+ *     age:         number | null  (age at year Y)
+ *     ageDisplay:  string         ('45' or '—')
+ *     supportClass: string        (see above)
+ *
+ *   The consumer decides how to split the roster into candidates
+ *   and staff. The Unassigned view does; other callers may not.
  *
  *   CLASSIFICATION PRIORITY: active > future > former > available.
  *
@@ -144,18 +181,8 @@
  *
  *   Characters with a milestone year sort before characters
  *   without one. Ties break alphabetically. Characters with no
- *   career status at all (no junior, senior, support, or
- *   instructor year — a data-quality signal) sort last,
- *   alphabetically among themselves.
- *
- *   Each row therefore carries the four raw year fields, plus:
- *
- *     milestoneYear:  1910 | null
- *     milestoneLabel: 'Junior 1910' | ''
- *
- *   The milestone fields are the sort anchor and the display
- *   anchor. The raw years are available for callers that want to
- *   render the full career timeline ("Junior 1910 → Senior 1912").
+ *   career status at all sort last, alphabetically among
+ *   themselves.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.data          (canonical state)
@@ -163,9 +190,10 @@
  *   - window.ObjectUtils   (mandatory; for deepClone)
  *
  * DEPENDENCIES (LAZY, read at call time):
- *   - window.CharacterQueries    (junior/senior predicate, status at
- *                                 year, career status year, display
- *                                 name, deceased predicate)
+ *   - window.CharacterQueries    (phase eligibility, junior/senior
+ *                                 predicate, status at year, career
+ *                                 status year, display name, age,
+ *                                 deceased predicate)
  *   - window.CharacterConstants  (staff tier classifier)
  *   - window.EliminationQueries  (elimination presence)
  *
@@ -1290,34 +1318,116 @@
     }
 
     /**
+     * Classify a character's support subtype.
+     *
+     * Returns one of:
+     *   'instructor'         instructor at year Y
+     *   'support-pure'       support, no student phase, no team
+     *   'support-retired'    support, has student phase, has team
+     *   'support-unassigned' support, has student phase, no team
+     *   'none'               not staff at year Y
+     *
+     * The three support subclasses distinguish the three kinds of
+     * support in the system. See the roster note in the file
+     * header for the full contract.
+     *
+     * The student-phase signal is juniorYear or seniorYear
+     * (non-null). The team-history signal is
+     * getTeamsForCharacterAllTime(charId, 'professional').length > 0.
+     *
+     * @param {object} char
+     * @param {string} charId
+     * @param {number} yearNum
+     * @param {string|null} staffRole - 'instructor' | 'support' | null
+     * @returns {string}
+     */
+    function classifySupportSubtype(char, charId, yearNum, staffRole) {
+        if (staffRole === 'instructor') {
+            return 'instructor';
+        }
+        if (staffRole !== 'support') {
+            return 'none';
+        }
+
+        var CharacterQueries = getCharacterQueries();
+        var hasStudentPhase = false;
+
+        if (CharacterQueries &&
+            typeof CharacterQueries.getJuniorYear === 'function') {
+            try {
+                if (CharacterQueries.getJuniorYear(char) !== null) {
+                    hasStudentPhase = true;
+                }
+            } catch (e) { /* leave false */ }
+        }
+        if (!hasStudentPhase &&
+            CharacterQueries &&
+            typeof CharacterQueries.getSeniorYear === 'function') {
+            try {
+                if (CharacterQueries.getSeniorYear(char) !== null) {
+                    hasStudentPhase = true;
+                }
+            } catch (e) { /* leave false */ }
+        }
+
+        // Team-history signal. Full all-time read, non-deprecated.
+        var hasTeamHistory = false;
+        try {
+            var teams = getTeamsForCharacterAllTime(
+                charId, 'professional'
+            );
+            hasTeamHistory = Array.isArray(teams) && teams.length > 0;
+        } catch (e) {
+            hasTeamHistory = false;
+        }
+
+        if (!hasStudentPhase && !hasTeamHistory) {
+            return 'support-pure';
+        }
+        if (hasStudentPhase && hasTeamHistory) {
+            return 'support-retired';
+        }
+        if (hasStudentPhase && !hasTeamHistory) {
+            return 'support-unassigned';
+        }
+
+        // No student phase but has team history. This is a data
+        // inconsistency: they played on a team without ever being
+        // a student in the record. Treat as retired so we do not
+        // accidentally put them back in the available pool.
+        return 'support-retired';
+    }
+
+    /**
      * Get every character eligible for a professional team at the
-     * given year, with their professional-team state and staff
-     * classification.
+     * given year, with their professional-team state, staff
+     * classification, support subtype, and age.
      *
      * The roster returns EVERY candidate: characters who pass the
-     * eligibility filters, plus characters who are staff at the
-     * query year but would otherwise be candidates. Staff are
-     * tagged with `staffRole` and `staffSince` so the consumer can
-     * split the list.
+     * eligibility filters, plus staff characters who are also
+     * candidates. The consumer splits the list.
      *
      * ELIGIBILITY (candidate filters — same for everyone):
-     *   - Has reached junior OR senior status by year Y.
+     *   - isProfessionallyEligiblePhaseAtYear(char, Y):
+     *       junior OR senior by year Y, NOT instructor by year Y.
      *   - Not deceased as of year Y.
      *   - No elimination record of any kind, any year, any week.
+     *   - If support at year Y: NOT already placed on a
+     *     professional team at any point.
      *
      * ADDITIONAL TAGS:
-     *   - staffRole:  'instructor' | 'support' | null
-     *   - staffSince: year | null
+     *   - staffRole:    'instructor' | 'support' | null
+     *   - staffSince:   year | null
+     *   - supportClass: see classifySupportSubtype
+     *   - age:          number | null
+     *   - ageDisplay:   string ('45' or '—')
      *
      * SORT:
-     *   Milestone year ascending, then name. The milestone is the
-     *   earliest of whichever career years the character has
-     *   (junior / senior / support / instructor). Characters with
-     *   no milestone sort last, alphabetically. See the SORT ORDER
-     *   block in the file header.
+     *   Milestone year ascending, then name. See the SORT ORDER
+     *   note in the file header.
      *
      * @param {number|string} year
-     * @returns {array} Sorted by milestone year ascending, then name
+     * @returns {array}
      */
     function getProfessionalTeamEligibleRoster(year) {
         var yearNum = parsePeriod(year);
@@ -1335,8 +1445,18 @@
         var canCheckElimination = EliminationQueries &&
             typeof EliminationQueries.getEliminationWeek === 'function';
 
-        var canCheckJuniorOrSenior =
-            typeof CharacterQueries.isJuniorOrSeniorByYear === 'function';
+        // Phase predicate. Prefer the new name; fall back to the
+        // old alias if a consumer is running an older
+        // CharacterQueries. Both now return the same thing.
+        var canCheckPhase = false;
+        if (typeof CharacterQueries.isProfessionallyEligiblePhaseAtYear ===
+            'function') {
+            canCheckPhase = true;
+        } else if (typeof CharacterQueries
+            .isEligibleForProfessionalTeamAtYear === 'function') {
+            canCheckPhase = true;
+        }
+
         var canCheckDeceased =
             typeof CharacterQueries.isDeceased === 'function';
         var canGetJuniorYear =
@@ -1351,6 +1471,8 @@
             typeof CharacterQueries.getDisplayName === 'function';
         var canGetCurrentStatus =
             typeof CharacterQueries.getCurrentStatus === 'function';
+        var canGetAge =
+            typeof CharacterQueries.calculateAge === 'function';
 
         var allChars = CharacterQueries.getCharacters() || [];
         var rows = [];
@@ -1360,18 +1482,27 @@
             if (!char || !char.id) { continue; }
             var cid = String(char.id);
 
-            // 1. Junior or senior by year.
-            if (canCheckJuniorOrSenior) {
-                var isEligibleStatus = false;
+            // 1. Phase eligibility.
+            if (canCheckPhase) {
+                var isEligiblePhase = false;
                 try {
-                    isEligibleStatus =
-                        CharacterQueries.isJuniorOrSeniorByYear(
-                            char, yearNum
-                        ) === true;
+                    if (typeof CharacterQueries
+                        .isProfessionallyEligiblePhaseAtYear ===
+                        'function') {
+                        isEligiblePhase = CharacterQueries
+                            .isProfessionallyEligiblePhaseAtYear(
+                                char, yearNum
+                            ) === true;
+                    } else {
+                        isEligiblePhase = CharacterQueries
+                            .isEligibleForProfessionalTeamAtYear(
+                                char, yearNum
+                            ) === true;
+                    }
                 } catch (e) {
-                    isEligibleStatus = false;
+                    isEligiblePhase = false;
                 }
-                if (!isEligibleStatus) { continue; }
+                if (!isEligiblePhase) { continue; }
             }
 
             // 2. Deceased.
@@ -1399,25 +1530,43 @@
                 }
             }
 
-            // 4. Classification.
-            var state = classifyProfessionalState(cid, yearNum);
-
-            // 5. Staff classification.
-            //
-            //    Year-scoped: a character who becomes an instructor
-            //    in 1910 is a candidate for the 1905 roster and
-            //    staff for the 1915 roster.
-            //
-            //    Staff are NOT excluded. They are returned with the
-            //    staffRole / staffSince fields populated. The
-            //    consumer decides whether to split the list.
+            // 4. Staff classification.
             var staffInfo = getStaffInfoAtYear(char, yearNum);
 
-            // 6. Career milestone years.
+            // 5. Support subtype.
+            var supportClass = classifySupportSubtype(
+                char, cid, yearNum, staffInfo.role
+            );
+
+            // 6. Team-history refinement.
             //
-            //    Each is optional. A character who never became a
-            //    senior has no seniorYear; a character who never
-            //    became support has no supportYear.
+            // A character who is support at year Y AND has already
+            // been placed on a professional team is retired.
+            // Excluded from the roster entirely — they are neither
+            // a candidate nor a fresh unassigned staff.
+            if (supportClass === 'support-retired') {
+                continue;
+            }
+
+            // ---- Classification of the professional state. ----
+            var state = classifyProfessionalState(cid, yearNum);
+
+            // ---- Age at year. ----
+            var ageValue = null;
+            if (canGetAge) {
+                try {
+                    ageValue = CharacterQueries.calculateAge(
+                        char, yearNum
+                    );
+                } catch (e) {
+                    ageValue = null;
+                }
+            }
+            var ageDisplay = (ageValue !== null &&
+                              ageValue !== undefined)
+                ? String(ageValue)
+                : '\u2014';
+
             var juniorYear = null;
             if (canGetJuniorYear) {
                 try { juniorYear = CharacterQueries.getJuniorYear(char); }
@@ -1445,11 +1594,6 @@
             }
 
             // ---- Milestone: the earliest career year. ----
-            //
-            // Evaluated in declaration order so ties resolve
-            // predictably: junior beats senior beats support
-            // beats instructor. This matches the natural reading
-            // order of a candidate row.
             var milestoneYear = null;
             var milestoneLabel = '';
 
@@ -1492,12 +1636,17 @@
                 characterId: cid,
                 name: displayName,
                 status: status,
+
+                age: ageValue,
+                ageDisplay: ageDisplay,
+
                 juniorYear: juniorYear,
                 seniorYear: seniorYear,
                 supportYear: supportYear,
                 instructorYear: instructorYear,
                 milestoneYear: milestoneYear,
                 milestoneLabel: milestoneLabel,
+
                 classification: state.classification,
                 activeTeamName: state.activeTeamName,
                 futureTeamName: state.futureTeamName,
@@ -1507,19 +1656,17 @@
                 // Staff tag. Null when the character is not staff
                 // at the query year.
                 staffRole: staffInfo.role,
-                staffSince: staffInfo.since
+                staffSince: staffInfo.since,
+
+                // Support subtype. 'none' when the character is not
+                // staff; 'instructor' when an instructor;
+                // 'support-pure' | 'support-retired' | 'support-unassigned'
+                // when support. See classifySupportSubtype.
+                supportClass: supportClass
             });
         }
 
         // ---- Sort: milestone year ascending, then name. ----
-        //
-        // The roster is ordered by when each character first
-        // became relevant to a professional team — earliest
-        // career milestone first. Characters with a milestone
-        // sort before characters without one; ties break
-        // alphabetically. Characters with no career status at
-        // all (no junior, senior, support, or instructor year)
-        // sort last, alphabetically among themselves.
         rows.sort(function(a, b) {
             var aYear = a.milestoneYear;
             var bYear = b.milestoneYear;
@@ -1696,6 +1843,7 @@
         // Staff classification helpers (exposed for consumers)
         isCharacterStaffAtYear: isCharacterStaffAtYear,
         getStaffInfoAtYear: getStaffInfoAtYear,
+        classifySupportSubtype: classifySupportSubtype,
 
         // Rankings
         getSortedRankings: getSortedRankings,
@@ -1730,6 +1878,7 @@
             'getCharacterTeamMembership',
             'getProfessionalTeamEligibleRoster',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
+            'classifySupportSubtype',
             'getSortedRankings', 'getMostRecentRanking', 'getCurrentRank',
             'getRankAtPeriod', 'hasRankings', 'getRankingSummary'
         ];
