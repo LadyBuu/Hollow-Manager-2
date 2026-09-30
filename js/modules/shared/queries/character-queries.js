@@ -92,31 +92,59 @@
  *   and senior years side by side; the matchmaking pool sorts
  *   candidates by their earliest career milestone.
  *
- * PROFESSIONAL-TEAM ELIGIBILITY BY YEAR:
- *   isEligibleForProfessionalTeamAtYear(char, year) is the
- *   composed predicate answering "is this character available to
- *   join a professional team at year Y?"
+ * PROFESSIONALLY-ELIGIBLE PHASE BY YEAR:
+ *   isProfessionallyEligiblePhaseAtYear(char, year) answers "is
+ *   this character in a phase of their career where they could
+ *   hold a professional team slot at year Y, absent any
+ *   team-history consideration?"
  *
- *   AVAILABLE when ALL of:
- *     - junior OR senior by year Y
- *     - NOT support by year Y
- *     - NOT instructor by year Y
+ *   The name and semantics changed in this revision. The prior
+ *   predicate was isEligibleForProfessionalTeamAtYear and it
+ *   excluded support staff unconditionally. That was wrong: it
+ *   excluded a support member who has NEVER been placed on a
+ *   team, and those are exactly the characters who need to be
+ *   assigned.
  *
- *   The support/instructor exclusions are year-scoped. A character
- *   who becomes support in 1915 is available for the 1910 pool and
- *   unavailable for the 1920 pool. Same character, two answers.
+ *   There are three kinds of support staff in the system:
  *
- *   A blank startYear on a support/instructor entry is treated as
- *   "staff from the beginning of time" and excludes the character
- *   in every year. This matches the year-scoped convention used by
- *   isStatusByYear: a blank year is a data-quality signal, not a
- *   filter reason.
+ *     PURE SUPPORT
+ *       No junior year, no senior year. Never had a student
+ *       phase. Never eligible for a professional team. Excluded
+ *       from the roster by the junior-or-senior clause below.
  *
- *   The composed predicate is offered here rather than at the
- *   aggregator because it is a property of the character, not of
- *   the team. Callers that want the raw pieces call
- *   isJuniorOrSeniorByYear, getSupportYear, and getInstructorYear
- *   directly.
+ *     RETIRED
+ *       Has a junior and/or senior year. Has been placed on at
+ *       least one professional team. Became support later.
+ *       Eligible for the roster per this predicate, but the
+ *       roster query excludes them via the "already placed"
+ *       refinement. See TeamQueries.getProfessionalTeamEligibleRoster.
+ *
+ *     UNASSIGNED STAFF (missing data)
+ *       Has a junior and/or senior year. Currently support. Has
+ *       NO team history on record. Eligible for the roster, and
+ *       the roster query does NOT exclude them. This is the case
+ *       the previous predicate got wrong.
+ *
+ *   The predicate on this module answers only the character-side
+ *   question: is the character in a phase where a slot is
+ *   conceivable? It does NOT look at the team store — a
+ *   TeamQueries concern. The "already placed" refinement lives
+ *   in the roster query, where the team store is reachable.
+ *
+ *   Consequently:
+ *
+ *     isProfessionallyEligiblePhaseAtYear returns true when:
+ *       - junior OR senior by year Y
+ *       - NOT instructor by year Y
+ *
+ *     Support status is NOT consulted here. A support member in
+ *     their student phase passes. Whether they go on the roster
+ *     is decided downstream.
+ *
+ *   isEligibleForProfessionalTeamAtYear is retained as a
+ *   deprecated alias. Its old semantics (support excluded) are
+ *   gone. Callers that relied on the old behaviour should move
+ *   to the roster query.
  *
  * STATUS-AT-YEAR:
  *   getStatusAtYear(char, year) answers "what career status did
@@ -776,7 +804,7 @@
     // CAREER STATUS BY YEAR
     // ============================================================
     //
-    // These three predicates answer "has this character reached the
+    // These predicates answer "has this character reached the
     // named status as of year Y?" by walking char.careerStatus.
     //
     // A blank startYear on a matching entry is treated as "in this
@@ -865,6 +893,22 @@
         return isStatusByYear(char, year, 'senior');
     }
 
+    /**
+     * Is this character support as of year Y?
+     * Thin wrapper over isStatusByYear, exists for readability.
+     */
+    function isSupportByYear(char, year) {
+        return isStatusByYear(char, year, 'support');
+    }
+
+    /**
+     * Is this character an instructor as of year Y?
+     * Thin wrapper over isStatusByYear, exists for readability.
+     */
+    function isInstructorByYear(char, year) {
+        return isStatusByYear(char, year, 'instructor');
+    }
+
     // ============================================================
     // CAREER STATUS YEAR (DISPLAY AND SORTING)
     // ============================================================
@@ -928,35 +972,47 @@
     }
 
     // ============================================================
-    // PROFESSIONAL-TEAM ELIGIBILITY BY YEAR
+    // PROFESSIONALLY-ELIGIBLE PHASE BY YEAR
     // ============================================================
     //
-    // See the PROFESSIONAL-TEAM ELIGIBILITY BY YEAR note in the
+    // See the PROFESSIONALLY-ELIGIBLE PHASE BY YEAR note in the
     // file header for the full contract.
+    //
+    // Character-only. Does NOT consult the team store. Support
+    // status is deliberately not excluded — the roster query
+    // applies the team-history refinement for support members.
+    //
+    // The deprecated alias isEligibleForProfessionalTeamAtYear is
+    // retained so existing callers do not break, but its OLD
+    // semantics (support excluded) are GONE. Callers that relied
+    // on the old behaviour should migrate to the roster query,
+    // which owns the team-aware eligibility decision.
 
     /**
-     * Is this character available to join a professional team at
-     * year Y?
+     * Is this character in a phase where they could hold a
+     * professional team slot at year Y?
      *
      * AVAILABLE when ALL of:
      *   - junior OR senior by year Y
-     *   - NOT support by year Y
      *   - NOT instructor by year Y
      *
-     * The support/instructor exclusions are year-scoped. A
-     * character who becomes support in 1915 is available for the
-     * 1910 pool and unavailable for the 1920 pool.
+     * Support status is NOT consulted. A support member who is
+     * still in their student phase passes; whether they end up on
+     * the roster is decided by
+     * TeamQueries.getProfessionalTeamEligibleRoster, which layers
+     * the "already placed on a professional team" refinement on
+     * top.
      *
      * Fail-closed: a malformed character or an invalid year
      * returns false. The alternative would be to include a
-     * character whose eligibility cannot be evaluated, which is
-     * the wrong default for a pool that feeds a commit.
+     * character whose phase cannot be evaluated, which is the
+     * wrong default for a pool that feeds a commit.
      *
      * @param {object} char
      * @param {number|string} year
      * @returns {boolean}
      */
-    function isEligibleForProfessionalTeamAtYear(char, year) {
+    function isProfessionallyEligiblePhaseAtYear(char, year) {
         if (!char || typeof char !== 'object') { return false; }
 
         var yearNum = parseInt(year, 10);
@@ -966,15 +1022,36 @@
             return false;
         }
 
-        if (isStatusByYear(char, yearNum, 'support')) {
-            return false;
-        }
-
-        if (isStatusByYear(char, yearNum, 'instructor')) {
+        if (isInstructorByYear(char, yearNum)) {
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * DEPRECATED alias for isProfessionallyEligiblePhaseAtYear.
+     *
+     * The name and semantics were changed in the same revision
+     * that introduced isProfessionallyEligiblePhaseAtYear:
+     *
+     *   BEFORE: junior-or-senior AND not-support AND not-instructor
+     *   AFTER:  junior-or-senior AND not-instructor
+     *
+     * The support exclusion was removed because it wrongly
+     * excluded support members who had NEVER been placed on a
+     * team, and those are exactly the characters who need to be
+     * assigned. The "already placed" exclusion now lives in the
+     * roster query, where the team store is reachable.
+     *
+     * Kept as an alias so nothing currently calling the old name
+     * breaks. New code should call
+     * isProfessionallyEligiblePhaseAtYear by its new name.
+     *
+     * @deprecated
+     */
+    function isEligibleForProfessionalTeamAtYear(char, year) {
+        return isProfessionallyEligiblePhaseAtYear(char, year);
     }
 
     // ============================================================
@@ -1090,6 +1167,8 @@
         // Career-status-by-year predicates
         isSeniorByYear: isSeniorByYear,
         isJuniorOrSeniorByYear: isJuniorOrSeniorByYear,
+        isSupportByYear: isSupportByYear,
+        isInstructorByYear: isInstructorByYear,
 
         // Career-status year display
         getCareerStatusYear: getCareerStatusYear,
@@ -1098,7 +1177,11 @@
         getSupportYear: getSupportYear,
         getInstructorYear: getInstructorYear,
 
-        // Composed eligibility predicate
+        // Phase eligibility (character-side only)
+        isProfessionallyEligiblePhaseAtYear:
+            isProfessionallyEligiblePhaseAtYear,
+
+        // Deprecated alias — see the doc comment above.
         isEligibleForProfessionalTeamAtYear:
             isEligibleForProfessionalTeamAtYear,
 
