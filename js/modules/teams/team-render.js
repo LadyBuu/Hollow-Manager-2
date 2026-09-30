@@ -27,29 +27,12 @@
  *     arrive on the VM. The renderer does not derive them.
  *
  * PAGE HEADER ACTIONS:
- *   The page header carries a different action set per tab:
+ *   The page header carries three actions on the professional tab:
  *
- *     Professional (Teams mode):
- *       [Export] [Matchmaking] [+ Add Team]
+ *     [Export] [Matchmaking] [+ Add Team]
  *
- *     Professional (Unassigned mode):
- *       (no actions — the list is a read-only roster)
- *
- *     Temporary:
- *       [+ Add Team]
- *
- *     Civilian:
- *       [+ Add Team]
- *
- *   Export and Matchmaking are professional-only concepts and stay
- *   scoped to the professional Teams mode. The + Add Team button
- *   appears on every tab that can hold a team, so the user can
- *   create a temporary or civilian team from the same place they
- *   view the list.
- *
- *   The "start the form on the current tab's type" behaviour is
- *   handled by team-events.js in showTeamForm, not by this
- *   renderer. The renderer only emits the button.
+ *   All three are hidden while the Unassigned view is active, and
+ *   on the Temporary and Civilian tabs.
  *
  * UNASSIGNED VIEW:
  *   The Unassigned view has TWO sections:
@@ -58,9 +41,32 @@
  *       at the current year, not already on one. Four columns:
  *       Character | Status | Junior Since | Senior Since.
  *
+ *       Each candidate row carries an age chip next to the name,
+ *       in parentheses, e.g. "Jane Doe (28)". The chip is muted
+ *       so it reads as metadata, not as part of the name.
+ *
+ *       A candidate who is ALSO support (supportClass
+ *       'support-unassigned') carries a small "Staff" tag next to
+ *       the name, so the user knows they hold a support role and
+ *       still need placing.
+ *
  *     - Staff: instructors and support at the current year, not
- *       already on a professional team. Four columns:
- *       Character | Status | Role | Since.
+ *       already on a professional team. Five columns:
+ *       Character | Status | Role | Since | Class.
+ *
+ *       Each staff row carries an age chip next to the name, in
+ *       parentheses.
+ *
+ *       The Role column shows the raw role ('Instructor' or
+ *       'Support') plus a subtype tag when the character is
+ *       support:
+ *
+ *         Support  [Pure]        never a student, no team history
+ *         Support  [Staff]       student phase, no team history
+ *                                (same character also appears in
+ *                                 the candidate section)
+ *         (Retired support never appears here: the roster query
+ *          has already excluded them.)
  *
  *   The staff section is only rendered when staffRows is non-empty.
  *
@@ -208,6 +214,22 @@
                     'data-id="' + idAttr + '">Delete</button>';
 
         return html;
+    }
+
+    /**
+     * Render the age chip that sits next to a character name.
+     *
+     * The chip is a small muted span in parentheses, e.g. "(28)".
+     * The em-dash placeholder is emitted for a missing age. The
+     * chip is skipped entirely when ageDisplay is empty, so a
+     * caller that forgot to populate it does not get a dangling
+     * "()".
+     */
+    function renderAgeChip(ageDisplay) {
+        if (!isNonEmptyString(ageDisplay)) { return ''; }
+        return '<span class="unassigned-age">(' +
+                    escapeHtml(ageDisplay) +
+                ')</span>';
     }
 
     // ============================================================
@@ -375,14 +397,33 @@
                 rowClass += ' has-future';
             }
 
+            // Staff tag: only rendered when the candidate is also
+            // support (supportClass === 'support-unassigned').
+            // This tells the user why a support member is in the
+            // candidate pool: they have a student phase and no
+            // team history yet, so they still need placing.
+            var staffTagHtml = '';
+            if (row.supportClass === 'support-unassigned') {
+                staffTagHtml = ' <span class="unassigned-staff-tag" ' +
+                                    'title="Support member with a ' +
+                                        'student phase and no team ' +
+                                        'history. Still needs a ' +
+                                        'placement.">Staff</span>';
+            }
+
             html += '<div class="' + rowClass + '" ' +
                         'data-id="' +
                             escapeAttribute(row.characterId) + '">';
 
             html += '<span class="unassigned-name-cell">';
+            html += '<span class="unassigned-name-line">';
             html += '<strong class="unassigned-name">' +
                         escapeHtml(row.displayName || 'Unknown') +
-                    '</strong>';
+                    '</strong> ';
+            html += renderAgeChip(row.ageDisplay);
+            html += staffTagHtml;
+            html += '</span>';
+
             if (hasFuture) {
                 html += '<span class="unassigned-future" ' +
                             'title="Already committed to a ' +
@@ -441,15 +482,45 @@
                 ? 'Support'
                 : 'Instructor';
 
+            // Subtype tag for support rows. Instructors get no
+            // tag (there is only one kind of instructor).
+            //   supportClass 'support-pure'       -> [Pure]
+            //   supportClass 'support-unassigned' -> [Staff]
+            //   supportClass 'support-retired'    -> (never here;
+            //                                        roster excludes)
+            var subtypeTagHtml = '';
+            if (row.staffRole === 'support') {
+                if (row.supportClass === 'support-pure') {
+                    subtypeTagHtml = ' <span ' +
+                        'class="unassigned-subtype-tag ' +
+                        'unassigned-subtype-pure" ' +
+                        'title="Never a student, no team history. ' +
+                        'Not available for placement.">' +
+                        'Pure</span>';
+                } else if (row.supportClass === 'support-unassigned') {
+                    subtypeTagHtml = ' <span ' +
+                        'class="unassigned-subtype-tag ' +
+                        'unassigned-subtype-staff" ' +
+                        'title="Has a student phase but no team ' +
+                        'history. Also appears in the candidate ' +
+                        'section.">' +
+                        'Staff</span>';
+                }
+            }
+
             html += '<div class="list-item unassigned-item ' +
                         'unassigned-staff-item" ' +
                         'data-id="' +
                             escapeAttribute(row.characterId) + '">';
 
             html += '<span class="unassigned-name-cell">';
+            html += '<span class="unassigned-name-line">';
             html += '<strong class="unassigned-name">' +
                         escapeHtml(row.displayName || 'Unknown') +
-                    '</strong>';
+                    '</strong> ';
+            html += renderAgeChip(row.ageDisplay);
+            html += '</span>';
+
             if (isNonEmptyString(row.teamName)) {
                 html += '<span class="unassigned-future" ' +
                             'title="Former professional team">' +
@@ -464,6 +535,7 @@
 
             html += '<span class="unassigned-role">' +
                         escapeHtml(roleLabel) +
+                        subtypeTagHtml +
                     '</span>';
 
             html += '<span class="unassigned-since">' +
@@ -1165,33 +1237,9 @@
         var html = '';
 
         // ---- Page header ----
-        //
-        // Action set per tab:
-        //
-        //   Professional (Teams mode):
-        //     [Export] [Matchmaking] [+ Add Team]
-        //
-        //   Professional (Unassigned mode):
-        //     (no actions)
-        //
-        //   Temporary:
-        //     [+ Add Team]
-        //
-        //   Civilian:
-        //     [+ Add Team]
-        //
-        // Export and Matchmaking are professional-only concepts.
-        // + Add Team is available on every tab that can hold a
-        // team, so the user can create a temporary or civilian
-        // team from the same place they view the list.
-        //
-        // The "start the form on the current tab's type" behaviour
-        // lives in team-events.js's showTeamForm. This renderer
-        // only emits the button.
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
-
         if (activeTab === 'professional' && !showUnassigned) {
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
@@ -1199,15 +1247,9 @@
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
-        }
-
-        // + Add Team is available on every non-unassigned view.
-        // (There is nothing to add to the Unassigned roster.)
-        if (!(activeTab === 'professional' && showUnassigned)) {
             html += '<button type="button" id="add-team-btn" ' +
                         'class="primary">+ Add Team</button>';
         }
-
         html += '</div>';
         html += '</div>';
 
