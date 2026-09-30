@@ -26,6 +26,11 @@
  *   so the walk lives here, is documented, and is the ONLY direct
  *   team-store walk in this file.
  *
+ * TIMELINE:
+ *   getTimelineViewModel delegates to TimelineQueries
+ *   (buildTimelineViewModel). The timeline's projection logic
+ *   lives in its own module; the aggregator only routes.
+ *
  * PERIOD SEMANTICS:
  *   - Periods are REQUIRED. No fallback to 1.
  *   - An invalid period produces an empty list or a null selected
@@ -50,89 +55,10 @@
  *   Interval containment is owned by TeamQueries.intervalContains.
  *   This module does not reimplement it.
  *
- * MEMBER-MODAL CANDIDATE SEMANTICS:
- *   FILTER:
- *     - EXCLUDE current members of this team (any period).
- *     - EXCLUDE civilians. Instructors are never excluded as
- *       civilians, even if their status string reads 'civilian'.
- *     - EXCLUDE characters eliminated as of the resolution year.
- *       When EliminationQueries is unavailable, this filter is
- *       skipped rather than failing closed.
- *     - INCLUDE instructors, support, other-class students, and
- *       deceased characters.
- *     - Class membership is NOT a filter.
- *
- *   SORT (four tiers, alphabetical within each tier):
- *     Tier 0: in class,   not on another team of this type
- *     Tier 1: in class,       on another team of this type
- *     Tier 2: other class, not on another team of this type
- *     Tier 3: other class,     on another team of this type
- *
- *     "Another team of this type" is scoped to the team's own type
- *     at the requested period. A character on an academic team is
- *     NOT counted as assigned for a professional team.
- *
- *     Deceased status does not affect the tier.
- *
- * MATCHMAKING CANDIDATE SEMANTICS:
- *   FILTER:
- *     - EXCLUDE deceased characters (as of the target year).
- *     - EXCLUDE characters not eligible for a professional team
- *       at the target year. Eligibility is the composed predicate
- *       CharacterQueries.isProfessionallyEligiblePhaseAtYear:
- *       junior-or-senior AND not-instructor (support is NOT
- *       excluded — a support member in their student phase passes
- *       here; the team-history refinement is applied later).
- *       When the predicate is unavailable, the aggregator falls
- *       back to isJuniorOrSeniorByYear, which skips the phase
- *       check entirely, and logs a one-time warning.
- *     - EXCLUDE characters eliminated at any point, in any year,
- *       by any cause. Presence-based.
- *     - EXCLUDE characters already active on a professional team
- *       at the target year.
- *
- *   SORT:
- *     MILESTONE YEAR ASCENDING, then alphabetically by name.
- *
- *     The milestone is the EARLIEST of whichever of these career
- *     years the character has:
- *       - juniorYear
- *       - seniorYear
- *       - supportYear
- *       - instructorYear
- *
- *     Candidates with no milestone year (no careerStatus entries
- *     at all — a data-quality signal) sort after every candidate
- *     who has one, alphabetically among themselves.
- *
- * JUNIOR-OR-SENIOR STATUS:
- *   The predicate is
- *   CharacterQueries.isJuniorOrSeniorByYear(char, year).
- *   When unavailable, this filter is skipped rather than failing
- *   closed.
- *
- * ELIMINATION IN MATCHMAKING:
- *   The check is presence-based, not year-scoped. When
- *   EliminationQueries is unavailable, this filter is skipped
- *   rather than failing closed.
- *
- * CLASS MEMBERSHIP SIGNAL (v29, migrated v30):
- *   The "in class" tier signal for the member modal reads class
- *   membership from two sources:
- *
- *     1. Students: the class's roster, via
- *        AcademyAggregator.getClassStudentsViewModel.
- *     2. Instructors: AcademyClasses.getClassInstructorIdsAllTime,
- *        which derives the class's instructors from per-discipline
- *        instructor enrolments.
- *
- *   The retired AcademyQueries facade is no longer consulted. The
- *   retired `class.instructorId` field is not consulted.
- *
  * UNASSIGNED VIEW SEMANTICS:
  *   getUnassignedViewModel() reads
  *   TeamQueries.getProfessionalTeamEligibleRoster(currentYear) and
- *   projects it into two disjoint lists:
+ *   projects it into two lists:
  *
  *     rows:      candidates — characters who can be placed on a
  *                professional team at the query year. This
@@ -144,18 +70,12 @@
  *                the roster at all — the query has already
  *                excluded them.
  *
- *   The two lists OVERLAP at one subclass: 'support-unassigned'
- *   characters appear in BOTH. They are candidates (the point of
- *   the subclass is that they need placing) and they are staff
- *   (they hold a support role at the query year).
+ *   The two lists OVERLAP at 'support-unassigned'. Those
+ *   characters appear in both. Pure support appears only in
+ *   staffRows.
  *
- *   A character that is currently active on a professional team
- *   is excluded from BOTH sections. Being active is a current
- *   fact, not a historical tag.
- *
- *   Both sections carry `ageDisplay` (number as string, or an
- *   em-dash) and the candidate rows in `staffRows` carry
- *   `supportClass` for the subtype tag.
+ *   A character currently active on a professional team is
+ *   excluded from BOTH sections.
  *
  *   When window.data.currentYear is unavailable, the projection
  *   returns empty lists and a null year. It does NOT invent a
@@ -172,6 +92,7 @@
  *   - window.TeamUI             (filter bar VM defaults)
  *   - window.EliminationQueries (candidate elimination filters)
  *   - window.MissionQueries     (mission options for the team form)
+ *   - window.TimelineQueries    (timeline VM builder)
  */
 
 (function() {
@@ -333,6 +254,10 @@
 
     function getMissionQueries() {
         return window.MissionQueries || null;
+    }
+
+    function getTimelineQueries() {
+        return window.TimelineQueries || null;
     }
 
     // ============================================================
@@ -1249,25 +1174,7 @@
     // UNASSIGNED VIEW MODEL
     // ============================================================
     //
-    // The two sections are DISJOINT except for one case.
-    //
-    //   rows:      candidates. Characters that can be placed on a
-    //              professional team at the query year. Includes
-    //              'support-unassigned' staff (support members
-    //              with a student phase and no team history).
-    //   staffRows: staff. Characters that hold a support or
-    //              instructor role at the query year. Includes
-    //              'support-pure' and 'support-unassigned'.
-    //
-    // The overlap is 'support-unassigned'. Those characters appear
-    // in both lists. Pure support appears only in staffRows.
-    // Retired support is not in the roster at all.
-    //
-    // A character currently active on a professional team is
-    // excluded from both sections.
-    //
-    // Both sections inherit the roster's milestone sort. The
-    // aggregator does not re-sort.
+    // See the UNASSIGNED VIEW SEMANTICS note in the file header.
 
     function getUnassignedViewModel() {
         var currentYear = null;
@@ -1308,22 +1215,8 @@
             var r = roster[i];
             if (!r) { continue; }
 
-            // ---- Active exclusion ----
-            //
-            // A character currently active on a professional team
-            // is not unassigned. Excluded from BOTH sections.
             if (r.classification === 'active') { continue; }
 
-            // ---- Candidate row ----
-            //
-            // Every remaining roster character lands in the
-            // candidate list. This includes:
-            //   - normal students (supportClass: 'none')
-            //   - unassigned staff (supportClass: 'support-unassigned')
-            //
-            // Retired support was already filtered out by the
-            // roster query. Pure support never reached the roster
-            // (no junior/senior year).
             var juniorDisplay = r.juniorYear !== null &&
                                 r.juniorYear !== undefined
                 ? String(r.juniorYear)
@@ -1355,23 +1248,9 @@
                                 r.futureJoinYear !== undefined
                     ? r.futureJoinYear
                     : null,
-
-                // Staff subtype. 'none' for normal students,
-                // 'support-unassigned' for the staff who are also
-                // candidates. The renderer shows a small tag for
-                // non-'none' values so the user can see which rows
-                // are staff members needing placement.
                 supportClass: r.supportClass || 'none'
             });
 
-            // ---- Staff row (additive) ----
-            //
-            // A character with a staff tag appears a SECOND time
-            // in the staff section. The two rows answer different
-            // questions:
-            //   - candidate row: "can this character be placed?"
-            //   - staff row:     "what is this character's staff
-            //                     role?"
             if (r.staffRole) {
                 staffRows.push({
                     characterId: r.characterId,
@@ -1406,6 +1285,24 @@
     }
 
     // ============================================================
+    // TIMELINE VIEW MODEL
+    // ============================================================
+    //
+    // Thin routing. The projection lives in TimelineQueries.
+
+    function getTimelineViewModel(options) {
+        var TQ = getTimelineQueries();
+        if (!TQ || typeof TQ.buildTimelineViewModel !== 'function') {
+            return {
+                range: { start: null, end: null },
+                years: [],
+                totalEvents: 0
+            };
+        }
+        return TQ.buildTimelineViewModel(options || {});
+    }
+
+    // ============================================================
     // MATCHMAKING VIEW MODEL
     // ============================================================
 
@@ -1422,7 +1319,6 @@
             };
         }
 
-        // ---- Availability predicate selection ----
         var canCheckEligibility =
             typeof CharacterQueries
                 .isProfessionallyEligiblePhaseAtYear === 'function';
@@ -1454,7 +1350,6 @@
         var canCheckElimination = EQ &&
             typeof EQ.getEliminationWeek === 'function';
 
-        // ---- Target pool: all non-deprecated professional teams. ----
         var allProfessionalTeams = TeamQueries.getTeams(
             'professional',
             null,
@@ -1473,7 +1368,6 @@
                 ).length;
         }
 
-        // ---- Direct team-store walk (documented at top of file). ----
         var historyByChar = Object.create(null);
         var activeAtYearByChar = Object.create(null);
 
@@ -1527,7 +1421,6 @@
             }
         }
 
-        // ---- Candidate pool. ----
         var allChars = CharacterQueries.getCharacters() || [];
         var candidates = [];
 
@@ -1537,7 +1430,6 @@
 
             var cid = String(char.id);
 
-            // 1. Deceased as of the target year.
             var deceased = false;
             try {
                 deceased =
@@ -1548,7 +1440,6 @@
             }
             if (deceased) { continue; }
 
-            // 2. Available for a professional team at this year?
             if (canCheckEligibility) {
                 var eligible = false;
                 try {
@@ -1573,7 +1464,6 @@
                 if (!isEligibleStatus) { continue; }
             }
 
-            // 3. Eliminated at any point, in any year, any cause.
             if (canCheckElimination) {
                 var earliest = null;
                 try {
@@ -1586,11 +1476,8 @@
                 }
             }
 
-            // 4. Already active on a professional team at the
-            //    target year.
             if (activeAtYearByChar[cid] === true) { continue; }
 
-            // 5. Career milestone years.
             var juniorYear = null;
             if (canGetJuniorYear) {
                 try { juniorYear = CharacterQueries.getJuniorYear(char); }
@@ -1619,7 +1506,6 @@
                 }
             }
 
-            // ---- Milestone. ----
             var milestoneYear = null;
             var milestoneLabel = '';
 
@@ -1646,7 +1532,6 @@
                 milestoneLabel = 'Instructor ' + instructorYear;
             }
 
-            // ---- History (professional-team years). ----
             var historyYears = [];
             if (historyByChar[cid]) {
                 var yearKeys = Object.keys(historyByChar[cid]);
@@ -1677,7 +1562,6 @@
             });
         }
 
-        // ---- Sort: milestone year ascending, then name. ----
         candidates.sort(function(a, b) {
             var aYear = a.milestoneYear;
             var bYear = b.milestoneYear;
@@ -1691,7 +1575,6 @@
             return a.name.localeCompare(b.name);
         });
 
-        // ---- Target pool: understaffed professional teams. ----
         var targets = [];
         for (var tt = 0; tt < allProfessionalTeams.length; tt++) {
             var tTeam = allProfessionalTeams[tt];
@@ -1747,6 +1630,7 @@
         getFilterBarViewModel: getFilterBarViewModel,
 
         getUnassignedViewModel: getUnassignedViewModel,
+        getTimelineViewModel: getTimelineViewModel,
 
         getTeamMatchmakingViewModel: getTeamMatchmakingViewModel,
 
