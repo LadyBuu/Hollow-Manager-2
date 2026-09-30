@@ -54,6 +54,31 @@
  *   programmatic change does not accidentally wipe the user's
  *   data.
  *
+ * SWAP BUTTON:
+ *   For directional types (mentor), the relationship form carries a
+ *   swap button (#rel-swap-btn) next to character 2. Clicking it:
+ *
+ *     - exchanges character 1 and character 2
+ *     - does NOT touch the two clarification fields
+ *
+ *   Why the clarifications are not swapped: the mentor relationship
+ *   has a specific meaning — character 1 mentors character 2. The
+ *   user clicks swap because they want the OTHER character to be the
+ *   mentor. If we swapped the clarifications too, the mentor would
+ *   stay the same and only the display order would change, which is
+ *   not what the button is for.
+ *
+ *   Keeping the clarification text in place means "Mentor" now
+ *   describes the character currently in slot 1's role toward the
+ *   character currently in slot 2. The labels above the fields
+ *   update automatically (refreshClarificationLabels), so the user
+ *   sees the new binding immediately and can edit either field if
+ *   the semantics need adjusting.
+ *
+ *   The button is visible only when the selected type is
+ *   directional. Visibility is managed by updateSwapButtonVisibility,
+ *   called on type change and on modal open.
+ *
  * ELIMINATED CHARACTERS:
  *   The relationship modal carries #rel-include-eliminated. When
  *   unchecked (the default), the character selects hide characters
@@ -359,6 +384,11 @@
      *   refactor that programmatically fires `change` does not wipe
      *   the freshly-populated clarifications. See the
      *   CLARIFICATIONS note in the file header.
+     *
+     * SWAP BUTTON VISIBILITY:
+     *   updateSwapButtonVisibility() is called at the end, after the
+     *   type select has been set. The button appears only when the
+     *   selected type is directional.
      */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
@@ -440,6 +470,7 @@
             _populatingRelationshipForm = false;
         }
 
+        updateSwapButtonVisibility();
         SocialViews.refreshClarificationLabels();
         Modal.showModal(modal);
     }
@@ -477,6 +508,20 @@
                 if (e.target === modal) {
                     handleCloseRelationshipForm();
                 }
+            });
+        }
+
+        // ---- Swap button ----
+        //
+        // Exchanges character 1 and character 2 and leaves the two
+        // clarification fields where they are. The labels above the
+        // fields refresh, so the user sees the new binding
+        // immediately. See the SWAP BUTTON note in the file header.
+        var swapBtn = document.getElementById('rel-swap-btn');
+        if (swapBtn) {
+            addEventListener(swapBtn, 'click', function(e) {
+                e.preventDefault();
+                handleSwapCharacters();
             });
         }
 
@@ -518,6 +563,17 @@
             });
         }
 
+        // ---- Type change handler ----
+        //
+        // The swap button is only meaningful for directional types.
+        // Show or hide it whenever the type changes.
+        var typeEl = document.getElementById('rel-type');
+        if (typeEl) {
+            addEventListener(typeEl, 'change', function() {
+                updateSwapButtonVisibility();
+            });
+        }
+
         // ---- "Include eliminated characters" checkbox ----
         //
         // When toggled, repopulate the character selects, preserving
@@ -548,6 +604,69 @@
                 SocialViews.refreshClarificationLabels();
             });
         }
+    }
+
+    /**
+     * Flip the direction of a directional relationship.
+     *
+     * Exchanges character 1 and character 2. Does NOT touch the
+     * clarification fields:
+     *
+     *   - "Mentor" in slot 1 was "character 1's role toward
+     *     character 2".
+     *   - After the swap, it is "the NEW character 1's role toward
+     *     the NEW character 2".
+     *   - The person described by slot 1 has changed. The value
+     *     therefore describes the other party's role. Which is
+     *     exactly what flipping the mentor direction means: the
+     *     mentee becomes the mentor.
+     *
+     * The user sees the new binding immediately because the labels
+     * refresh. If the clarification text needs a companion edit
+     * (e.g. "mentor" -> "mentee"), the user can type it.
+     *
+     * The population guard is set during the swap so the two
+     * character-change handlers do NOT clear the fields. This is an
+     * intentional swap, not a manual character change.
+     */
+    function handleSwapCharacters() {
+        var c1 = document.getElementById('rel-char1');
+        var c2 = document.getElementById('rel-char2');
+        if (!c1 || !c2) { return; }
+
+        _populatingRelationshipForm = true;
+        try {
+            var tmpChar = c1.value;
+            c1.value = c2.value;
+            c2.value = tmpChar;
+        } finally {
+            _populatingRelationshipForm = false;
+        }
+
+        SocialViews.refreshClarificationLabels();
+    }
+
+    /**
+     * Show the swap button only when the current type is directional.
+     *
+     * Reads the current value of #rel-type and asks
+     * SocialConstants.isDirectional. When SocialConstants is not
+     * available, the button is hidden, because we cannot confirm
+     * the type has a direction.
+     *
+     * Idempotent and safe to call at any time.
+     */
+    function updateSwapButtonVisibility() {
+        var swapBtn = document.getElementById('rel-swap-btn');
+        var typeEl = document.getElementById('rel-type');
+        if (!swapBtn || !typeEl) { return; }
+
+        var SocialConstants = window.SocialConstants;
+        var isDirectional = SocialConstants &&
+            typeof SocialConstants.isDirectional === 'function' &&
+            SocialConstants.isDirectional(typeEl.value);
+
+        swapBtn.style.display = isDirectional ? 'inline-block' : 'none';
     }
 
     function handleSaveRelationship() {
@@ -1424,7 +1543,11 @@
         // Graph drill-down helpers (exposed for testing / external
         // callers that need to force a breadcrumb rebuild)
         renderGraphBreadcrumb: renderGraphBreadcrumb,
-        jumpFocusTo: jumpFocusTo
+        jumpFocusTo: jumpFocusTo,
+
+        // Swap button (exposed for testing)
+        handleSwapCharacters: handleSwapCharacters,
+        updateSwapButtonVisibility: updateSwapButtonVisibility
     };
 
     // ============================================================
