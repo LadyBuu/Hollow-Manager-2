@@ -20,6 +20,25 @@
  *     #rel-clarification-1   character1's role toward character2
  *     #rel-clarification-2   character2's role toward character1
  *
+ * DIRECTIONAL ARROW (this revision):
+ *   The standalone Social list renders every row in STORED
+ *   orientation: character1 on the left, character2 on the right.
+ *   The arrow therefore describes the stored direction, not the
+ *   viewer's perspective:
+ *
+ *     directional  -> ' → '   (character1 → character2)
+ *     undirected   -> ' ↔ '
+ *
+ *   The aggregator still exposes `directionText`, computed from a
+ *   context character id, for surfaces that render from one
+ *   character's point of view (the character form's Social tab).
+ *   The standalone list ignores `directionText` because the row
+ *   always shows both endpoints in stored order.
+ *
+ *   Do NOT reintroduce a context-sensitive arrow here. If a row
+ *   renders both endpoints, the arrow must be orientation-stable
+ *   or it disagrees with the names it sits between.
+ *
  * ELIMINATED CHARACTERS:
  *   Two modal surfaces hide eliminated characters by default:
  *
@@ -656,7 +675,23 @@
     function renderRelationshipRow(vm, color, contextCharId) {
         if (!vm) { return ''; }
 
-        var arrow = vm.isDirectional ? (vm.directionText || ' \u2192 ').trim() : '\u2194';
+        // ---- Arrow describes STORED orientation ----
+        //
+        // The row always renders character1 on the left and
+        // character2 on the right, in stored order. The arrow must
+        // therefore describe the stored direction, NOT the viewer's
+        // perspective:
+        //
+        //   directional -> ' → '   (character1 → character2)
+        //   undirected  -> ' ↔ '
+        //
+        // We deliberately ignore vm.directionText here. That field
+        // is context-sensitive (computed from a context character
+        // id) and belongs to surfaces that render from one
+        // character's point of view — the character form's Social
+        // tab, for instance. Rendering it here would make the arrow
+        // disagree with the names it sits between.
+        var arrow = vm.isDirectional ? '\u2192' : '\u2194';
         var period = vm.period || '';
 
         var chipsHtml = '';
