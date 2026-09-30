@@ -251,6 +251,13 @@
     <script src="js/modules/teams/team-matchmaking.js"></script>
     <script src="js/modules/teams/team-matchmaking-view.js"></script>
 
+    <!-- Timeline view: queries + view must load before team-events
+         binds to them, and before team-aggregator routes to them
+         at call time. Placed here so both are available when the
+         events module runs its dependency check. -->
+    <script src="js/modules/teams/timeline-queries.js"></script>
+    <script src="js/modules/teams/timeline-view.js"></script>
+
     <script src="js/modules/teams/member-adapter-teams.js"></script>
 
     <script src="js/modules/teams/team-events.js"></script>
