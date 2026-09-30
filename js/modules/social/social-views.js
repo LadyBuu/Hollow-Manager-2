@@ -39,6 +39,27 @@
  *   renders both endpoints, the arrow must be orientation-stable
  *   or it disagrees with the names it sits between.
  *
+ * SWAP BUTTON:
+ *   The relationship form carries a swap button (#rel-swap-btn)
+ *   next to character 2. It is visible ONLY when the selected
+ *   type is directional (mentor). Clicking it flips the direction
+ *   of the relationship:
+ *
+ *     - character 1 and character 2 exchange values
+ *     - the two clarifications are NOT touched
+ *
+ *   Keeping the clarifications in place means "Mentor" now describes
+ *   the OTHER character's role toward the first, which is exactly
+ *   what "flip the mentor direction" means. The labels above the
+ *   fields update automatically, so the user sees the new binding
+ *   immediately and can edit either field if the semantics need
+ *   adjusting.
+ *
+ *   Visibility is managed by SocialEvents via updateSwapButtonVisibility,
+ *   which reads the current type and asks SocialConstants.isDirectional.
+ *   The button starts hidden; the events layer reveals it when the
+ *   modal opens with a directional type already selected.
+ *
  * ELIMINATED CHARACTERS:
  *   Two modal surfaces hide eliminated characters by default:
  *
@@ -353,9 +374,15 @@
                                 </div>
                                 <div class="form-group">
                                     <label>Character 2 *</label>
-                                    <select id="rel-char2" required style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
-                                        <option value="">Select character...</option>
-                                    </select>
+                                    <div style="display:flex;gap:6px;align-items:center;">
+                                        <select id="rel-char2" required style="flex:1;min-width:0;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                            <option value="">Select character...</option>
+                                        </select>
+                                        <button type="button" id="rel-swap-btn" class="small secondary"
+                                                title="Swap character 1 and 2 (flips the direction for directional types)"
+                                                aria-label="Swap characters"
+                                                style="display:none;flex:0 0 auto;padding:6px 10px;font-size:0.9rem;line-height:1;">\u21c4</button>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label>Relationship Type *</label>
