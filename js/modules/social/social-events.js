@@ -38,6 +38,22 @@
  *   toward character1). The labels are refreshed on open and
  *   whenever either character select changes.
  *
+ *   When a character select changes, the CORRESPONDING clarification
+ *   field is cleared. The field's semantic is "the role of the
+ *   character currently selected in slot N", so changing the
+ *   character invalidates the previously-entered text. Without the
+ *   clear, a user who swaps the two characters in the form would
+ *   silently save the old clarifications under the new character
+ *   order — the exact bug that produced "Mentor" and "Mentee"
+ *   showing on the wrong sides after an edit.
+ *
+ *   The clear is guarded by a "populating" flag: programmatic value
+ *   assignment during modal open does not fire `change` events on
+ *   select elements, so the flag is defensive rather than load-
+ *   bearing. It exists so a future refactor that DOES trigger a
+ *   programmatic change does not accidentally wipe the user's
+ *   data.
+ *
  * ELIMINATED CHARACTERS:
  *   The relationship modal carries #rel-include-eliminated. When
  *   unchecked (the default), the character selects hide characters
@@ -49,7 +65,7 @@
  *   Changing the checkbox repopulates the character selects,
  *   preserving whatever is currently selected on each side.
  *
- * GRAPH DRILL-DOWN (this revision):
+ * GRAPH DRILL-DOWN:
  *   The graph is FOCUSED. One character is centered; its direct
  *   connections sit on a ring around it. The click model is:
  *
@@ -207,6 +223,13 @@
     var _eventListeners = [];
     var _editId = null;
 
+    // Populating guard. Set true while populateFormSelectors and the
+    // initial value assignments run, so a future refactor that
+    // triggers a programmatic `change` event cannot be mistaken for
+    // a user edit. Setting a select's .value programmatically does
+    // not fire `change` in current browsers; the flag is defensive.
+    var _populatingRelationshipForm = false;
+
     // ============================================================
     // EVENT BINDING HELPERS
     // ============================================================
@@ -272,6 +295,7 @@
 
         // Wipe state a previous init may have left behind.
         _editId = null;
+        _populatingRelationshipForm = false;
 
         SocialViews.renderSocialView(container);
 
@@ -299,6 +323,7 @@
         removeAllEventListeners();
         _initialized = false;
         _editId = null;
+        _populatingRelationshipForm = false;
     }
 
     // ============================================================
@@ -325,6 +350,15 @@
      * existing relationship and passed to populateFormSelectors as
      * preserve1 / preserve2, so a filtered-out (eliminated) value on
      * either side survives the initial population.
+     *
+     * POPULATION GUARD:
+     *   _populatingRelationshipForm is set true at the top of the
+     *   body and false at the end, around the populate + initial
+     *   value assignments. The two character-change handlers skip
+     *   the clarification-clear when the flag is true, so a future
+     *   refactor that programmatically fires `change` does not wipe
+     *   the freshly-populated clarifications. See the
+     *   CLARIFICATIONS note in the file header.
      */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
@@ -351,51 +385,59 @@
             }
         }
 
-        // Reset the checkbox BEFORE populating. Default is
-        // unchecked (hide eliminated characters).
-        var includeCb = document.getElementById('rel-include-eliminated');
-        if (includeCb) { includeCb.checked = false; }
+        // ---- Begin population guard ----
+        _populatingRelationshipForm = true;
 
-        // Repopulate the character selects with the filter applied.
-        // The editing values, if any, are preserved even when they
-        // are eliminated, so an edit does not lose a side.
-        SocialViews.populateFormSelectors({
-            includeEliminated: false,
-            preserve1: editing ? editing.character1 : null,
-            preserve2: editing ? editing.character2 : null
-        });
+        try {
+            // Reset the checkbox BEFORE populating. Default is
+            // unchecked (hide eliminated characters).
+            var includeCb = document.getElementById('rel-include-eliminated');
+            if (includeCb) { includeCb.checked = false; }
 
-        SocialViews.populateTypeSelectors();
+            // Repopulate the character selects with the filter applied.
+            // The editing values, if any, are preserved even when they
+            // are eliminated, so an edit does not lose a side.
+            SocialViews.populateFormSelectors({
+                includeEliminated: false,
+                preserve1: editing ? editing.character1 : null,
+                preserve2: editing ? editing.character2 : null
+            });
 
-        form.reset();
+            SocialViews.populateTypeSelectors();
 
-        var c1El = document.getElementById('rel-char1');
-        var c2El = document.getElementById('rel-char2');
-        var typeEl = document.getElementById('rel-type');
-        var clar1El = document.getElementById('rel-clarification-1');
-        var clar2El = document.getElementById('rel-clarification-2');
-        var startEl = document.getElementById('rel-start-year');
-        var endEl = document.getElementById('rel-end-year');
-        var notesEl = document.getElementById('rel-notes');
+            form.reset();
 
-        if (editing) {
-            title.textContent = 'Edit Relationship';
+            var c1El = document.getElementById('rel-char1');
+            var c2El = document.getElementById('rel-char2');
+            var typeEl = document.getElementById('rel-type');
+            var clar1El = document.getElementById('rel-clarification-1');
+            var clar2El = document.getElementById('rel-clarification-2');
+            var startEl = document.getElementById('rel-start-year');
+            var endEl = document.getElementById('rel-end-year');
+            var notesEl = document.getElementById('rel-notes');
 
-            if (c1El) { c1El.value = editing.character1 || ''; }
-            if (c2El) { c2El.value = editing.character2 || ''; }
-            if (typeEl) { typeEl.value = editing.typeId || ''; }
-            if (startEl) { startEl.value = editing.startYear || ''; }
-            if (endEl) { endEl.value = editing.endYear || ''; }
-            if (notesEl) { notesEl.value = editing.notes || ''; }
+            if (editing) {
+                title.textContent = 'Edit Relationship';
 
-            if (clar1El) {
-                clar1El.value = SocialQueries.readClarification(editing, 1);
+                if (c1El) { c1El.value = editing.character1 || ''; }
+                if (c2El) { c2El.value = editing.character2 || ''; }
+                if (typeEl) { typeEl.value = editing.typeId || ''; }
+                if (startEl) { startEl.value = editing.startYear || ''; }
+                if (endEl) { endEl.value = editing.endYear || ''; }
+                if (notesEl) { notesEl.value = editing.notes || ''; }
+
+                if (clar1El) {
+                    clar1El.value = SocialQueries.readClarification(editing, 1);
+                }
+                if (clar2El) {
+                    clar2El.value = SocialQueries.readClarification(editing, 2);
+                }
+            } else {
+                title.textContent = 'Add Relationship';
             }
-            if (clar2El) {
-                clar2El.value = SocialQueries.readClarification(editing, 2);
-            }
-        } else {
-            title.textContent = 'Add Relationship';
+        } finally {
+            // ---- End population guard ----
+            _populatingRelationshipForm = false;
         }
 
         SocialViews.refreshClarificationLabels();
@@ -438,23 +480,52 @@
             });
         }
 
-        // Live label refresh when the character selects change.
+        // ---- Character 1 change handler ----
+        //
+        // When the user picks a different character for slot 1,
+        // the clarification field for slot 1 is cleared. The field
+        // is semantically "the role of the character currently in
+        // slot 1", so a change of character invalidates its text.
+        //
+        // We do NOT clear on the initial populate: the populate
+        // guard suppresses it. Programmatic assignment does not
+        // fire `change` in current browsers; the guard exists so a
+        // future refactor that changes that does not wipe the
+        // user's data.
+        //
+        // After clearing, refreshClarificationLabels() renames both
+        // labels to reflect the new character pair.
         var c1 = document.getElementById('rel-char1');
         var c2 = document.getElementById('rel-char2');
+
         if (c1) {
             addEventListener(c1, 'change', function() {
-                SocialViews.refreshClarificationLabels();
-            });
-        }
-        if (c2) {
-            addEventListener(c2, 'change', function() {
+                if (!_populatingRelationshipForm) {
+                    var clar1El = document.getElementById('rel-clarification-1');
+                    if (clar1El) { clar1El.value = ''; }
+                }
                 SocialViews.refreshClarificationLabels();
             });
         }
 
-        // "Include eliminated characters" checkbox. When toggled,
-        // repopulate the character selects, preserving whatever is
-        // currently selected on each side.
+        if (c2) {
+            addEventListener(c2, 'change', function() {
+                if (!_populatingRelationshipForm) {
+                    var clar2El = document.getElementById('rel-clarification-2');
+                    if (clar2El) { clar2El.value = ''; }
+                }
+                SocialViews.refreshClarificationLabels();
+            });
+        }
+
+        // ---- "Include eliminated characters" checkbox ----
+        //
+        // When toggled, repopulate the character selects, preserving
+        // whatever is currently selected on each side. The
+        // clarification fields are NOT cleared by this: the checkbox
+        // is a filter change, not a character change. The guard is
+        // set during the repopulate in case a future refactor
+        // causes a change event to fire.
         var includeCb = document.getElementById('rel-include-eliminated');
         if (includeCb) {
             addEventListener(includeCb, 'change', function() {
@@ -463,11 +534,16 @@
                 var preserve1 = c1El ? String(c1El.value || '') : '';
                 var preserve2 = c2El ? String(c2El.value || '') : '';
 
-                SocialViews.populateFormSelectors({
-                    includeEliminated: includeCb.checked === true,
-                    preserve1: preserve1,
-                    preserve2: preserve2
-                });
+                _populatingRelationshipForm = true;
+                try {
+                    SocialViews.populateFormSelectors({
+                        includeEliminated: includeCb.checked === true,
+                        preserve1: preserve1,
+                        preserve2: preserve2
+                    });
+                } finally {
+                    _populatingRelationshipForm = false;
+                }
 
                 SocialViews.refreshClarificationLabels();
             });
@@ -533,6 +609,7 @@
         var modal = document.getElementById('relationship-form-modal');
         hideModal(modal);
         _editId = null;
+        _populatingRelationshipForm = false;
     }
 
     // ============================================================
