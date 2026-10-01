@@ -33,7 +33,7 @@
  *     #export-characters-csv-btn        CSV export
  *     #import-characters-csv-btn        CSV import (opens picker)
  *     #template-characters-csv-btn      CSV template
- *     #manage-fillers-btn               Filler manager (this revision)
+ *     #manage-fillers-btn               Filler manager
  *     #characters-csv-file-input        hidden file input
  *     #toggle-char-list                 mobile list toggle
  *     #add-character-btn                create a new character
@@ -42,7 +42,20 @@
  *   not in this header. It lives in the character form's actions
  *   row.
  *
- * FILLER MANAGER (this revision):
+ * FILTERS:
+ *   The sidebar carries three hide-checkboxes:
+ *
+ *     #hide-deceased      Hide Deceased     (default checked)
+ *     #hide-eliminated    Hide Eliminated   (default checked)
+ *     #hide-filler        Hide Filler       (default checked,
+ *                                              persisted)
+ *
+ *   The filler checkbox's state is persisted to sessionStorage by
+ *   CharacterList. On mount, mountCharacters() syncs the checkbox
+ *   with the persisted value BEFORE the first render, so the user
+ *   does not see a flash of the wrong state.
+ *
+ * FILLER MANAGER:
  *   The Manage Fillers button opens the FillerManagerModal, a
  *   maintenance modal that lists every character and lets the
  *   user flag some as filler. The flag drives the strip on save;
@@ -190,6 +203,25 @@
         }
 
         container.innerHTML = getCharactersHTML();
+
+        // ---- Sync the filler checkbox with its persisted state ----
+        //
+        // The HTML default is `checked`, but the user may have
+        // unchecked it in a previous session. CharacterList stores
+        // the persisted value; we sync the checkbox to it before
+        // the first render so the visible state matches reality.
+        if (CharacterList &&
+            typeof CharacterList.getHideFiller === 'function') {
+            try {
+                var hideFillerCb = document.getElementById('hide-filler');
+                if (hideFillerCb) {
+                    hideFillerCb.checked = CharacterList.getHideFiller();
+                }
+            } catch (e) {
+                // Non-fatal. The HTML default (checked) is safe;
+                // the user's next interaction corrects it.
+            }
+        }
 
         if (CharacterList && typeof CharacterList.render === 'function') {
             try {
@@ -360,6 +392,10 @@
                             <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
                                 <input type="checkbox" id="hide-eliminated" checked />
                                 Hide Eliminated
+                            </label>
+                            <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                <input type="checkbox" id="hide-filler" checked />
+                                Hide Filler
                             </label>
                             <button id="clear-char-filter" class="small secondary" style="font-size:0.55rem;padding:2px 8px;">Clear</button>
                         </div>
