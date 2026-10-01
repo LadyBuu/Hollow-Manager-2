@@ -22,6 +22,7 @@
  *         right: [
  *           {
  *             teamId, teamName,
+ *             formedThisYear: boolean,
  *             departures: [
  *               { characterId, characterName, diedAtYear, label }
  *             ],
@@ -36,11 +37,7 @@
  * EXPANDED YEARS:
  *   The caller passes an `expandedYears` object: { [year]: true }
  *   for every year the user has expanded. Years not present are
- *   collapsed. A year with zero events is never rendered.
- *
- *   The renderer draws the year circle regardless of expansion.
- *   When expanded, the left and right event columns are drawn
- *   next to the circle. When collapsed, only the circle is drawn.
+ *   collapsed.
  *
  * HEADER:
  *   The header carries the year-range inputs and the
@@ -49,12 +46,7 @@
  *
  * SPINE:
  *   A continuous vertical line runs through the timeline behind
- *   the circles. The line is drawn as an absolutely-positioned
- *   element inside the timeline container. Circles have an opaque
- *   background that covers the spine behind them.
- *
- *   When the timeline has zero years, the spine is not drawn and
- *   an empty-state message is rendered instead.
+ *   the circles.
  *
  * CLICK TARGETS:
  *   - .timeline-circle[data-year]      toggle that year
@@ -121,7 +113,7 @@
     // HEADER
     // ============================================================
 
-    function renderHeader(vm, rangeStart, rangeEnd) {
+    function renderHeader(vm) {
         var html = '';
 
         html += '<div class="timeline-header">';
@@ -245,6 +237,15 @@
                     'data-team-id="' +
                         escapeAttribute(group.teamId || '') + '">';
 
+        // ---- Formation line (only when the team formed this year) ----
+        if (group.formedThisYear === true) {
+            html += '<div class="timeline-event timeline-event-formed">' +
+                        escapeHtml(group.teamName || 'Team') +
+                        ' formed' +
+                    '</div>';
+        }
+
+        // ---- Departure lines ----
         for (var i = 0; i < group.departures.length; i++) {
             var dep = group.departures[i];
             var labelClass = 'timeline-event timeline-event-leave';
@@ -260,8 +261,12 @@
                     '</div>';
         }
 
-        // "Team X now: ..." line, only when remainingMembers is
-        // an array (the team is still active the year after).
+        // ---- "Team X now: ..." line ----
+        //
+        // remainingMembers is an array only when the group had at
+        // least one departure this year AND the team is still
+        // active the year after. Formation-only groups carry null,
+        // so nothing is drawn.
         if (Array.isArray(group.remainingMembers)) {
             var count = group.remainingMembers.length;
             var membersText = count === 0
@@ -309,15 +314,6 @@
     // PUBLIC
     // ============================================================
 
-    /**
-     * Render the timeline view.
-     *
-     * @param {object} vm              the view model from
-     *                                 TimelineQueries
-     * @param {object} expandedYears   { [year]: true } for every
-     *                                 expanded year
-     * @returns {string} HTML
-     */
     function renderTimeline(vm, expandedYears) {
         if (!vm) {
             throw new Error(
@@ -341,9 +337,6 @@
             return html;
         }
 
-        // The spine is a single absolutely-positioned element
-        // behind the year rows. It fills the vertical extent of
-        // the rows container.
         html += '<div class="timeline-rows">';
         html += '<div class="timeline-spine" aria-hidden="true"></div>';
 
@@ -353,8 +346,8 @@
             html += renderYearRow(row, isExpanded);
         }
 
-        html += '</div>';   // .timeline-rows
-        html += '</div>';   // .timeline-view
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
