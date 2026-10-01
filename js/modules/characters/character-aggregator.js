@@ -66,6 +66,15 @@
  *     CharacterQueries.isDeceased(char) so year changes are respected
  *     even if the cache is stale.
  *
+ * FILLER FILTER (this revision):
+ *   The list projection accepts a `hideFiller` option. When true
+ *   (the default), characters with `char.isFiller === true` are
+ *   excluded from the list. When false, they appear like any other
+ *   character.
+ *
+ *   The flag is the sole signal at read time. The heuristic that
+ *   populates the flag lives in character-strip.js.
+ *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterQueries       (from shared/queries)
  *   - window.AcademyClasses         (from academy-classes.js)
@@ -966,6 +975,14 @@
      * Get character list view model.
      * Collection-level projection that avoids per-character N+1 aggregation.
      *
+     * FILLER FILTER (this revision):
+     *   When options.hideFiller is true (the default), characters
+     *   with `char.isFiller === true` are excluded. When false,
+     *   they appear like any other character.
+     *
+     *   The flag is the sole signal. There is no heuristic at read
+     *   time; the heuristic lives in character-strip.js.
+     *
      * OPTIONS:
      *   - classFilter     : class ID, or 'all'
      *   - statusFilter    : array of status strings, or null / empty
@@ -977,6 +994,7 @@
      *   - nameFilter      : substring, case-insensitive
      *   - hideDeceased    : boolean
      *   - hideEliminated  : boolean
+     *   - hideFiller      : boolean (default true)
      *   - week            : current week (for schedule-related reads)
      *   - year            : elimination filter year
      *
@@ -1017,6 +1035,7 @@
         var nameFilter = options.nameFilter || '';
         var hideDeceased = options.hideDeceased !== false;
         var hideEliminated = options.hideEliminated !== false;
+        var hideFiller = options.hideFiller !== false;
 
         // Status filter is an array of lowercase status names. An
         // empty array, null, or undefined means "no status filter".
@@ -1103,6 +1122,11 @@
         // ---- Filter ----
         var filtered = characters.filter(function(char) {
             if (!char || typeof char !== 'object') { return false; }
+
+            // Filler filter. The flag is the sole signal.
+            if (hideFiller && char.isFiller === true) {
+                return false;
+            }
 
             if (nameFilter) {
                 var displayName = CharacterQueries.getDisplayName(char).toLowerCase();
