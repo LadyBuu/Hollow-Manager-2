@@ -197,6 +197,15 @@
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-moves.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
+
+    <!-- Filler strip: helpers, then the maintenance modal. -->
+    <script src="js/modules/characters/character-strip.js"></script>
+    <script src="js/modules/characters/filler-manager-modal.js"></script>
+
+    <!-- Character roster text export. Must load before
+         character-events.js binds the header button. -->
+    <script src="js/import-export/character-roster-export.js"></script>
+
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
@@ -253,8 +262,7 @@
 
     <!-- Timeline view: queries + view must load before team-events
          binds to them, and before team-aggregator routes to them
-         at call time. Placed here so both are available when the
-         events module runs its dependency check. -->
+         at call time. -->
     <script src="js/modules/teams/timeline-queries.js"></script>
     <script src="js/modules/teams/timeline-view.js"></script>
 
@@ -264,13 +272,6 @@
     <script src="js/modules/teams/index.js"></script>
 
     <!-- Academy instructor repair view + controller -->
-    <!--
-        The repair view is a top-level module. It exposes
-        AcademyInstructorRepairView, which the repair controller
-        wraps into the six-method controller contract.
-        Load order: the view must be present before the controller
-        runs its IIFE dependency check.
-    -->
     <script src="js/modules/academy/academy-instructor-repair-view.js"></script>
 
     <!-- Academy controllers -->
