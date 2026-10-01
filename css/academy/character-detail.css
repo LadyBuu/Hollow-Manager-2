@@ -7,6 +7,7 @@
  * Covers:
  *   - Panel shell and header
  *   - Role badge, mode toggle (instructor checkbox)
+ *   - Filler toggle (filler character checkbox)
  *   - Elimination warning banner
  *   - Tab bar
  *   - Main tab: class chips, performance scores, drop-out section
@@ -141,6 +142,42 @@
 }
 
 /* ============================================================
+   FILLER TOGGLE (filler character checkbox)
+   ============================================================
+   Rendered below the mode toggle in the header. Emits
+   data-action="character-toggle-filler" with the character id
+   and the target value. See academy-character-detail.js's
+   renderFillerToggle and academy-people-controller.js's
+   handleCharacterFillerToggle.
+
+   The toggle carries its own hint line beneath the checkbox so
+   the user understands what the flag does. The hint is small
+   and muted, matching the mode toggle's hint style.
+   ============================================================ */
+
+/* === NEW === */
+
+.academy-character-filler-toggle {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.academy-character-filler-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.academy-filler-toggle-hint {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    margin: 3px 0 0 20px;
+    line-height: 1.35;
+}
+
+/* ============================================================
    ELIMINATION WARNING BANNER
    ============================================================ */
 
@@ -259,10 +296,6 @@
    MAIN TAB - CLASS CHIPS
    ============================================================ */
 
-.academy-character-class-chips {
-    /* reuses .academy-character-detail-section */
-}
-
 .academy-character-chip-row {
     display: flex;
     flex-wrap: wrap;
@@ -311,10 +344,6 @@
 /* ============================================================
    MAIN TAB - PERFORMANCE SCORES
    ============================================================ */
-
-.academy-character-scores {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-score-grid {
     display: grid;
@@ -420,11 +449,6 @@
     border-radius: 4px;
 }
 
-.academy-dropout-status-eliminated {
-    /* Modifier: kept for explicit override sites. Same as base
-       for now. */
-}
-
 .academy-dropout-status-label {
     font-size: 0.72rem;
     font-weight: 600;
@@ -441,10 +465,6 @@
 /* ============================================================
    DISCIPLINES TAB - STUDENT
    ============================================================ */
-
-.academy-character-disciplines {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-character-discipline-list {
     display: flex;
@@ -492,37 +512,7 @@
 
 /* ============================================================
    DISCIPLINES TAB - INSTRUCTOR
-   ============================================================
-   The instructor Disciplines tab reuses the student row base
-   and adds three things:
-
-     1. A distinct border-left colour (--info, matching the
-        instructor role badge and the Teaching Groups block).
-
-     2. A classes list, shown next to each discipline, listing
-        every class the instructor teaches that discipline for.
-        The list is derived by the aggregator (group-by-discipline
-        across classes) and is display-only.
-
-     3. A per-row "Stop teaching this class" button, rendered
-        only when the instructor teaches the discipline for the
-        currently selected class. The button's data-action is
-        the same "leave-discipline" the student Leave button
-        uses; the domain call is identical.
-
-   Row layout (wide viewports):
-
-       [Discipline name]  [Type]  [Class A, Class B]  [Button]
-
-   The classes list has margin-left: auto, so it and the button
-   are pushed to the right edge of the flex row. On narrow
-   viewports the row wraps and the classes list takes its own
-   line (see the mobile block).
    ============================================================ */
-
-.academy-character-instructor-disciplines {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-instructor-discipline-row {
     cursor: pointer;
@@ -532,10 +522,6 @@
 .academy-instructor-discipline-row:hover {
     background: var(--info-soft);
 }
-
-/* The classes list rendered next to an instructor's discipline
-   row. Shows every class the instructor teaches that discipline
-   for, comma-separated. Read-only. */
 
 .academy-character-discipline-classes {
     font-size: 0.65rem;
@@ -549,12 +535,6 @@
     max-width: 40%;
 }
 
-/* The per-row "Stop teaching this class" button. Inherits the
-   .academy-character-discipline-row button.small base rule from
-   the STUDENT DISCIPLINES section above. Named here so the
-   button can be targeted for a distinct hover or spacing if the
-   two modes ever diverge. */
-
 .academy-instructor-stop-teaching-btn {
     flex: 0 0 auto;
     white-space: nowrap;
@@ -563,10 +543,6 @@
 /* ============================================================
    GRADES TAB
    ============================================================ */
-
-.academy-character-grades {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-grades-editor-host {
     display: block;
@@ -652,10 +628,6 @@
     white-space: nowrap;
 }
 
-.academy-grades-editor-table .discipline-col {
-    /* Flexible */
-}
-
 .academy-grades-editor-table .type-col {
     width: 100px;
     color: var(--text-dim);
@@ -689,26 +661,11 @@
     font-variant-numeric: tabular-nums;
 }
 
-.academy-grade-score-excellent {
-    color: var(--accent);
-}
-
-.academy-grade-score-good {
-    color: var(--info);
-}
-
-.academy-grade-score-passing {
-    color: var(--warning);
-}
-
-.academy-grade-score-failing {
-    color: var(--danger);
-}
-
-.academy-grade-score-unknown {
-    color: var(--text-dim);
-    font-weight: 400;
-}
+.academy-grade-score-excellent { color: var(--accent); }
+.academy-grade-score-good      { color: var(--info); }
+.academy-grade-score-passing   { color: var(--warning); }
+.academy-grade-score-failing   { color: var(--danger); }
+.academy-grade-score-unknown   { color: var(--text-dim); font-weight: 400; }
 
 /* ---------- Summary line ---------- */
 
@@ -724,10 +681,6 @@
    SCHEDULE TAB
    ============================================================ */
 
-.academy-character-schedule {
-    /* reuses .academy-character-detail-section */
-}
-
 .academy-schedule-host {
     display: block;
     min-height: 200px;
@@ -736,10 +689,6 @@
 /* ============================================================
    TEAMS TAB
    ============================================================ */
-
-.academy-character-teams {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-character-team-list {
     display: flex;
@@ -779,43 +728,13 @@
 
 /* ============================================================
    TEACHING GROUPS TAB
-   ============================================================
-   Instructor-mode tab. Lists the teaching groups the instructor
-   runs for the currently selected class, grouped by discipline.
-
-   Layout:
-
-     [Discipline header — toggles collapse]   [N groups]
-        [Group block — collapsible]
-           [▾] [Group name]  [N students]  [Clear] [+ Add] [✕]
-           |  Roster: Alice, Bob, Carol
-           |  Sessions:
-           |    Tuesday, 11:00  2h    [Edit] [Delete]
-           |    Thursday, 11:00 2h    [Edit] [Delete]
-           |  [+ Add Session]
-        [Group block]
-        ...
-
-   Every discipline the instructor teaches for the class appears
-   as a container, even when it has no groups yet. The container
-   shows an empty state in that case.
-
-   Visual language matches the instructor Disciplines tab
-   (--info border for the discipline header) and the roster
-   patterns already in this file.
    ============================================================ */
-
-.academy-character-teaching-groups {
-    /* reuses .academy-character-detail-section */
-}
 
 .academy-teaching-group-discipline-list {
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
-
-/* ---------- Discipline container ---------- */
 
 .academy-teaching-group-discipline {
     background: var(--panel-alt);
@@ -824,9 +743,6 @@
     overflow: hidden;
 }
 
-/* The header row wraps the discipline header button and the
-   "+ New Group" button. The header button is the collapse
-   toggle; the new-group button sits beside it. */
 .academy-teaching-group-discipline-header-row {
     display: flex;
     align-items: center;
@@ -913,9 +829,6 @@
     gap: 6px;
 }
 
-/* The block body is what collapses. The header row stays
-   visible so the toggle and the action buttons remain
-   reachable. */
 .academy-teaching-group-body {
     display: flex;
     flex-direction: column;
@@ -995,9 +908,6 @@
     padding: 2px 8px;
 }
 
-/* The clear-roster and delete buttons share the header row
-   with Add Student. Named here so the header's wrap behaviour
-   is predictable. */
 .academy-teaching-group-clear-roster-btn,
 .academy-teaching-group-delete-btn {
     flex: 0 0 auto;
@@ -1006,13 +916,7 @@
     padding: 2px 8px;
 }
 
-/* ---------- Sessions list (inside a group block) ----------
- *
- *   Sessions                    3
- *   Tuesday, 11:00  2h    [Edit] [Delete]
- *   Thursday, 11:00 2h    [Edit] [Delete]
- *   + Add Session
- */
+/* ---------- Sessions list ---------- */
 
 .academy-teaching-group-sessions {
     display: flex;
@@ -1220,17 +1124,6 @@
 
 /* ============================================================
    MODAL - ENROLLMENT
-   ============================================================
-   The enrollment modal is opened from the Disciplines tab via
-   data-action="enroll-discipline". It lists the class's active
-   offerings and lets the user select one or more to enrol the
-   character into. Rendered by academy-enrollment-modal.js.
-
-   The modal header text is supplied by the caller:
-     - Student mode: "Enroll [Name] in a Discipline" (default)
-     - Instructor mode: "Assign to teach a discipline — [Name]"
-   The modal does not change the header markup based on mode; it
-   renders whatever title string it was given.
    ============================================================ */
 
 .academy-enroll-summary {
@@ -1287,8 +1180,6 @@
     border-left-color: var(--accent);
 }
 
-/* ---------- Row checkbox / state badge ---------- */
-
 .academy-enroll-checkbox-label {
     display: flex;
     align-items: center;
@@ -1337,8 +1228,6 @@
     white-space: nowrap;
 }
 
-/* ---------- Mandatory badge ---------- */
-
 .academy-enroll-badge-mandatory {
     display: inline-block;
     font-size: 0.55rem;
@@ -1351,8 +1240,6 @@
     white-space: nowrap;
     flex: 0 0 auto;
 }
-
-/* ---------- Footer ---------- */
 
 .academy-enroll-footer {
     display: flex;
@@ -1395,14 +1282,6 @@
         margin-left: auto;
     }
 
-    /* On narrow viewports the instructor discipline row wraps.
-       The classes list moves to its own line so it does not
-       crowd out the discipline name; the "Stop teaching this
-       class" button stays on the same line as the classes list
-       but is pushed to the right edge. Reading order becomes:
-
-           [Discipline name]  [Type]
-           [Class A, Class B]      [Stop teaching this class] */
     .academy-character-discipline-classes {
         margin-left: 0;
         padding-left: 0;
@@ -1491,21 +1370,10 @@
         padding: 4px 6px;
     }
 
-    .academy-grades-editor-table .week-col {
-        width: 45px;
-    }
-
-    .academy-grades-editor-table .type-col {
-        width: 70px;
-    }
-
-    .academy-grades-editor-table .score-col {
-        width: 80px;
-    }
-
-    .academy-grades-editor-table .actions-col {
-        width: 90px;
-    }
+    .academy-grades-editor-table .week-col { width: 45px; }
+    .academy-grades-editor-table .type-col { width: 70px; }
+    .academy-grades-editor-table .score-col { width: 80px; }
+    .academy-grades-editor-table .actions-col { width: 90px; }
 
     .academy-grades-editor-table .actions-col button {
         font-size: 0.55rem;
