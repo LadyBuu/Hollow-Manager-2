@@ -126,16 +126,13 @@
     <!-- ============================================================
          Core infrastructure (partial)
          import-pipeline.js requires ActivityLog + MutationPipeline.
-         They must load before the import/export block.
          ============================================================ -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
 
     <!-- ============================================================
          IMPORT / EXPORT
-         Boundary layer. Loads before any domain module so that
-         every domain script that references ExportUtils, CSV,
-         JSONIO, or CharacterCSV at load time finds them.
+         Boundary layer. Loads before any domain module.
          ============================================================ -->
 
     <!-- Core -->
@@ -149,23 +146,25 @@
     <script src="js/import-export/import-pipeline.js"></script>
     <script src="js/import-export/json-io.js"></script>
 
-    <!-- CSV domain modules -->
-    <script src="js/import-export/character-csv.js"></script>
+    <!-- Consolidated character export bundle.
+         Installs: CharacterCSV, CharacterRosterExport, CharacterExport,
+                   and the four legacy template aliases. -->
+    <script src="js/import-export/character-export.js"></script>
+
+    <!-- Mission CSV (schema, export, import, template). -->
     <script src="js/import-export/mission-csv.js"></script>
 
-    <!-- Text and grid exports -->
+    <!-- Consolidated team export bundle.
+         Installs: TeamExport, TeamExportPicker. -->
     <script src="js/import-export/team-export.js"></script>
+
+    <!-- Standalone exporters. -->
     <script src="js/import-export/schedule-export.js"></script>
     <script src="js/import-export/class-roster-export.js"></script>
-    <script src="js/import-export/character-export.js"></script>
-    <script src="js/import-export/character-roster-export.js"></script>
 
-    <!-- Character export picker (consolidates CSV / Roster / Template) -->
+    <!-- Picker modals. -->
     <script src="js/import-export/character-export-picker.js"></script>
-
-    <!-- Export pickers -->
     <script src="js/import-export/graduates-export-picker.js"></script>
-    <script src="js/import-export/team-export-picker.js"></script>
 
     <!-- ============================================================
          Core infrastructure (remaining)
@@ -343,9 +342,6 @@
 
     <!-- ============================================================
          Import/export UI — binds header buttons.
-         Last of the import/export group. Requires TabManager,
-         NotificationSystem, and MutationPipeline, all of which are
-         loaded above.
          ============================================================ -->
     <script src="js/import-export/ui.js"></script>
     <script src="js/import-export/index.js"></script>
