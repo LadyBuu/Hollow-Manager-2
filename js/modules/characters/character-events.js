@@ -20,21 +20,29 @@
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
  *
- * DELETE BINDING (this revision):
- *   The Delete button used to live in the form header and was bound
- *   directly in init(). It now lives inside #character-form-content
- *   (rendered by character-form.js's getCharacterFormHTML) so it
- *   appears in the bottom form-actions row next to Cancel and
- *   Create/Update. Because #character-form-content is re-rendered on
- *   every CharacterForm.render() call, the Delete button must be
- *   bound via DELEGATION:
+ * DELETE BINDING:
+ *   The Delete button lives inside #character-form-content (rendered
+ *   by character-form.js's getCharacterFormHTML) so it appears in
+ *   the bottom form-actions row next to Cancel and Create/Update.
+ *   Bound via DELEGATION:
  *
  *     bindDeleteButton() -> addSafeDelegatedListener(
  *         '#delete-char-btn', 'click', ...)
  *
  *   A direct binding would be lost after the first re-render.
  *
- * CHARACTER REPORT EXPORT (this revision):
+ * FILLER MANAGER BUTTON (this revision):
+ *   The character page header carries a Manage Fillers button
+ *   (#manage-fillers-btn) rendered by characters/index.js. Clicking
+ *   it opens the FillerManagerModal, which lists every character
+ *   with a checkbox and lets the user flag some as filler. The flag
+ *   drives the strip on save (see character-strip.js and
+ *   character-crud.js).
+ *
+ *   The button is bound directly (not delegated) because it lives
+ *   in the static header, outside the re-rendered form content.
+ *
+ * CHARACTER REPORT EXPORT:
  *   The character page header carries a report-export button
  *   (#export-character-report-btn). It exports a plain-text report
  *   of the currently-selected character via
@@ -51,14 +59,7 @@
  *     - handleDelete() on success        (nothing selected)
  *     - installCharacterEditListener()   (characterEdit CustomEvent)
  *
- *   The button is disabled when:
- *     - no character is selected
- *     - CharacterExport is not loaded
- *
- *   No change to the report content is made here. The report itself
- *   is owned by CharacterExport.exportCharacterText.
- *
- * COLLAPSIBLE CAREER STATUS FILTER (this revision):
+ * COLLAPSIBLE CAREER STATUS FILTER:
  *   The Career Status checkbox group in the character list sidebar
  *   is collapsible. The header (#career-status-filter-toggle) is a
  *   button. Clicking it toggles the collapsed state, which:
@@ -71,10 +72,6 @@
  *   _careerStatusCollapsed so it survives re-renders of the list
  *   panel. The initial value is written into the markup by
  *   characters/index.js on mount.
- *
- *   The binding is delegated so it survives any re-render of the
- *   sidebar (currently there is none, but the pattern is consistent
- *   with the rest of the module).
  *
  * PER-FIELD RANDOM:
  *   The Physical and Personality tabs render a small ⟳ button
@@ -95,8 +92,6 @@
  *   saved values" bug.
  *
  *   refreshUI() is render-only. It must not enqueue mutations.
- *   If a read-only refresh needs a derived value, it computes it
- *   and writes it to the DOM; it does not call performMutation.
  */
 
 (function() {
@@ -146,16 +141,10 @@
 
     var _characterEditListenerInstalled = false;
 
-    // Save re-entrancy guard. A single user click must not produce
-    // two concurrent saves. See the SAVE RE-ENTRANCY note in the
-    // file header.
+    // Save re-entrancy guard.
     var _saveInFlight = false;
 
-    // Career Status filter collapse state. Persists across re-renders
-    // of the sidebar. Initialised to null so the first click reads
-    // the DOM's data-collapsed attribute (which characters/index.js
-    // writes on mount based on viewport). After the first toggle,
-    // this holds the authoritative value.
+    // Career Status filter collapse state.
     var _careerStatusCollapsed = null;
 
     // ============================================================
@@ -168,6 +157,10 @@
 
     function getCharacterExport() {
         return window.CharacterExport || null;
+    }
+
+    function getFillerManagerModal() {
+        return window.FillerManagerModal || null;
     }
 
     // ============================================================
@@ -306,15 +299,6 @@
     // ============================================================
     // UI REFRESH - READ-ONLY
     // ============================================================
-    //
-    // refreshUI is a RENDER-ONLY function. It must not enqueue any
-    // mutation.
-    //
-    // After refreshUI's work, refreshCharacterReportButton() is
-    // called by the specific handlers that change the edit id, not
-    // by refreshUI itself. Keeping refreshUI read-only-only avoids
-    // the report button's enabled state being driven by an
-    // unrelated render pass.
 
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
@@ -338,23 +322,7 @@
     // ============================================================
     // CHARACTER REPORT EXPORT BUTTON
     // ============================================================
-    //
-    // See the CHARACTER REPORT EXPORT note in the file header.
 
-    /**
-     * Enable/disable the report-export button to match the current
-     * edit state.
-     *
-     * - No character selected         -> disabled
-     * - CharacterExport not loaded    -> disabled
-     * - Otherwise                     -> enabled
-     *
-     * The button's data is not touched here; only its disabled
-     * state and visual opacity. The click handler reads the edit id
-     * at click time (handleCharacterReportExport), so a stale
-     * enabled button cannot export the wrong character: the handler
-     * will simply refuse and notify.
-     */
     function refreshCharacterReportButton() {
         var btn = document.getElementById('export-character-report-btn');
         if (!btn) { return; }
@@ -432,22 +400,44 @@
     }
 
     // ============================================================
-    // CAREER STATUS FILTER TOGGLE
+    // FILLER MANAGER BUTTON
     // ============================================================
     //
-    // See the COLLAPSIBLE CAREER STATUS FILTER note in the file
-    // header.
-    //
-    // STATE:
-    //   _careerStatusCollapsed holds the authoritative value once
-    //   the user has toggled. Before the first toggle, it is null,
-    //   and applyCareerStatusCollapsed() derives the current state
-    //   from the DOM (data-collapsed on the group element), which
-    //   characters/index.js writes on mount.
-    //
-    //   The DOM is the source of truth for the INITIAL state. The
-    //   module variable becomes the source of truth after the first
-    //   user toggle, so re-renders do not reset a user's choice.
+    // The Manage Fillers button lives in the static character page
+    // header, so it is bound directly (not delegated). Clicking it
+    // opens the FillerManagerModal.
+
+    function bindManageFillers(container) {
+        var btn = document.getElementById('manage-fillers-btn');
+        if (!btn) { return; }
+
+        addSafeEventListener(btn, 'click', function(e) {
+            e.preventDefault();
+
+            var FM = getFillerManagerModal();
+            if (!FM || typeof FM.openModal !== 'function') {
+                notify('Filler manager is not available.', 'error');
+                return;
+            }
+
+            try {
+                FM.openModal();
+            } catch (err) {
+                console.warn(
+                    '[CharacterEvents] FillerManagerModal.openModal ' +
+                    'threw:', err
+                );
+                notify(
+                    'Failed to open the filler manager: ' + err.message,
+                    'error'
+                );
+            }
+        });
+    }
+
+    // ============================================================
+    // CAREER STATUS FILTER TOGGLE
+    // ============================================================
 
     function readCareerStatusCollapsedFromDOM() {
         var group = document.getElementById('career-status-filter-group');
@@ -479,10 +469,6 @@
             function(e, target) {
                 e.preventDefault();
 
-                // First toggle in this session: read the initial
-                // state from the DOM. Afterwards, trust the module
-                // variable. The DOM is still kept in sync via
-                // applyCareerStatusCollapsed below.
                 if (_careerStatusCollapsed === null) {
                     _careerStatusCollapsed =
                         readCareerStatusCollapsedFromDOM();
@@ -615,6 +601,7 @@
         bindFilters(container);
         bindClickOutside(container);
         bindCharacterList(container);
+        bindManageFillers(container);
 
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
@@ -643,16 +630,8 @@
 
         _initialized = true;
 
-        // Apply the initial state of the report-export button. On
-        // first init, no character is selected, so the button starts
-        // disabled.
         refreshCharacterReportButton();
 
-        // Re-sync the Career Status filter to whatever the DOM says.
-        // The module variable is null on first init; applyCareerStatusCollapsed
-        // will read the DOM's data-collapsed and reflect it. This
-        // matters if init runs after a re-render of the sidebar; it
-        // ensures the DOM and the module agree.
         if (_careerStatusCollapsed !== null) {
             applyCareerStatusCollapsed(_careerStatusCollapsed);
         }
@@ -708,16 +687,6 @@
         }
     }
 
-    /**
-     * Bind Delete via delegation.
-     *
-     * The Delete button now lives inside #character-form-content,
-     * which is re-rendered on every CharacterForm.render(). A direct
-     * binding would be lost after the first re-render. Delegation on
-     * #delete-char-btn survives every re-render.
-     *
-     * See the DELETE BINDING note in the file header.
-     */
     function bindDeleteButton(container) {
         addSafeDelegatedListener('#delete-char-btn', 'click', function(e, target) {
             e.preventDefault();
@@ -1958,26 +1927,7 @@
     // HANDLERS
     // ============================================================
 
-    /**
-     * Save the character form.
-     *
-     * RE-ENTRANCY GUARD:
-     *   A module-level _saveInFlight flag prevents a second save
-     *   from starting while the first is still in flight.
-     *
-     * NO RE-RENDER FOR EXISTING CHARACTERS:
-     *   On success, the form is re-rendered ONLY when the save
-     *   CREATED a new character.
-     *
-     *   When the save creates a new character, we DO need to
-     *   re-render: the form must adopt the new character's id, and
-     *   the "Create" button must become "Update".
-     *
-     * refreshCharacterReportButton() is called after the edit id
-     * changes so the report-export button reflects the new state.
-     */
     function handleSave() {
-        // ---- Re-entrancy guard ----
         if (_saveInFlight) {
             return;
         }
@@ -2006,8 +1956,6 @@
                             window.setCurrentEditId(savedId);
                         }
 
-                        // Only re-render when we just created a new
-                        // character. See the file header.
                         if (!wasEditing) {
                             CharacterForm.render(savedId);
                         }
@@ -2022,8 +1970,6 @@
                 notify('An error occurred while saving.', 'error');
             })
             .then(function() {
-                // Always release the guard, whether the save
-                // succeeded, failed, or the success handler threw.
                 _saveInFlight = false;
             });
     }
