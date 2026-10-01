@@ -71,8 +71,7 @@
  *   The flag is set through CharacterCRUD.setFillerFlag(ids, value),
  *   which:
  *     - sets char.isFiller on every id
- *     - when value === true, strips the empty fields from each
- *       record in the same transaction
+ *     - when value === true, strips the empty fields from each *       record in the same transaction
  *     - when value === false, only clears the flag; the record
  *       stays stripped, and the next save re-populates it through
  *       the normal normaliseCharacterData path
@@ -83,6 +82,21 @@
  *   The strip helper lives in character-strip.js. It is resolved
  *   lazily so a missing module degrades to "no strip" rather than
  *   blocking the save.
+ *
+ * CAREER STATUS TIMELINE (this revision):
+ *   applyCareerStatusTimeline(charId, stages) replaces a
+ *   character's entire careerStatus array in a single pipeline
+ *   transaction. It exists for the CareerStatusWizard to commit
+ *   its generated timeline.
+ *
+ *   The method is a deliberate footgun: it does NOT merge. It
+ *   REPLACES. That is the wizard's contract, and it is what
+ *   makes the wizard preview meaningful. Callers that want to
+ *   add a stage without disturbing the rest should use the
+ *   normal save path with a form edit.
+ *
+ *   No UI. No preview. No notifications beyond what the pipeline
+ *   already sends. The wizard is responsible for the preview.
  *
  * DELETE CASCADE SEMANTICS:
  *   Unchanged from the previous revision.
@@ -1532,6 +1546,204 @@
     }
 
     // ============================================================
+    // APPLY CAREER STATUS TIMELINE
+    // ============================================================
+    //
+    // Wholesale replacement of a character's careerStatus array.
+    // Used by the CareerStatusWizard to commit its generated
+    // timeline in one transaction.
+    //
+    // The method REPLACES. It does not merge. Every stage in the
+    // character's current careerStatus that is not in `stages` is
+    // removed.
+    //
+    // STAGE SHAPE:
+    //   {
+    //     status:    'trainee' | 'rookie' | 'junior' | 'senior' | 'support' | ...,
+    //     startYear: number | integer-string,
+    //     endYear:   number | integer-string | '' (open),
+    //     title:     string (optional)
+    //   }
+    //
+    // VALIDATION:
+    //   - `stages` must be an array.
+    //   - Each stage must be an object with a non-empty `status`.
+    //   - `startYear` must parse to an integer >= 1.
+    //   - `endYear` must be either blank, or parse to an integer
+    //     >= startYear.
+    //
+    //   Invalid rows reject the whole mutation. Partial writes do
+    //   not happen.
+    //
+    // WHAT THIS DOES NOT DO:
+    //   - It does not touch the character record's OTHER fields.
+    //     Only careerStatus is written.
+    //   - It does not run the death cascade. careerStatus is not
+    //     a team stint, and endStintsForCharacter does not read
+    //     it.
+    //   - It does not re-derive the deceased cache. That is a
+    //     consequence of deathYear, which this method does not
+    //     change.
+    //
+    // @param {string} charId
+    // @param {Array}  stages
+    // @returns {Promise<{success, data?, message?}>}
+
+    function applyCareerStatusTimeline(charId, stages) {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        if (!charId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
+        }
+
+        if (!Array.isArray(stages)) {
+            return Promise.resolve({
+                success: false,
+                message: 'Stages must be an array.'
+            });
+        }
+
+        var targetChar = String(charId);
+
+        // ---- Pre-validate the shape and each stage's payload. ----
+        var cleanStages = [];
+        for (var i = 0; i < stages.length; i++) {
+            var row = stages[i];
+            var rowLabel = 'Stage ' + (i + 1);
+
+            if (!row || typeof row !== 'object' || Array.isArray(row)) {
+                return Promise.resolve({
+                    success: false,
+                    message: rowLabel + ': must be an object.'
+                });
+            }
+
+            var status = row.status !== undefined && row.status !== null
+                ? String(row.status).trim().toLowerCase()
+                : '';
+            if (status === '') {
+                return Promise.resolve({
+                    success: false,
+                    message: rowLabel + ': status is required.'
+                });
+            }
+
+            var startNum = parseInt(String(row.startYear || '').trim(), 10);
+            if (isNaN(startNum) || startNum < 1) {
+                return Promise.resolve({
+                    success: false,
+                    message: rowLabel + ': startYear must be a positive ' +
+                        'integer.'
+                });
+            }
+
+            var endRaw = row.endYear;
+            var endStr = (endRaw === undefined || endRaw === null)
+                ? ''
+                : String(endRaw).trim();
+            var endNum = null;
+            if (endStr !== '') {
+                endNum = parseInt(endStr, 10);
+                if (isNaN(endNum) || endNum < 1) {
+                    return Promise.resolve({
+                        success: false,
+                        message: rowLabel + ': endYear must be a positive ' +
+                            'integer, or blank for an open-ended stage.'
+                    });
+                }
+                if (endNum < startNum) {
+                    return Promise.resolve({
+                        success: false,
+                        message: rowLabel + ': endYear cannot be before ' +
+                            'startYear.'
+                    });
+                }
+            }
+
+            cleanStages.push({
+                status: status,
+                startYear: String(startNum),
+                endYear: endNum === null ? '' : String(endNum),
+                title: row.title !== undefined && row.title !== null
+                    ? String(row.title).trim()
+                    : ''
+            });
+        }
+
+        // ---- Resolve the character for the log message. ----
+        var char = CharacterQueries.getCharacterById(targetChar);
+        if (!char) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
+        }
+        var name = CharacterQueries.getDisplayName(char);
+
+        // ---- Commit. ----
+        return MutationPipeline.performMutation({
+            validate: function() {
+                var current = CharacterQueries.getCharacterById(targetChar);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is malformed.');
+                }
+
+                var target = null;
+                for (var i = 0; i < data.characters.length; i++) {
+                    var c = data.characters[i];
+                    if (c && String(c.id) === targetChar) {
+                        target = c;
+                        break;
+                    }
+                }
+                if (!target) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                // Replace wholesale. Preserve nothing from the
+                // existing array; the caller owns the final shape.
+                target.careerStatus = cleanStages.slice();
+                target.updatedAt = new Date().toISOString();
+
+                invalidateCharacterIndex();
+
+                return {
+                    characterId: targetChar,
+                    stageCount: cleanStages.length
+                };
+            },
+            logMessage: function(result) {
+                return 'Replaced career status for ' + name +
+                    ' (' + result.stageCount + ' stage' +
+                    (result.stageCount === 1 ? '' : 's') + ')';
+            },
+            successMessage: function(result) {
+                return 'Career status replaced: ' +
+                    result.stageCount + ' stage' +
+                    (result.stageCount === 1 ? '' : 's') + '.';
+            },
+            failureMessage: 'Failed to replace career status.'
+        });
+    }
+
+    // ============================================================
     // DELETE CHARACTER
     // ============================================================
 
@@ -1732,6 +1944,9 @@
 
         // Filler flag.
         setFillerFlag: setFillerFlag,
+
+        // Career status wizard commit path.
+        applyCareerStatusTimeline: applyCareerStatusTimeline,
 
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData
