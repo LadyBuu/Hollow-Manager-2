@@ -15,49 +15,25 @@
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
  *
- * FILLER FLAG (this revision):
+ * FILLER FLAG:
  *   The Name tab carries a checkbox, #char-is-filler, below the
  *   Character ID field. It is collected by collect() as
  *   dto.isFiller and drives the strip on save (see
- *   CharacterCRUD.save). The Academy module's character form has
- *   its own copy of the same checkbox, bound to the same field.
+ *   CharacterCRUD.save).
  *
- * CAREER WIZARD BUTTON (this revision):
+ * CAREER WIZARD BUTTON:
  *   The Professional tab's Career Status History section carries
- *   a [⌂ Career Wizard] button next to [+ Add Status Entry].
- *   Clicking it opens the CareerStatusWizard modal, which
- *   generates a careerStatus timeline from a start year and a
- *   route, and commits it via
- *   CharacterCRUD.applyCareerStatusTimeline.
+ *   a [⌂ Career Wizard] button (#career-wizard-btn) that opens
+ *   the CareerStatusWizard modal.
  *
- *   The button is a plain HTML element inside the form content.
- *   CharacterEvents delegates the click; this module does not
- *   bind listeners. See character-events.js
- *   bindCareerStatusWizard().
+ * CAREER TRANSITION BUTTON (this revision):
+ *   The same section carries a [⏹ Career Transition] button
+ *   (#career-transition-btn) that opens an inline modal for
+ *   marking the character Retired / Support / Instructor at a
+ *   chosen year, with the professional-team cascade.
  *
- * CLASS OPTIONS (v30):
- *   Unchanged.
- *
- * PER-FIELD RANDOM:
- *   Unchanged.
- *
- * TAB STATE:
- *   Unchanged.
- *
- * FORM TAB BUTTONS (BUG-E12):
- *   Unchanged.
- *
- * FORM ACTIONS ROW:
- *   Unchanged.
- *
- * CHARACTER ID FIELD:
- *   Unchanged.
- *
- * EXPORT BUTTON:
- *   Unchanged.
- *
- * EDIT ID RESOLUTION:
- *   Unchanged.
+ *   Both buttons live inside #character-form-content and are
+ *   bound by delegation in character-events.js.
  */
 
 (function() {
@@ -207,7 +183,8 @@
             { value: 'junior', label: 'Junior' },
             { value: 'senior', label: 'Senior' },
             { value: 'instructor', label: 'Instructor' },
-            { value: 'support', label: 'Support' }
+            { value: 'support', label: 'Support' },
+            { value: 'retired', label: 'Retired' }
         ];
     }
 
@@ -703,7 +680,6 @@
             : 'Assigned on save';
         var charIdDisabled = c.id ? '' : 'disabled';
 
-        // Filler flag. Default unchecked.
         var isFiller = c.isFiller === true;
         var isFillerChecked = isFiller ? ' checked' : '';
 
@@ -1035,9 +1011,11 @@
     // PROFESSIONAL TAB
     // ============================================================
     //
-    // This revision adds the Career Wizard button next to
-    // + Add Status Entry. The button opens the CareerStatusWizard
-    // modal via a delegated click handler in character-events.js.
+    // This revision adds the Career Transition button next to
+    // + Add Status Entry and Career Wizard. The button opens an
+    // inline modal (built by character-events.js) for marking the
+    // character Retired / Support / Instructor at a chosen year,
+    // with the professional-team cascade.
 
     function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
@@ -1057,6 +1035,7 @@
                     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center;">
                         <button type="button" id="add-career-entry-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">+ Add Status Entry</button>
                         <button type="button" id="career-wizard-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;" title="Auto-fill career status from a start year and a route">\u2302 Career Wizard</button>
+                        <button type="button" id="career-transition-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;" title="Mark the character Retired, Support, or Instructor and end their open professional stints">\u23f9 Career Transition</button>
                     </div>
                 </div>
 
@@ -1258,8 +1237,6 @@
         FormUtils.setField('char-nickname', char.nickname);
         FormUtils.setField('char-alias', char.alias);
 
-        // Filler flag. Boolean. FormUtils.setField handles
-        // checkboxes when given a boolean.
         FormUtils.setField('char-is-filler', char.isFiller === true);
 
         var prevNamesContainer = document.getElementById('previous-names-container');
