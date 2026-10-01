@@ -1,86 +1,30 @@
 /**
  * modules/characters/index.js - Characters Module Entry Point
- * Single entry point for all character functionality
+ * Single entry point for all character functionality.
+ *
  * Path: js/modules/characters/index.js
  *
- * This module is responsible for:
- *   - Registering with TabManager
- *   - Rendering the character container
- *   - Initializing all character sub-modules
- *   - Managing character lifecycle
- *   - Coordinating character state
- *   - Ensuring CharacterAggregator is available
- *   - Mounting the relationship modal shell (used by character-views / character-events)
+ * HEADER CONTROLS (this revision):
+ *   The character page header carries four labelled controls:
  *
- * LIFECYCLE:
- *   TabManager.register('characters') -> mountCharacters() ->
- *   CharacterList.render() -> CharacterForm.render() -> CharacterEvents.init()
+ *     #import-characters-csv-btn    Import   (opens CSV picker)
+ *     #export-characters-btn        Export   (opens export picker)
+ *     #manage-fillers-btn           Fillers  (opens filler manager)
+ *     #add-character-btn            Add
  *
- * IMPORTANT:
- *   - This module is the only external entry point for characters
- *   - All character logic lives in the sub-modules
- *   - This module does NOT implement character logic directly
- *   - It delegates to sub-modules for all operations
- *   - mountCharacters() is the ONLY function that constructs the full HTML
- *   - TabManager is the single source of truth for lifecycle
- *   - CharacterAggregator is verified at initialization
- *   - The relationship modal shell (#character-relationship-modal) is mounted here ONCE
- *   - The graph modal is created on demand by CharacterEvents
+ *   The previous three export icons (CSV ↓, Template ▤, Roster ☰)
+ *   collapsed into a single Export button that opens
+ *   CharacterExportPicker. The picker offers Full CSV, Roster
+ *   (text), and Blank template.
  *
- * HEADER CONTROLS:
- *   The character page header carries, in order:
- *
- *     #export-characters-csv-btn        CSV export
- *     #import-characters-csv-btn        CSV import (opens picker)
- *     #template-characters-csv-btn      CSV template
- *     #manage-fillers-btn               Filler manager
- *     #export-character-roster-btn      Roster text export
- *     #characters-csv-file-input        hidden file input
- *     #toggle-char-list                 mobile list toggle
- *     #add-character-btn                create a new character
- *
- *   The report-export button (#export-character-report-btn) is
- *   not in this header. It lives in the character form's actions
- *   row.
+ *   The header uses text labels rather than glyphs. The icons were
+ *   not self-describing and clipped on narrow sidebars.
  *
  * FILTERS:
- *   The sidebar carries three hide-checkboxes:
+ *   Unchanged.
  *
- *     #hide-deceased      Hide Deceased     (default checked)
- *     #hide-eliminated    Hide Eliminated   (default checked)
- *     #hide-filler        Hide Filler       (default checked,
- *                                              persisted)
- *
- *   The filler checkbox's state is persisted to sessionStorage by
- *   CharacterList. On mount, mountCharacters() syncs the checkbox
- *   with the persisted value BEFORE the first render, so the user
- *   does not see a flash of the wrong state.
- *
- * FILLER MANAGER:
- *   The Manage Fillers button opens the FillerManagerModal, a
- *   maintenance modal that lists every character and lets the
- *   user flag some as filler. The flag drives the strip on save;
- *   see character-strip.js and character-crud.js.
- *
- * ROSTER EXPORT:
- *   The Export Character Roster button produces a tab-separated
- *   plain-text file of every character's Name, Gender, Birth Year,
- *   and Eliminated marker. The export is not filtered by the
- *   character-list filters; it always includes the full store.
- *   See character-roster-export.js.
- *
- * DEPENDENCIES:
- *   - window.TabManager (from tab-manager.js) - MANDATORY
- *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
- *   - window.CharacterList (from character-list.js) - MANDATORY
- *   - window.CharacterForm (from character-form.js) - MANDATORY
- *   - window.CharacterEvents (from character-events.js) - MANDATORY
- *   - window.CharacterClassView (from character-class-view.js) - MANDATORY
- *   - window.CharacterViews (from character-views.js) - MANDATORY (for Social tab)
- *   - window.UI_CONSTANTS (from ui-constants.js) - MANDATORY (for MOBILE_BREAKPOINT)
- *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
- *   - window.FillerManagerModal (from filler-manager-modal.js) - LAZY
- *   - window.CharacterRosterExport (from character-roster-export.js) - LAZY
+ * LIFECYCLE:
+ *   Unchanged. TabManager.register('characters') -> mountCharacters.
  */
 
 (function() {
@@ -134,32 +78,27 @@
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
         }
-
         if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
         if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
             missing.push('CharacterAggregator.getCharacterListViewModel');
         }
-
         if (!CharacterList || typeof CharacterList.render !== 'function') {
             missing.push('CharacterList.render');
         }
-
         if (!CharacterForm || typeof CharacterForm.render !== 'function') {
             missing.push('CharacterForm.render');
         }
         if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
             missing.push('CharacterForm.collect');
         }
-
         if (!CharacterEvents || typeof CharacterEvents.init !== 'function') {
             missing.push('CharacterEvents.init');
         }
         if (!CharacterEvents || typeof CharacterEvents.destroy !== 'function') {
             missing.push('CharacterEvents.destroy');
         }
-
         if (!CharacterClassView || typeof CharacterClassView.populateClassFilter !== 'function') {
             missing.push('CharacterClassView.populateClassFilter');
         }
@@ -197,7 +136,6 @@
         if (!container) {
             container = document.getElementById('tab-characters');
         }
-
         if (!container) {
             return;
         }
@@ -213,12 +151,7 @@
 
         container.innerHTML = getCharactersHTML();
 
-        // ---- Sync the filler checkbox with its persisted state ----
-        //
-        // The HTML default is `checked`, but the user may have
-        // unchecked it in a previous session. CharacterList stores
-        // the persisted value; we sync the checkbox to it before
-        // the first render so the visible state matches reality.
+        // Sync the filler checkbox with its persisted state.
         if (CharacterList &&
             typeof CharacterList.getHideFiller === 'function') {
             try {
@@ -227,8 +160,7 @@
                     hideFillerCb.checked = CharacterList.getHideFiller();
                 }
             } catch (e) {
-                // Non-fatal. The HTML default (checked) is safe;
-                // the user's next interaction corrects it.
+                // Non-fatal.
             }
         }
 
@@ -310,30 +242,22 @@
                     <div class="characters-header">
                         <h2>Characters</h2>
                         <div class="characters-header-actions">
-                            <button id="export-characters-csv-btn"
-                                    class="small secondary"
-                                    title="Export Characters (CSV)"
-                                    aria-label="Export Characters CSV">↓</button>
                             <button id="import-characters-csv-btn"
                                     class="small secondary"
-                                    title="Import Characters (CSV)"
-                                    aria-label="Import Characters CSV">↑</button>
-                            <button id="template-characters-csv-btn"
-                                    class="small secondary"
-                                    title="Character CSV Template"
-                                    aria-label="Character CSV Template">▤</button>
-                            <button id="manage-fillers-btn"
-                                    class="small secondary"
-                                    title="Manage Filler Characters"
-                                    aria-label="Manage Filler Characters">✦</button>
-                            <button id="export-character-roster-btn"
-                                    class="small secondary"
-                                    title="Export Character Roster (Text)"
-                                    aria-label="Export Character Roster Text">☰</button>
+                                    title="Import Characters from CSV"
+                                    aria-label="Import Characters CSV">Import</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
                                    style="display:none;">
+                            <button id="export-characters-btn"
+                                    class="small secondary"
+                                    title="Export Characters"
+                                    aria-label="Export Characters">Export</button>
+                            <button id="manage-fillers-btn"
+                                    class="small secondary"
+                                    title="Manage Filler Characters"
+                                    aria-label="Manage Filler Characters">Fillers</button>
                             <button id="toggle-char-list"
                                     class="secondary small"
                                     aria-label="Toggle character list">☰</button>
