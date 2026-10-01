@@ -9,103 +9,49 @@
  *   - Static elements (outside the form content) use direct binding.
  *   - Combat tab bindings (roll buttons, class overrides, stat/magic
  *     live updates, weapons, moves) are all delegated.
- *   - Social tab bindings (add/edit/delete relationship, group toggles,
- *     graph view, character search filter) are all delegated.
- *   - Academic tab uses a class DROPDOWN (not a free-text input) as of
- *     the Academic tab rework. The Add button reads the selected class
- *     from #academic-class-select and calls AcademyClasses.addToClass.
- *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
- *     so the character form's Social tab works even if the top-level
- *     Social tab was never opened.
- *   - Modals are HIDDEN (not destroyed) so they can be reused:
- *     use Modal.hideModal() not Modal.closeModal().
+ *   - Social tab bindings (add/edit/delete relationship, group
+ *     toggles, graph view, character search filter) are all
+ *     delegated.
+ *   - Academic tab uses a class DROPDOWN. The Add button reads
+ *     #academic-class-select and calls AcademyClasses.addToClass.
+ *   - SocialCore is initialized on-demand via
+ *     ensureSocialCoreInitialized().
+ *   - Modals are HIDDEN (not destroyed) so they can be reused.
+ *
+ * HEADER CONTROLS (this revision):
+ *   The character page header carries four controls:
+ *
+ *     #import-characters-csv-btn    opens the CSV file picker
+ *     #export-characters-btn        opens the export picker
+ *     #manage-fillers-btn           opens the filler manager
+ *     #add-character-btn            creates a new character
+ *
+ *   The previous three export buttons (CSV, template, roster) are
+ *   gone. Their behaviour is now reachable through the export
+ *   picker (CharacterExportPicker). See
+ *   character-export-picker.js.
  *
  * DELETE BINDING:
- *   The Delete button lives inside #character-form-content (rendered
- *   by character-form.js's getCharacterFormHTML) so it appears in
- *   the bottom form-actions row next to Cancel and Create/Update.
- *   Bound via DELEGATION:
- *
- *     bindDeleteButton() -> addSafeDelegatedListener(
- *         '#delete-char-btn', 'click', ...)
- *
- *   A direct binding would be lost after the first re-render.
- *
- * FILLER MANAGER BUTTON:
- *   The character page header carries a Manage Fillers button
- *   (#manage-fillers-btn) rendered by characters/index.js. Clicking
- *   it opens the FillerManagerModal.
- *
- *   The button is bound directly (not delegated) because it lives
- *   in the static header, outside the re-rendered form content.
- *
- * CHARACTER ROSTER EXPORT BUTTON:
- *   The character page header carries a roster-export button
- *   (#export-character-roster-btn) rendered by characters/index.js.
- *   Clicking it produces a tab-separated plain-text roster
- *   (Name / Gender / Birth Year / Eliminated) of every character
- *   in the store, downloaded as a .txt file. The export is produced
- *   by window.CharacterRosterExport.
- *
- *   The button lives in the static header, so it is bound directly
- *   (not delegated).
- *
- * FILLER FILTER CHECKBOX:
- *   The character list sidebar carries a "Hide filler" checkbox
- *   (#hide-filler). Toggling it persists the state through
- *   CharacterList.setHideFiller and re-renders the list.
- *
- *   The Clear button (#clear-char-filter) resets the checkbox
- *   back to its default (checked), which is persisted too.
+ *   The Delete button lives inside #character-form-content.
+ *   Bound via DELEGATION.
  *
  * CHARACTER REPORT EXPORT:
  *   The character form's actions row carries a report-export
- *   button (#export-character-report-btn). It exports a plain-text
- *   report of the currently-selected character via
- *   CharacterExport.exportCharacterText.
- *
- *   The button is only meaningful when a character is selected. Its
- *   enabled state is kept in sync with the current edit id by
- *   refreshCharacterReportButton(), called from every path that
- *   changes the edit id:
- *
- *     - init()                           (initial state)
- *     - handleCharacterSelect()          (user picked a character)
- *     - handleSave() on success          (created or updated)
- *     - handleDelete() on success        (nothing selected)
- *     - installCharacterEditListener()   (characterEdit CustomEvent)
+ *   button (#export-character-report-btn). Its enabled state is
+ *   kept in sync by refreshCharacterReportButton().
  *
  * COLLAPSIBLE CAREER STATUS FILTER:
  *   The Career Status checkbox group in the character list sidebar
- *   is collapsible. The header (#career-status-filter-toggle) is a
- *   button. Clicking it toggles the collapsed state, which:
- *
- *     - flips data-collapsed on #career-status-filter-group
- *     - flips the caret glyph inside .status-filter-caret
- *     - shows/hides #char-status-filter
- *
- *   The collapsed state is stored at module scope in
- *   _careerStatusCollapsed so it survives re-renders of the list
- *   panel. The initial value is written into the markup by
- *   characters/index.js on mount.
- *
- * PER-FIELD RANDOM:
- *   The Physical and Personality tabs render a small ⟳ button
- *   (.field-random-btn) next to each pool-backed field. Clicking
- *   one rerolls only that field.
+ *   is collapsible. See the previous revisions of this file for
+ *   the full contract.
  *
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded against re-entrant invocation by a
- *   module-level _saveInFlight flag. A single user click cannot
- *   produce two concurrent saves.
+ *   module-level _saveInFlight flag.
  *
  *   On success, the form is re-rendered ONLY when the save CREATED
  *   a new character. For an EXISTING character, the form already
- *   holds the values the user just submitted, and re-rendering it
- *   from window.data creates an opportunity for a queued mutation
- *   to overwrite the freshly-saved values with a stale snapshot.
- *   This is the fix for the "rolled stats revert to previously
- *   saved values" bug.
+ *   holds the values the user just submitted.
  *
  *   refreshUI() is render-only. It must not enqueue mutations.
  */
@@ -157,10 +103,8 @@
 
     var _characterEditListenerInstalled = false;
 
-    // Save re-entrancy guard.
     var _saveInFlight = false;
 
-    // Career Status filter collapse state.
     var _careerStatusCollapsed = null;
 
     // ============================================================
@@ -179,8 +123,8 @@
         return window.FillerManagerModal || null;
     }
 
-    function getCharacterRosterExport() {
-        return window.CharacterRosterExport || null;
+    function getCharacterExportPicker() {
+        return window.CharacterExportPicker || null;
     }
 
     // ============================================================
@@ -452,61 +396,42 @@
     }
 
     // ============================================================
-    // CHARACTER ROSTER EXPORT BUTTON
+    // CHARACTER EXPORT PICKER
     // ============================================================
     //
-    // The character page header carries a roster-export button
-    // (#export-character-roster-btn) rendered by characters/index.js.
-    // Clicking it produces a tab-separated plain-text roster
-    // (Name / Gender / Birth Year / Eliminated) of every character
-    // in the store, downloaded as a .txt file.
+    // The header carries ONE Export button (#export-characters-btn)
+    // that opens the export picker. The picker owns the format
+    // choice (Full CSV / Roster text / Blank template) and the
+    // download.
     //
     // The button lives in the static header, so it is bound
     // directly (not delegated).
 
-    function bindCharacterRosterExport(container) {
-        var btn = document.getElementById('export-character-roster-btn');
+    function bindCharacterExportPicker(container) {
+        var btn = document.getElementById('export-characters-btn');
         if (!btn) { return; }
 
         addSafeEventListener(btn, 'click', function(e) {
             e.preventDefault();
 
-            var Exporter = getCharacterRosterExport();
-            if (!Exporter || typeof Exporter.exportText !== 'function') {
-                notify('Character roster export is not available.', 'error');
+            var Picker = getCharacterExportPicker();
+            if (!Picker || typeof Picker.openModal !== 'function') {
+                notify('Character export is not available.', 'error');
                 return;
             }
 
-            var result;
             try {
-                result = Exporter.exportText();
+                Picker.openModal();
             } catch (err) {
                 console.warn(
-                    '[CharacterEvents] CharacterRosterExport.exportText ' +
-                    'threw:', err
+                    '[CharacterEvents] ' +
+                    'CharacterExportPicker.openModal threw:', err
                 );
                 notify(
-                    'Character roster export failed: ' + err.message,
+                    'Character export failed: ' + err.message,
                     'error'
                 );
-                return;
             }
-
-            if (result && result.exported) {
-                notify(
-                    'Exported ' + result.count + ' character' +
-                    (result.count === 1 ? '' : 's') + ': ' +
-                    result.filename,
-                    'success'
-                );
-                return;
-            }
-
-            notify(
-                'Character roster export failed: ' +
-                    ((result && result.error) || 'Unknown error'),
-                'error'
-            );
         });
     }
 
@@ -677,7 +602,7 @@
         bindClickOutside(container);
         bindCharacterList(container);
         bindManageFillers(container);
-        bindCharacterRosterExport(container);
+        bindCharacterExportPicker(container);
 
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
@@ -825,12 +750,6 @@
             });
         }
 
-        // ---- Hide filler ----
-        //
-        // Reads its own persisted default on mount (see
-        // characters/index.js). When the checkbox is toggled, the
-        // state is persisted via CharacterList.setHideFiller and
-        // the list re-renders.
         var hideFiller = document.getElementById('hide-filler');
         if (hideFiller) {
             addSafeEventListener(hideFiller, 'change', function() {
