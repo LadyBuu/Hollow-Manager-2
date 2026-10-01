@@ -247,6 +247,14 @@
     <script src="js/modules/characters/character-class-view.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-views.js"></script>
+
+    <!-- Career wizard: absorbs no state of its own beyond the
+         modal. Reads CharacterQueries and CharacterCRUD lazily.
+         Must load after character-crud.js (for
+         applyCareerStatusTimeline) and before character-events.js
+         (which binds the #career-wizard-btn click handler). -->
+    <script src="js/modules/characters/career-status-wizard.js"></script>
+
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
