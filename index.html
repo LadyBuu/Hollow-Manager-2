@@ -131,8 +131,13 @@
     <script src="js/core/mutation-pipeline.js"></script>
 
     <!-- ============================================================
-         IMPORT / EXPORT
-         Boundary layer. Loads before any domain module.
+         IMPORT / EXPORT (FOUNDATION)
+         ============================================================
+         Only modules that depend exclusively on the utilities
+         and shared queries above. Domain-dependent import/export
+         modules (schedule-export, class-roster-export,
+         graduates-export-picker) are loaded much later, after
+         the Academy domain block.
          ============================================================ -->
 
     <!-- Core -->
@@ -158,13 +163,9 @@
          Installs: TeamExport, TeamExportPicker. -->
     <script src="js/import-export/team-export.js"></script>
 
-    <!-- Standalone exporters. -->
-    <script src="js/import-export/schedule-export.js"></script>
-    <script src="js/import-export/class-roster-export.js"></script>
-
-    <!-- Picker modals. -->
+    <!-- Character export picker. Reads only the character CSV /
+         roster / report globals, all installed above. -->
     <script src="js/import-export/character-export-picker.js"></script>
-    <script src="js/import-export/graduates-export-picker.js"></script>
 
     <!-- ============================================================
          Core infrastructure (remaining)
@@ -347,6 +348,34 @@
     <script src="js/modules/missions/mission-aggregator.js"></script>
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
+
+    <!-- ============================================================
+         IMPORT / EXPORT (DOMAIN-DEPENDENT)
+         ============================================================
+         These modules read from the Academy domain at load time,
+         so they must load after the Academy block above. They are
+         grouped here, immediately before ui.js, because they are
+         the last import/export consumers to become resolvable.
+
+         Ordering within this block matters:
+           1. class-roster-export.js
+              Installs the GraduatesExport compatibility alias. Its
+              own dependencies (CharacterQueries, AcademyClasses,
+              AcademyAggregator, CSV, ExportUtils) are all loaded by
+              this point.
+           2. schedule-export.js
+              Reads AcademyClasses, AcademyTeachingSessions,
+              AcademyTeachingGroups, AcademyInstructorCommitments,
+              AcademyDisciplines, CharacterQueries, CalendarConstants,
+              CalendarValidation, ExportUtils. All loaded.
+           3. graduates-export-picker.js
+              Needs ClassRosterExport (installed by step 1) and
+              AcademyClasses.getClasses (loaded above).
+         ============================================================ -->
+
+    <script src="js/import-export/class-roster-export.js"></script>
+    <script src="js/import-export/schedule-export.js"></script>
+    <script src="js/import-export/graduates-export-picker.js"></script>
 
     <!-- ============================================================
          Import/export UI — binds header buttons.
