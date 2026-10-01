@@ -29,111 +29,69 @@
  *     bindDeleteButton() -> addSafeDelegatedListener(
  *         '#delete-char-btn', 'click', ...)
  *
- *   A direct binding would be lost after the first re-render.
- *
  * FILLER MANAGER BUTTON:
  *   The character page header carries a Manage Fillers button
  *   (#manage-fillers-btn) rendered by characters/index.js. Clicking
  *   it opens the FillerManagerModal.
  *
- *   The button is bound directly (not delegated) because it lives
- *   in the static header, outside the re-rendered form content.
- *
  * CHARACTER ROSTER EXPORT BUTTON:
  *   The character page header carries a roster-export button
  *   (#export-character-roster-btn) rendered by characters/index.js.
- *   Clicking it produces a tab-separated plain-text roster
- *   (Name / Gender / Birth Year / Eliminated) of every character
- *   in the store, downloaded as a .txt file. The export is produced
- *   by window.CharacterRosterExport.
  *
- *   The button lives in the static header, so it is bound directly
- *   (not delegated).
- *
- * CAREER WIZARD BUTTON (this revision):
+ * CAREER WIZARD BUTTON:
  *   The Professional tab's Career Status History section carries a
- *   [⌂ Career Wizard] button (#career-wizard-btn) rendered by
- *   character-form.js's getProfessionalTabHTML. Clicking it opens
- *   the CareerStatusWizard modal for the current edit id.
+ *   [⌂ Career Wizard] button (#career-wizard-btn) that opens the
+ *   CareerStatusWizard modal.
  *
- *   The button lives inside #character-form-content, which is
- *   re-rendered on every CharacterForm.render(). It MUST be bound
- *   via delegation, or the listener is lost after the first
- *   re-render.
+ * CAREER TRANSITION BUTTON (this revision):
+ *   The same section carries a [⏹ Career Transition] button
+ *   (#career-transition-btn). Clicking it opens an inline modal
+ *   with:
+ *     - A status radio group (Retired / Support / Instructor)
+ *     - A year input (default: current application year)
+ *     - A live preview showing how many professional stints will
+ *       be ended
+ *     - Cancel and Apply buttons
  *
- *   The wizard handles its own commit via
- *   CharacterCRUD.applyCareerStatusTimeline. This module's only job
- *   is to open the modal. On close, the wizard dispatches nothing;
- *   this module does not need to refresh anything, because the
- *   wizard's Apply re-renders the form via a normal callback path
- *   inside the wizard's closeModal -> form refresh.
+ *   Apply calls CharacterCRUD.setCareerTransition(charId, status, year),
+ *   which:
+ *     - Appends a terminal careerStatus entry
+ *     - Ends every open professional stint for the character at
+ *       the chosen year
+ *     - Commits in one pipeline transaction
  *
- *   Wait — the wizard does NOT re-render the form itself. It only
- *   closes. That means after Apply, the form's careerStatus rows
- *   are stale until something re-renders the form. To avoid a
- *   silent-stale-form bug, this module re-renders the form after
- *   the wizard closes. The wizard does not expose a "did apply"
- *   flag, so we re-render unconditionally on close. The re-render
- *   is cheap and the correctness win is worth it.
+ *   The modal reuses the .csw-* classes declared in
+ *   css/characters.css for the CareerStatusWizard. No new styles.
+ *
+ *   The modal element is created once per open, appended to
+ *   document.body, and destroyed on close. There is no
+ *   persistent shell.
  *
  * FILLER FILTER CHECKBOX:
  *   The character list sidebar carries a "Hide filler" checkbox
  *   (#hide-filler). Toggling it persists the state through
  *   CharacterList.setHideFiller and re-renders the list.
  *
- *   The Clear button (#clear-char-filter) resets the checkbox
- *   back to its default (checked), which is persisted too.
- *
  * CHARACTER REPORT EXPORT:
  *   The character form's actions row carries a report-export
- *   button (#export-character-report-btn). It exports a plain-text
- *   report of the currently-selected character via
- *   CharacterExport.exportCharacterText.
- *
- *   The button is only meaningful when a character is selected. Its
- *   enabled state is kept in sync with the current edit id by
- *   refreshCharacterReportButton(), called from every path that
- *   changes the edit id:
- *
- *     - init()                           (initial state)
- *     - handleCharacterSelect()          (user picked a character)
- *     - handleSave() on success          (created or updated)
- *     - handleDelete() on success        (nothing selected)
- *     - installCharacterEditListener()   (characterEdit CustomEvent)
+ *   button (#export-character-report-btn).
  *
  * COLLAPSIBLE CAREER STATUS FILTER:
  *   The Career Status checkbox group in the character list sidebar
  *   is collapsible. The header (#career-status-filter-toggle) is a
- *   button. Clicking it toggles the collapsed state, which:
- *
- *     - flips data-collapsed on #career-status-filter-group
- *     - flips the caret glyph inside .status-filter-caret
- *     - shows/hides #char-status-filter
- *
- *   The collapsed state is stored at module scope in
- *   _careerStatusCollapsed so it survives re-renders of the list
- *   panel. The initial value is written into the markup by
- *   characters/index.js on mount.
+ *   button. Clicking it toggles the collapsed state.
  *
  * PER-FIELD RANDOM:
  *   The Physical and Personality tabs render a small ⟳ button
- *   (.field-random-btn) next to each pool-backed field. Clicking
- *   one rerolls only that field.
+ *   (.field-random-btn) next to each pool-backed field.
  *
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded against re-entrant invocation by a
- *   module-level _saveInFlight flag. A single user click cannot
- *   produce two concurrent saves.
+ *   module-level _saveInFlight flag.
  *
  *   On success, the form is re-rendered ONLY when the save CREATED
  *   a new character. For an EXISTING character, the form already
- *   holds the values the user just submitted, and re-rendering it
- *   from window.data creates an opportunity for a queued mutation
- *   to overwrite the freshly-saved values with a stale snapshot.
- *   This is the fix for the "rolled stats revert to previously
- *   saved values" bug.
- *
- *   refreshUI() is render-only. It must not enqueue mutations.
+ *   holds the values the user just submitted.
  */
 
 (function() {
@@ -183,11 +141,25 @@
 
     var _characterEditListenerInstalled = false;
 
-    // Save re-entrancy guard.
     var _saveInFlight = false;
 
-    // Career Status filter collapse state.
     var _careerStatusCollapsed = null;
+
+    // ---- Career-transition modal state ----
+    //
+    // The modal is created once per open. These references are
+    // cleared on close. There is at most one open at a time.
+
+    var _ctModal = null;
+    var _ctContentEl = null;
+    var _ctCharId = null;
+    var _ctState = {
+        status: 'retired',
+        year: 0
+    };
+    var _ctClickHandler = null;
+    var _ctChangeHandler = null;
+    var _ctInputHandler = null;
 
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
@@ -211,6 +183,10 @@
 
     function getCareerStatusWizard() {
         return window.CareerStatusWizard || null;
+    }
+
+    function getTeamQueries() {
+        return window.TeamQueries || null;
     }
 
     // ============================================================
@@ -452,24 +428,6 @@
     // ============================================================
     // CAREER WIZARD BUTTON
     // ============================================================
-    //
-    // The Professional tab's Career Status History section carries
-    // a [⌂ Career Wizard] button rendered by
-    // character-form.js's getProfessionalTabHTML.
-    //
-    // The button lives inside #character-form-content, which is
-    // re-rendered on every CharacterForm.render(). It MUST be
-    // bound via delegation.
-    //
-    // ON CLOSE:
-    //   After the wizard closes, the form's careerStatus rows are
-    //   stale (the wizard does not re-render the form). We
-    //   re-render the form unconditionally on close so the user
-    //   sees the wizard's output without an extra action.
-    //
-    //   The re-render is skipped if the wizard never opened (for
-    //   example, because no character is selected). The wizard's
-    //   openModal returns null in that case.
 
     function bindCareerStatusWizard() {
         addSafeDelegatedListener(
@@ -509,28 +467,7 @@
                     return;
                 }
 
-                if (!opened) {
-                    // openModal returned null: it refused to open
-                    // (typically because the character no longer
-                    // exists). Nothing to re-render.
-                    return;
-                }
-
-                // ---- Re-render on close. ----
-                //
-                // The wizard does not expose a close callback, so
-                // we install a one-shot observer on the modal's
-                // removal from the DOM. When the modal element is
-                // gone, we re-render the form.
-                //
-                // This is a pragmatic solution: the Modal API does
-                // not offer a "onClosed" hook, and the wizard does
-                // not expose one either. A MutationObserver on
-                // document.body watching for the modal's removal
-                // is the least intrusive option.
-                //
-                // The observer disconnects itself on the first
-                // removal, so it does not leak.
+                if (!opened) { return; }
 
                 var modalEl = opened;
                 var observer = null;
@@ -571,10 +508,6 @@
                         subtree: false
                     });
                 } catch (observerErr) {
-                    // MutationObserver is not universally available
-                    // in every environment (older browsers, some
-                    // test harnesses). If it is not, we fall back to
-                    // a simple interval poll that stops itself.
                     var poll = setInterval(function() {
                         if (!document.body.contains(modalEl)) {
                             clearInterval(poll);
@@ -597,6 +530,492 @@
                 }
             }
         );
+    }
+
+    // ============================================================
+    // CAREER TRANSITION BUTTON + INLINE MODAL
+    // ============================================================
+    //
+    // The Career Transition modal lets the user mark a character
+    // as Retired, Support, or Instructor at a chosen year. The
+    // underlying mutation (CharacterCRUD.setCareerTransition) ends
+    // every open professional stint for the character at that
+    // year, so the modal preview shows the count.
+    //
+    // The modal reuses the .csw-* CSS classes from the Career
+    // Wizard modal. No new stylesheet.
+    //
+    // LIFECYCLE:
+    //   - openCareerTransitionModal(charId) builds and shows the
+    //     modal, storing handlers on module-level refs.
+    //   - closeCareerTransitionModal() removes listeners, closes
+    //     the Modal, and nulls the refs.
+    //   - handleCareerTransitionApply() reads the form state,
+    //     calls setCareerTransition, then closes and re-renders
+    //     the character form.
+    //
+    // The form is re-rendered after every close (apply, cancel,
+    // backdrop, escape) so any change the mutation made is
+    // reflected. The re-render is cheap and safe.
+
+    var TRANSITION_STATUSES = [
+        { value: 'retired',    label: 'Retired',    hint: 'Left the roster. No staff role.' },
+        { value: 'support',    label: 'Support',    hint: 'Staff role. No longer competing.' },
+        { value: 'instructor', label: 'Instructor', hint: 'Teaching role. No longer competing.' }
+    ];
+
+    function getCurrentApplicationYear() {
+        if (window.data &&
+            typeof window.data.currentYear === 'number' &&
+            isFinite(window.data.currentYear) &&
+            window.data.currentYear > 0) {
+            return Math.floor(window.data.currentYear);
+        }
+        return new Date().getFullYear();
+    }
+
+    /**
+     * Count the character's open professional stints — the ones
+     * whose leavePeriod is blank and whose joinPeriod is at or
+     * before the given year.
+     *
+     * Returns { count: number, teamsTouched: number }.
+     *
+     * This is a display-only read. The actual cascade is run by
+     * TeamCore.endStintsForCharacter inside the mutation.
+     */
+    function countOpenProfessionalStints(charId, year) {
+        var result = { count: 0, teamsTouched: 0 };
+        var TeamQueries = getTeamQueries();
+        if (!TeamQueries ||
+            typeof TeamQueries.getTeams !== 'function' ||
+            typeof TeamQueries.getAllTeamMemberRecords !== 'function') {
+            return result;
+        }
+
+        var teams = [];
+        try {
+            teams = TeamQueries.getTeams('professional', null, false) || [];
+        } catch (e) {
+            return result;
+        }
+
+        var teamsTouched = Object.create(null);
+        var target = String(charId);
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum)) { return result; }
+
+        for (var t = 0; t < teams.length; t++) {
+            var team = teams[t];
+            if (!team || !team.id) { continue; }
+
+            var members = [];
+            try {
+                members = TeamQueries.getAllTeamMemberRecords(team) || [];
+            } catch (e) {
+                members = [];
+            }
+
+            for (var m = 0; m < members.length; m++) {
+                var member = members[m];
+                if (!member || String(member.characterId) !== target) {
+                    continue;
+                }
+                if (!Array.isArray(member.intervals)) { continue; }
+
+                for (var iv = 0; iv < member.intervals.length; iv++) {
+                    var interval = member.intervals[iv];
+                    if (!interval || typeof interval !== 'object') { continue; }
+
+                    var leave = interval.leavePeriod === undefined ||
+                                interval.leavePeriod === null
+                        ? ''
+                        : String(interval.leavePeriod).trim();
+                    if (leave !== '') { continue; }
+
+                    var join = interval.joinPeriod === undefined ||
+                               interval.joinPeriod === null
+                        ? ''
+                        : String(interval.joinPeriod).trim();
+                    if (join !== '') {
+                        var joinNum = parseInt(join, 10);
+                        if (!isNaN(joinNum) && joinNum > yearNum) {
+                            continue;
+                        }
+                    }
+
+                    result.count++;
+                    teamsTouched[String(team.id)] = true;
+                }
+            }
+        }
+
+        result.teamsTouched = Object.keys(teamsTouched).length;
+        return result;
+    }
+
+    function buildCareerTransitionHTML(charName) {
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Career Transition \u2014 ' +
+                    escapeHtmlSafe(charName) +
+                '</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-ct-action="close" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body career-wizard-body">';
+
+        html += '<p class="field-hint" ' +
+                    'style="font-size:0.75rem;color:var(--text-dim);' +
+                    'margin:0;line-height:1.45;">' +
+                    'Mark this character as having left the active roster. ' +
+                    'Their open professional-team stints will end at the ' +
+                    'chosen year.' +
+                '</p>';
+
+        // ---- Status ----
+        html += '<div class="csw-field">';
+        html += '<label>Status</label>';
+
+        for (var i = 0; i < TRANSITION_STATUSES.length; i++) {
+            var s = TRANSITION_STATUSES[i];
+            var checked = _ctState.status === s.value ? ' checked' : '';
+            html += '<label class="csw-radio-row">';
+            html += '<input type="radio" name="ct-status" ' +
+                        'value="' + escapeAttribute(s.value) + '"' +
+                        checked + '>';
+            html += '<span><strong>' + escapeHtml(s.label) + '</strong>' +
+                    ' \u2014 ' + escapeHtml(s.hint) + '</span>';
+            html += '</label>';
+        }
+
+        html += '</div>';
+
+        // ---- Year ----
+        html += '<div class="csw-field">';
+        html += '<label for="ct-year">Year</label>';
+        html += '<input type="number" id="ct-year" ' +
+                    'class="ct-year" min="1" ' +
+                    'value="' + escapeAttribute(String(_ctState.year)) + '">';
+        html += '</div>';
+
+        // ---- Preview ----
+        var counts = countOpenProfessionalStints(_ctCharId, _ctState.year);
+        html += '<div class="csw-preview">';
+        html += '<div class="csw-preview-header">Preview</div>';
+
+        if (counts.count === 0) {
+            html += '<p class="csw-note">' +
+                        'No open professional stints for this character at ' +
+                        'year ' + escapeHtml(String(_ctState.year)) + '. ' +
+                        'The career status will still be set.' +
+                    '</p>';
+        } else {
+            html += '<div class="csw-warning">';
+            html += '<span class="csw-warning-icon">\u26a0</span>';
+            html += '<span>This will end <strong>' + counts.count +
+                    '</strong> open professional stint' +
+                    (counts.count === 1 ? '' : 's') +
+                    ' across <strong>' + counts.teamsTouched +
+                    '</strong> team' +
+                    (counts.teamsTouched === 1 ? '' : 's') +
+                    ' at year ' + escapeHtml(String(_ctState.year)) +
+                    '.</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        html += '</div>';
+
+        // ---- Footer ----
+        html += '<div class="modal-footer csw-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-ct-action="close">Cancel</button>';
+        html += '<span class="csw-footer-spacer"></span>';
+        html += '<button type="button" class="primary" ' +
+                    'data-ct-action="apply">' +
+                    'Apply' +
+                '</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderCareerTransitionModal() {
+        if (!_ctContentEl) { return; }
+
+        var char = CharacterQueries.getCharacterById(_ctCharId);
+        var charName = char
+            ? CharacterQueries.getDisplayName(char)
+            : 'Unknown';
+
+        _ctContentEl.innerHTML = buildCareerTransitionHTML(charName);
+    }
+
+    function openCareerTransitionModal(charId) {
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return null;
+        }
+
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            notify('Modal module not available.', 'error');
+            return null;
+        }
+
+        closeCareerTransitionModal();
+
+        _ctCharId = String(charId);
+        _ctState.status = 'retired';
+        _ctState.year = getCurrentApplicationYear();
+
+        var shell = Modal.createModal('career-transition-modal');
+        if (!shell) {
+            notify('Failed to create modal.', 'error');
+            _ctCharId = null;
+            return null;
+        }
+        shell.id = 'career-transition-modal';
+
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content wide';
+        shell.appendChild(contentEl);
+
+        _ctModal = shell;
+        _ctContentEl = contentEl;
+
+        _ctClickHandler = handleCareerTransitionClick;
+        _ctChangeHandler = handleCareerTransitionChange;
+        _ctInputHandler = handleCareerTransitionInput;
+
+        contentEl.addEventListener('click', _ctClickHandler);
+        contentEl.addEventListener('change', _ctChangeHandler);
+        contentEl.addEventListener('input', _ctInputHandler);
+
+        renderCareerTransitionModal();
+
+        Modal.modalSetup(shell, function() {
+            closeCareerTransitionModal();
+        });
+        Modal.showModal(shell);
+
+        return shell;
+    }
+
+    function closeCareerTransitionModal() {
+        var modal = _ctModal;
+        var contentEl = _ctContentEl;
+
+        if (contentEl && _ctClickHandler) {
+            try {
+                contentEl.removeEventListener('click', _ctClickHandler);
+            } catch (e) { /* ignore */ }
+        }
+        if (contentEl && _ctChangeHandler) {
+            try {
+                contentEl.removeEventListener('change', _ctChangeHandler);
+            } catch (e) { /* ignore */ }
+        }
+        if (contentEl && _ctInputHandler) {
+            try {
+                contentEl.removeEventListener('input', _ctInputHandler);
+            } catch (e) { /* ignore */ }
+        }
+
+        var charIdAtClose = _ctCharId;
+
+        _ctModal = null;
+        _ctContentEl = null;
+        _ctCharId = null;
+        _ctClickHandler = null;
+        _ctChangeHandler = null;
+        _ctInputHandler = null;
+
+        if (modal) {
+            try {
+                Modal.closeModal(modal);
+            } catch (e) {
+                // Ignore.
+            }
+        }
+
+        // Re-render the form so any change made by the mutation
+        // shows up. Even on Cancel the re-render is safe; it just
+        // rebuilds the form from the current record.
+        if (charIdAtClose) {
+            var currentId = typeof window.getCurrentEditId === 'function'
+                ? window.getCurrentEditId()
+                : null;
+            if (currentId && String(currentId) === String(charIdAtClose)) {
+                try {
+                    CharacterForm.render(currentId);
+                } catch (renderErr) {
+                    console.warn(
+                        '[CharacterEvents] form re-render after ' +
+                        'transition close failed:', renderErr
+                    );
+                }
+            }
+        }
+    }
+
+    function handleCareerTransitionClick(e) {
+        var target = e.target;
+        if (!target || typeof target.closest !== 'function') { return; }
+
+        var btn = target.closest('[data-ct-action]');
+        if (!btn || !btn.dataset) { return; }
+
+        var action = btn.dataset.ctAction;
+
+        if (action === 'close') {
+            e.preventDefault();
+            closeCareerTransitionModal();
+            return;
+        }
+
+        if (action === 'apply') {
+            e.preventDefault();
+            handleCareerTransitionApply();
+            return;
+        }
+    }
+
+    function handleCareerTransitionChange(e) {
+        var target = e.target;
+        if (!target) { return; }
+
+        if (target.name === 'ct-status') {
+            _ctState.status = String(target.value || 'retired');
+            renderCareerTransitionModal();
+            return;
+        }
+    }
+
+    function handleCareerTransitionInput(e) {
+        var target = e.target;
+        if (!target) { return; }
+
+        if (target.classList && target.classList.contains('ct-year')) {
+            var v = parseInt(target.value, 10);
+            if (!isNaN(v) && v >= 1) {
+                _ctState.year = v;
+            }
+            renderCareerTransitionModal();
+        }
+    }
+
+    function handleCareerTransitionApply() {
+        if (!_ctCharId) { return; }
+
+        var charId = _ctCharId;
+        var status = _ctState.status;
+        var year = _ctState.year;
+
+        if (!status || typeof status !== 'string') {
+            notify('Select a status.', 'error');
+            return;
+        }
+        if (typeof year !== 'number' || year < 1) {
+            notify('Year must be a positive integer.', 'error');
+            return;
+        }
+
+        if (!CharacterCRUD ||
+            typeof CharacterCRUD.setCareerTransition !== 'function') {
+            notify('Career transition is not available.', 'error');
+            return;
+        }
+
+        CharacterCRUD.setCareerTransition(charId, status, year)
+            .then(function(result) {
+                if (result && result.success) {
+                    closeCareerTransitionModal();
+                    return;
+                }
+                notify(
+                    'Career transition failed: ' +
+                    ((result && result.message) || 'Unknown error'),
+                    'error'
+                );
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[CharacterEvents] setCareerTransition threw:', err
+                );
+                notify(
+                    'Career transition failed: ' + err.message,
+                    'error'
+                );
+            });
+    }
+
+    function bindCareerTransition() {
+        addSafeDelegatedListener(
+            '#career-transition-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+
+                var charId = typeof window.getCurrentEditId === 'function'
+                    ? window.getCurrentEditId()
+                    : null;
+
+                if (!charId) {
+                    notify(
+                        'Save the character before marking a transition.',
+                        'error'
+                    );
+                    return;
+                }
+
+                try {
+                    openCareerTransitionModal(charId);
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] openCareerTransitionModal ' +
+                        'threw:', err
+                    );
+                    notify(
+                        'Failed to open career transition: ' + err.message,
+                        'error'
+                    );
+                }
+            }
+        );
+    }
+
+    // Small local escape helper, used by the transition modal
+    // before CharacterQueries / DomUtils become strictly necessary.
+    function escapeHtmlSafe(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeAttribute === 'function') {
+            return window.DomUtils.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -634,15 +1053,6 @@
     // ============================================================
     // CHARACTER ROSTER EXPORT BUTTON
     // ============================================================
-    //
-    // The character page header carries a roster-export button
-    // (#export-character-roster-btn) rendered by characters/index.js.
-    // Clicking it produces a tab-separated plain-text roster
-    // (Name / Gender / Birth Year / Eliminated) of every character
-    // in the store, downloaded as a .txt file.
-    //
-    // The button lives in the static header, so it is bound
-    // directly (not delegated).
 
     function bindCharacterRosterExport(container) {
         var btn = document.getElementById('export-character-roster-btn');
@@ -869,6 +1279,7 @@
         bindPreviousNameButtons();
         bindCareerButtons();
         bindCareerStatusWizard();
+        bindCareerTransition();
         bindClassDropdown();
         bindClassTagRemoval();
         bindStandaloneElimRemoval();
@@ -895,6 +1306,12 @@
     }
 
     function destroy() {
+        // Close any open transition modal first. This also
+        // re-renders the form if it is still in the DOM, which
+        // is safe during a destroy (the form may be about to be
+        // unmounted anyway; the re-render is a no-op in that case).
+        closeCareerTransitionModal();
+
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
@@ -1006,12 +1423,6 @@
             });
         }
 
-        // ---- Hide filler ----
-        //
-        // Reads its own persisted default on mount (see
-        // characters/index.js). When the checkbox is toggled, the
-        // state is persisted via CharacterList.setHideFiller and
-        // the list re-renders.
         var hideFiller = document.getElementById('hide-filler');
         if (hideFiller) {
             addSafeEventListener(hideFiller, 'change', function() {
