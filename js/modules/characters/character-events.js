@@ -39,7 +39,18 @@
  *   The button is bound directly (not delegated) because it lives
  *   in the static header, outside the re-rendered form content.
  *
- * FILLER FILTER CHECKBOX (this revision):
+ * CHARACTER ROSTER EXPORT BUTTON:
+ *   The character page header carries a roster-export button
+ *   (#export-character-roster-btn) rendered by characters/index.js.
+ *   Clicking it produces a tab-separated plain-text roster
+ *   (Name / Gender / Birth Year / Eliminated) of every character
+ *   in the store, downloaded as a .txt file. The export is produced
+ *   by window.CharacterRosterExport.
+ *
+ *   The button lives in the static header, so it is bound directly
+ *   (not delegated).
+ *
+ * FILLER FILTER CHECKBOX:
  *   The character list sidebar carries a "Hide filler" checkbox
  *   (#hide-filler). Toggling it persists the state through
  *   CharacterList.setHideFiller and re-renders the list.
@@ -166,6 +177,10 @@
 
     function getFillerManagerModal() {
         return window.FillerManagerModal || null;
+    }
+
+    function getCharacterRosterExport() {
+        return window.CharacterRosterExport || null;
     }
 
     // ============================================================
@@ -437,6 +452,65 @@
     }
 
     // ============================================================
+    // CHARACTER ROSTER EXPORT BUTTON
+    // ============================================================
+    //
+    // The character page header carries a roster-export button
+    // (#export-character-roster-btn) rendered by characters/index.js.
+    // Clicking it produces a tab-separated plain-text roster
+    // (Name / Gender / Birth Year / Eliminated) of every character
+    // in the store, downloaded as a .txt file.
+    //
+    // The button lives in the static header, so it is bound
+    // directly (not delegated).
+
+    function bindCharacterRosterExport(container) {
+        var btn = document.getElementById('export-character-roster-btn');
+        if (!btn) { return; }
+
+        addSafeEventListener(btn, 'click', function(e) {
+            e.preventDefault();
+
+            var Exporter = getCharacterRosterExport();
+            if (!Exporter || typeof Exporter.exportText !== 'function') {
+                notify('Character roster export is not available.', 'error');
+                return;
+            }
+
+            var result;
+            try {
+                result = Exporter.exportText();
+            } catch (err) {
+                console.warn(
+                    '[CharacterEvents] CharacterRosterExport.exportText ' +
+                    'threw:', err
+                );
+                notify(
+                    'Character roster export failed: ' + err.message,
+                    'error'
+                );
+                return;
+            }
+
+            if (result && result.exported) {
+                notify(
+                    'Exported ' + result.count + ' character' +
+                    (result.count === 1 ? '' : 's') + ': ' +
+                    result.filename,
+                    'success'
+                );
+                return;
+            }
+
+            notify(
+                'Character roster export failed: ' +
+                    ((result && result.error) || 'Unknown error'),
+                'error'
+            );
+        });
+    }
+
+    // ============================================================
     // CAREER STATUS FILTER TOGGLE
     // ============================================================
 
@@ -603,6 +677,7 @@
         bindClickOutside(container);
         bindCharacterList(container);
         bindManageFillers(container);
+        bindCharacterRosterExport(container);
 
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
@@ -764,8 +839,6 @@
                     window.CharacterList.setHideFiller(hideFiller.checked);
                     return;
                 }
-                // Fallback when CharacterList is unavailable: just
-                // re-render whatever is there.
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
                 }
@@ -785,8 +858,6 @@
                 if (hideDeadEl) { hideDeadEl.checked = true; }
                 if (hideElimEl) { hideElimEl.checked = true; }
 
-                // Hide filler resets to its default (checked).
-                // Persisted via CharacterList.setHideFiller.
                 if (window.CharacterList &&
                     typeof window.CharacterList.setHideFiller === 'function') {
                     window.CharacterList.setHideFiller(true);
