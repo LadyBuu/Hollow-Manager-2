@@ -6,47 +6,34 @@
  *
  * WHAT THIS MODULE DOES:
  *   - isFillerCandidate(char): heuristic. True when the character
- *     looks like a filler entry: has meaningful history (career,
- *     class, eliminations, parents) but no authored content
- *     (no stats beyond default, no magic, no personality, no
- *     notes, no weapons, no moves, no bio text).
+ *     has no authored content of any kind.
  *   - stripEmptyFields(char): returns a NEW object containing only
- *     the non-empty, non-default keys. The original object is not
- *     mutated.
+ *     the non-empty, non-default keys.
+ *   - stripEliminatedForExport(charArray): returns a NEW array in
+ *     which every character with an elimination record has been
+ *     reduced via stripEmptyFields. Used by the export pipeline.
  *
  * WHAT THIS MODULE DOES NOT DO:
  *   - It does not mutate window.data.
  *   - It does not touch persistence.
- *   - It does not decide WHEN to strip. That is CharacterCRUD's
- *     job, driven by char.isFiller.
- *   - It does not check team membership. That lives on team
- *     records, not on the character record, and is the caller's
- *     concern.
+ *   - It does not decide WHEN to strip. That is CharacterCRUD's job
+ *     (save path) and ExportEnvelope.create's job (export path).
+ *   - It does not check team membership.
  *
- * SHAPE:
- *   stripEmptyFields walks the character object and drops every
- *   key whose value is empty or at its domain default:
+ * EXPORT PATH:
+ *   The export-time strip is triggered by ExportEnvelope.create,
+ *   which reads window.CharacterStrip.stripEliminatedForExport
+ *   lazily. When the module is absent, the export runs unstripped.
  *
- *     strings       ''              -> dropped
- *     arrays        []              -> dropped
- *     numbers       0 (hp/mp)       -> dropped
- *                   10 (stats)      -> dropped
- *     objects       all inner keys dropped -> whole key dropped
+ *   A character is "eliminated" for export purposes when either of
+ *   these holds:
+ *     char.eliminations.length > 0
+ *     char.eliminatedWeeks.length > 0
  *
- *   A fixed KEEP set survives regardless: id, firstName, lastName,
- *   gender, birthYear, deceased, isFiller, createdAt, updatedAt,
- *   and any non-empty careerStatus / classIds / parentIds /
- *   eliminations / eliminatedWeeks array.
- *
- *   The strip is idempotent. Running it twice produces the same
- *   shape.
- *
- * DEFAULT VALUES:
- *   The module carries its own default table. It does NOT read
- *   CharacterConstants, because a missing CharacterConstants
- *   should not block a strip. The defaults mirror the canonical
- *   values: STAT_DEFAULT = 10, MAGIC default = 0, HP/MP default
- *   = 0.
+ *   This is a shape check on the character record itself. It does
+ *   not consult EliminationQueries; the export path has no need
+ *   for the query, and a record-level check is more robust against
+ *   a mid-session query change.
  *
  * DEPENDENCIES:
  *   None.
@@ -65,7 +52,6 @@
     // ============================================================
 
     var STAT_DEFAULT = 10;
-    var STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
     var DEFAULT_DISPLAY_PARTS = {
         first: true,
@@ -77,19 +63,6 @@
 
     var DEFAULT_NAME_FORMAT = 'firstlast';
 
-    /**
-     * Keys always kept on a stripped record, regardless of value.
-     *
-     *   id              identity
-     *   firstName       required by validation
-     *   lastName        required by validation
-     *   gender          meaningful even when empty (birth, display)
-     *   birthYear       meaningful even when empty
-     *   deceased        cached boolean
-     *   isFiller        the flag itself
-     *   createdAt       provenance
-     *   updatedAt       provenance
-     */
     var ALWAYS_KEEP = {
         id: true,
         firstName: true,
@@ -102,10 +75,6 @@
         updatedAt: true
     };
 
-    /**
-     * Keys kept when their value is a non-empty array. Dropped
-     * when empty.
-     */
     var KEEP_NONEMPTY_ARRAY = {
         careerStatus: true,
         classIds: true,
@@ -115,10 +84,6 @@
         previousNames: true
     };
 
-    /**
-     * Keys that are simple strings, dropped when empty.
-     * Kept when non-empty.
-     */
     var DROP_EMPTY_STRING = {
         middleName: true,
         nickname: true,
@@ -214,51 +179,36 @@
             var expected = DEFAULT_DISPLAY_PARTS[k];
             if (obj[k] !== expected) { return false; }
         }
-        // Also treat extra keys as non-default.
         if (Object.keys(obj).length !== keys.length) { return false; }
         return true;
+    }
+
+    function hasEliminationRecord(char) {
+        if (!char || typeof char !== 'object') { return false; }
+        if (Array.isArray(char.eliminations) &&
+            char.eliminations.length > 0) {
+            return true;
+        }
+        if (Array.isArray(char.eliminatedWeeks) &&
+            char.eliminatedWeeks.length > 0) {
+            return true;
+        }
+        return false;
     }
 
     // ============================================================
     // FILLER CANDIDATE HEURISTIC
     // ============================================================
 
-    /**
-     * Does this character look like a filler entry?
-     *
-     * FILLER WHEN:
-     *   - The character has NO authored content of any kind:
-     *     stats all default, magic all zero, hp/mp zero, no
-     *     weapons, no moves, no personality strings, no bio
-     *     fields, no notes, no combat notes, no specialty.
-     *
-     *   This is a NEGATIVE heuristic: it does not require the
-     *   character to have any specific history to be a candidate.
-     *   The reason is that the caller (the maintenance modal)
-     *   can filter further: "on a team" and "eliminated" and
-     *   "in a class" are useful signals on the LIST view, but
-     *   they are not what makes a character filler.
-     *
-     *   What makes a character filler is that they have NO
-     *   authored content. The modal shows all such characters
-     *   and lets the user pick.
-     *
-     * @param {object} char
-     * @returns {boolean}
-     */
     function isFillerCandidate(char) {
         if (!char || typeof char !== 'object') { return false; }
-
-        // Any authored content disqualifies the record.
         if (hasAuthoredContent(char)) { return false; }
-
         return true;
     }
 
     function hasAuthoredContent(char) {
         if (!char || typeof char !== 'object') { return false; }
 
-        // Stats.
         if (isPlainObject(char.stats)) {
             var statKeys = Object.keys(char.stats);
             for (var i = 0; i < statKeys.length; i++) {
@@ -268,7 +218,6 @@
             }
         }
 
-        // Magic.
         if (isPlainObject(char.magic)) {
             var magicKeys = Object.keys(char.magic);
             for (var j = 0; j < magicKeys.length; j++) {
@@ -279,20 +228,13 @@
             }
         }
 
-        // HP / MP.
-        if (typeof char.hp === 'number' && char.hp > 0) {
-            return true;
-        }
-        if (typeof char.mp === 'number' && char.mp > 0) {
-            return true;
-        }
+        if (typeof char.hp === 'number' && char.hp > 0) { return true; }
+        if (typeof char.mp === 'number' && char.mp > 0) { return true; }
 
-        // Weapons.
         if (Array.isArray(char.weapons) && char.weapons.length > 0) {
             return true;
         }
 
-        // Special moves.
         if (isPlainObject(char.specialMoves)) {
             var phys = char.specialMoves.physical;
             var magi = char.specialMoves.magical;
@@ -300,7 +242,6 @@
             if (Array.isArray(magi) && magi.length > 0) { return true; }
         }
 
-        // Personality.
         if (isPlainObject(char.personality)) {
             var pKeys = Object.keys(char.personality);
             for (var p = 0; p < pKeys.length; p++) {
@@ -317,7 +258,6 @@
             }
         }
 
-        // Bio strings.
         var bioFields = [
             'appearanceNotes', 'notes', 'combatNotes',
             'specialty', 'eyes', 'hair', 'skin',
@@ -340,17 +280,6 @@
     // STRIP
     // ============================================================
 
-    /**
-     * Return a new character object containing only the non-empty,
-     * non-default keys.
-     *
-     * The original object is not mutated. Callers that wish to
-     * replace the record in place (preserving object identity) do
-     * so themselves.
-     *
-     * @param {object} char
-     * @returns {object}
-     */
     function stripEmptyFields(char) {
         if (!char || typeof char !== 'object') {
             return char;
@@ -363,13 +292,11 @@
             var key = keys[i];
             var value = char[key];
 
-            // Always-keep keys.
             if (ALWAYS_KEEP[key]) {
                 out[key] = value;
                 continue;
             }
 
-            // Non-empty arrays kept.
             if (KEEP_NONEMPTY_ARRAY[key]) {
                 if (Array.isArray(value) && value.length > 0) {
                     out[key] = value;
@@ -377,19 +304,15 @@
                 continue;
             }
 
-            // Simple strings dropped when empty.
             if (DROP_EMPTY_STRING[key]) {
                 if (typeof value === 'string' && value.trim() !== '') {
                     out[key] = value;
                 } else if (typeof value === 'number') {
-                    // Some of these keys can be numbers historically;
-                    // keep nonzero numbers.
                     if (value !== 0) { out[key] = value; }
                 }
                 continue;
             }
 
-            // Category-specific handling.
             switch (key) {
                 case 'stats':
                     if (isPlainObject(value) &&
@@ -459,7 +382,6 @@
                     continue;
 
                 default:
-                    // Unknown keys: keep unless trivially empty.
                     if (isEmptyString(value)) { continue; }
                     if (isEmptyArray(value)) { continue; }
                     if (value === null || value === undefined) {
@@ -473,13 +395,52 @@
     }
 
     // ============================================================
+    // EXPORT-TIME STRIP
+    // ============================================================
+
+    /**
+     * Return a NEW array in which every eliminated character has
+     * been reduced via stripEmptyFields.
+     *
+     * Called by ExportEnvelope.create on the deep-cloned character
+     * array. Never touches the source array or the source objects.
+     *
+     * The isFiller flag is set on the returned records so the file
+     * reflects that these are filler records.
+     *
+     * @param {array} charArray
+     * @returns {array}
+     */
+    function stripEliminatedForExport(charArray) {
+        if (!Array.isArray(charArray)) { return charArray; }
+
+        var result = new Array(charArray.length);
+        for (var i = 0; i < charArray.length; i++) {
+            var c = charArray[i];
+            if (!c || typeof c !== 'object') {
+                result[i] = c;
+                continue;
+            }
+            if (!hasEliminationRecord(c)) {
+                result[i] = c;
+                continue;
+            }
+            var reduced = stripEmptyFields(c);
+            reduced.isFiller = true;
+            result[i] = reduced;
+        }
+        return result;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CharacterStrip = Object.freeze({
         isFillerCandidate: isFillerCandidate,
         hasAuthoredContent: hasAuthoredContent,
-        stripEmptyFields: stripEmptyFields
+        stripEmptyFields: stripEmptyFields,
+        stripEliminatedForExport: stripEliminatedForExport
     });
 
 })();
