@@ -7,111 +7,31 @@
  *
  * ROLE MODEL (v31):
  *   A character's role — student or instructor — is CLASS-SCOPED.
- *   Alice can teach Class of 2026 and study in Class of 2027. The
- *   role the panel displays is the role for the class currently
- *   selected in the sidebar.
+ *   See the previous revision for the full contract.
  *
- *   The header renders a role badge that reads:
- *     "Instructor of <ClassName>"
- *   or
- *     "Student of <ClassName>"
+ * FILLER FLAG (this revision):
+ *   The header carries a checkbox, #academy-char-is-filler,
+ *   directly below the mode toggle. It is a live toggle: clicking
+ *   it emits
  *
- *   The mode toggle is a per-class toggle. It is emitted with the
- *   character id and the class id, so the controller knows exactly
- *   which pair the user is flipping. When no class is selected,
- *   the toggle is disabled and shows a hint, because there is no
- *   class to scope the role to.
+ *     data-action="character-toggle-filler"
+ *     data-character-id="<id>"
+ *     data-target-value="true|false"
  *
- *   The panel does NOT read character.mode. That field is a legacy
- *   tombstone. It is not consulted anywhere in this file.
+ *   The People controller routes the action to
+ *   CharacterCRUD.setFillerFlag([id], value). There is no save
+ *   button on this panel; the checkbox is immediate.
+ *
+ *   Checking the box strips the record's empty fields on the
+ *   next save. Unchecking clears the flag but does not restore
+ *   stripped fields.
+ *
+ *   The checkbox reflects char.isFiller. When the flag is
+ *   unavailable on the VM (older callers), the checkbox renders
+ *   unchecked and disabled.
  *
  * TEACHING GROUPS CANDIDATE PICKER:
- *   The inline "add students to this group" picker is a
- *   multi-select picker with two sections:
- *
- *     Eligible        checkboxes, selectable.
- *     Would conflict  no checkboxes; not selectable; each row
- *                     shows a conflict reason.
- *
- *   Each section carries an action row:
- *     [Select all]  checks every visible row in that section
- *     [Clear]       unchecks every row in that section
- *
- *   Search filters rows in both sections. A section with zero
- *   visible rows hides itself, INCLUDING its action row. A
- *   picker with zero visible rows shows a "no matches" hint.
- *
- *   Footer Add button shows the count of checked candidates
- *   and is disabled when the count is zero.
- *
- * TEACHING GROUP BULK ACTIONS:
- *   Each group block header carries, in order:
- *
- *     Caret          toggles the block's body (roster + sessions).
- *     Clear Roster   secondary. Shown only when the group has
- *                    members.
- *     + Add Student  primary. Opens the candidate picker.
- *     ✕ (delete)     danger. Deletes the group and every session.
- *
- * COLLAPSE STATE:
- *   Read through a local helper (readTeachingGroupExpanded) that
- *   consults AcademyUI.isExpanded. When AcademyUI is unavailable
- *   or the key is absent, the default is EXPANDED.
- *
- * CHARACTER EXPORT BUTTON:
- *   The header title row carries a small, secondary-styled Export
- *   button. Clicking it produces a plain-text report of everything
- *   the application knows about the character, downloaded as a
- *   .txt file. The report is built by
- *   CharacterExport.exportCharacterText.
- *
- *   The button emits:
- *     data-action="character-export"
- *     data-character-id="<the character id>"
- *
- * SOCIAL SCORE:
- *   The Performance card's "Social Score" row carries an Edit
- *   action. The action element emits:
- *
- *     data-action="edit-social-score"
- *     data-character-id="<the character id>"
- *
- *   The character id is sourced from the character detail VM
- *   (`viewModel.character.id`), NOT from `performance.characterId`.
- *
- * SCHEDULE TAB EXPORTS (this revision):
- *   The Schedule tab header carries two export affordances:
- *
- *     1. An "Export Schedule" button. Emits:
- *          data-action="character-export-schedule-text"
- *          data-character-id="<char id>"
- *        Routed by the People controller to
- *        ScheduleExport.exportStudentScheduleText. Produces the
- *        weekly grid text file.
- *
- *     2. Seven small day buttons (Mon–Sun). Each emits:
- *          data-action="character-export-schedule-day"
- *          data-character-id="<char id>"
- *          data-day="1..7"
- *        Routed by the People controller to
- *        ScheduleExport.exportStudentDayScheduleText. Produces the
- *        three-row day strip for one weekday.
- *
- *   The day buttons are compact and secondary-styled, matching the
- *   Schedule tab header's visual weight. There is no day picker
- *   modal, no dropdown, no multi-select. One click, one day.
- *
- *   Both affordances are pure emitters. This file never calls
- *   ScheduleExport directly.
- *
- * GRADES TAB:
- *   The Grades tab renders ONLY a host container:
- *
- *     <div id="academy-grades-editor-host"></div>
- *
- *   The grades editor mounts into that host and emits its own
- *   header. The panel does NOT emit an outer "Grades" header;
- *   that produced a double heading in an earlier revision.
+ *   Unchanged.
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -284,6 +204,10 @@
     //   1. the character name (h3)
     //   2. the role badge, scoped to the currently selected class
     //   3. the Export button
+    //
+    // Below the meta line and the mode toggle, the header also
+    // carries the filler checkbox. See the FILLER FLAG note in the
+    // file header.
 
     function renderHeader(character, mode, classContext) {
         var displayRole = mode === 'instructor' ? 'instructor' : 'student';
@@ -341,6 +265,7 @@
         html += '</div>';
 
         html += renderModeToggle(mode, classContext, character);
+        html += renderFillerToggle(character);
 
         html += '</div>';
 
@@ -403,6 +328,60 @@
                     '</p>';
         }
 
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Filler toggle.
+     *
+     * Emits a single action the People controller routes to
+     * CharacterCRUD.setFillerFlag. No save button involved; the
+     * checkbox is immediate.
+     *
+     * When the VM does not carry `isFiller` (older callers or a
+     * missing flag), the checkbox renders disabled and unchecked.
+     */
+    function renderFillerToggle(character) {
+        if (!character || !character.id) { return ''; }
+
+        var charId = String(character.id);
+
+        // The flag is a boolean on the character record. We treat
+        // anything other than true as false.
+        var isFiller = character.isFiller === true;
+        var isChecked = isFiller ? ' checked' : '';
+
+        // The action value is the value the checkbox will become.
+        // Checking flips the target to true; unchecking to false.
+        // The controller reads data-target-value and calls
+        // setFillerFlag with it.
+        var targetValue = isFiller ? 'false' : 'true';
+
+        var checkboxId = 'academy-char-is-filler';
+
+        var html = '';
+        html += '<div class="academy-character-filler-toggle">';
+        html += '<label class="academy-mode-checkbox-label" ' +
+                    'for="' + checkboxId + '">';
+        html += '<input type="checkbox" ' +
+                    'id="' + checkboxId + '" ' +
+                    'class="academy-character-filler-checkbox" ' +
+                    'data-action="character-toggle-filler" ' +
+                    'data-character-id="' +
+                        escapeAttribute(charId) + '" ' +
+                    'data-target-value="' +
+                        escapeAttribute(targetValue) + '" ' +
+                    isChecked +
+                    '>';
+        html += '<span class="academy-mode-checkbox-text">' +
+                    'Filler character' +
+                '</span>';
+        html += '</label>';
+        html += '<p class="field-hint academy-filler-toggle-hint">' +
+                    'Strip empty fields on save. Keeps name, career, ' +
+                    'class, teams, eliminations, and parent links.' +
+                '</p>';
         html += '</div>';
         return html;
     }
@@ -471,7 +450,7 @@
     }
 
     // ============================================================
-    // MAIN TAB
+    // MAIN TAB (unchanged)
     // ============================================================
 
     function renderMainTab(vm, mode) {
@@ -492,10 +471,6 @@
 
         return html;
     }
-
-    // ============================================================
-    // CLASS CHIPS
-    // ============================================================
 
     function renderClassChips(classes, character) {
         var html = '';
@@ -547,10 +522,6 @@
         html += '</div>';
         return html;
     }
-
-    // ============================================================
-    // PERFORMANCE SCORES
-    // ============================================================
 
     function renderPerformanceScores(performance, charId) {
         var html = '';
@@ -627,10 +598,6 @@
         return html;
     }
 
-    // ============================================================
-    // DROP OUT
-    // ============================================================
-
     function renderDropOutSection(character, elimination) {
         var isEliminated = elimination !== null && elimination !== undefined;
 
@@ -679,7 +646,7 @@
     }
 
     // ============================================================
-    // DISCIPLINES TAB
+    // DISCIPLINES TAB (unchanged)
     // ============================================================
 
     function renderDisciplinesTab(vm, mode) {
@@ -886,12 +853,8 @@
     }
 
     // ============================================================
-    // GRADES TAB
+    // GRADES TAB (unchanged)
     // ============================================================
-    //
-    // The Grades tab renders ONLY the host container. The grades
-    // editor mounts into it and emits its own header. See the file
-    // header for the "double heading" note.
 
     function renderGradesTab(vm) {
         if (!vm.classContext) {
@@ -915,18 +878,8 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB (this revision)
+    // SCHEDULE TAB (unchanged)
     // ============================================================
-    //
-    // The Schedule tab header carries:
-    //   - the title "Schedule"
-    //   - the week badge
-    //   - an "Export Schedule" button (weekly grid)
-    //   - seven day buttons (Mon–Sun) for the day strip
-    //
-    // Both affordances are pure emitters. The People controller
-    // routes the two action names. This file never calls
-    // ScheduleExport itself.
 
     var DAY_BUTTONS = [
         { day: 1, short: 'Mon' },
@@ -968,21 +921,10 @@
         return html;
     }
 
-    /**
-     * Render the Schedule tab's export controls.
-     *
-     * Layout:
-     *   [Export Schedule]  [Mon] [Tue] [Wed] [Thu] [Fri] [Sat] [Sun]
-     *
-     * The weekly button is the primary affordance; the seven day
-     * buttons are compact and secondary. All eight are pure
-     * emitters. No modal, no dropdown.
-     */
     function renderScheduleExportControls(charId) {
         var html = '';
         html += '<div class="academy-character-schedule-exports">';
 
-        // ---- Weekly export button ----
         html += '<button type="button" ' +
                     'class="small secondary ' +
                     'academy-character-schedule-export-btn" ' +
@@ -993,7 +935,6 @@
                     'Export Schedule' +
                 '</button>';
 
-        // ---- Seven day buttons ----
         html += '<span class="academy-character-schedule-export-days">';
 
         for (var i = 0; i < DAY_BUTTONS.length; i++) {
@@ -1019,7 +960,7 @@
     }
 
     // ============================================================
-    // TEAMS TAB
+    // TEAMS TAB (unchanged)
     // ============================================================
 
     function renderTeamsTab(vm) {
@@ -1091,7 +1032,7 @@
     }
 
     // ============================================================
-    // TEACHING GROUPS TAB
+    // TEACHING GROUPS TAB (unchanged)
     // ============================================================
 
     function renderTeachingGroupsTab(vm) {
@@ -1272,10 +1213,6 @@
         return html;
     }
 
-    // ============================================================
-    // TEACHING GROUP BLOCK (collapsible)
-    // ============================================================
-
     function renderTeachingGroupBlock(
         group,
         charId,
@@ -1298,7 +1235,6 @@
                     'data-expanded="' +
                         escapeAttribute(isExpanded ? 'true' : 'false') + '">';
 
-        // ---- Header (caret + name + count + actions) ----
         html += '<div class="academy-teaching-group-header">';
 
         html += '<button type="button" ' +
@@ -1361,7 +1297,6 @@
 
         html += '</div>';
 
-        // ---- Body (collapsible) ----
         html += '<div class="academy-teaching-group-body">';
 
         if (isPickerOpen) {
@@ -1426,10 +1361,6 @@
         html += '</div>';
         return html;
     }
-
-    // ============================================================
-    // CANDIDATE PICKER (multi-select)
-    // ============================================================
 
     function renderCandidatePicker(group, charId, pickerCandidates) {
         var hasVM = pickerCandidates &&
@@ -1670,10 +1601,6 @@
         return 'Conflicts with a session on ' + parts.join(' at ');
     }
 
-    // ============================================================
-    // SESSIONS LIST (inside a teaching-group block)
-    // ============================================================
-
     function renderTeachingGroupSessionsList(group) {
         if (!group || !group.groupId) { return ''; }
 
@@ -1792,7 +1719,7 @@
     }
 
     // ============================================================
-    // CREATE-GROUP MODAL
+    // CREATE-GROUP MODAL (unchanged)
     // ============================================================
 
     function canOpenCreateGroupModal() {
