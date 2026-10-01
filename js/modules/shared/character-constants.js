@@ -1,23 +1,36 @@
 /**
  * shared/constants/character-constants.js - Character Constants
  * Single source of truth for all character-related constants
- * 
+ *
  * STATUS TIERS:
  *   - STUDENT_STATUSES:     trainee, rookie, junior, senior, student
  *   - INSTRUCTOR_STATUSES:  instructor, teacher, professor
  *   - SUPPORT_STATUSES:     support
+ *   - RETIRED_STATUSES:     retired
  *   - All others fall through as civilian/unknown.
- * 
+ *
  *   `senior` is a STUDENT tier. A senior is a final-year student,
  *   not a teacher. The previous classification as instructor was a
  *   legacy conflation that excluded seniors from academic team
  *   membership eligibility and from any other student-scoped query.
- * 
+ *
  *   `support` is its own tier. Support staff (medics, technicians,
  *   administrative roles) are neither students nor instructors.
  *   They are excluded from student-scoped and instructor-scoped
  *   queries alike.
- * 
+ *
+ *   `retired` is its own tier. A retired character left the
+ *   organisation's active roster and did NOT take a staff role.
+ *   They are neither students, nor instructors, nor support. They
+ *   are also NOT civilians: `civilian` describes a character who
+ *   has not joined (or has never been part of the organisation);
+ *   `retired` describes a character who has left it.
+ *
+ *   `retired` is a MANUAL-ONLY status. The Career Wizard does not
+ *   produce it. The wizard generates the on-ramp ladder (trainee,
+ *   rookie, junior, senior, support); terminal post-career states
+ *   are set by hand in the career-status form.
+ *
  * PHYSICAL CLASS WEIGHT VECTORS:
  *   Each class's weights define the stat profile that class
  *   rewards. The vectors are chosen so that no class's self-dot
@@ -261,6 +274,13 @@
     // ============================================================
     // CAREER STATUS
     // ============================================================
+    //
+    // ---- NEW ----
+    // `retired` added. It is a MANUAL-ONLY status: the Career
+    // Wizard does not produce it. It exists for characters who
+    // have left the organisation's active roster and did NOT
+    // take a staff role. It is distinct from `civilian`, which
+    // describes a character who has not joined.
 
     var CAREER_STATUS_OPTIONS = [
         { value: '', label: 'Select status...' },
@@ -270,29 +290,37 @@
         { value: 'junior',     label: 'Junior' },
         { value: 'senior',     label: 'Senior' },
         { value: 'instructor', label: 'Instructor' },
-        { value: 'support',    label: 'Support' }
+        { value: 'support',    label: 'Support' },
+        { value: 'retired',    label: 'Retired' }
     ];
 
     // ============================================================
     // STATUS TIERS
     // ============================================================
     //
-    // The three tiers are DISJOINT. A status string belongs to at
-    // most one tier. The predicates below (isStudentStatus,
-    // isInstructorStatus, isSupportStatus) are mutually exclusive.
+    // The tiers are DISJOINT. A status string belongs to at most
+    // one tier. The predicates below are mutually exclusive.
     //
-    // `senior` is a student tier: final-year students, still enrolled,
-    // still members of academic teams, still participants in exams.
+    // `senior` is a student tier: final-year students, still
+    // enrolled, still members of academic teams, still participants
+    // in exams.
     //
     // `support` is its own tier: non-teaching, non-enrolled staff.
     // Medics, technicians, administrators. They are excluded from
     // both student-scoped and instructor-scoped queries.
+    //
+    // `retired` is its own tier: a character who left the active
+    // roster and did not take a staff role. Retired characters are
+    // neither students nor instructors nor support. They are also
+    // NOT civilians; `civilian` means "has not joined."
     //
     // `instructor` and its synonyms are the only teaching tier.
 
     var STUDENT_STATUSES = ['trainee', 'rookie', 'junior', 'senior', 'student'];
     var INSTRUCTOR_STATUSES = ['instructor', 'teacher', 'professor'];
     var SUPPORT_STATUSES = ['support'];
+    // ---- NEW ----
+    var RETIRED_STATUSES = ['retired'];
 
     // ============================================================
     // NAME FORMATS
@@ -392,15 +420,29 @@
         return SUPPORT_STATUSES.indexOf(status.toLowerCase()) !== -1;
     }
 
+    // ---- NEW ----
+    function isRetiredStatus(status) {
+        if (!status || typeof status !== 'string') { return false; }
+        return RETIRED_STATUSES.indexOf(status.toLowerCase()) !== -1;
+    }
+
     /**
-     * Classify a status string into one of the three tiers.
-     * Returns 'student', 'instructor', 'support', or null.
+     * Classify a status string into one of the four tiers.
+     * Returns 'student', 'instructor', 'support', 'retired', or null.
      *
      * Status strings with a ' (Former)' suffix are classified by
      * their base tier. A former instructor is still classified as an
      * instructor — they taught, they may still be referenced as one.
      * If a caller wants "is currently an instructor," they should
      * check the career status history directly, not this classifier.
+     *
+     * ---- NEW ----
+     * `retired` is checked LAST. A status string that matches an
+     * earlier tier (e.g., 'senior') is classified as that tier even
+     * if a character also carries a `retired` flag elsewhere. The
+     * tier classifiers here are per-status-string, not per-character.
+     * A character's retirement is expressed by their CURRENT status
+     * being 'retired', not by a flag layered on another status.
      */
     function classifyStatus(status) {
         if (!status || typeof status !== 'string') { return null; }
@@ -412,6 +454,7 @@
         if (STUDENT_STATUSES.indexOf(base) !== -1) { return 'student'; }
         if (INSTRUCTOR_STATUSES.indexOf(base) !== -1) { return 'instructor'; }
         if (SUPPORT_STATUSES.indexOf(base) !== -1) { return 'support'; }
+        if (RETIRED_STATUSES.indexOf(base) !== -1) { return 'retired'; }
         return null;
     }
 
@@ -595,14 +638,22 @@
         }
 
         // ---- Status tier disjointness ----
-        // The three tiers must not overlap. A status string in two
-        // tiers would make classifyStatus non-deterministic.
+        // The tiers must not overlap. A status string in two tiers
+        // would make classifyStatus non-deterministic.
+        //
+        // ---- NEW ----
+        // RETIRED_STATUSES joins the check. It is a single-element
+        // array today, so overlap is impossible, but the check
+        // exists so a future addition (e.g., 'alumnus') cannot
+        // silently collide.
         var studentSet = Object.create(null);
         STUDENT_STATUSES.forEach(function(s) { studentSet[s] = true; });
         var instructorSet = Object.create(null);
         INSTRUCTOR_STATUSES.forEach(function(s) { instructorSet[s] = true; });
         var supportSet = Object.create(null);
         SUPPORT_STATUSES.forEach(function(s) { supportSet[s] = true; });
+        var retiredSet = Object.create(null);
+        RETIRED_STATUSES.forEach(function(s) { retiredSet[s] = true; });
 
         STUDENT_STATUSES.forEach(function(s) {
             if (instructorSet[s]) {
@@ -611,10 +662,21 @@
             if (supportSet[s]) {
                 errors.push('Status "' + s + '" is in both STUDENT_STATUSES and SUPPORT_STATUSES.');
             }
+            if (retiredSet[s]) {
+                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and RETIRED_STATUSES.');
+            }
         });
         INSTRUCTOR_STATUSES.forEach(function(s) {
             if (supportSet[s]) {
                 errors.push('Status "' + s + '" is in both INSTRUCTOR_STATUSES and SUPPORT_STATUSES.');
+            }
+            if (retiredSet[s]) {
+                errors.push('Status "' + s + '" is in both INSTRUCTOR_STATUSES and RETIRED_STATUSES.');
+            }
+        });
+        SUPPORT_STATUSES.forEach(function(s) {
+            if (retiredSet[s]) {
+                errors.push('Status "' + s + '" is in both SUPPORT_STATUSES and RETIRED_STATUSES.');
             }
         });
 
@@ -638,6 +700,7 @@
     deepFreeze(STUDENT_STATUSES);
     deepFreeze(INSTRUCTOR_STATUSES);
     deepFreeze(SUPPORT_STATUSES);
+    deepFreeze(RETIRED_STATUSES);
     deepFreeze(NAME_FORMATS);
     deepFreeze(ATTRACTION_VALUES);
     deepFreeze(SEXUALITY_VALUES);
@@ -688,6 +751,8 @@
         STUDENT_STATUSES: STUDENT_STATUSES,
         INSTRUCTOR_STATUSES: INSTRUCTOR_STATUSES,
         SUPPORT_STATUSES: SUPPORT_STATUSES,
+        // ---- NEW ----
+        RETIRED_STATUSES: RETIRED_STATUSES,
 
         // Names
         NAME_FORMATS: NAME_FORMATS,
@@ -719,6 +784,8 @@
         isStudentStatus: isStudentStatus,
         isInstructorStatus: isInstructorStatus,
         isSupportStatus: isSupportStatus,
+        // ---- NEW ----
+        isRetiredStatus: isRetiredStatus,
         classifyStatus: classifyStatus,
 
         getAttractionValues: getAttractionValues,
