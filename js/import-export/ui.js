@@ -4,81 +4,31 @@
  *
  * Path: js/import-export/ui.js
  *
- * This module wires up export/import UI controls to the underlying
- * import/export pipeline functions. It handles:
- *   - Button click handlers
- *   - File input triggers
- *   - Notifications
- *   - UI refresh after operations
- *
- * IMPORTANT:
- *   - NO business logic - delegates to pipeline modules
- *   - NO data mutation
- *   - NO persistence
- *   - Uses NotificationSystem for user feedback
- *   - Uses TabManager for UI refresh
- *   - Self-contained UI lifecycle
- *
- * ACTIVE SURFACE:
- *   Eight controls are wired today:
+ * ACTIVE SURFACE (this revision):
+ *   Three controls are wired today:
  *
  *     export-json-btn              download JSON backup
  *     import-json-btn              open the JSON file picker
  *     json-file-input              the picker itself
  *     export-graduates-json-btn    open the graduates export picker
- *     export-characters-csv-btn    export all characters to CSV
  *     import-characters-csv-btn    open the characters CSV picker
  *     characters-csv-file-input    the picker itself
- *     template-characters-csv-btn  download a characters CSV template
  *
- *   The character CSV controls live in the character module's page
- *   header (rendered by characters/index.js's getCharactersHTML),
- *   not in the application header. That is deliberate: they are
- *   character-specific, they belong with the character list, and
- *   they sit next to "+ Add" where the user is already looking.
+ *   The character CSV EXPORT button and TEMPLATE button are no
+ *   longer bound here. They are gone from the character page
+ *   header, replaced by a single Export button that opens
+ *   CharacterExportPicker. character-events.js owns that button
+ *   because it lives inside the character page's re-rendered
+ *   header.
  *
- *   Every control's binding lives here, in one place. There is no
- *   second binding path. See the "ONE BINDING PER CONTROL" note
- *   below.
+ *   Import stays here because it is plain file plumbing and its
+ *   button is mounted by characters/index.js, then never
+ *   re-rendered.
  *
  * ONE BINDING PER CONTROL:
  *   Each header button is bound exactly once, by this module's
- *   init(). There is no delegation fallback elsewhere in the tree.
- *
- *   This is a deliberate architectural choice. Earlier revisions
- *   had character-events.js also bind the same three character CSV
- *   buttons via delegated document-level listeners, and those
- *   listeners pointed at window-level function names that never
- *   existed. The result was a button that looked wired and did
- *   nothing.
- *
- *   If a control is ever restored to a different module's markup,
- *   add its bind call HERE, not in that module. Do not split the
- *   binding across two files. The two-path pattern is what caused
- *   the character export to appear broken for a release.
- *
- * REMOVED FROM THE UI (handlers kept as public exports for callers
- * that still route to them programmatically, or for a future
- * restore):
- *
- *     Mission CSV:    export, import, template
- *     Graduates CSV:  export (the picker is shared with JSON)
- *     Teams JSON:     export (picker opens the same modal)
- *     Teams CSV:      export (same)
- *
- *   The picker-open handlers for Graduates and Teams are still
- *   exported because the picker modules themselves are unchanged
- *   and can be opened from anywhere.
- *
- * GRADUATES EXPORT:
- *   The graduate button opens a picker modal listing every class.
- *   The user picks a class, then chooses JSON or CSV inside the
- *   picker. The picker owns the download; ui.js only opens it.
- *
- * TEAMS EXPORT:
- *   The team pickers open a modal showing a pre-flight count of
- *   professional teams, members, and stints, with an optional
- *   status filter. Same rationale as graduates.
+ *   init() (for its three), or by character-events.js's init()
+ *   (for the two character-page buttons that are NOT bound here).
  *
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
@@ -94,11 +44,6 @@
  * DEPENDENCIES (LAZY, resolved at click time):
  *   - window.GraduatesExportPicker
  *   - window.TeamExportPicker
- *
- * USAGE:
- *   // Auto-initializes on DOM ready
- *   // Or manually:
- *   window.ImportExportUI.init();
  */
 
 (function() {
@@ -144,21 +89,6 @@
     // ============================================================
     // ERROR NORMALISATION
     // ============================================================
-    //
-    // Import results can carry errors in two shapes:
-    //
-    //   - plain strings (from envelope validation, migration, etc.)
-    //   - structured objects from CrossDomainValidator:
-    //       { section, entityId, field, targetId, message }
-    //
-    // ImportPipeline.createValidationFailureResult flattens these
-    // to strings at the source, but this helper exists as a
-    // belt-and-braces guard for any other caller that hands a
-    // structured error to the UI. Without it, a structured error
-    // becomes "[object Object]" the moment it is string-concatenated
-    // into a notification.
-    //
-    // See also: import-pipeline.js normaliseErrorEntry.
 
     function errorToDisplayString(e) {
         if (typeof e === 'string') {
@@ -244,10 +174,6 @@
         notify(message, 'warning');
     }
 
-    function notifyInfo(message) {
-        notify(message, 'info');
-    }
-
     // ============================================================
     // UI REFRESH
     // ============================================================
@@ -269,15 +195,6 @@
     // ============================================================
     // BUTTON BINDING
     // ============================================================
-    //
-    // bindButton and bindFileInput are the shared machinery. Both
-    // silently skip a missing target: a control that is not in the
-    // markup is not an error, it is a control the current UI does
-    // not render.
-    //
-    // The clone-and-replace pattern is retained so re-init (which
-    // some flows trigger via the dataReady event) does not stack
-    // duplicate listeners on the same element.
 
     function bindButton(id, handler) {
         if (_handlers[id]) return;
@@ -480,9 +397,6 @@
                     var errors = importResult.errors || [];
                     var warnings = importResult.warnings || [];
 
-                    // Dump the full result to the console. The toast
-                    // shows only the first error so the user is not
-                    // buried; the console gets everything.
                     console.error(
                         '[JSON import] failed. Full result:',
                         importResult
@@ -503,8 +417,6 @@
                     return;
                 }
 
-                // Neither success nor a structured failure. Should
-                // not happen, but say so rather than silently stop.
                 console.error(
                     '[JSON import] unexpected result shape:',
                     importResult
@@ -524,39 +436,10 @@
     // HANDLERS - Character CSV
     // ============================================================
     //
-    // Bound by init() above. The three header buttons in the
-    // character module's page header route here through
-    // bindButton / bindFileInput.
-
-    function handleCharacterExport() {
-        var CharacterCSV = deps.CharacterCSV;
-        if (!CharacterCSV || typeof CharacterCSV.exportFromData !== 'function') {
-            notifyError('Character export not available');
-            return;
-        }
-
-        try {
-            var result = CharacterCSV.exportFromData();
-            if (result && result.message) {
-                if (result.message === 'No characters to export.') {
-                    notifyWarning(result.message);
-                } else {
-                    notifySuccess(result.message);
-                    try {
-                        deps.ActivityLog.record('Exported ' + result.count + ' characters to CSV', 'export');
-                    } catch (e) {
-                        // Non-fatal
-                    }
-                }
-            } else if (result && result.count !== undefined) {
-                notifySuccess('Exported ' + result.count + ' characters');
-            } else {
-                notifySuccess('Characters exported');
-            }
-        } catch (err) {
-            notifyError('Export failed: ' + err.message);
-        }
-    }
+    // IMPORT ONLY. Export and template now go through
+    // CharacterExportPicker, which is bound by character-events.js
+    // because its trigger button lives inside the character page's
+    // re-rendered header.
 
     function handleCharacterImport(file) {
         var CharacterCSV = deps.CharacterCSV;
@@ -653,25 +536,6 @@
             .catch(function(err) {
                 notifyError('Import failed: ' + err.message);
             });
-    }
-
-    function handleCharacterTemplate() {
-        var CharacterCSV = deps.CharacterCSV;
-        if (!CharacterCSV || typeof CharacterCSV.exportTemplate !== 'function') {
-            notifyError('Character template not available');
-            return;
-        }
-
-        try {
-            var result = CharacterCSV.exportTemplate();
-            if (result && result.exported) {
-                notifySuccess('Character template downloaded: ' + result.filename);
-            } else {
-                notifySuccess('Character template downloaded');
-            }
-        } catch (err) {
-            notifyError('Template generation failed: ' + err.message);
-        }
     }
 
     // ============================================================
@@ -830,10 +694,6 @@
     // ============================================================
     // HANDLERS - Graduates Export
     // ============================================================
-    //
-    // The header exposes one graduates button (JSON). The picker
-    // itself offers both JSON and CSV. The CSV handler remains
-    // exported for callers that open the picker directly.
 
     function getGraduatesExportPicker() {
         return window.GraduatesExportPicker || null;
@@ -868,10 +728,6 @@
     // ============================================================
     // HANDLERS - Teams Export
     // ============================================================
-    //
-    // No bound controls today. Both handlers open the same picker;
-    // the format is chosen inside the modal. Kept as public exports
-    // for callers that open the picker directly.
 
     function getTeamExportPicker() {
         return window.TeamExportPicker || null;
@@ -907,11 +763,12 @@
     // INITIALIZATION
     // ============================================================
     //
-    // Every header control is bound here, and only here. See the
-    // ONE BINDING PER CONTROL note in the file header.
+    // ONLY the JSON controls and the character CSV IMPORT control
+    // are bound here. The character EXPORT and FILLERS controls
+    // are bound by character-events.js because they live in the
+    // character page's re-rendered header.
     //
-    // If a control is restored to the markup, add its bind call
-    // here. Do not split the binding across two files.
+    // See the ACTIVE SURFACE note in the file header.
 
     function init() {
         if (_initialized) return;
@@ -932,40 +789,17 @@
         bindFileInput('json-file-input', handleJSONImport);
 
         // ---- Graduates Export ----
-        // One button. The picker offers JSON and CSV inside.
         bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
 
-        // ---- Character CSV ----
-        // Three buttons in the character module's page header
-        // (rendered by characters/index.js's getCharactersHTML),
-        // plus the hidden file input next to them.
+        // ---- Character CSV import ----
         //
-        // The character page re-renders on every list refresh, so
-        // the buttons are re-created each time. bindButton uses the
-        // clone-and-replace pattern, which means a re-bind after a
-        // re-render works correctly without stacking listeners.
-        bindButton('export-characters-csv-btn', handleCharacterExport);
+        // The import button lives in the character page header.
+        // It is mounted by characters/index.js and never
+        // re-rendered, so binding it here is safe.
         bindButton('import-characters-csv-btn', function() {
             triggerFileInput('characters-csv-file-input');
         });
         bindFileInput('characters-csv-file-input', handleCharacterImport);
-        bindButton('template-characters-csv-btn', handleCharacterTemplate);
-
-        // --------------------------------------------------------
-        // NOT WIRED
-        // --------------------------------------------------------
-        //
-        // The controls below have no markup in index.html. Their
-        // handlers are still exported above; do not bind them here
-        // until the markup returns.
-        //
-        //   export-missions-csv-btn
-        //   import-missions-csv-btn
-        //   missions-csv-file-input
-        //   template-missions-csv-btn
-        //   export-graduates-csv-btn
-        //   export-teams-json-btn
-        //   export-teams-csv-btn
     }
 
     // ============================================================
@@ -997,14 +831,10 @@
         init: init,
         destroy: destroy,
 
-        // Handlers (exposed for testing and for callers that route
-        // to them programmatically; see the header's ACTIVE SURFACE
-        // and REMOVED FROM THE UI notes)
+        // Handlers (exposed for testing and programmatic use)
         handleJSONExport: handleJSONExport,
         handleJSONImport: handleJSONImport,
-        handleCharacterExport: handleCharacterExport,
         handleCharacterImport: handleCharacterImport,
-        handleCharacterTemplate: handleCharacterTemplate,
         handleMissionExport: handleMissionExport,
         handleMissionImport: handleMissionImport,
         handleMissionTemplate: handleMissionTemplate,
