@@ -61,42 +61,67 @@
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *
  * DEATH → PROFESSIONAL TEAM CASCADE:
- *   Unchanged from the previous revision.
+ *   Unchanged from the previous revision. When a character's
+ *   deathYear becomes non-blank, TeamCore.endStintsForCharacter
+ *   closes every open professional stint at that year.
  *
- * FILLER FLAG (this revision):
+ * CAREER TRANSITION → PROFESSIONAL TEAM CASCADE (this revision):
+ *   When a character's latest careerStatus entry transitions from
+ *   an on-ladder status to an off-ladder status, the same team
+ *   cascade fires. Off-ladder statuses are:
+ *
+ *     retired    - left the roster, no staff role
+ *     support    - staff role, no longer competing
+ *     instructor - teaching role, no longer competing
+ *
+ *   On-ladder statuses (trainee, rookie, junior, senior) do NOT
+ *   cascade: a character who is still on the ladder stays on their
+ *   team. `civilian` does NOT cascade either; it describes a
+ *   character who has not joined, not one who has left.
+ *
+ *   The cascade is scoped to PROFESSIONAL teams. Academic teams are
+ *   managed by the Academy module; temporary and civilian team
+ *   memberships do not participate.
+ *
+ *   TRIGGER:
+ *     The transition is detected by comparing the latest
+ *     careerStatus entry before and after a save.
+ *
+ *       previousLatest.status in {on-ladder, civilian} AND
+ *       newLatest.status      in {retired, support, instructor}
+ *
+ *     When that is true, the cascade fires with the new entry's
+ *     startYear as the cut-off year.
+ *
+ *   TWO PATHS, ONE CASCADE:
+ *     - CharacterCRUD.save() runs the detection inline. Any save
+ *       that results in an off-ladder latest status ends the open
+ *       stints, whether the user picked the status from the manual
+ *       dropdown or arrived there some other way.
+ *     - CharacterCRUD.setCareerTransition(charId, statusKey, year)
+ *       is the dedicated mutation the Career Transition modal
+ *       calls. It appends (or updates) the careerStatus entry AND
+ *       runs the cascade in the same transaction.
+ *
+ *     The two paths converge on the same helper,
+ *     applyCareerTransitionCascade, so the semantics are identical.
+ *
+ *   IDEMPOTENT:
+ *     A save that does not change the latest status does not
+ *     re-run the cascade. A save that goes from `senior` to
+ *     `senior` (no status change) does nothing. A save that goes
+ *     from `senior` to `retired`, then saves again with `retired`
+ *     still latest, does nothing the second time.
+ *
+ *   NON-REVERSIBLE:
+ *     Clearing the retirement (deleting the retired entry) does
+ *     NOT restore the ended stints. Ending a stint is a fact.
+ *     Users reopen stints by hand if they want to undo a career
+ *     transition.
+ *
+ * FILLER FLAG:
  *   character.isFiller is a boolean. When true, the record is
- *   written in its stripped form: every empty / default field is
- *   dropped before the write lands in window.data.
- *
- *   The flag is set through CharacterCRUD.setFillerFlag(ids, value),
- *   which:
- *     - sets char.isFiller on every id
- *     - when value === true, strips the empty fields from each *       record in the same transaction
- *     - when value === false, only clears the flag; the record
- *       stays stripped, and the next save re-populates it through
- *       the normal normaliseCharacterData path
- *
- *   The save path also honours the flag: a save of a character
- *   with isFiller === true produces a stripped record.
- *
- *   The strip helper lives in character-strip.js. It is resolved
- *   lazily so a missing module degrades to "no strip" rather than
- *   blocking the save.
- *
- * CAREER STATUS TIMELINE (this revision):
- *   applyCareerStatusTimeline(charId, stages) replaces a
- *   character's entire careerStatus array in a single pipeline
- *   transaction. It exists for the CareerStatusWizard to commit
- *   its generated timeline.
- *
- *   The method is a deliberate footgun: it does NOT merge. It
- *   REPLACES. That is the wizard's contract, and it is what
- *   makes the wizard preview meaningful. Callers that want to
- *   add a stage without disturbing the rest should use the
- *   normal save path with a form edit.
- *
- *   No UI. No preview. No notifications beyond what the pipeline
- *   already sends. The wizard is responsible for the preview.
+ *   written in its stripped form. See setFillerFlag.
  *
  * DELETE CASCADE SEMANTICS:
  *   Unchanged from the previous revision.
@@ -153,6 +178,20 @@
 
     var ROLE_STUDENT = 'student';
     var ROLE_INSTRUCTOR = 'instructor';
+
+    /**
+     * Off-ladder career statuses. A character whose LATEST
+     * careerStatus entry has one of these has left the active
+     * roster and does not hold a professional-team stint.
+     *
+     * `civilian` is deliberately NOT in this set. It describes a
+     * character who has not joined, not one who has left.
+     */
+    var CAREER_TRANSITION_STATUSES = {
+        'retired': true,
+        'support': true,
+        'instructor': true
+    };
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -288,10 +327,197 @@
             return normalised;
         }
         var stripped = Strip.stripEmptyFields(normalised);
-        // Belt and braces: the flag is a first-class field and must
-        // survive the strip even if the helper did not know about it.
         stripped.isFiller = true;
         return stripped;
+    }
+
+    // ============================================================
+    // CAREER TRANSITION HELPERS
+    // ============================================================
+
+    /**
+     * Extract the latest careerStatus entry's status string.
+     *
+     * "Latest" means the entry with the highest startYear. Ties
+     * are broken by array order (later entries win), matching how
+     * CharacterQueries.getCurrentStatus behaves. If careerStatus
+     * is empty or malformed, returns ''.
+     *
+     * The status is normalised to lowercase and stripped of a
+     * trailing ' (Former)' suffix, so 'Senior (Former)' and
+     * 'senior' compare equal.
+     */
+    function getLatestCareerStatus(careerStatus) {
+        if (!Array.isArray(careerStatus) || careerStatus.length === 0) {
+            return '';
+        }
+
+        var latest = null;
+        var latestYear = -Infinity;
+        var latestIndex = -1;
+
+        for (var i = 0; i < careerStatus.length; i++) {
+            var entry = careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var rawStatus = entry.status !== undefined && entry.status !== null
+                ? String(entry.status).trim().toLowerCase()
+                : '';
+            if (rawStatus === '') { continue; }
+
+            var formerIdx = rawStatus.indexOf(' (former)');
+            if (formerIdx !== -1) {
+                rawStatus = rawStatus.substring(0, formerIdx).trim();
+            }
+
+            var year = parseInt(entry.startYear, 10);
+            if (isNaN(year)) { year = -Infinity; }
+
+            if (year > latestYear ||
+                (year === latestYear && i > latestIndex)) {
+                latest = rawStatus;
+                latestYear = year;
+                latestIndex = i;
+            }
+        }
+
+        return latest || '';
+    }
+
+    /**
+     * Get the startYear of the latest careerStatus entry, as an
+     * integer, or null when the array is empty or malformed.
+     */
+    function getLatestCareerStatusYear(careerStatus) {
+        if (!Array.isArray(careerStatus) || careerStatus.length === 0) {
+            return null;
+        }
+
+        var latestYear = -Infinity;
+        var latestIndex = -1;
+
+        for (var i = 0; i < careerStatus.length; i++) {
+            var entry = careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (entry.status === undefined ||
+                entry.status === null ||
+                String(entry.status).trim() === '') {
+                continue;
+            }
+
+            var year = parseInt(entry.startYear, 10);
+            if (isNaN(year)) { year = -Infinity; }
+
+            if (year > latestYear ||
+                (year === latestYear && i > latestIndex)) {
+                latestYear = year;
+                latestIndex = i;
+            }
+        }
+
+        if (latestYear === -Infinity) { return null; }
+        return latestYear;
+    }
+
+    function isCareerTransitionStatus(status) {
+        if (!status || typeof status !== 'string') { return false; }
+        return CAREER_TRANSITION_STATUSES[status.toLowerCase()] === true;
+    }
+
+    /**
+     * Run the career-transition → team cascade, if the transition
+     * qualifies.
+     *
+     * QUALIFIES WHEN:
+     *   - previousLatestStatus is NOT a transition status
+     *     (including the empty case: a brand new character with
+     *     no prior careerStatus, or a character whose prior
+     *     latest was on-ladder or civilian)
+     *   - newLatestStatus IS a transition status
+     *   - the new latest entry has a parseable startYear
+     *
+     * SIDE EFFECTS:
+     *   Ends every open professional stint for the character at
+     *   the new latest entry's startYear. See
+     *   TeamCore.endStintsForCharacter for the exact semantics.
+     *
+     * Returns a summary object:
+     *   {
+     *     fired: boolean,
+     *     reason: string,
+     *     year: number | null,
+     *     stintsEnded: number,
+     *     teamsTouched: number
+     *   }
+     *
+     * Never throws. A missing TeamCore returns
+     * { fired: false, reason: 'no-team-core' }.
+     */
+    function applyCareerTransitionCascade(
+        data,
+        charId,
+        previousLatestStatus,
+        careerStatus
+    ) {
+        var result = {
+            fired: false,
+            reason: '',
+            year: null,
+            stintsEnded: 0,
+            teamsTouched: 0
+        };
+
+        var newLatest = getLatestCareerStatus(careerStatus);
+
+        if (!isCareerTransitionStatus(newLatest)) {
+            result.reason = 'not-a-transition-status';
+            return result;
+        }
+
+        if (isCareerTransitionStatus(previousLatestStatus)) {
+            result.reason = 'already-transitioned';
+            return result;
+        }
+
+        var year = getLatestCareerStatusYear(careerStatus);
+        if (year === null) {
+            result.reason = 'no-year';
+            return result;
+        }
+
+        result.year = year;
+
+        var TeamCore = getTeamCore();
+        if (!TeamCore ||
+            typeof TeamCore.endStintsForCharacter !== 'function') {
+            result.reason = 'no-team-core';
+            console.warn(
+                '[CharacterCRUD] Career-transition cascade skipped ' +
+                'for character ' + charId + ': ' +
+                'TeamCore.endStintsForCharacter is unavailable. ' +
+                'Open professional stints, if any, were not ended.'
+            );
+            return result;
+        }
+
+        var cascadeResult = TeamCore.endStintsForCharacter(
+            data, charId, year
+        );
+
+        result.fired = true;
+        result.reason = 'transitioned';
+        if (cascadeResult && typeof cascadeResult === 'object') {
+            result.stintsEnded =
+                typeof cascadeResult.stintsEnded === 'number'
+                    ? cascadeResult.stintsEnded
+                    : 0;
+            result.teamsTouched =
+                typeof cascadeResult.teamsTouched === 'number'
+                    ? cascadeResult.teamsTouched
+                    : 0;
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -672,6 +898,11 @@
         var existingChar = null;
         var name = normalised.firstName + ' ' + normalised.lastName;
 
+        // Previous latest status is captured BEFORE the mutation,
+        // from the live store. It is used to detect a career
+        // transition inside the mutate callback.
+        var previousLatestStatus = '';
+
         if (isEditing) {
             existingChar = CharacterQueries.getCharacterById(editId);
             if (!existingChar) {
@@ -681,6 +912,9 @@
                 });
             }
             name = CharacterQueries.getDisplayName(existingChar);
+            previousLatestStatus = getLatestCareerStatus(
+                existingChar.careerStatus
+            );
         }
 
         var isFiller = normalised.isFiller === true;
@@ -713,16 +947,48 @@
                 if (!result.success) {
                     throw new Error(result.error || 'Failed to save character.');
                 }
+
+                // ---- Career-transition cascade ----
+                //
+                // Runs after the character is written. The
+                // comparison is between the previous latest status
+                // (captured before the mutation) and the new latest
+                // status (read from the just-written record).
+                //
+                // For a brand new character, previousLatestStatus
+                // is '', which is not a transition status. A save
+                // that immediately creates a `retired` character
+                // (rare, but possible) fires the cascade correctly:
+                // there are no stints to end, so the cascade is a
+                // no-op on the data, but it also does no harm.
+                var cascade = applyCareerTransitionCascade(
+                    data,
+                    result.id,
+                    previousLatestStatus,
+                    result.character ? result.character.careerStatus : null
+                );
+
                 return {
                     id: result.id,
                     character: result.character,
-                    isNew: !isEditing
+                    isNew: !isEditing,
+                    careerTransition: cascade
                 };
             },
-            logMessage: function() {
-                return isEditing
+            logMessage: function(mutationResult) {
+                var base = isEditing
                     ? 'Updated character: ' + name
                     : 'Created character: ' + name;
+
+                var cascade = mutationResult &&
+                    mutationResult.careerTransition;
+                if (cascade && cascade.fired && cascade.stintsEnded > 0) {
+                    base += ' (career transition; ended ' +
+                        cascade.stintsEnded + ' stint' +
+                        (cascade.stintsEnded === 1 ? '' : 's') +
+                        ' at year ' + cascade.year + ')';
+                }
+                return base;
             },
             successMessage: function() {
                 return isEditing
@@ -772,14 +1038,8 @@
 
         var merged = Object.assign({}, current, normalised, preserved);
 
-        // Filler strip after merge so the flag drives the write
-        // shape. The strip drops empty/default keys, including any
-        // that were just re-populated by normaliseCharacterData.
         var finalRecord = applyFillerStripIfSet(merged, isFiller);
 
-        // Apply IN PLACE — preserve object identity so the id index
-        // sees the new values immediately. We first delete keys
-        // that the strip removed, then assign the rest.
         var existingKeys = Object.keys(current);
         for (var ek = 0; ek < existingKeys.length; ek++) {
             var key = existingKeys[ek];
@@ -841,24 +1101,6 @@
     // SET FILLER FLAG
     // ============================================================
 
-    /**
-     * Set or clear the isFiller flag on a list of characters.
-     *
-     * value === true:
-     *   Set char.isFiller = true, then strip empty fields from
-     *   each affected record in place.
-     *
-     * value === false:
-     *   Set char.isFiller = false. Do NOT restore fields. The next
-     *   edit re-populates the record via the normal save path.
-     *
-     * Single pipeline transaction. The strip is applied to records
-     * already in window.data, in place, preserving object identity
-     * so the id index stays fresh.
-     *
-     * @param {string[]} ids
-     * @param {boolean} value
-     */
     function setFillerFlag(ids, value) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -881,7 +1123,6 @@
             });
         }
 
-        // Normalise and dedupe.
         var idList = [];
         var seen = Object.create(null);
         for (var i = 0; i < ids.length; i++) {
@@ -941,8 +1182,6 @@
                         var reduced = Strip.stripEmptyFields(char);
                         reduced.isFiller = true;
 
-                        // Delete keys the strip removed, then copy
-                        // the rest. In place, identity preserved.
                         var existingKeys = Object.keys(char);
                         for (var ek = 0;
                              ek < existingKeys.length; ek++) {
@@ -1133,10 +1372,6 @@
         });
     }
 
-    /**
-     * Build the list of social relationships the child gets on
-     * creation. Two-sided clarifications.
-     */
     function buildChildRelationships(data, childRecord, parentA, parentB) {
         var list = [];
 
@@ -1173,7 +1408,6 @@
             return 'Sibling';
         }
 
-        // Parent A <-> child
         list.push({
             character1: String(parentA.id),
             character2: String(childRecord.id),
@@ -1195,7 +1429,6 @@
             notes: ''
         });
 
-        // Parent B <-> child
         list.push({
             character1: String(parentB.id),
             character2: String(childRecord.id),
@@ -1217,8 +1450,6 @@
             notes: ''
         });
 
-        // Siblings: any existing character sharing a parent with
-        // the new child.
         var parentIdSet = Object.create(null);
         parentIdSet[String(parentA.id)] = true;
         parentIdSet[String(parentB.id)] = true;
@@ -1546,6 +1777,232 @@
     }
 
     // ============================================================
+    // SET CAREER TRANSITION
+    // ============================================================
+    //
+    // Appends (or updates) a terminal careerStatus entry and runs
+    // the professional-team cascade in the same transaction. This
+    // is the mutation the Career Transition modal calls.
+    //
+    // STATUS:
+    //   `statusKey` must be one of the transition statuses:
+    //     'retired' | 'support' | 'instructor'
+    //
+    //   `civilian` is NOT accepted. It is a pre-career status, not
+    //   a transition. If a caller passes it, the mutation rejects
+    //   with a clear message.
+    //
+    // YEAR:
+    //   A positive integer. The year the transition happened. This
+    //   becomes the entry's startYear AND the cascade cut-off.
+    //
+    // BEHAVIOUR:
+    //   1. Reads the character's current careerStatus.
+    //   2. Removes any existing entry with the same statusKey
+    //      (there should be at most one).
+    //   3. Appends a fresh entry:
+    //        { status: statusKey, startYear: String(year),
+    //          endYear: '', title: '' }
+    //   4. Writes careerStatus back to the character.
+    //   5. Runs TeamCore.endStintsForCharacter(data, charId, year)
+    //      to end every open professional stint at that year.
+    //   6. One pipeline transaction. Rollback on failure.
+    //
+    // IDEMPOTENT:
+    //   Calling twice with the same (statusKey, year) produces the
+    //   same array. The second call replaces the entry with an
+    //   identical one, and the cascade finds no open stints.
+    //
+    // @param {string} charId
+    // @param {string} statusKey
+    // @param {number|string} year
+    // @returns {Promise<{success, data?, message?}>}
+
+    function setCareerTransition(charId, statusKey, year) {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        if (!charId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
+        }
+
+        var targetChar = String(charId);
+
+        var normalisedStatus = (statusKey === undefined || statusKey === null)
+            ? ''
+            : String(statusKey).trim().toLowerCase();
+        if (!isCareerTransitionStatus(normalisedStatus)) {
+            return Promise.resolve({
+                success: false,
+                message: 'Status must be one of: retired, support, instructor.'
+            });
+        }
+
+        var yearNum = parseInt(year, 10);
+        if (isNaN(yearNum) || yearNum < 1) {
+            return Promise.resolve({
+                success: false,
+                message: 'Year must be a positive integer.'
+            });
+        }
+        var yearStr = String(yearNum);
+
+        var char = CharacterQueries.getCharacterById(targetChar);
+        if (!char) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
+        }
+        var name = CharacterQueries.getDisplayName(char);
+
+        var statusLabel = normalisedStatus.charAt(0).toUpperCase() +
+            normalisedStatus.slice(1);
+
+        return MutationPipeline.performMutation({
+            validate: function() {
+                var current = CharacterQueries.getCharacterById(targetChar);
+                if (!current) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is malformed.');
+                }
+
+                var target = null;
+                for (var i = 0; i < data.characters.length; i++) {
+                    var c = data.characters[i];
+                    if (c && String(c.id) === targetChar) {
+                        target = c;
+                        break;
+                    }
+                }
+                if (!target) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                // ---- Rebuild careerStatus ----
+                //
+                // Keep every entry whose status is NOT the transition
+                // status we are setting. Then append the fresh
+                // entry. This means a repeated call with the same
+                // status produces the same array (idempotent), and a
+                // call after an earlier retirement with a different
+                // year replaces the earlier one.
+                var existing = Array.isArray(target.careerStatus)
+                    ? target.careerStatus
+                    : [];
+                var kept = [];
+                for (var j = 0; j < existing.length; j++) {
+                    var e = existing[j];
+                    if (!e || typeof e !== 'object') { continue; }
+                    var s = e.status !== undefined && e.status !== null
+                        ? String(e.status).trim().toLowerCase()
+                        : '';
+                    var formerIdx = s.indexOf(' (former)');
+                    if (formerIdx !== -1) {
+                        s = s.substring(0, formerIdx).trim();
+                    }
+                    if (s === normalisedStatus) { continue; }
+                    kept.push(e);
+                }
+
+                kept.push({
+                    status: normalisedStatus,
+                    startYear: yearStr,
+                    endYear: '',
+                    title: ''
+                });
+
+                target.careerStatus = kept;
+                target.updatedAt = new Date().toISOString();
+
+                invalidateCharacterIndex();
+
+                // ---- Career-transition cascade ----
+                //
+                // Runs against the same snapshot. Since we just set
+                // the transition status ourselves, we bypass the
+                // previous/new comparison and call the cascade
+                // helper's underlying action directly.
+                var cascade = {
+                    fired: false,
+                    year: yearNum,
+                    stintsEnded: 0,
+                    teamsTouched: 0
+                };
+
+                var TeamCore = getTeamCore();
+                if (TeamCore &&
+                    typeof TeamCore.endStintsForCharacter === 'function') {
+                    var cascadeResult = TeamCore.endStintsForCharacter(
+                        data, targetChar, yearNum
+                    );
+                    cascade.fired = true;
+                    if (cascadeResult && typeof cascadeResult === 'object') {
+                        cascade.stintsEnded =
+                            typeof cascadeResult.stintsEnded === 'number'
+                                ? cascadeResult.stintsEnded
+                                : 0;
+                        cascade.teamsTouched =
+                            typeof cascadeResult.teamsTouched === 'number'
+                                ? cascadeResult.teamsTouched
+                                : 0;
+                    }
+                } else {
+                    console.warn(
+                        '[CharacterCRUD] Career-transition cascade ' +
+                        'skipped for character ' + targetChar + ': ' +
+                        'TeamCore.endStintsForCharacter is unavailable. ' +
+                        'Open professional stints, if any, were not ended.'
+                    );
+                }
+
+                return {
+                    characterId: targetChar,
+                    status: normalisedStatus,
+                    year: yearNum,
+                    cascade: cascade
+                };
+            },
+            logMessage: function(result) {
+                var msg = 'Set ' + name + ' to ' + statusLabel +
+                    ' in ' + result.year;
+                if (result.cascade && result.cascade.stintsEnded > 0) {
+                    msg += ' (ended ' + result.cascade.stintsEnded +
+                        ' professional stint' +
+                        (result.cascade.stintsEnded === 1 ? '' : 's') +
+                        ')';
+                }
+                return msg;
+            },
+            successMessage: function(result) {
+                var parts = [statusLabel + ' set for ' + result.year + '.'];
+                if (result.cascade && result.cascade.stintsEnded > 0) {
+                    parts.push('Ended ' + result.cascade.stintsEnded +
+                        ' professional stint' +
+                        (result.cascade.stintsEnded === 1 ? '' : 's') + '.');
+                }
+                return parts.join(' ');
+            },
+            failureMessage: 'Failed to set career transition.'
+        });
+    }
+
+    // ============================================================
     // APPLY CAREER STATUS TIMELINE
     // ============================================================
     //
@@ -1553,41 +2010,18 @@
     // Used by the CareerStatusWizard to commit its generated
     // timeline in one transaction.
     //
-    // The method REPLACES. It does not merge. Every stage in the
-    // character's current careerStatus that is not in `stages` is
-    // removed.
+    // The method REPLACES. It does not merge.
     //
-    // STAGE SHAPE:
-    //   {
-    //     status:    'trainee' | 'rookie' | 'junior' | 'senior' | 'support' | ...,
-    //     startYear: number | integer-string,
-    //     endYear:   number | integer-string | '' (open),
-    //     title:     string (optional)
-    //   }
+    // CAREER-TRANSITION CASCADE:
+    //   If the new timeline's latest entry is a transition status
+    //   (retired, support, instructor), the professional-team
+    //   cascade runs against the same snapshot. This is what makes
+    //   the wizard's route B (which terminates in `support`) end
+    //   the character's open stints when it is applied.
     //
-    // VALIDATION:
-    //   - `stages` must be an array.
-    //   - Each stage must be an object with a non-empty `status`.
-    //   - `startYear` must parse to an integer >= 1.
-    //   - `endYear` must be either blank, or parse to an integer
-    //     >= startYear.
-    //
-    //   Invalid rows reject the whole mutation. Partial writes do
-    //   not happen.
-    //
-    // WHAT THIS DOES NOT DO:
-    //   - It does not touch the character record's OTHER fields.
-    //     Only careerStatus is written.
-    //   - It does not run the death cascade. careerStatus is not
-    //     a team stint, and endStintsForCharacter does not read
-    //     it.
-    //   - It does not re-derive the deceased cache. That is a
-    //     consequence of deathYear, which this method does not
-    //     change.
-    //
-    // @param {string} charId
-    // @param {Array}  stages
-    // @returns {Promise<{success, data?, message?}>}
+    //   The comparison is between the PREVIOUS latest status
+    //   (read before the mutation) and the NEW latest status
+    //   (read after). No transition, no cascade.
 
     function applyCareerStatusTimeline(charId, stages) {
         if (!checkDependencies()) {
@@ -1613,7 +2047,6 @@
 
         var targetChar = String(charId);
 
-        // ---- Pre-validate the shape and each stage's payload. ----
         var cleanStages = [];
         for (var i = 0; i < stages.length; i++) {
             var row = stages[i];
@@ -1678,7 +2111,6 @@
             });
         }
 
-        // ---- Resolve the character for the log message. ----
         var char = CharacterQueries.getCharacterById(targetChar);
         if (!char) {
             return Promise.resolve({
@@ -1688,7 +2120,8 @@
         }
         var name = CharacterQueries.getDisplayName(char);
 
-        // ---- Commit. ----
+        var previousLatestStatus = getLatestCareerStatus(char.careerStatus);
+
         return MutationPipeline.performMutation({
             validate: function() {
                 var current = CharacterQueries.getCharacterById(targetChar);
@@ -1717,27 +2150,55 @@
                     throw new Error('Character not found in data store.');
                 }
 
-                // Replace wholesale. Preserve nothing from the
-                // existing array; the caller owns the final shape.
                 target.careerStatus = cleanStages.slice();
                 target.updatedAt = new Date().toISOString();
 
                 invalidateCharacterIndex();
 
+                // ---- Career-transition cascade ----
+                //
+                // Compare previous and new latest statuses. A
+                // timeline whose latest entry is `support` (the
+                // wizard's route B terminal) cascades when the
+                // previous latest was not already a transition
+                // status.
+                var cascade = applyCareerTransitionCascade(
+                    data,
+                    targetChar,
+                    previousLatestStatus,
+                    target.careerStatus
+                );
+
                 return {
                     characterId: targetChar,
-                    stageCount: cleanStages.length
+                    stageCount: cleanStages.length,
+                    careerTransition: cascade
                 };
             },
             logMessage: function(result) {
-                return 'Replaced career status for ' + name +
+                var msg = 'Replaced career status for ' + name +
                     ' (' + result.stageCount + ' stage' +
                     (result.stageCount === 1 ? '' : 's') + ')';
+                var cascade = result.careerTransition;
+                if (cascade && cascade.fired && cascade.stintsEnded > 0) {
+                    msg += '; ended ' + cascade.stintsEnded +
+                        ' professional stint' +
+                        (cascade.stintsEnded === 1 ? '' : 's') +
+                        ' at year ' + cascade.year;
+                }
+                return msg;
             },
             successMessage: function(result) {
-                return 'Career status replaced: ' +
+                var msg = 'Career status replaced: ' +
                     result.stageCount + ' stage' +
                     (result.stageCount === 1 ? '' : 's') + '.';
+                var cascade = result.careerTransition;
+                if (cascade && cascade.fired && cascade.stintsEnded > 0) {
+                    msg += ' Ended ' + cascade.stintsEnded +
+                        ' professional stint' +
+                        (cascade.stintsEnded === 1 ? '' : 's') + '.';
+                }
+                return msg;
             },
             failureMessage: 'Failed to replace career status.'
         });
@@ -1947,6 +2408,9 @@
 
         // Career status wizard commit path.
         applyCareerStatusTimeline: applyCareerStatusTimeline,
+
+        // Career-transition modal commit path.
+        setCareerTransition: setCareerTransition,
 
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData
