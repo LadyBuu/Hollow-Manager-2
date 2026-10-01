@@ -1,44 +1,23 @@
 /**
  * js/import-export/export-envelope.js - Export Envelope
  * Envelope creation, validation, and manipulation for Hollow Manager 2 exports
- * 
- * This module handles the outer envelope of the export format:
- *   - Creating envelopes with proper structure
- *   - Validating envelope integrity
- *   - Extracting metadata
- *   - Converting between envelope and internal formats
- *   - Format version detection and migration coordination
- * 
- * IMPORTANT:
- *   - This module is PURE - no side effects, no mutations
- *   - No persistence, no DOM, no state
- *   - Uses ExportSchema for format constants
- *   - Validates envelope structure, not domain data
- *   - Domain data validation is handled by domain schemas
- *   - Format migration is coordinated but delegated to format-migrations.js
- * 
+ *
+ * FILLER STRIP (this revision):
+ *   When ExportEnvelope.create runs, the character array in the
+ *   envelope's data is passed through
+ *   window.CharacterStrip.stripEliminatedForExport before the
+ *   metadata counts are computed. Every character with an
+ *   elimination record is reduced to its meaningful fields in the
+ *   exported copy ONLY; the live store is not touched.
+ *
+ *   The CharacterStrip module is resolved lazily. When it is
+ *   absent, the pre-pass is a no-op: the export proceeds with
+ *   whatever the caller passed in.
+ *
  * DEPENDENCIES:
  *   - window.ExportSchema (from export-schema.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- * 
- * USAGE:
- *   var Envelope = window.ExportEnvelope;
- *   
- *   // Create envelope from data
- *   var envelope = Envelope.create(data, { applicationName: 'Hollow Manager 2' });
- *   
- *   // Validate envelope
- *   var result = Envelope.validate(envelope);
- *   if (result.valid) { /* proceed * / }
- *   
- *   // Extract data from envelope
- *   var data = Envelope.extract(envelope);
- *   
- *   // Check if envelope needs migration
- *   var needsMigrate = Envelope.needsMigration(envelope);
- *   if (needsMigrate) {
- *       envelope = Envelope.migrate(envelope);
- *   }
+ *   - window.CharacterStrip (from character-strip.js) - LAZY
  */
 
 (function() {
@@ -94,23 +73,51 @@
         return new Date().toISOString();
     }
 
+    /**
+     * Resolve the CharacterStrip module, lazily.
+     *
+     * Returns null when the module is unavailable; callers must
+     * treat that as "no strip" and pass the array through
+     * unchanged.
+     */
+    function getCharacterStrip() {
+        return window.CharacterStrip || null;
+    }
+
+    /**
+     * Run the export-time filler strip on a character array.
+     *
+     * Returns the array unchanged when:
+     *   - the input is not an array
+     *   - CharacterStrip is unavailable
+     *   - CharacterStrip.stripEliminatedForExport is missing
+     *
+     * Otherwise returns the array of stripped copies.
+     */
+    function applyFillerStripForExport(charArray) {
+        if (!Array.isArray(charArray)) { return charArray; }
+
+        var Strip = getCharacterStrip();
+        if (!Strip ||
+            typeof Strip.stripEliminatedForExport !== 'function') {
+            return charArray;
+        }
+
+        try {
+            return Strip.stripEliminatedForExport(charArray);
+        } catch (e) {
+            console.warn(
+                '[ExportEnvelope] stripEliminatedForExport threw; ' +
+                'exporting characters unstripped:', e
+            );
+            return charArray;
+        }
+    }
+
     // ============================================================
     // ENVELOPE CREATION
     // ============================================================
 
-    /**
-     * Create an export envelope from application data.
-     * 
-     * @param {object} data - Application data (canonical domain data)
-     * @param {object} options - Options
-     * @param {string} options.applicationName - Application name
-     * @param {string} options.applicationVersion - Application version
-     * @param {number} options.dataVersion - Internal data version
-     * @param {string} options.exportedBy - Who exported the data
-     * @param {boolean} options.preserveTimestamps - Preserve original timestamps (default: false)
-     * @param {object} options.extraMetadata - Additional metadata fields
-     * @returns {object} Export envelope
-     */
     function create(data, options) {
         options = options || {};
 
@@ -118,7 +125,6 @@
             throw new TypeError('Data must be an object.');
         }
 
-        // Validate data sections
         var validatedData = {};
         var sections = Schema.getSections();
 
@@ -131,7 +137,7 @@
             }
         }
 
-        // Application settings
+        // Application settings.
         if (data.currentYear !== undefined) {
             validatedData.currentYear = data.currentYear;
         }
@@ -139,7 +145,21 @@
             validatedData.currentWeek = data.currentWeek;
         }
 
-        // Build envelope
+        // ---- FILLER STRIP (export-only) ----
+        //
+        // Strip eliminated characters on the CLONE, before the
+        // metadata counts are computed. The source `data` object
+        // is untouched: the clone was made above.
+        //
+        // Only the characters array is affected. Teams, missions,
+        // social, and every other section pass through unchanged.
+        if (Array.isArray(validatedData.characters)) {
+            validatedData.characters = applyFillerStripForExport(
+                validatedData.characters
+            );
+        }
+
+        // Build envelope.
         var envelope = {
             format: FORMAT_NAME,
             formatVersion: FORMAT_VERSION,
@@ -159,7 +179,6 @@
             }
         };
 
-        // Add extra metadata
         if (options.extraMetadata && typeof options.extraMetadata === 'object') {
             for (var key in options.extraMetadata) {
                 if (Object.prototype.hasOwnProperty.call(options.extraMetadata, key)) {
@@ -171,13 +190,6 @@
         return envelope;
     }
 
-    /**
-     * Create an empty envelope with default structure.
-     * Useful for generating templates or starting fresh.
-     * 
-     * @param {object} options - Options
-     * @returns {object} Empty export envelope
-     */
     function createEmpty(options) {
         options = options || {};
 
@@ -195,16 +207,6 @@
     // ENVELOPE VALIDATION
     // ============================================================
 
-    /**
-     * Validate an export envelope.
-     * Checks structure, format, version, and required sections.
-     * 
-     * @param {object} envelope - Export envelope to validate
-     * @param {object} options - Options
-     * @param {boolean} options.strict - Strict validation (default: true)
-     * @param {boolean} options.checkRequiredSections - Check required sections (default: true)
-     * @returns {object} { valid: boolean, errors: array, warnings: array }
-     */
     function validate(envelope, options) {
         options = options || {};
         var strict = options.strict !== false;
@@ -218,12 +220,10 @@
             return { valid: false, errors: errors, warnings: warnings };
         }
 
-        // ---- Check format ----
         if (envelope.format !== FORMAT_NAME) {
             errors.push('Invalid format. Expected "' + FORMAT_NAME + '", got "' + (envelope.format || 'undefined') + '".');
         }
 
-        // ---- Check format version ----
         if (!isNumber(envelope.formatVersion)) {
             errors.push('formatVersion must be a number.');
         } else if (envelope.formatVersion < MIN_SUPPORTED_VERSION) {
@@ -232,7 +232,6 @@
             warnings.push('Export format version ' + envelope.formatVersion + ' is newer than current version ' + FORMAT_VERSION + '. Some features may not be available.');
         }
 
-        // ---- Check exportedAt ----
         if (envelope.exportedAt !== undefined && !isString(envelope.exportedAt)) {
             errors.push('exportedAt must be a string.');
         } else if (envelope.exportedAt) {
@@ -242,18 +241,15 @@
             }
         }
 
-        // ---- Check application metadata ----
         if (envelope.application !== undefined && !isObject(envelope.application)) {
             errors.push('application must be an object.');
         }
 
-        // ---- Check data section ----
         if (!envelope.data || typeof envelope.data !== 'object') {
             errors.push('data section is required and must be an object.');
             return { valid: false, errors: errors, warnings: warnings };
         }
 
-        // ---- Check required sections ----
         if (checkRequired) {
             var requiredSections = Schema.getRequiredSections();
             for (var i = 0; i < requiredSections.length; i++) {
@@ -266,7 +262,6 @@
             }
         }
 
-        // ---- Check optional sections ----
         var optionalSections = Schema.getOptionalSections();
         for (var j = 0; j < optionalSections.length; j++) {
             var optSection = optionalSections[j];
@@ -275,12 +270,10 @@
             }
         }
 
-        // ---- Check metadata ----
         if (envelope.metadata !== undefined && !isObject(envelope.metadata)) {
             errors.push('metadata must be an object.');
         }
 
-        // ---- Check for unknown top-level fields ----
         if (strict) {
             var knownFields = ['format', 'formatVersion', 'exportedAt', 'application', 'data', 'metadata'];
             var envelopeKeys = Object.keys(envelope);
@@ -299,28 +292,15 @@
         };
     }
 
-    /**
-     * Quick validation - returns boolean.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {boolean} True if valid
-     */
     function isValid(envelope) {
         var result = validate(envelope, { strict: false });
         return result.valid;
     }
 
-    /**
-     * Validate envelope structure only (no domain validation).
-     * This is a lighter validation for quick checks.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {object} { valid: boolean, errors: array }
-     */
     function validateStructure(envelope) {
-        var result = validate(envelope, { 
-            strict: true, 
-            checkRequiredSections: true 
+        var result = validate(envelope, {
+            strict: true,
+            checkRequiredSections: true
         });
         return {
             valid: result.valid,
@@ -332,16 +312,6 @@
     // ENVELOPE EXTRACTION
     // ============================================================
 
-    /**
-     * Extract application data from an envelope.
-     * Returns a clean data object with only the canonical sections.
-     * 
-     * @param {object} envelope - Export envelope
-     * @param {object} options - Options
-     * @param {boolean} options.includeSettings - Include application settings (default: true)
-     * @param {boolean} options.defaultMissing - Default missing sections (default: true)
-     * @returns {object} Application data object
-     */
     function extract(envelope, options) {
         options = options || {};
         var includeSettings = options.includeSettings !== false;
@@ -354,7 +324,6 @@
         var data = {};
         var sections = Schema.getSections();
 
-        // Extract canonical sections
         for (var i = 0; i < sections.length; i++) {
             var section = sections[i];
             if (section in envelope.data) {
@@ -364,7 +333,6 @@
             }
         }
 
-        // Extract application settings
         if (includeSettings) {
             if (envelope.data.currentYear !== undefined) {
                 data.currentYear = envelope.data.currentYear;
@@ -377,12 +345,6 @@
         return data;
     }
 
-    /**
-     * Extract metadata from an envelope.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {object} Metadata object
-     */
     function extractMetadata(envelope) {
         if (!envelope || typeof envelope !== 'object') {
             return {};
@@ -410,12 +372,6 @@
     // ENVELOPE MIGRATION
     // ============================================================
 
-    /**
-     * Check if an envelope needs migration to the current format.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {boolean} True if migration is needed
-     */
     function needsMigration(envelope) {
         if (!envelope || typeof envelope !== 'object') {
             return false;
@@ -429,12 +385,6 @@
         return version < FORMAT_VERSION && version >= MIN_SUPPORTED_VERSION;
     }
 
-    /**
-     * Check if an envelope can be migrated to the current format.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {boolean} True if migration is possible
-     */
     function canMigrate(envelope) {
         if (!envelope || typeof envelope !== 'object') {
             return false;
@@ -448,16 +398,6 @@
         return version >= MIN_SUPPORTED_VERSION;
     }
 
-    /**
-     * Migrate an envelope to the current format.
-     * This coordinates migration but delegates actual transformation
-     * to format-migrations.js.
-     * 
-     * @param {object} envelope - Export envelope to migrate
-     * @param {object} options - Options
-     * @param {boolean} options.inPlace - Modify in place (default: false)
-     * @returns {object} Migrated envelope
-     */
     function migrate(envelope, options) {
         options = options || {};
 
@@ -478,17 +418,10 @@
             throw new Error('Envelope version ' + version + ' is too old to migrate. Minimum supported version is ' + MIN_SUPPORTED_VERSION + '.');
         }
 
-        // Create a working copy
         var result = options.inPlace ? envelope : deepClone(envelope);
 
-        // Apply migrations sequentially
-        // This is where format-migrations.js would be called
-        // For v1, there are no migrations yet
-
-        // Update format version
         result.formatVersion = FORMAT_VERSION;
 
-        // Ensure all required sections exist
         var sections = Schema.getRequiredSections();
         for (var i = 0; i < sections.length; i++) {
             var section = sections[i];
@@ -504,16 +437,6 @@
     // ENVELOPE COMPARISON
     // ============================================================
 
-    /**
-     * Compare two envelopes for structural equality.
-     * 
-     * @param {object} envelope1 - First envelope
-     * @param {object} envelope2 - Second envelope
-     * @param {object} options - Options
-     * @param {boolean} options.ignoreTimestamps - Ignore exportedAt (default: true)
-     * @param {boolean} options.ignoreMetadata - Ignore metadata (default: false)
-     * @returns {boolean} True if structurally equal
-     */
     function isEqual(envelope1, envelope2, options) {
         options = options || {};
         var ignoreTimestamps = options.ignoreTimestamps !== false;
@@ -527,32 +450,26 @@
             return envelope1 === envelope2;
         }
 
-        // Compare format
         if (envelope1.format !== envelope2.format) {
             return false;
         }
 
-        // Compare format version
         if (envelope1.formatVersion !== envelope2.formatVersion) {
             return false;
         }
 
-        // Compare exportedAt
         if (!ignoreTimestamps && envelope1.exportedAt !== envelope2.exportedAt) {
             return false;
         }
 
-        // Compare application
         if (JSON.stringify(envelope1.application) !== JSON.stringify(envelope2.application)) {
             return false;
         }
 
-        // Compare data
         if (JSON.stringify(envelope1.data) !== JSON.stringify(envelope2.data)) {
             return false;
         }
 
-        // Compare metadata
         if (!ignoreMetadata) {
             if (JSON.stringify(envelope1.metadata) !== JSON.stringify(envelope2.metadata)) {
                 return false;
@@ -566,12 +483,6 @@
     // ENVELOPE UTILITIES
     // ============================================================
 
-    /**
-     * Get a human-readable description of an envelope.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {string} Description
-     */
     function describe(envelope) {
         if (!envelope || typeof envelope !== 'object') {
             return 'Invalid envelope';
@@ -609,12 +520,6 @@
         return parts.join(' | ');
     }
 
-    /**
-     * Get a compact summary of an envelope for display.
-     * 
-     * @param {object} envelope - Export envelope
-     * @returns {object} Display summary
-     */
     function getDisplaySummary(envelope) {
         if (!envelope || typeof envelope !== 'object') {
             return {
@@ -717,7 +622,6 @@
 
         if (missing.length > 0) {
             console.warn('[ExportEnvelope] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
