@@ -31,21 +31,26 @@
  *
  *   A direct binding would be lost after the first re-render.
  *
- * FILLER MANAGER BUTTON (this revision):
+ * FILLER MANAGER BUTTON:
  *   The character page header carries a Manage Fillers button
  *   (#manage-fillers-btn) rendered by characters/index.js. Clicking
- *   it opens the FillerManagerModal, which lists every character
- *   with a checkbox and lets the user flag some as filler. The flag
- *   drives the strip on save (see character-strip.js and
- *   character-crud.js).
+ *   it opens the FillerManagerModal.
  *
  *   The button is bound directly (not delegated) because it lives
  *   in the static header, outside the re-rendered form content.
  *
+ * FILLER FILTER CHECKBOX (this revision):
+ *   The character list sidebar carries a "Hide filler" checkbox
+ *   (#hide-filler). Toggling it persists the state through
+ *   CharacterList.setHideFiller and re-renders the list.
+ *
+ *   The Clear button (#clear-char-filter) resets the checkbox
+ *   back to its default (checked), which is persisted too.
+ *
  * CHARACTER REPORT EXPORT:
- *   The character page header carries a report-export button
- *   (#export-character-report-btn). It exports a plain-text report
- *   of the currently-selected character via
+ *   The character form's actions row carries a report-export
+ *   button (#export-character-report-btn). It exports a plain-text
+ *   report of the currently-selected character via
  *   CharacterExport.exportCharacterText.
  *
  *   The button is only meaningful when a character is selected. Its
@@ -402,10 +407,6 @@
     // ============================================================
     // FILLER MANAGER BUTTON
     // ============================================================
-    //
-    // The Manage Fillers button lives in the static character page
-    // header, so it is bound directly (not delegated). Clicking it
-    // opens the FillerManagerModal.
 
     function bindManageFillers(container) {
         var btn = document.getElementById('manage-fillers-btn');
@@ -749,6 +750,28 @@
             });
         }
 
+        // ---- Hide filler ----
+        //
+        // Reads its own persisted default on mount (see
+        // characters/index.js). When the checkbox is toggled, the
+        // state is persisted via CharacterList.setHideFiller and
+        // the list re-renders.
+        var hideFiller = document.getElementById('hide-filler');
+        if (hideFiller) {
+            addSafeEventListener(hideFiller, 'change', function() {
+                if (window.CharacterList &&
+                    typeof window.CharacterList.setHideFiller === 'function') {
+                    window.CharacterList.setHideFiller(hideFiller.checked);
+                    return;
+                }
+                // Fallback when CharacterList is unavailable: just
+                // re-render whatever is there.
+                if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+                    window.CharacterList.render();
+                }
+            });
+        }
+
         var clearFilter = document.getElementById('clear-char-filter');
         if (clearFilter) {
             addSafeEventListener(clearFilter, 'click', function() {
@@ -761,6 +784,13 @@
                 if (classEl) { classEl.value = 'all'; }
                 if (hideDeadEl) { hideDeadEl.checked = true; }
                 if (hideElimEl) { hideElimEl.checked = true; }
+
+                // Hide filler resets to its default (checked).
+                // Persisted via CharacterList.setHideFiller.
+                if (window.CharacterList &&
+                    typeof window.CharacterList.setHideFiller === 'function') {
+                    window.CharacterList.setHideFiller(true);
+                }
 
                 var statusBoxes = document.querySelectorAll(
                     '#char-status-filter input[type="checkbox"][data-status]'
