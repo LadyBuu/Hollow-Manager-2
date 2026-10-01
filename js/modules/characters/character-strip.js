@@ -1,0 +1,485 @@
+/**
+ * modules/characters/character-strip.js - Character Strip Helpers
+ * Reduce a character record to its meaningful fields.
+ *
+ * Path: js/modules/characters/character-strip.js
+ *
+ * WHAT THIS MODULE DOES:
+ *   - isFillerCandidate(char): heuristic. True when the character
+ *     looks like a filler entry: has meaningful history (career,
+ *     class, eliminations, parents) but no authored content
+ *     (no stats beyond default, no magic, no personality, no
+ *     notes, no weapons, no moves, no bio text).
+ *   - stripEmptyFields(char): returns a NEW object containing only
+ *     the non-empty, non-default keys. The original object is not
+ *     mutated.
+ *
+ * WHAT THIS MODULE DOES NOT DO:
+ *   - It does not mutate window.data.
+ *   - It does not touch persistence.
+ *   - It does not decide WHEN to strip. That is CharacterCRUD's
+ *     job, driven by char.isFiller.
+ *   - It does not check team membership. That lives on team
+ *     records, not on the character record, and is the caller's
+ *     concern.
+ *
+ * SHAPE:
+ *   stripEmptyFields walks the character object and drops every
+ *   key whose value is empty or at its domain default:
+ *
+ *     strings       ''              -> dropped
+ *     arrays        []              -> dropped
+ *     numbers       0 (hp/mp)       -> dropped
+ *                   10 (stats)      -> dropped
+ *     objects       all inner keys dropped -> whole key dropped
+ *
+ *   A fixed KEEP set survives regardless: id, firstName, lastName,
+ *   gender, birthYear, deceased, isFiller, createdAt, updatedAt,
+ *   and any non-empty careerStatus / classIds / parentIds /
+ *   eliminations / eliminatedWeeks array.
+ *
+ *   The strip is idempotent. Running it twice produces the same
+ *   shape.
+ *
+ * DEFAULT VALUES:
+ *   The module carries its own default table. It does NOT read
+ *   CharacterConstants, because a missing CharacterConstants
+ *   should not block a strip. The defaults mirror the canonical
+ *   values: STAT_DEFAULT = 10, MAGIC default = 0, HP/MP default
+ *   = 0.
+ *
+ * DEPENDENCIES:
+ *   None.
+ */
+
+(function() {
+    'use strict';
+
+    if (window.__characterStripLoaded) {
+        return;
+    }
+    window.__characterStripLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var STAT_DEFAULT = 10;
+    var STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+
+    var DEFAULT_DISPLAY_PARTS = {
+        first: true,
+        middle: true,
+        last: true,
+        nickname: false,
+        alias: false
+    };
+
+    var DEFAULT_NAME_FORMAT = 'firstlast';
+
+    /**
+     * Keys always kept on a stripped record, regardless of value.
+     *
+     *   id              identity
+     *   firstName       required by validation
+     *   lastName        required by validation
+     *   gender          meaningful even when empty (birth, display)
+     *   birthYear       meaningful even when empty
+     *   deceased        cached boolean
+     *   isFiller        the flag itself
+     *   createdAt       provenance
+     *   updatedAt       provenance
+     */
+    var ALWAYS_KEEP = {
+        id: true,
+        firstName: true,
+        lastName: true,
+        gender: true,
+        birthYear: true,
+        deceased: true,
+        isFiller: true,
+        createdAt: true,
+        updatedAt: true
+    };
+
+    /**
+     * Keys kept when their value is a non-empty array. Dropped
+     * when empty.
+     */
+    var KEEP_NONEMPTY_ARRAY = {
+        careerStatus: true,
+        classIds: true,
+        parentIds: true,
+        eliminations: true,
+        eliminatedWeeks: true,
+        previousNames: true
+    };
+
+    /**
+     * Keys that are simple strings, dropped when empty.
+     * Kept when non-empty.
+     */
+    var DROP_EMPTY_STRING = {
+        middleName: true,
+        nickname: true,
+        alias: true,
+        attraction: true,
+        sexuality: true,
+        eyes: true,
+        hair: true,
+        skin: true,
+        height: true,
+        weight: true,
+        build: true,
+        appearanceNotes: true,
+        specialty: true,
+        notes: true,
+        combatNotes: true,
+        deathYear: true,
+        deathAge: true,
+        deathCause: true,
+        deathWeek: true,
+        graduatingClassId: true
+    };
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
+    }
+
+    function isEmptyString(value) {
+        return typeof value === 'string' && value.trim() === '';
+    }
+
+    function isDefaultStatObject(obj) {
+        if (!isPlainObject(obj)) { return false; }
+        var keys = Object.keys(obj);
+        if (keys.length === 0) { return true; }
+        for (var i = 0; i < keys.length; i++) {
+            if (obj[keys[i]] !== STAT_DEFAULT) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isZeroNumberObject(obj) {
+        if (!isPlainObject(obj)) { return false; }
+        var keys = Object.keys(obj);
+        if (keys.length === 0) { return true; }
+        for (var i = 0; i < keys.length; i++) {
+            if (obj[keys[i]] !== 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isEmptyStringObject(obj) {
+        if (!isPlainObject(obj)) { return false; }
+        var keys = Object.keys(obj);
+        if (keys.length === 0) { return true; }
+        for (var i = 0; i < keys.length; i++) {
+            var v = obj[keys[i]];
+            if (typeof v === 'string' && v.trim() !== '') {
+                return false;
+            }
+            if (typeof v === 'number' && v !== 0) {
+                return false;
+            }
+            if (Array.isArray(v) && v.length > 0) {
+                return false;
+            }
+            if (isPlainObject(v) && Object.keys(v).length > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isEmptyArray(value) {
+        return Array.isArray(value) && value.length === 0;
+    }
+
+    function isDefaultDisplayParts(obj) {
+        if (!isPlainObject(obj)) { return false; }
+        var keys = Object.keys(DEFAULT_DISPLAY_PARTS);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            var expected = DEFAULT_DISPLAY_PARTS[k];
+            if (obj[k] !== expected) { return false; }
+        }
+        // Also treat extra keys as non-default.
+        if (Object.keys(obj).length !== keys.length) { return false; }
+        return true;
+    }
+
+    // ============================================================
+    // FILLER CANDIDATE HEURISTIC
+    // ============================================================
+
+    /**
+     * Does this character look like a filler entry?
+     *
+     * FILLER WHEN:
+     *   - The character has NO authored content of any kind:
+     *     stats all default, magic all zero, hp/mp zero, no
+     *     weapons, no moves, no personality strings, no bio
+     *     fields, no notes, no combat notes, no specialty.
+     *
+     *   This is a NEGATIVE heuristic: it does not require the
+     *   character to have any specific history to be a candidate.
+     *   The reason is that the caller (the maintenance modal)
+     *   can filter further: "on a team" and "eliminated" and
+     *   "in a class" are useful signals on the LIST view, but
+     *   they are not what makes a character filler.
+     *
+     *   What makes a character filler is that they have NO
+     *   authored content. The modal shows all such characters
+     *   and lets the user pick.
+     *
+     * @param {object} char
+     * @returns {boolean}
+     */
+    function isFillerCandidate(char) {
+        if (!char || typeof char !== 'object') { return false; }
+
+        // Any authored content disqualifies the record.
+        if (hasAuthoredContent(char)) { return false; }
+
+        return true;
+    }
+
+    function hasAuthoredContent(char) {
+        if (!char || typeof char !== 'object') { return false; }
+
+        // Stats.
+        if (isPlainObject(char.stats)) {
+            var statKeys = Object.keys(char.stats);
+            for (var i = 0; i < statKeys.length; i++) {
+                if (char.stats[statKeys[i]] !== STAT_DEFAULT) {
+                    return true;
+                }
+            }
+        }
+
+        // Magic.
+        if (isPlainObject(char.magic)) {
+            var magicKeys = Object.keys(char.magic);
+            for (var j = 0; j < magicKeys.length; j++) {
+                var mv = char.magic[magicKeys[j]];
+                if (typeof mv === 'number' && mv > 0) {
+                    return true;
+                }
+            }
+        }
+
+        // HP / MP.
+        if (typeof char.hp === 'number' && char.hp > 0) {
+            return true;
+        }
+        if (typeof char.mp === 'number' && char.mp > 0) {
+            return true;
+        }
+
+        // Weapons.
+        if (Array.isArray(char.weapons) && char.weapons.length > 0) {
+            return true;
+        }
+
+        // Special moves.
+        if (isPlainObject(char.specialMoves)) {
+            var phys = char.specialMoves.physical;
+            var magi = char.specialMoves.magical;
+            if (Array.isArray(phys) && phys.length > 0) { return true; }
+            if (Array.isArray(magi) && magi.length > 0) { return true; }
+        }
+
+        // Personality.
+        if (isPlainObject(char.personality)) {
+            var pKeys = Object.keys(char.personality);
+            for (var p = 0; p < pKeys.length; p++) {
+                var pv = char.personality[pKeys[p]];
+                if (typeof pv === 'string' && pv.trim() !== '') {
+                    return true;
+                }
+                if (typeof pv === 'number' && pv !== 0) {
+                    return true;
+                }
+                if (Array.isArray(pv) && pv.length > 0) {
+                    return true;
+                }
+            }
+        }
+
+        // Bio strings.
+        var bioFields = [
+            'appearanceNotes', 'notes', 'combatNotes',
+            'specialty', 'eyes', 'hair', 'skin',
+            'height', 'weight', 'build',
+            'attraction', 'sexuality',
+            'middleName', 'nickname', 'alias',
+            'deathCause'
+        ];
+        for (var b = 0; b < bioFields.length; b++) {
+            var bv = char[bioFields[b]];
+            if (typeof bv === 'string' && bv.trim() !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ============================================================
+    // STRIP
+    // ============================================================
+
+    /**
+     * Return a new character object containing only the non-empty,
+     * non-default keys.
+     *
+     * The original object is not mutated. Callers that wish to
+     * replace the record in place (preserving object identity) do
+     * so themselves.
+     *
+     * @param {object} char
+     * @returns {object}
+     */
+    function stripEmptyFields(char) {
+        if (!char || typeof char !== 'object') {
+            return char;
+        }
+
+        var out = {};
+
+        var keys = Object.keys(char);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var value = char[key];
+
+            // Always-keep keys.
+            if (ALWAYS_KEEP[key]) {
+                out[key] = value;
+                continue;
+            }
+
+            // Non-empty arrays kept.
+            if (KEEP_NONEMPTY_ARRAY[key]) {
+                if (Array.isArray(value) && value.length > 0) {
+                    out[key] = value;
+                }
+                continue;
+            }
+
+            // Simple strings dropped when empty.
+            if (DROP_EMPTY_STRING[key]) {
+                if (typeof value === 'string' && value.trim() !== '') {
+                    out[key] = value;
+                } else if (typeof value === 'number') {
+                    // Some of these keys can be numbers historically;
+                    // keep nonzero numbers.
+                    if (value !== 0) { out[key] = value; }
+                }
+                continue;
+            }
+
+            // Category-specific handling.
+            switch (key) {
+                case 'stats':
+                    if (isPlainObject(value) &&
+                        !isDefaultStatObject(value)) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'magic':
+                    if (isPlainObject(value) &&
+                        !isZeroNumberObject(value)) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'hp':
+                case 'mp':
+                    if (typeof value === 'number' && value !== 0) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'weapons':
+                    if (Array.isArray(value) && value.length > 0) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'specialMoves':
+                    if (isPlainObject(value)) {
+                        var hasPhys = Array.isArray(value.physical) &&
+                            value.physical.length > 0;
+                        var hasMagi = Array.isArray(value.magical) &&
+                            value.magical.length > 0;
+                        if (hasPhys || hasMagi) {
+                            out[key] = value;
+                        }
+                    }
+                    continue;
+
+                case 'personality':
+                    if (isPlainObject(value) &&
+                        !isEmptyStringObject(value)) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'displayParts':
+                    if (isPlainObject(value) &&
+                        !isDefaultDisplayParts(value)) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'nameFormat':
+                    if (typeof value === 'string' &&
+                        value !== '' &&
+                        value !== DEFAULT_NAME_FORMAT) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                case 'graduatingClassInstructor':
+                    if (value === true) {
+                        out[key] = value;
+                    }
+                    continue;
+
+                default:
+                    // Unknown keys: keep unless trivially empty.
+                    if (isEmptyString(value)) { continue; }
+                    if (isEmptyArray(value)) { continue; }
+                    if (value === null || value === undefined) {
+                        continue;
+                    }
+                    out[key] = value;
+            }
+        }
+
+        return out;
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.CharacterStrip = Object.freeze({
+        isFillerCandidate: isFillerCandidate,
+        hasAuthoredContent: hasAuthoredContent,
+        stripEmptyFields: stripEmptyFields
+    });
+
+})();
