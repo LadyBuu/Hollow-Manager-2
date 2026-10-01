@@ -9,49 +9,129 @@
  *   - Static elements (outside the form content) use direct binding.
  *   - Combat tab bindings (roll buttons, class overrides, stat/magic
  *     live updates, weapons, moves) are all delegated.
- *   - Social tab bindings (add/edit/delete relationship, group
- *     toggles, graph view, character search filter) are all
- *     delegated.
- *   - Academic tab uses a class DROPDOWN. The Add button reads
- *     #academic-class-select and calls AcademyClasses.addToClass.
- *   - SocialCore is initialized on-demand via
- *     ensureSocialCoreInitialized().
- *   - Modals are HIDDEN (not destroyed) so they can be reused.
- *
- * HEADER CONTROLS (this revision):
- *   The character page header carries four controls:
- *
- *     #import-characters-csv-btn    opens the CSV file picker
- *     #export-characters-btn        opens the export picker
- *     #manage-fillers-btn           opens the filler manager
- *     #add-character-btn            creates a new character
- *
- *   The previous three export buttons (CSV, template, roster) are
- *   gone. Their behaviour is now reachable through the export
- *   picker (CharacterExportPicker). See
- *   character-export-picker.js.
+ *   - Social tab bindings (add/edit/delete relationship, group toggles,
+ *     graph view, character search filter) are all delegated.
+ *   - Academic tab uses a class DROPDOWN (not a free-text input) as of
+ *     the Academic tab rework. The Add button reads the selected class
+ *     from #academic-class-select and calls AcademyClasses.addToClass.
+ *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
+ *     so the character form's Social tab works even if the top-level
+ *     Social tab was never opened.
+ *   - Modals are HIDDEN (not destroyed) so they can be reused:
+ *     use Modal.hideModal() not Modal.closeModal().
  *
  * DELETE BINDING:
- *   The Delete button lives inside #character-form-content.
- *   Bound via DELEGATION.
+ *   The Delete button lives inside #character-form-content (rendered
+ *   by character-form.js's getCharacterFormHTML) so it appears in
+ *   the bottom form-actions row next to Cancel and Create/Update.
+ *   Bound via DELEGATION:
+ *
+ *     bindDeleteButton() -> addSafeDelegatedListener(
+ *         '#delete-char-btn', 'click', ...)
+ *
+ *   A direct binding would be lost after the first re-render.
+ *
+ * FILLER MANAGER BUTTON:
+ *   The character page header carries a Manage Fillers button
+ *   (#manage-fillers-btn) rendered by characters/index.js. Clicking
+ *   it opens the FillerManagerModal.
+ *
+ *   The button is bound directly (not delegated) because it lives
+ *   in the static header, outside the re-rendered form content.
+ *
+ * CHARACTER ROSTER EXPORT BUTTON:
+ *   The character page header carries a roster-export button
+ *   (#export-character-roster-btn) rendered by characters/index.js.
+ *   Clicking it produces a tab-separated plain-text roster
+ *   (Name / Gender / Birth Year / Eliminated) of every character
+ *   in the store, downloaded as a .txt file. The export is produced
+ *   by window.CharacterRosterExport.
+ *
+ *   The button lives in the static header, so it is bound directly
+ *   (not delegated).
+ *
+ * CAREER WIZARD BUTTON (this revision):
+ *   The Professional tab's Career Status History section carries a
+ *   [⌂ Career Wizard] button (#career-wizard-btn) rendered by
+ *   character-form.js's getProfessionalTabHTML. Clicking it opens
+ *   the CareerStatusWizard modal for the current edit id.
+ *
+ *   The button lives inside #character-form-content, which is
+ *   re-rendered on every CharacterForm.render(). It MUST be bound
+ *   via delegation, or the listener is lost after the first
+ *   re-render.
+ *
+ *   The wizard handles its own commit via
+ *   CharacterCRUD.applyCareerStatusTimeline. This module's only job
+ *   is to open the modal. On close, the wizard dispatches nothing;
+ *   this module does not need to refresh anything, because the
+ *   wizard's Apply re-renders the form via a normal callback path
+ *   inside the wizard's closeModal -> form refresh.
+ *
+ *   Wait — the wizard does NOT re-render the form itself. It only
+ *   closes. That means after Apply, the form's careerStatus rows
+ *   are stale until something re-renders the form. To avoid a
+ *   silent-stale-form bug, this module re-renders the form after
+ *   the wizard closes. The wizard does not expose a "did apply"
+ *   flag, so we re-render unconditionally on close. The re-render
+ *   is cheap and the correctness win is worth it.
+ *
+ * FILLER FILTER CHECKBOX:
+ *   The character list sidebar carries a "Hide filler" checkbox
+ *   (#hide-filler). Toggling it persists the state through
+ *   CharacterList.setHideFiller and re-renders the list.
+ *
+ *   The Clear button (#clear-char-filter) resets the checkbox
+ *   back to its default (checked), which is persisted too.
  *
  * CHARACTER REPORT EXPORT:
  *   The character form's actions row carries a report-export
- *   button (#export-character-report-btn). Its enabled state is
- *   kept in sync by refreshCharacterReportButton().
+ *   button (#export-character-report-btn). It exports a plain-text
+ *   report of the currently-selected character via
+ *   CharacterExport.exportCharacterText.
+ *
+ *   The button is only meaningful when a character is selected. Its
+ *   enabled state is kept in sync with the current edit id by
+ *   refreshCharacterReportButton(), called from every path that
+ *   changes the edit id:
+ *
+ *     - init()                           (initial state)
+ *     - handleCharacterSelect()          (user picked a character)
+ *     - handleSave() on success          (created or updated)
+ *     - handleDelete() on success        (nothing selected)
+ *     - installCharacterEditListener()   (characterEdit CustomEvent)
  *
  * COLLAPSIBLE CAREER STATUS FILTER:
  *   The Career Status checkbox group in the character list sidebar
- *   is collapsible. See the previous revisions of this file for
- *   the full contract.
+ *   is collapsible. The header (#career-status-filter-toggle) is a
+ *   button. Clicking it toggles the collapsed state, which:
+ *
+ *     - flips data-collapsed on #career-status-filter-group
+ *     - flips the caret glyph inside .status-filter-caret
+ *     - shows/hides #char-status-filter
+ *
+ *   The collapsed state is stored at module scope in
+ *   _careerStatusCollapsed so it survives re-renders of the list
+ *   panel. The initial value is written into the markup by
+ *   characters/index.js on mount.
+ *
+ * PER-FIELD RANDOM:
+ *   The Physical and Personality tabs render a small ⟳ button
+ *   (.field-random-btn) next to each pool-backed field. Clicking
+ *   one rerolls only that field.
  *
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded against re-entrant invocation by a
- *   module-level _saveInFlight flag.
+ *   module-level _saveInFlight flag. A single user click cannot
+ *   produce two concurrent saves.
  *
  *   On success, the form is re-rendered ONLY when the save CREATED
  *   a new character. For an EXISTING character, the form already
- *   holds the values the user just submitted.
+ *   holds the values the user just submitted, and re-rendering it
+ *   from window.data creates an opportunity for a queued mutation
+ *   to overwrite the freshly-saved values with a stale snapshot.
+ *   This is the fix for the "rolled stats revert to previously
+ *   saved values" bug.
  *
  *   refreshUI() is render-only. It must not enqueue mutations.
  */
@@ -103,8 +183,10 @@
 
     var _characterEditListenerInstalled = false;
 
+    // Save re-entrancy guard.
     var _saveInFlight = false;
 
+    // Career Status filter collapse state.
     var _careerStatusCollapsed = null;
 
     // ============================================================
@@ -123,8 +205,12 @@
         return window.FillerManagerModal || null;
     }
 
-    function getCharacterExportPicker() {
-        return window.CharacterExportPicker || null;
+    function getCharacterRosterExport() {
+        return window.CharacterRosterExport || null;
+    }
+
+    function getCareerStatusWizard() {
+        return window.CareerStatusWizard || null;
     }
 
     // ============================================================
@@ -364,6 +450,156 @@
     }
 
     // ============================================================
+    // CAREER WIZARD BUTTON
+    // ============================================================
+    //
+    // The Professional tab's Career Status History section carries
+    // a [⌂ Career Wizard] button rendered by
+    // character-form.js's getProfessionalTabHTML.
+    //
+    // The button lives inside #character-form-content, which is
+    // re-rendered on every CharacterForm.render(). It MUST be
+    // bound via delegation.
+    //
+    // ON CLOSE:
+    //   After the wizard closes, the form's careerStatus rows are
+    //   stale (the wizard does not re-render the form). We
+    //   re-render the form unconditionally on close so the user
+    //   sees the wizard's output without an extra action.
+    //
+    //   The re-render is skipped if the wizard never opened (for
+    //   example, because no character is selected). The wizard's
+    //   openModal returns null in that case.
+
+    function bindCareerStatusWizard() {
+        addSafeDelegatedListener(
+            '#career-wizard-btn',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+
+                var charId = typeof window.getCurrentEditId === 'function'
+                    ? window.getCurrentEditId()
+                    : null;
+
+                if (!charId) {
+                    notify('Save the character before using the wizard.',
+                        'error');
+                    return;
+                }
+
+                var Wizard = getCareerStatusWizard();
+                if (!Wizard || typeof Wizard.openModal !== 'function') {
+                    notify('Career wizard is not available.', 'error');
+                    return;
+                }
+
+                var opened = null;
+                try {
+                    opened = Wizard.openModal(charId);
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] CareerStatusWizard.openModal ' +
+                        'threw:', err
+                    );
+                    notify(
+                        'Career wizard failed: ' + err.message,
+                        'error'
+                    );
+                    return;
+                }
+
+                if (!opened) {
+                    // openModal returned null: it refused to open
+                    // (typically because the character no longer
+                    // exists). Nothing to re-render.
+                    return;
+                }
+
+                // ---- Re-render on close. ----
+                //
+                // The wizard does not expose a close callback, so
+                // we install a one-shot observer on the modal's
+                // removal from the DOM. When the modal element is
+                // gone, we re-render the form.
+                //
+                // This is a pragmatic solution: the Modal API does
+                // not offer a "onClosed" hook, and the wizard does
+                // not expose one either. A MutationObserver on
+                // document.body watching for the modal's removal
+                // is the least intrusive option.
+                //
+                // The observer disconnects itself on the first
+                // removal, so it does not leak.
+
+                var modalEl = opened;
+                var observer = null;
+
+                try {
+                    observer = new MutationObserver(function(mutations) {
+                        for (var i = 0; i < mutations.length; i++) {
+                            var removed = mutations[i].removedNodes;
+                            for (var j = 0; j < removed.length; j++) {
+                                if (removed[j] === modalEl) {
+                                    if (observer) {
+                                        observer.disconnect();
+                                        observer = null;
+                                    }
+                                    var current = typeof window.getCurrentEditId === 'function'
+                                        ? window.getCurrentEditId()
+                                        : null;
+                                    if (current) {
+                                        try {
+                                            CharacterForm.render(current);
+                                        } catch (renderErr) {
+                                            console.warn(
+                                                '[CharacterEvents] form ' +
+                                                're-render after wizard ' +
+                                                'close failed:',
+                                                renderErr
+                                            );
+                                        }
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    });
+
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: false
+                    });
+                } catch (observerErr) {
+                    // MutationObserver is not universally available
+                    // in every environment (older browsers, some
+                    // test harnesses). If it is not, we fall back to
+                    // a simple interval poll that stops itself.
+                    var poll = setInterval(function() {
+                        if (!document.body.contains(modalEl)) {
+                            clearInterval(poll);
+                            var currentId = typeof window.getCurrentEditId === 'function'
+                                ? window.getCurrentEditId()
+                                : null;
+                            if (currentId) {
+                                try {
+                                    CharacterForm.render(currentId);
+                                } catch (pollErr) {
+                                    console.warn(
+                                        '[CharacterEvents] form re-render ' +
+                                        'after wizard close failed:',
+                                        pollErr
+                                    );
+                                }
+                            }
+                        }
+                    }, 250);
+                }
+            }
+        );
+    }
+
+    // ============================================================
     // FILLER MANAGER BUTTON
     // ============================================================
 
@@ -396,42 +632,61 @@
     }
 
     // ============================================================
-    // CHARACTER EXPORT PICKER
+    // CHARACTER ROSTER EXPORT BUTTON
     // ============================================================
     //
-    // The header carries ONE Export button (#export-characters-btn)
-    // that opens the export picker. The picker owns the format
-    // choice (Full CSV / Roster text / Blank template) and the
-    // download.
+    // The character page header carries a roster-export button
+    // (#export-character-roster-btn) rendered by characters/index.js.
+    // Clicking it produces a tab-separated plain-text roster
+    // (Name / Gender / Birth Year / Eliminated) of every character
+    // in the store, downloaded as a .txt file.
     //
     // The button lives in the static header, so it is bound
     // directly (not delegated).
 
-    function bindCharacterExportPicker(container) {
-        var btn = document.getElementById('export-characters-btn');
+    function bindCharacterRosterExport(container) {
+        var btn = document.getElementById('export-character-roster-btn');
         if (!btn) { return; }
 
         addSafeEventListener(btn, 'click', function(e) {
             e.preventDefault();
 
-            var Picker = getCharacterExportPicker();
-            if (!Picker || typeof Picker.openModal !== 'function') {
-                notify('Character export is not available.', 'error');
+            var Exporter = getCharacterRosterExport();
+            if (!Exporter || typeof Exporter.exportText !== 'function') {
+                notify('Character roster export is not available.', 'error');
                 return;
             }
 
+            var result;
             try {
-                Picker.openModal();
+                result = Exporter.exportText();
             } catch (err) {
                 console.warn(
-                    '[CharacterEvents] ' +
-                    'CharacterExportPicker.openModal threw:', err
+                    '[CharacterEvents] CharacterRosterExport.exportText ' +
+                    'threw:', err
                 );
                 notify(
-                    'Character export failed: ' + err.message,
+                    'Character roster export failed: ' + err.message,
                     'error'
                 );
+                return;
             }
+
+            if (result && result.exported) {
+                notify(
+                    'Exported ' + result.count + ' character' +
+                    (result.count === 1 ? '' : 's') + ': ' +
+                    result.filename,
+                    'success'
+                );
+                return;
+            }
+
+            notify(
+                'Character roster export failed: ' +
+                    ((result && result.error) || 'Unknown error'),
+                'error'
+            );
         });
     }
 
@@ -602,7 +857,7 @@
         bindClickOutside(container);
         bindCharacterList(container);
         bindManageFillers(container);
-        bindCharacterExportPicker(container);
+        bindCharacterRosterExport(container);
 
         // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
@@ -613,6 +868,7 @@
         bindFieldRandomButtons();
         bindPreviousNameButtons();
         bindCareerButtons();
+        bindCareerStatusWizard();
         bindClassDropdown();
         bindClassTagRemoval();
         bindStandaloneElimRemoval();
@@ -750,6 +1006,12 @@
             });
         }
 
+        // ---- Hide filler ----
+        //
+        // Reads its own persisted default on mount (see
+        // characters/index.js). When the checkbox is toggled, the
+        // state is persisted via CharacterList.setHideFiller and
+        // the list re-renders.
         var hideFiller = document.getElementById('hide-filler');
         if (hideFiller) {
             addSafeEventListener(hideFiller, 'change', function() {
