@@ -27,6 +27,7 @@
  *   - Filler flag checkbox (.filler-flag-group)
  *   - Filler manager modal (.filler-manager-*)
  *   - Career Status Wizard modal (.csw-*)
+ *   - Career Transition modal (#career-transition-modal, reuses .csw-*)
  *
  * Load order: shared.css → characters.css
  */
@@ -391,8 +392,6 @@
    Sits on the Name tab, under the Character ID field, above the
    First/Middle name row. See character-form.js's getNameTabHTML.
    */
-
-/* === NEW === */
 
 .filler-flag-group {
     margin-bottom: 12px;
@@ -1181,15 +1180,8 @@
    ============================================================
    Opened by the Manage Fillers button (#manage-fillers-btn) in
    the character page header. Lists every character with a
-   checkbox; the user flags some as filler. The Apply button
-   calls CharacterCRUD.setFillerFlag for the newly-checked and
-   newly-unchecked sets.
-
-   The modal is a maintenance surface. It sits above the standard
-   .modal-content chrome; only its internal list needs styling.
+   checkbox; the user flags some as filler.
    ============================================================ */
-
-/* === NEW === */
 
 .filler-manager-hint {
     font-size: 0.72rem;
@@ -1258,17 +1250,11 @@
     background: var(--panel-alt);
 }
 
-/* Rows whose character is already flagged (or newly checked by
-   the user during this session). Accent border-left, tinted
-   background. */
 .filler-manager-row.is-checked {
     background: var(--accent-soft);
     border-left-color: var(--accent);
 }
 
-/* Rows that the heuristic thinks are filler candidates.
-   Distinguished from is-checked so the user can see the
-   suggestion separately from the actual flag. */
 .filler-manager-row.is-candidate {
     /* Base styling matches a plain row; the "Candidate" badge
        below carries the distinction. Named hook for a future
@@ -1325,13 +1311,11 @@
    Styling for the CareerStatusWizard modal, opened from the
    Professional tab's [⌂ Career Wizard] button.
 
-   All rules are scoped under the .csw- prefix or the
-   #career-status-wizard-modal id, so nothing here can bleed
-   into another modal or another form.
-
-   Every color is a css/shared.css token, so the wizard
-   re-skins with every theme: dark, light, vaporwave, pastel,
-   carnival.
+   Layout intent:
+     Compact radio rows, one line each where possible, so the
+     three route options and two timing options fit without
+     dominating the modal. The preview table and warning strip
+     carry the visual weight; the input controls stay quiet.
    ============================================================ */
 
 /* ------------------------------------------------------------
@@ -1339,96 +1323,103 @@
    ------------------------------------------------------------ */
 
 #career-status-wizard-modal .modal-content {
-    max-width: 560px;
-    padding: 20px;
+    max-width: 520px;
+    padding: 18px 20px 16px 20px;
 }
 
 #career-status-wizard-modal .modal-header {
-    padding-bottom: 12px;
-    margin-bottom: 16px;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
 }
 
 #career-status-wizard-modal .modal-header h3 {
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: var(--accent);
-    letter-spacing: 0.01em;
 }
 
 /* ------------------------------------------------------------
-   Body layout
+   Body
    ------------------------------------------------------------ */
 
 .career-wizard-body {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 14px;
+    font-size: 0.78rem;
 }
 
 .csw-field {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 5px;
 }
 
 .csw-field > label:first-child {
-    font-size: 0.7rem;
+    font-size: 0.62rem;
     font-weight: 600;
     color: var(--text-dim);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.07em;
     margin: 0;
+    line-height: 1.2;
 }
 
 .csw-field input[type="number"] {
-    width: 120px;
-    padding: 8px 10px;
-    font-size: 0.85rem;
+    width: 100px;
+    padding: 5px 8px;
+    font-size: 0.8rem;
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 6px;
+    border-radius: 5px;
     font-variant-numeric: tabular-nums;
+    line-height: 1.3;
 }
 
 .csw-field input[type="number"]:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 /* ------------------------------------------------------------
-   Radio rows and checkbox rows
+   Radio / checkbox rows
+   ------------------------------------------------------------
+   One-line rows. The label to the right of the radio is inline
+   and wraps only if the text really is long. Padding is tight —
+   the row reads as a compact list, not a wall of cards.
    ------------------------------------------------------------ */
 
 .csw-radio-row,
 .csw-checkbox-row {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--border-soft);
-    border-radius: 8px;
-    background: var(--panel-alt);
+    gap: 8px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
     cursor: pointer;
-    transition: border-color 0.15s, background-color 0.15s;
-    font-size: 0.8rem;
-    line-height: 1.4;
+    transition: background-color 0.12s, border-color 0.12s;
+    font-size: 0.78rem;
+    line-height: 1.35;
     color: var(--text);
 }
 
 .csw-radio-row:hover,
 .csw-checkbox-row:hover {
-    border-color: var(--border);
-    background: var(--panel);
+    background: var(--panel-alt);
 }
 
 .csw-radio-row input[type="radio"],
 .csw-checkbox-row input[type="checkbox"] {
     margin: 2px 0 0 0;
-    flex-shrink: 0;
+    flex: 0 0 auto;
     accent-color: var(--accent);
     cursor: pointer;
+    width: 14px;
+    height: 14px;
 }
 
 .csw-radio-row span,
@@ -1445,9 +1436,8 @@
 
 .csw-radio-row:has(input:checked),
 .csw-checkbox-row:has(input:checked) {
-    background: var(--panel);
+    background: var(--accent-soft);
     border-color: var(--accent);
-    box-shadow: inset 3px 0 0 var(--accent);
 }
 
 @supports not selector(:has(*)) {
@@ -1462,9 +1452,9 @@
    ------------------------------------------------------------ */
 
 .csw-suboption {
-    margin-top: 4px;
-    margin-left: 12px;
-    padding-left: 12px;
+    margin-top: 2px;
+    margin-left: 8px;
+    padding-left: 10px;
     border-left: 2px solid var(--border-soft);
 }
 
@@ -1475,25 +1465,26 @@
 .csw-preview {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 5px;
 }
 
 .csw-preview-header {
-    font-size: 0.7rem;
+    font-size: 0.62rem;
     font-weight: 600;
     color: var(--text-dim);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.07em;
+    line-height: 1.2;
 }
 
 .csw-preview-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-variant-numeric: tabular-nums;
     background: var(--bg);
     border: 1px solid var(--border-soft);
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
 }
 
@@ -1503,20 +1494,22 @@
 
 .csw-preview-table th {
     text-align: left;
-    padding: 8px 12px;
+    padding: 5px 10px;
     font-weight: 600;
-    font-size: 0.65rem;
-    letter-spacing: 0.05em;
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--text-dim);
     border-bottom: 1px solid var(--border);
+    line-height: 1.2;
 }
 
 .csw-preview-table td {
-    padding: 8px 12px;
+    padding: 5px 10px;
     border-bottom: 1px solid var(--border-soft);
     color: var(--text);
     vertical-align: middle;
+    line-height: 1.35;
 }
 
 .csw-preview-table tr:last-child td {
@@ -1536,7 +1529,7 @@
 
 .csw-note-cell {
     color: var(--text-dim);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-style: italic;
 }
 
@@ -1545,33 +1538,29 @@
 }
 
 /* ------------------------------------------------------------
-   Death-year note
+   Note / warning strips
    ------------------------------------------------------------ */
 
 .csw-note {
     margin: 0;
-    padding: 8px 12px;
+    padding: 7px 10px;
     background: var(--info-soft);
     border-left: 3px solid var(--info);
     border-radius: 4px;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     line-height: 1.4;
     color: var(--text);
 }
-
-/* ------------------------------------------------------------
-   Warning strip
-   ------------------------------------------------------------ */
 
 .csw-warning {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     background: var(--warning-soft);
     border-left: 3px solid var(--warning);
-    border-radius: 6px;
-    font-size: 0.78rem;
+    border-radius: 5px;
+    font-size: 0.75rem;
     line-height: 1.4;
     color: var(--text);
 }
@@ -1579,7 +1568,7 @@
 .csw-warning-icon {
     flex-shrink: 0;
     color: var(--warning);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     line-height: 1.3;
 }
 
@@ -1600,8 +1589,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-top: 16px;
-    margin-top: 4px;
+    padding-top: 14px;
+    margin-top: 14px;
     border-top: 1px solid var(--border-soft);
 }
 
@@ -1610,9 +1599,40 @@
 }
 
 .csw-footer button {
-    padding: 8px 16px;
-    font-size: 0.8rem;
-    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Career-transition modal (reuses every .csw-* class above)
+   ------------------------------------------------------------
+   The Career Transition modal has one extra element: a
+   field-hint paragraph at the top of the body. Kept quiet — it
+   is orientation text, not content.
+   ------------------------------------------------------------ */
+
+#career-transition-modal .modal-content {
+    max-width: 460px;
+    padding: 18px 20px 16px 20px;
+}
+
+#career-transition-modal .modal-header {
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+}
+
+#career-transition-modal .modal-header h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+#career-transition-modal .career-wizard-body > p.field-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 0;
+    line-height: 1.45;
 }
 
 /* ============================================================
@@ -1672,10 +1692,12 @@
         padding: 6px 8px;
     }
 
-    /* ---------- Career wizard (mobile) ---------- */
+    /* ---------- Career wizard + transition (mobile) ---------- */
 
-    #career-status-wizard-modal .modal-content {
+    #career-status-wizard-modal .modal-content,
+    #career-transition-modal .modal-content {
         padding: 14px;
+        max-width: 100%;
     }
 
     .csw-field input[type="number"] {
@@ -1684,13 +1706,14 @@
 
     .csw-preview-table th,
     .csw-preview-table td {
-        padding: 6px 8px;
-        font-size: 0.72rem;
+        padding: 5px 7px;
+        font-size: 0.7rem;
     }
 
     .csw-footer {
         flex-direction: column-reverse;
         align-items: stretch;
+        gap: 6px;
     }
 
     .csw-footer button {
@@ -1699,1381 +1722,5 @@
 
     .csw-footer-spacer {
         display: none;
-    }
-}/**
- * css/characters.css - Hollow Blades Manager
- *
- * The Characters tab.
- *
- * Covers:
- *   - Character layout (.characters-layout, sidebar, form container)
- *   - Character list (.char-list-item, filters, #char-list-panel)
- *   - Character form shell (.form-header, .form-tabs, .form-tab-btn)
- *   - Form panels (name, physical, personality, professional, combat,
- *     social, notes, academic)
- *   - Per-field random buttons (.field-random-btn)
- *   - Class chips (#class-tag-container, .class-tag)
- *   - Career status entries (.career-status-entry)
- *   - Weapons (.weapon-entry)
- *   - Combat stats (.stat-block, .stat-input, .stat-modifier)
- *   - Magic (.magic-type-block, .magic-category, .magic-grid)
- *   - Special moves (.moves-column, .special-move-entry, .moves-list)
- *   - Social tab (.relationship-groups, .relationship-group,
- *     .relationship-row)
- *   - Character detail modal (.detail-tabs, .detail-tab-btn,
- *     .detail-tab-panel)
- *   - Elimination controls (.elimination-controls, standalone list)
- *   - Academic tab (.academic-section, .enrollment-chip)
- *   - Grades tab host
- *   - Schedule tab host
- *   - Filler flag checkbox (.filler-flag-group)
- *   - Filler manager modal (.filler-manager-*)
- *
- * Load order: shared.css → characters.css
- */
-
-/* ============================================================
-   LAYOUT
-   ============================================================ */
-
-.characters-layout {
-    display: grid;
-    grid-template-columns: 300px 1fr;
-    gap: 16px;
-}
-
-@media (max-width: 768px) {
-    .characters-layout {
-        grid-template-columns: 1fr;
-        gap: 12px;
-    }
-}
-
-/* ============================================================
-   SIDEBAR
-   ============================================================ */
-
-.characters-sidebar {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px;
-    max-height: 640px;
-    overflow-y: auto;
-}
-
-@media (max-width: 480px) {
-    .characters-sidebar {
-        max-height: 300px;
-    }
-}
-
-.characters-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-}
-
-.characters-header h2 {
-    font-size: 1rem;
-    color: var(--accent);
-}
-
-.characters-header-actions {
-    display: flex;
-    gap: 4px;
-}
-
-/* ============================================================
-   FILTERS
-   ============================================================ */
-
-.characters-filters {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
-}
-
-.characters-filters input,
-.characters-filters select {
-    width: 100%;
-    padding: 3px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.65rem;
-    font-family: 'Inter', sans-serif;
-}
-
-.characters-filters input:focus,
-.characters-filters select:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.filter-checkboxes {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-    padding: 4px 0;
-}
-
-.filter-check {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    cursor: pointer;
-}
-
-.filter-check input[type="checkbox"] {
-    width: auto;
-    accent-color: var(--accent);
-    cursor: pointer;
-}
-
-/* ============================================================
-   CHARACTER LIST — MOBILE DRAWER, DESKTOP ALWAYS-OPEN
-   ============================================================ */
-
-#char-list-panel {
-    display: none;
-    max-height: 400px;
-    overflow-y: auto;
-}
-
-#char-list-panel.open {
-    display: block;
-}
-
-#char-list-panel .empty-state {
-    padding: 10px;
-    font-size: 0.8rem;
-    color: var(--text-dim);
-}
-
-#characters-container {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-@media (min-width: 769px) {
-    #char-list-panel {
-        display: block;
-    }
-
-    #toggle-char-list {
-        display: none;
-    }
-}
-
-.char-list-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 6px 8px;
-    background: transparent;
-    border-radius: 4px;
-    border-bottom: 1px solid var(--border-soft);
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.char-list-item:hover {
-    background: var(--panel-alt);
-}
-
-.char-list-item.selected,
-.char-list-item.active {
-    background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-    padding-left: 6px;
-}
-
-.char-list-item.deceased {
-    opacity: 0.5;
-}
-
-.char-list-item.eliminated {
-    border-left: 3px solid var(--danger);
-    padding-left: 6px;
-}
-
-.char-list-item .char-list-item-main {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 6px;
-}
-
-.char-list-item .char-name {
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--text);
-}
-
-.char-list-item .char-status {
-    font-size: 0.55rem;
-    color: var(--text-dim);
-}
-
-.char-list-item .char-list-item-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-
-/* ============================================================
-   FORM CONTAINER
-   ============================================================ */
-
-.characters-form-container {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px;
-    max-height: 640px;
-    overflow-y: auto;
-}
-
-@media (max-width: 480px) {
-    .characters-form-container {
-        max-height: 500px;
-        padding: 6px;
-    }
-}
-
-#character-form {
-    display: block;
-}
-
-#character-form .form-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-#character-form .form-header h3 {
-    font-size: 0.95rem;
-    color: var(--accent);
-    margin: 0;
-}
-
-#character-form .form-header .char-name-display {
-    font-size: 0.75rem;
-    color: var(--text-dim);
-}
-
-#character-form .form-header .form-actions {
-    display: flex;
-    gap: 4px;
-}
-
-/* ============================================================
-   FORM TABS
-   ============================================================ */
-
-.form-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
-    margin-bottom: 12px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border);
-}
-
-.form-tab-btn {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 4px 4px 0 0;
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    font-weight: 500;
-    padding: 4px 10px;
-    cursor: pointer;
-    transition: 0.15s;
-    white-space: nowrap;
-}
-
-.form-tab-btn:hover {
-    color: var(--text);
-    background: var(--panel-alt);
-}
-
-.form-tab-btn.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-    background: var(--accent-soft);
-    font-weight: 600;
-}
-
-@media (max-width: 480px) {
-    .form-tab-btn {
-        font-size: 0.55rem;
-        padding: 3px 6px;
-    }
-}
-
-.tab-panel {
-    display: none;
-}
-
-.tab-panel.active,
-.tab-panel[style*="display:block"],
-.tab-panel[style*="display: block"] {
-    display: block;
-}
-
-/* ============================================================
-   PER-FIELD RANDOM BUTTONS
-   ============================================================ */
-
-.field-random-btn {
-    display: inline;
-    background: transparent;
-    border: none;
-    padding: 0;
-    margin: 0 0 0 3px;
-    color: var(--text-dim);
-    font-size: 0.75em;
-    line-height: 1;
-    cursor: pointer;
-    vertical-align: baseline;
-    transition: color 0.15s, transform 0.1s;
-    user-select: none;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.field-random-btn:hover {
-    color: var(--accent);
-}
-
-.field-random-btn:active {
-    color: var(--accent);
-    transform: scale(0.85);
-}
-
-.field-random-btn:focus {
-    outline: none;
-    color: var(--accent);
-    text-shadow: 0 0 4px var(--accent);
-}
-
-.field-random-btn:focus-visible {
-    outline: 1px solid var(--accent);
-    outline-offset: 2px;
-    border-radius: 3px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .field-random-btn {
-        transition: none;
-    }
-    .field-random-btn:active {
-        transform: none;
-    }
-}
-
-/* ============================================================
-   FILLER FLAG CHECKBOX (Character Form)
-   ============================================================
-   Sits on the Name tab, under the Character ID field, above the
-   First/Middle name row. See character-form.js's getNameTabHTML.
-   */
-
-/* === NEW === */
-
-.filler-flag-group {
-    margin-bottom: 12px;
-    padding: 6px 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-}
-
-.filler-flag-group > label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-    font-size: 0.75rem;
-    color: var(--text);
-    user-select: none;
-}
-
-.filler-flag-group > label input[type="checkbox"] {
-    width: auto;
-    margin: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-}
-
-.filler-flag-hint {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    margin: 4px 0 0 20px;
-    line-height: 1.35;
-}
-
-/* ============================================================
-   CLASS CHIPS
-   ============================================================ */
-
-#class-tag-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 4px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    min-height: 36px;
-}
-
-.class-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    background: var(--accent-soft);
-    border: 1px solid var(--accent);
-    border-radius: 10px;
-    font-size: 0.7rem;
-    color: var(--accent);
-}
-
-.class-tag-orphan {
-    background: var(--danger-soft);
-    border-color: var(--danger);
-    color: var(--danger);
-}
-
-.class-tag .remove-class-tag {
-    background: none;
-    border: none;
-    color: var(--danger);
-    cursor: pointer;
-    font-size: 0.5rem;
-    padding: 0 2px;
-}
-
-/* ---------- New academic chip row (character class view) ---------- */
-
-.academic-section {
-    margin-bottom: 16px;
-}
-
-.academic-section:last-child {
-    margin-bottom: 0;
-}
-
-.academic-section > label,
-.academic-section > .academic-section-label {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--accent);
-    font-weight: 600;
-    margin-bottom: 6px;
-}
-
-.academic-add-class {
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.academic-classes {
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.academic-teams {
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.academic-enrollment {
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.academic-grades {
-    /* No bottom border — last section */
-}
-
-.enrollment-chip {
-    display: inline-block;
-    padding: 2px 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 10px;
-    font-size: 0.65rem;
-    color: var(--text);
-}
-
-/* ============================================================
-   PREVIOUS NAME ROWS
-   ============================================================ */
-
-.previous-name-row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-
-.previous-name-input {
-    flex: 1;
-    padding: 6px 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.75rem;
-}
-
-.previous-name-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   CAREER STATUS ROWS
-   ============================================================ */
-
-.career-status-entry {
-    display: grid;
-    grid-template-columns: 1.2fr 0.7fr 0.7fr 1.2fr auto;
-    gap: 6px;
-    align-items: center;
-    margin-bottom: 6px;
-}
-
-@media (max-width: 600px) {
-    .career-status-entry {
-        grid-template-columns: 1fr 1fr;
-    }
-    .career-status-entry .career-title {
-        grid-column: 1 / -1;
-    }
-    .career-status-entry .remove-career-entry {
-        grid-column: 2;
-        justify-self: end;
-    }
-}
-
-.career-status-entry select,
-.career-status-entry input {
-    width: 100%;
-    padding: 4px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-family: 'Inter', sans-serif;
-}
-
-.career-status-entry select:focus,
-.career-status-entry input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   WEAPONS
-   ============================================================ */
-
-.weapon-entry {
-    display: grid;
-    grid-template-columns: 1.5fr 1fr 2fr auto;
-    gap: 6px;
-    align-items: center;
-    margin-bottom: 6px;
-}
-
-@media (max-width: 600px) {
-    .weapon-entry {
-        grid-template-columns: 1fr 1fr;
-    }
-    .weapon-entry .weapon-notes {
-        grid-column: 1 / -1;
-    }
-    .weapon-entry .remove-weapon {
-        grid-column: 2;
-        justify-self: end;
-    }
-}
-
-.weapon-entry input,
-.weapon-entry select {
-    width: 100%;
-    padding: 4px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-family: 'Inter', sans-serif;
-}
-
-.weapon-entry input:focus,
-.weapon-entry select:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   PHYSICAL STATS (Combat tab)
-   ============================================================ */
-
-.stat-input-group {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 4px;
-}
-
-@media (max-width: 500px) {
-    .stat-input-group {
-        grid-template-columns: repeat(3, 1fr);
-    }
-}
-
-.stat-input-group .form-group label {
-    text-align: center;
-    font-size: 0.55rem;
-}
-
-.stat-input-group .form-group input {
-    width: 100%;
-    text-align: center;
-    padding: 4px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.75rem;
-}
-
-/* ---------- New stat-block layout (character-form.js) ---------- */
-
-.stat-block {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    align-items: center;
-    padding: 6px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-}
-
-.stat-block label {
-    font-size: 0.6rem;
-    font-weight: 600;
-    color: var(--text-dim);
-}
-
-.stat-input {
-    width: 100%;
-    padding: 4px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.9rem;
-    font-weight: 700;
-    text-align: center;
-}
-
-.stat-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.stat-modifier {
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--text-dim);
-}
-
-/* ---------- Stat action rows ---------- */
-
-.stat-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    margin-top: 8px;
-    padding: 8px;
-    background: var(--bg);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-}
-
-.stat-label {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-.suggested-class {
-    background: var(--accent-soft);
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 0.7rem;
-    color: var(--accent);
-    font-weight: 600;
-}
-
-.suggested-class.empty {
-    background: transparent;
-    border-color: var(--border);
-    color: var(--text-dim);
-    font-weight: 400;
-}
-
-#class-description-display {
-    margin-top: 6px;
-    padding: 6px 10px;
-    background: var(--panel-alt);
-    border-left: 3px solid var(--accent);
-    border-radius: 4px;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-/* ============================================================
-   COMBAT SECTIONS
-   ============================================================ */
-
-.combat-section {
-    margin-bottom: 12px;
-    padding: 10px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-}
-
-.combat-section:last-child {
-    margin-bottom: 0;
-}
-
-/* ============================================================
-   MAGIC
-   ============================================================ */
-
-.magic-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 6px;
-    margin-top: 12px;
-}
-
-@media (max-width: 600px) {
-    .magic-stats-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
-}
-
-.magic-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 4px;
-}
-
-@media (max-width: 600px) {
-    .magic-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
-}
-
-.magic-category {
-    margin-bottom: 10px;
-}
-
-.magic-type-block {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    align-items: center;
-    padding: 4px;
-    background: var(--bg);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-}
-
-.magic-type-block label {
-    font-size: 0.55rem;
-    font-weight: 600;
-    color: var(--text-dim);
-}
-
-.magic-input {
-    width: 100%;
-    padding: 3px 4px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 3px;
-    font-size: 0.8rem;
-    text-align: center;
-    font-weight: 600;
-}
-
-.magic-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.magic-level {
-    font-size: 0.5rem;
-    color: var(--text-dim);
-}
-
-.magic-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    margin-top: 8px;
-    padding: 8px;
-    background: var(--bg);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-}
-
-.magic-power-display {
-    margin-top: 6px;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-.magic-power-display span {
-    font-weight: 600;
-    color: var(--info);
-}
-
-/* ============================================================
-   SPECIAL MOVES
-   ============================================================ */
-
-.moves-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin-top: 12px;
-}
-
-@media (max-width: 500px) {
-    .moves-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-.moves-column {
-    padding: 6px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-}
-
-.move-label {
-    font-size: 0.65rem;
-    font-weight: 600;
-}
-
-.move-label.physical {
-    color: var(--accent);
-}
-
-.move-label.magical {
-    color: var(--info);
-}
-
-.moves-list {
-    margin-top: 2px;
-    max-height: 120px;
-    overflow-y: auto;
-}
-
-.moves-list .empty-state {
-    padding: 4px;
-    font-size: 0.7rem;
-}
-
-.move-input-group {
-    margin-top: 4px;
-}
-
-.move-input-group input {
-    width: 100%;
-    padding: 2px 4px;
-    margin-bottom: 2px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.6rem;
-}
-
-.move-input-group input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.special-move-entry {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px 6px;
-    margin-bottom: 3px;
-    background: var(--bg);
-    border-left: 3px solid var(--accent);
-    border-radius: 4px;
-    font-size: 0.7rem;
-}
-
-.special-move-entry .move-name {
-    font-weight: 600;
-    color: var(--text);
-}
-
-.special-move-entry .move-desc {
-    padding-left: 4px;
-    font-size: 0.6rem;
-    color: var(--text-dim);
-}
-
-.remove-special-move {
-    background: none;
-    border: none;
-    color: var(--danger);
-    cursor: pointer;
-    font-size: 0.6rem;
-    padding: 0 4px;
-}
-
-/* ============================================================
-   SOCIAL TAB (character form)
-   ============================================================ */
-
-.relationship-groups {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.relationship-group {
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    overflow: hidden;
-}
-
-.relationship-group-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    background: var(--panel);
-    border-left: 3px solid var(--accent);
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.relationship-group-header:hover {
-    background: var(--accent-soft);
-}
-
-.relationship-group-caret {
-    display: inline-block;
-    width: 12px;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-}
-
-.relationship-group-body {
-    padding: 6px 10px;
-}
-
-.relationship-subheader {
-    padding: 4px 0;
-    border-bottom: 1px solid var(--border-soft);
-    margin-bottom: 4px;
-    font-size: 0.6rem;
-    font-weight: 600;
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-.relationship-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 0 4px 18px;
-    font-size: 0.72rem;
-}
-
-.relationship-row .edit-char-relationship,
-.relationship-row .delete-char-relationship {
-    font-size: 0.55rem;
-    padding: 1px 6px;
-}
-
-/* ============================================================
-   CHARACTER DETAIL MODAL
-   ============================================================ */
-
-#character-detail-modal .detail-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-}
-
-.detail-tab-btn {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 4px 4px 0 0;
-    padding: 4px 12px;
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    cursor: pointer;
-    transition: 0.15s;
-}
-
-.detail-tab-btn:hover {
-    color: var(--text);
-    background: var(--panel-alt);
-}
-
-.detail-tab-btn.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-    background: var(--accent-soft);
-    font-weight: 600;
-}
-
-.detail-tab-panel {
-    display: none;
-}
-
-.detail-tab-panel.active {
-    display: block;
-}
-
-/* Detail rows inside the modal */
-#character-detail-modal .detail-section {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-#character-detail-modal .detail-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 0;
-    border-bottom: 1px solid var(--border-soft);
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-#character-detail-modal .detail-row .label {
-    color: var(--text-dim);
-    font-size: 0.8rem;
-}
-
-/* ============================================================
-   ELIMINATION CONTROLS
-   ============================================================ */
-
-.elimination-controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    align-items: center;
-    padding: 4px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-}
-
-.elimination-controls label {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-}
-
-.elimination-controls input[type="number"] {
-    width: 40px;
-    padding: 2px 3px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-}
-
-.elimination-controls input[type="text"] {
-    flex: 1;
-    min-width: 60px;
-    padding: 2px 6px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-}
-
-/* Standalone elimination rows (character elimination view) */
-.standalone-elimination-entry {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 8px;
-    margin-bottom: 2px;
-    background: var(--warning-soft);
-    border-left: 3px solid var(--warning);
-    border-radius: 4px;
-}
-
-.tournament-elimination-entry {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 8px;
-    margin-bottom: 2px;
-    background: var(--info-soft);
-    border-left: 3px solid var(--info);
-    border-radius: 4px;
-}
-
-/* ============================================================
-   GRADES TAB HOST
-   ============================================================ */
-
-.academy-grades-editor-host {
-    display: block;
-}
-
-/* ============================================================
-   SCHEDULE TAB HOST
-   ============================================================ */
-
-.academy-schedule-host {
-    display: block;
-    min-height: 200px;
-}
-
-/* ============================================================
-   FILLER MANAGER MODAL
-   ============================================================
-   Opened by the Manage Fillers button (#manage-fillers-btn) in
-   the character page header. Lists every character with a
-   checkbox; the user flags some as filler. The Apply button
-   calls CharacterCRUD.setFillerFlag for the newly-checked and
-   newly-unchecked sets.
-
-   The modal is a maintenance surface. It sits above the standard
-   .modal-content chrome; only its internal list needs styling.
-   ============================================================ */
-
-/* === NEW === */
-
-.filler-manager-hint {
-    font-size: 0.72rem;
-    color: var(--text-dim);
-    margin: 0 0 10px 0;
-    line-height: 1.45;
-}
-
-/* ---------- Toolbar ---------- */
-
-.filler-manager-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 6px 10px;
-    margin-bottom: 8px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-}
-
-.filler-manager-toolbar button {
-    font-size: 0.68rem;
-    padding: 3px 12px;
-    white-space: nowrap;
-}
-
-.filler-manager-count {
-    margin-left: auto;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    font-variant-numeric: tabular-nums;
-}
-
-.filler-manager-count strong {
-    color: var(--text);
-    font-weight: 600;
-}
-
-/* ---------- List ---------- */
-
-.filler-manager-list {
-    max-height: 420px;
-    overflow-y: auto;
-    border: 1px solid var(--border-soft);
-    border-radius: 4px;
-    padding: 4px;
-    background: var(--bg);
-}
-
-.filler-manager-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 8px;
-    border-left: 3px solid transparent;
-    border-radius: 3px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    user-select: none;
-    transition: background 0.15s;
-}
-
-.filler-manager-row:hover {
-    background: var(--panel-alt);
-}
-
-/* Rows whose character is already flagged (or newly checked by
-   the user during this session). Accent border-left, tinted
-   background. */
-.filler-manager-row.is-checked {
-    background: var(--accent-soft);
-    border-left-color: var(--accent);
-}
-
-/* Rows that the heuristic thinks are filler candidates.
-   Distinguished from is-checked so the user can see the
-   suggestion separately from the actual flag. */
-.filler-manager-row.is-candidate {
-    /* Base styling matches a plain row; the "Candidate" badge
-       below carries the distinction. Named hook for a future
-       change. */
-}
-
-.filler-manager-row input[type="checkbox"].filler-row-check {
-    width: auto;
-    margin: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-    flex: 0 0 auto;
-}
-
-.filler-manager-name {
-    flex: 1;
-    min-width: 0;
-    font-weight: 500;
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* ---------- Candidate badge ---------- */
-
-.filler-manager-badge {
-    font-size: 0.55rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--info);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 8px;
-    padding: 1px 6px;
-    line-height: 1.4;
-    white-space: nowrap;
-    flex: 0 0 auto;
-    cursor: help;
-}
-
-/* ---------- Modal footer (reuses .form-actions) ---------- */
-
-.filler-manager-list + .form-actions {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border-soft);
-}
-
-/* ============================================================
-   MOBILE
-   ============================================================ */
-
-@media (max-width: 480px) {
-    .characters-form-container {
-        padding: 6px;
-    }
-
-    .characters-layout {
-        gap: 8px;
-    }
-
-    .characters-sidebar {
-        max-height: 300px;
-    }
-
-    .form-tab-btn {
-        font-size: 0.55rem;
-        padding: 3px 6px;
-    }
-
-    .char-list-item {
-        font-size: 0.7rem;
-    }
-
-    .stat-input-group,
-    .magic-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
-
-    /* ---------- Filler manager (mobile) ---------- */
-
-    .filler-manager-toolbar {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 4px;
-    }
-
-    .filler-manager-toolbar button {
-        width: 100%;
-    }
-
-    .filler-manager-count {
-        margin-left: 0;
-        text-align: right;
-    }
-
-    .filler-manager-list {
-        max-height: 260px;
-    }
-
-    .filler-manager-row {
-        font-size: 0.72rem;
-        padding: 6px 8px;
     }
 }
