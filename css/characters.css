@@ -24,6 +24,8 @@
  *   - Academic tab (.academic-section, .enrollment-chip)
  *   - Grades tab host
  *   - Schedule tab host
+ *   - Filler flag checkbox (.filler-flag-group)
+ *   - Filler manager modal (.filler-manager-*)
  *
  * Load order: shared.css → characters.css
  */
@@ -135,22 +137,6 @@
 
 /* ============================================================
    CHARACTER LIST — MOBILE DRAWER, DESKTOP ALWAYS-OPEN
-   ============================================================
-   The list is a collapsible drawer on narrow screens and a
-   permanent part of the sidebar on wide screens.
-
-   Default state (no .open class): hidden. This is the mobile
-   default. The ☰ toggle button in the header adds .open to
-   reveal it.
-
-   Desktop override: always visible, and the toggle button is
-   hidden entirely, because there is nothing to toggle.
-
-   The breakpoint (769px) matches the .characters-layout grid
-   breakpoint above. Below 768px the layout is single-column and
-   the sidebar sits above the form; that is exactly when a
-   collapsible drawer is useful. Above 768px the sidebar is a
-   fixed 300px column on the left, and the list is always shown.
    ============================================================ */
 
 #char-list-panel {
@@ -176,9 +162,6 @@
 }
 
 @media (min-width: 769px) {
-    /* Desktop: the drawer behaviour is disabled. The panel is
-       always shown, and the toggle button (which would have no
-       effect) is hidden. */
     #char-list-panel {
         display: block;
     }
@@ -353,19 +336,6 @@
 
 /* ============================================================
    PER-FIELD RANDOM BUTTONS
-   ============================================================
-   A small ⟳ rendered inside the <label> of every pool-backed
-   field on the Physical and Personality tabs. Clicking it rerolls
-   only that field.
-
-   The button inherits the label's colour by default and darkens
-   to the accent on hover. It is inline so it sits flush against
-   the label text without shifting baseline.
-
-   Because the button is inside the <label>, it is keyboard-
-   reachable (Tab) and announces via its aria-label. The focus
-   outline is a subtle accent ring rather than the browser
-   default, so it does not clash with the surrounding typography.
    ============================================================ */
 
 .field-random-btn {
@@ -405,7 +375,6 @@
     border-radius: 3px;
 }
 
-/* Respect the user's motion preference. */
 @media (prefers-reduced-motion: reduce) {
     .field-random-btn {
         transition: none;
@@ -413,6 +382,47 @@
     .field-random-btn:active {
         transform: none;
     }
+}
+
+/* ============================================================
+   FILLER FLAG CHECKBOX (Character Form)
+   ============================================================
+   Sits on the Name tab, under the Character ID field, above the
+   First/Middle name row. See character-form.js's getNameTabHTML.
+   */
+
+/* === NEW === */
+
+.filler-flag-group {
+    margin-bottom: 12px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.filler-flag-group > label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--text);
+    user-select: none;
+}
+
+.filler-flag-group > label input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.filler-flag-hint {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin: 4px 0 0 20px;
+    line-height: 1.35;
 }
 
 /* ============================================================
@@ -1153,8 +1163,6 @@
    ============================================================ */
 
 .academy-grades-editor-host {
-    /* The grades editor styles itself. This host only needs to
-       establish block display. */
     display: block;
 }
 
@@ -1165,6 +1173,149 @@
 .academy-schedule-host {
     display: block;
     min-height: 200px;
+}
+
+/* ============================================================
+   FILLER MANAGER MODAL
+   ============================================================
+   Opened by the Manage Fillers button (#manage-fillers-btn) in
+   the character page header. Lists every character with a
+   checkbox; the user flags some as filler. The Apply button
+   calls CharacterCRUD.setFillerFlag for the newly-checked and
+   newly-unchecked sets.
+
+   The modal is a maintenance surface. It sits above the standard
+   .modal-content chrome; only its internal list needs styling.
+   ============================================================ */
+
+/* === NEW === */
+
+.filler-manager-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 0 0 10px 0;
+    line-height: 1.45;
+}
+
+/* ---------- Toolbar ---------- */
+
+.filler-manager-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.filler-manager-toolbar button {
+    font-size: 0.68rem;
+    padding: 3px 12px;
+    white-space: nowrap;
+}
+
+.filler-manager-count {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.filler-manager-count strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* ---------- List ---------- */
+
+.filler-manager-list {
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 4px;
+    background: var(--bg);
+}
+
+.filler-manager-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-left: 3px solid transparent;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+.filler-manager-row:hover {
+    background: var(--panel-alt);
+}
+
+/* Rows whose character is already flagged (or newly checked by
+   the user during this session). Accent border-left, tinted
+   background. */
+.filler-manager-row.is-checked {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+}
+
+/* Rows that the heuristic thinks are filler candidates.
+   Distinguished from is-checked so the user can see the
+   suggestion separately from the actual flag. */
+.filler-manager-row.is-candidate {
+    /* Base styling matches a plain row; the "Candidate" badge
+       below carries the distinction. Named hook for a future
+       change. */
+}
+
+.filler-manager-row input[type="checkbox"].filler-row-check {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.filler-manager-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---------- Candidate badge ---------- */
+
+.filler-manager-badge {
+    font-size: 0.55rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--info);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 1px 6px;
+    line-height: 1.4;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    cursor: help;
+}
+
+/* ---------- Modal footer (reuses .form-actions) ---------- */
+
+.filler-manager-list + .form-actions {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
 }
 
 /* ============================================================
@@ -1196,5 +1347,31 @@
     .stat-input-group,
     .magic-grid {
         grid-template-columns: repeat(3, 1fr);
+    }
+
+    /* ---------- Filler manager (mobile) ---------- */
+
+    .filler-manager-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+    }
+
+    .filler-manager-toolbar button {
+        width: 100%;
+    }
+
+    .filler-manager-count {
+        margin-left: 0;
+        text-align: right;
+    }
+
+    .filler-manager-list {
+        max-height: 260px;
+    }
+
+    .filler-manager-row {
+        font-size: 0.72rem;
+        padding: 6px 8px;
     }
 }
