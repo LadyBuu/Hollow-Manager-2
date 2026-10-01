@@ -23,6 +23,20 @@
  *   scope of the view — so every role read and write carries the
  *   class id.
  *
+ * FILLER FLAG (this revision):
+ *   The character detail panel carries a "Filler character" checkbox
+ *   (#academy-char-is-filler) in its header. Clicking it emits
+ *
+ *     data-action="character-toggle-filler"
+ *     data-character-id="<id>"
+ *     data-target-value="true|false"
+ *
+ *   This controller routes the action to
+ *   CharacterCRUD.setFillerFlag([id], value). There is no save
+ *   button on this panel; the checkbox is immediate. Checking it
+ *   strips the record's empty fields on the next save; unchecking
+ *   clears the flag but does not restore stripped fields.
+ *
  * DISCIPLINE-HOURS PICKER:
  *   The picker reads two VM fields from the aggregator:
  *
@@ -864,6 +878,10 @@
                 handleCharacterExport(el.dataset.characterId);
                 return;
 
+            case 'character-toggle-filler':
+                handleCharacterFillerToggle(el);
+                return;
+
             case 'edit-social-score':
                 handleEditSocialScore(el.dataset.characterId);
                 return;
@@ -1181,6 +1199,65 @@
             'Character export failed: ' + (err || 'Unknown error'),
             'error'
         );
+    }
+
+    // ============================================================
+    // CHARACTER FILLER FLAG
+    // ============================================================
+    //
+    // The character detail panel's header carries a "Filler
+    // character" checkbox. Clicking it emits
+    // data-action="character-toggle-filler" with the character id
+    // and the target value (the value the checkbox is becoming).
+    //
+    // This handler routes the flip to CharacterCRUD.setFillerFlag.
+    // The mutation is a single pipeline transaction.
+    //
+    // Setting the flag strips the record's empty fields on the
+    // next save. Clearing it does NOT restore stripped fields.
+    // On success the panel re-renders (via the context's onChange)
+    // so the checkbox reflects the new state.
+    //
+    // The setFillerFlag call is deferred to the caller; this
+    // controller does not depend on CharacterStrip directly.
+
+    function handleCharacterFillerToggle(el) {
+        if (!el || !el.dataset) { return; }
+
+        var charId = el.dataset.characterId || '';
+        var targetValue = el.dataset.targetValue === 'true';
+
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        if (!CharacterCRUD ||
+            typeof CharacterCRUD.setFillerFlag !== 'function') {
+            notify('Filler flag mutation is not available.', 'error');
+            return;
+        }
+
+        CharacterCRUD.setFillerFlag([String(charId)], targetValue)
+            .then(function(result) {
+                if (result && result.success) {
+                    var ctx = getContext();
+                    ctx.onChange();
+                    return;
+                }
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                } else {
+                    notify('Failed to update filler flag.', 'error');
+                }
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyPeopleController] setFillerFlag failed:',
+                    err
+                );
+                notify('Failed to update filler flag.', 'error');
+            });
     }
 
     // ============================================================
