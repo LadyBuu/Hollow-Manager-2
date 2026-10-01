@@ -15,75 +15,36 @@
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
  *
+ * FILLER FLAG (this revision):
+ *   The Name tab carries a checkbox, #char-is-filler, below the
+ *   Character ID field. It is collected by collect() as
+ *   dto.isFiller and drives the strip on save (see
+ *   CharacterCRUD.save). The Academy module's character form has
+ *   its own copy of the same checkbox, bound to the same field.
+ *
  * CLASS OPTIONS (v30):
- *   The class dropdown reads AcademyClasses.getClasses() directly.
- *   The retired AcademyQueries facade is no longer consulted.
+ *   Unchanged.
  *
  * PER-FIELD RANDOM:
- *   Physical and personality fields sourced from fixed pools carry a
- *   small ⟳ button (class .field-random-btn) that rerolls only that
- *   field. The button is bound via delegation in character-events.js;
- *   this file only emits the markup.
+ *   Unchanged.
  *
  * TAB STATE:
- *   - state.currentTab is module-level. It survives across renders.
- *   - Switching between two EXISTING characters keeps the current
- *     tab.
- *   - Opening a NEW character (editId === null) resets the tab to
- *     'name'.
- *   - CharacterForm.hide() also resets the tab to 'name'.
+ *   Unchanged.
  *
  * FORM TAB BUTTONS (BUG-E12):
- *   - getTabsHTML() emits <button type="button"> for every tab.
+ *   Unchanged.
  *
  * FORM ACTIONS ROW:
- *   The form-level actions row at the bottom of the form carries:
+ *   Unchanged.
  *
- *     [Delete]                (only when editing an existing character)
- *     [Export]                (only when editing an existing character)
- *     <spacer>
- *     [Cancel]
- *     [Create Character]      (or "Update Character")
+ * CHARACTER ID FIELD:
+ *   Unchanged.
  *
- *   Delete and Export are rendered only when editing an existing
- *   character; a new draft has no id, so neither is meaningful.
- *
- *   Delete is bound via delegation in character-events.js on
- *   #delete-char-btn. Export is bound the same way on
- *   #export-character-report-btn.
- *
- * CHARACTER ID FIELD (this revision):
- *   The Name tab carries a read-only text input, #char-id, above
- *   the First / Middle name row. It displays the character's id
- *   and is not editable. Its purpose is to make the id easily
- *   copyable without opening DevTools.
- *
- *   For a new character (no id yet), the field renders with the
- *   placeholder "Assigned on save" and the disabled attribute.
- *   After the character is created, the panel re-renders with the
- *   real id.
- *
- *   The field is NOT collected by collect(). It is a display-only
- *   affordance. CharacterCRUD owns the id; the form does not
- *   write it.
- *
- * EXPORT BUTTON (this revision):
- *   The form-actions row carries an Export button,
- *   #export-character-report-btn. It is rendered only when editing
- *   an existing character. Clicking it produces a plain-text
- *   report of the character, downloaded as a .txt file, built by
- *   CharacterExport.exportCharacterText.
- *
- *   The button emits no data-* markers; character-events.js binds
- *   a delegated click listener to it by id. The id matches the one
- *   the previous character-page header used, so an existing
- *   delegate that targeted the old header button will work
- *   unchanged if it is already wired.
+ * EXPORT BUTTON:
+ *   Unchanged.
  *
  * EDIT ID RESOLUTION:
- *   getCurrentEditId() / setCurrentEditId() prefer the global
- *   functions exposed by characters/index.js. The `window._currentEditId`
- *   fallback exists only for the brief window before index.js runs.
+ *   Unchanged.
  */
 
 (function() {
@@ -280,9 +241,6 @@
     // ============================================================
     // CLASS OPTIONS
     // ============================================================
-    //
-    // The class dropdown reads AcademyClasses.getClasses() directly.
-    // The retired AcademyQueries facade is no longer consulted.
 
     function getClassOptionsHTML(selectedId) {
         var AcademyClasses = getAcademyClasses();
@@ -477,7 +435,6 @@
             if (!char) { return; }
         }
 
-        // ---- TAB SESSION RULE ----
         var normalizedEditId = editId === undefined || editId === null || editId === ''
             ? null
             : String(editId);
@@ -640,19 +597,6 @@
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
-        // ---- Left-side action buttons ----
-        //
-        // Delete and Export are rendered only when editing an
-        // existing character. A new draft has no id, so neither
-        // operation is meaningful.
-        //
-        // Both are bound via delegation in character-events.js:
-        //   #delete-char-btn
-        //   #export-character-report-btn
-        //
-        // The report button's id matches the one the previous
-        // character-page header used. An existing delegate that
-        // targeted the old header button continues to work.
         var leftActionsHTML = editId
             ? ('<button type="button" id="delete-char-btn" class="danger small" ' +
                     'style="font-size:0.75rem;padding:6px 12px;">Delete</button>' +
@@ -740,17 +684,15 @@
             }
         }
 
-        // ---- Character ID field ----
-        //
-        // Read-only. Displays the id when it exists. For a new
-        // character (no id), shows a placeholder and is disabled.
-        // The field is not collected; it is a display-only
-        // affordance.
         var charIdValue = c.id ? String(c.id) : '';
         var charIdPlaceholder = c.id
             ? ''
             : 'Assigned on save';
         var charIdDisabled = c.id ? '' : 'disabled';
+
+        // Filler flag. Default unchecked.
+        var isFiller = c.isFiller === true;
+        var isFillerChecked = isFiller ? ' checked' : '';
 
         return `
             <div class="tab-panel" data-tab="name" style="display:${active};">
@@ -765,6 +707,23 @@
                            readonly
                            ${charIdDisabled}
                            style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.7rem;font-family:monospace;cursor:${c.id ? 'text' : 'not-allowed'};opacity:${c.id ? '1' : '0.5'};">
+                </div>
+
+                <div class="form-group filler-flag-group" style="margin-bottom:12px;">
+                    <label for="char-is-filler"
+                           style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.75rem;color:var(--text);">
+                        <input type="checkbox"
+                               id="char-is-filler"
+                               ${isFillerChecked}
+                               style="accent-color:var(--accent);">
+                        <span>Filler character</span>
+                    </label>
+                    <p class="field-hint filler-flag-hint"
+                       style="font-size:0.65rem;color:var(--text-dim);margin-top:2px;margin-left:20px;">
+                        Strip empty fields on save. Keeps name, career,
+                        class, teams, eliminations, and parent links.
+                        Unchecking does not restore stripped fields.
+                    </p>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -886,7 +845,7 @@
     }
 
     // ============================================================
-    // PHYSICAL TAB
+    // PHYSICAL TAB (unchanged)
     // ============================================================
 
     function getPhysicalTabHTML(c) {
@@ -948,7 +907,7 @@
     }
 
     // ============================================================
-    // PERSONALITY TAB
+    // PERSONALITY TAB (unchanged)
     // ============================================================
 
     function getPersonalityTabHTML(c) {
@@ -1046,7 +1005,7 @@
     }
 
     // ============================================================
-    // ACADEMIC TAB
+    // ACADEMIC TAB (unchanged)
     // ============================================================
 
     function getAcademicTabHTML(c) {
@@ -1060,7 +1019,7 @@
     }
 
     // ============================================================
-    // PROFESSIONAL TAB
+    // PROFESSIONAL TAB (unchanged)
     // ============================================================
 
     function getProfessionalTabHTML(c) {
@@ -1087,7 +1046,7 @@
     }
 
     // ============================================================
-    // COMBAT TAB
+    // COMBAT TAB (unchanged)
     // ============================================================
 
     function getCombatTabHTML(c) {
@@ -1127,7 +1086,7 @@
     }
 
     // ============================================================
-    // COMBAT TAB - PHYSICAL SECTION
+    // COMBAT TAB - PHYSICAL SECTION (unchanged)
     // ============================================================
 
     function getPhysicalSectionHTML(c) {
@@ -1205,7 +1164,7 @@
     }
 
     // ============================================================
-    // COMBAT TAB - WEAPONS SECTION
+    // COMBAT TAB - WEAPONS SECTION (unchanged)
     // ============================================================
 
     function getWeaponsSectionHTML(c) {
@@ -1221,7 +1180,7 @@
     }
 
     // ============================================================
-    // SOCIAL TAB
+    // SOCIAL TAB (unchanged)
     // ============================================================
 
     function getSocialTabHTML(c) {
@@ -1247,7 +1206,7 @@
     }
 
     // ============================================================
-    // NOTES TAB
+    // NOTES TAB (unchanged)
     // ============================================================
 
     function getNotesTabHTML(c) {
@@ -1273,15 +1232,15 @@
         var FormUtils = getFormUtils();
         if (!FormUtils) { return; }
 
-        // Character ID field is populated from char.id directly
-        // by the render pass; it is not a FormUtils-managed field
-        // because it is readonly and never collected.
-
         FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-middleName', char.middleName);
         FormUtils.setField('char-lastName', char.lastName);
         FormUtils.setField('char-nickname', char.nickname);
         FormUtils.setField('char-alias', char.alias);
+
+        // Filler flag. Boolean. FormUtils.setField handles
+        // checkboxes when given a boolean.
+        FormUtils.setField('char-is-filler', char.isFiller === true);
 
         var prevNamesContainer = document.getElementById('previous-names-container');
         if (prevNamesContainer) {
@@ -1520,6 +1479,8 @@
             alias: FormUtils.getField('char-alias') || '',
             previousNames: previousNames,
             displayParts: displayParts,
+
+            isFiller: FormUtils.getField('char-is-filler') === true,
 
             birthYear: birthYearRaw,
 
