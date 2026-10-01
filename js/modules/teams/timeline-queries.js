@@ -16,28 +16,31 @@
  *              became Support
  *              became Instructor
  *
- *     RIGHT  team departures
- *              left a professional team
- *              left a professional team (died)
+ *     RIGHT  team events
+ *              team formed
+ *              member left a professional team
  *
- *   The "died" annotation is a suffix, not a separate event. It
- *   is emitted when the leave year equals the character's
- *   deathYear. A character who dies on no teams produces no event
- *   at all.
+ *   The "left ... (died)" annotation is a suffix on a departure,
+ *   not a separate event. A character who dies on no teams
+ *   produces no event at all.
  *
- *   For each team that lost at least one member in a given year,
- *   the row also carries the team's remaining roster AFTER the
- *   year's departures are applied:
+ *   Each right-side event is grouped by team. Within a group, the
+ *   order is:
  *
- *     remainingMembers: [ 'Bob Jones', 'Carol Danvers' ] | null
+ *     1. "Team X formed"   (only when the team formed this year)
+ *     2. one line per departure
+ *     3. "Team X now: ..."  (only when the team has a departure
+ *                            this year and is still active next
+ *                            year)
  *
- *   The roster is `getActiveTeamMembers(team, Y)` minus every
- *   character who left that team in year Y. `null` means the
- *   team is not active in year Y+1 (the team ended); the
- *   renderer skips the "now" line entirely.
+ *   The roster on the "now" line is `getActiveTeamMembers(team, Y)`
+ *   minus every character who left that team in year Y. `null`
+ *   means the "now" line is not rendered — either the team ended,
+ *   or the group has no departures this year (a formation-only
+ *   row).
  *
  *   Empty years are skipped. Only years with at least one event
- *   are emitted.
+ *   (left or right) are emitted.
  *
  * IMPORTANT:
  *   - Pure. No DOM. No mutations. No persistence.
@@ -58,22 +61,11 @@
  *   annotated as '(died)'. When it is missing or malformed, no
  *   annotation is added.
  *
- * COMPOSITION SEMANTICS:
- *   The remaining roster for a team at year Y is computed as
- *   follows:
- *
- *     1. Read `getActiveTeamMembers(team, Y)`.
- *     2. Build a set of characterIds that left team X in year Y
- *        from the departure list.
- *     3. Remove every member whose characterId is in that set.
- *     4. If `isTeamActiveAtPeriod(team, Y+1)` is false, the
- *        remainingMembers value is null. The team ended; the
- *        renderer will not draw a "now" line.
- *
- *   The subtraction in step 3 is required because interval
- *   containment is inclusive: a member with `leavePeriod === Y`
- *   is still active at Y. Without the subtraction, a "now" line
- *   would show the character who just left.
+ * FORMATION:
+ *   `team.startPeriod` is parsed with TeamConstants.parsePeriod.
+ *   A valid year in range produces a "Team X formed" event on the
+ *   right side, above that team's departures for the same year
+ *   (if any).
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -224,20 +216,10 @@
     }
 
     /**
-     * Build the right-side events for one team.
+     * Build the right-side departure events for one team.
      *
      * For each member, walk its intervals. A non-blank leavePeriod
      * in the range produces a departure event.
-     *
-     * Returns an array of departure events:
-     *
-     *   {
-     *     year:           number,
-     *     characterId:    string,
-     *     characterName:  string,
-     *     diedAtYear:     boolean,
-     *     label:          string
-     *   }
      */
     function collectTeamDepartures(team, rangeStart, rangeEnd) {
         var departures = [];
@@ -251,7 +233,6 @@
         for (var m = 0; m < team.members.length; m++) {
             var member = team.members[m];
             if (!member || !member.characterId) { continue; }
-
             if (!Array.isArray(member.intervals)) { continue; }
 
             var charId = String(member.characterId);
@@ -267,7 +248,6 @@
 
                 var leaveYear = parseYear(iv.leavePeriod);
                 if (leaveYear === null) { continue; }
-
                 if (leaveYear < rangeStart || leaveYear > rangeEnd) {
                     continue;
                 }
@@ -291,6 +271,23 @@
         return departures;
     }
 
+    /**
+     * Return the year a team was formed, or null.
+     *
+     * Reads team.startPeriod via TeamConstants.parsePeriod. Blank
+     * and malformed values return null.
+     */
+    function getTeamFormationYear(team) {
+        if (!team || typeof team !== 'object') { return null; }
+        var raw = team.startPeriod;
+        if (raw === undefined || raw === null || raw === '') {
+            return null;
+        }
+        var n = TeamConstants.parsePeriod(raw);
+        if (n === null) { return null; }
+        return n;
+    }
+
     // ============================================================
     // COMPOSITION
     // ============================================================
@@ -299,22 +296,14 @@
      * Compute the remaining roster for a team at year Y.
      *
      * Returns either:
-     *   null   the team is not active in year Y+1, so there is no
-     *          "now" line to render.
+     *   null   the team is not active in year Y+1, or the group
+     *          has no departures this year (formation-only row).
      *   []     the team is active but has no remaining members.
      *   [name, ...]  the remaining members, alphabetically sorted.
-     *
-     * @param {object} team
-     * @param {number} year
-     * @param {object} departingCharIds - set of characterIds that
-     *                                    left THIS team in year
-     * @returns {array|null}
      */
     function computeRemainingMembers(team, year, departingCharIds) {
         if (!team || !team.id) { return null; }
 
-        // Is the team still active the year after? If not, skip
-        // the "now" line entirely.
         var stillActive = false;
         try {
             stillActive = TeamQueries.isTeamActiveAtPeriod(
@@ -364,23 +353,12 @@
     // BUILD
     // ============================================================
 
-    /**
-     * Build the timeline view model.
-     *
-     * @param {object} options
-     * @param {number|string} options.start   inclusive range start
-     * @param {number|string} options.end     inclusive range end
-     * @returns {object} the VM
-     */
     function buildTimelineViewModel(options) {
         options = options || {};
 
         var rawStart = parseYear(options.start);
         var rawEnd = parseYear(options.end);
 
-        // Normalise a missing or inverted range to an empty one.
-        // The renderer shows the range header regardless, so an
-        // empty VM still carries the range it was asked for.
         if (rawStart === null) {
             return {
                 range: { start: null, end: rawEnd },
@@ -399,15 +377,11 @@
         var rangeStart = Math.min(rawStart, rawEnd);
         var rangeEnd = Math.max(rawStart, rawEnd);
 
-        // ---- Collect events, keyed by year. ----
-        //
-        // Two buckets: leftEvents by year, rightEvents by year.
-        // Right-side events are grouped by team within each year,
-        // later.
+        // ---- Buckets. ----
         var leftEvents = Object.create(null);
         var rightEventsByYear = Object.create(null);
 
-        // Career transitions: one pass over every character.
+        // ---- Career transitions: one pass over every character. ----
         var allChars = [];
         try {
             allChars = CharacterQueries.getCharacters() || [];
@@ -420,7 +394,7 @@
             );
         }
 
-        // Team departures: one pass over every professional team.
+        // ---- Teams: one pass over every professional team. ----
         var teams = [];
         try {
             teams = TeamQueries.getTeams(
@@ -434,6 +408,31 @@
             var team = teams[t];
             if (!team || !team.id) { continue; }
 
+            var teamKey = String(team.id);
+            var teamName = team.name || 'Unnamed Team';
+
+            // ---- Formation event. ----
+            var formedYear = getTeamFormationYear(team);
+            if (formedYear !== null &&
+                formedYear >= rangeStart &&
+                formedYear <= rangeEnd) {
+
+                if (!rightEventsByYear[formedYear]) {
+                    rightEventsByYear[formedYear] = Object.create(null);
+                }
+                if (!rightEventsByYear[formedYear][teamKey]) {
+                    rightEventsByYear[formedYear][teamKey] = {
+                        teamId: teamKey,
+                        teamName: teamName,
+                        formedThisYear: false,
+                        departures: [],
+                        departingCharIds: Object.create(null)
+                    };
+                }
+                rightEventsByYear[formedYear][teamKey].formedThisYear = true;
+            }
+
+            // ---- Departure events. ----
             var departures = collectTeamDepartures(
                 team, rangeStart, rangeEnd
             );
@@ -445,11 +444,11 @@
                 if (!rightEventsByYear[y]) {
                     rightEventsByYear[y] = Object.create(null);
                 }
-                var teamKey = String(team.id);
                 if (!rightEventsByYear[y][teamKey]) {
                     rightEventsByYear[y][teamKey] = {
                         teamId: teamKey,
-                        teamName: team.name || 'Unnamed Team',
+                        teamName: teamName,
+                        formedThisYear: false,
                         departures: [],
                         departingCharIds: Object.create(null)
                     };
@@ -506,8 +505,7 @@
 
             if (teamGroupsRaw) {
                 var teamKeys = Object.keys(teamGroupsRaw);
-                // Sort teams alphabetically by name for stable
-                // output.
+
                 teamKeys.sort(function(ka, kb) {
                     var na = teamGroupsRaw[ka].teamName || '';
                     var nb = teamGroupsRaw[kb].teamName || '';
@@ -516,40 +514,45 @@
 
                 for (var tk = 0; tk < teamKeys.length; tk++) {
                     var group = teamGroupsRaw[teamKeys[tk]];
+                    var hasDepartures = group.departures.length > 0;
 
-                    // Sort departures alphabetically by character
-                    // name.
+                    // Sort departures alphabetically by name.
                     group.departures.sort(function(a, b) {
                         return a.characterName.localeCompare(
                             b.characterName
                         );
                     });
 
-                    // Find the team object once, for the roster
-                    // computation. It's the same team we saw during
-                    // the departure walk.
-                    var teamObj = null;
-                    for (var ft = 0; ft < teams.length; ft++) {
-                        if (String(teams[ft].id) === group.teamId) {
-                            teamObj = teams[ft];
-                            break;
-                        }
-                    }
-
+                    // Composition: only meaningful when there are
+                    // departures this year. A formation-only group
+                    // carries remainingMembers = null.
                     var remaining = null;
-                    if (teamObj) {
-                        remaining = computeRemainingMembers(
-                            teamObj, year, group.departingCharIds
-                        );
+                    if (hasDepartures) {
+                        var teamObj = null;
+                        for (var ft = 0; ft < teams.length; ft++) {
+                            if (String(teams[ft].id) === group.teamId) {
+                                teamObj = teams[ft];
+                                break;
+                            }
+                        }
+                        if (teamObj) {
+                            remaining = computeRemainingMembers(
+                                teamObj, year,
+                                group.departingCharIds
+                            );
+                        }
                     }
 
                     teamGroups.push({
                         teamId: group.teamId,
                         teamName: group.teamName,
+                        formedThisYear: group.formedThisYear === true,
                         departures: group.departures,
                         remainingMembers: remaining
                     });
 
+                    // Count.
+                    if (group.formedThisYear) { totalEvents++; }
                     totalEvents += group.departures.length;
                 }
             }
