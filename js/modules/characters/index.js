@@ -34,6 +34,7 @@
  *     #import-characters-csv-btn        CSV import (opens picker)
  *     #template-characters-csv-btn      CSV template
  *     #manage-fillers-btn               Filler manager
+ *     #export-character-roster-btn      Roster text export
  *     #characters-csv-file-input        hidden file input
  *     #toggle-char-list                 mobile list toggle
  *     #add-character-btn                create a new character
@@ -61,6 +62,13 @@
  *   user flag some as filler. The flag drives the strip on save;
  *   see character-strip.js and character-crud.js.
  *
+ * ROSTER EXPORT:
+ *   The Export Character Roster button produces a tab-separated
+ *   plain-text file of every character's Name, Gender, Birth Year,
+ *   and Eliminated marker. The export is not filtered by the
+ *   character-list filters; it always includes the full store.
+ *   See character-roster-export.js.
+ *
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js) - MANDATORY
  *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
@@ -72,6 +80,7 @@
  *   - window.UI_CONSTANTS (from ui-constants.js) - MANDATORY (for MOBILE_BREAKPOINT)
  *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
  *   - window.FillerManagerModal (from filler-manager-modal.js) - LAZY
+ *   - window.CharacterRosterExport (from character-roster-export.js) - LAZY
  */
 
 (function() {
@@ -317,6 +326,10 @@
                                     class="small secondary"
                                     title="Manage Filler Characters"
                                     aria-label="Manage Filler Characters">✦</button>
+                            <button id="export-character-roster-btn"
+                                    class="small secondary"
+                                    title="Export Character Roster (Text)"
+                                    aria-label="Export Character Roster Text">☰</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
