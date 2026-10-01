@@ -6,16 +6,30 @@
  * This module is responsible for:
  *   - Rendering the character list
  *   - Filtering characters by name, class, career status,
- *     deceased status, elimination status
+ *     deceased status, elimination status, and filler flag
  *   - Sorting characters by name
  *   - Displaying character status badges (deceased, eliminated,
  *     current professional team)
  *   - Handling character selection (delegates to index.js)
  *
+ * FILLER FILTER (this revision):
+ *   The list carries a "Hide filler" checkbox (#hide-filler).
+ *   When checked (the default), characters with `char.isFiller
+ *   === true` are excluded from the list. When unchecked, they
+ *   appear like any other character.
+ *
+ *   The state is persisted to sessionStorage under
+ *   `characters_hide_filler_v1`. It survives tab switches within
+ *   the current browser session and is cleared on browser close,
+ *   matching the other character-list filters.
+ *
+ *   The flag is the sole signal. There is no heuristic at read
+ *   time; the heuristic lives in character-strip.js.
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no event binding (handled by character-events.js)
  *   - No data mutations
- *   - No persistence calls
+ *   - No persistence calls other than the filler toggle
  *   - Uses LAZY LOADING for CharacterAggregator
  *   - Uses LAZY LOADING for getCurrentEditId
  *   - Uses CharacterQueries for simple character data
@@ -44,14 +58,14 @@
  *
  * LOAD-ORDER WARNING (B5, removed):
  *   The dependency check previously warned when
- *   `window.getCurrentEditId` was not yet defined. That function is
- *   installed by `characters/index.js`, which loads AFTER this
+ *   `window.getCurrentEditId` was not yet defined. That function
+ *   is installed by `characters/index.js`, which loads AFTER this
  *   module. The warning fired on every page load even though
- *   nothing was broken: `getCurrentEditId()` locally falls back to
- *   `window._currentEditId`, then to null. The warning has been
- *   removed. Nothing in this module depends on `getCurrentEditId`
- *   being defined at module-load time; the resolve happens per
- *   render.
+ *   nothing was broken: `getCurrentEditId()` locally falls back
+ *   to `window._currentEditId`, then to null. The warning has
+ *   been removed. Nothing in this module depends on
+ *   `getCurrentEditId` being defined at module-load time; the
+ *   resolve happens per render.
  *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterAggregator (from character-aggregator.js)
@@ -69,6 +83,12 @@
         return;
     }
     window.__characterListLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var HIDE_FILLER_STORAGE_KEY = 'characters_hide_filler_v1';
 
     // ============================================================
     // LAZY LOADING HELPERS - Breaks circular dependencies
@@ -105,12 +125,55 @@
     }
 
     // ============================================================
+    // FILLER FILTER PERSISTENCE
+    // ============================================================
+
+    /**
+     * Read the persisted "hide filler" state.
+     *
+     * Returns true (hide filler) when:
+     *   - nothing has been persisted (the default)
+     *   - the persisted value is not parseable
+     *   - sessionStorage is unavailable
+     *
+     * Returns false only when the persisted value is exactly the
+     * string 'false'.
+     */
+    function getHideFillerFromStorage() {
+        try {
+            var raw = sessionStorage.getItem(HIDE_FILLER_STORAGE_KEY);
+            if (raw === null) { return true; }
+            return raw !== 'false';
+        } catch (e) {
+            return true;
+        }
+    }
+
+    /**
+     * Persist the "hide filler" state.
+     *
+     * Silent on failure. sessionStorage is a cache; if it is
+     * unavailable, the checkbox still works for the current render
+     * pass.
+     */
+    function setHideFillerInStorage(value) {
+        try {
+            sessionStorage.setItem(
+                HIDE_FILLER_STORAGE_KEY,
+                value ? 'true' : 'false'
+            );
+        } catch (e) {
+            // Ignore. See the doc comment above.
+        }
+    }
+
+    // ============================================================
     // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
     //
     // `getCurrentEditId` is deliberately NOT part of the check.
     // It is defined by `characters/index.js`, which loads after
-    // this module. See the LOAD-ORDER WARNING note in the header.
+    // this module.
 
     function checkDependencies() {
         var missing = [];
@@ -204,6 +267,21 @@
         return values;
     }
 
+    /**
+     * Read the "Hide filler" checkbox.
+     *
+     * When the checkbox is missing from the DOM (e.g. a caller
+     * renders the list without the sidebar), falls back to the
+     * persisted state so the behaviour is stable.
+     */
+    function getHideFillerFromDOM() {
+        var cb = document.getElementById('hide-filler');
+        if (!cb) {
+            return getHideFillerFromStorage();
+        }
+        return cb.checked === true;
+    }
+
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
         var classFilter = document.getElementById('char-class-filter');
@@ -215,7 +293,8 @@
             classId: classFilter ? classFilter.value : 'all',
             statusFilter: getStatusFilterValues(),
             hideDeceased: hideDeceased ? hideDeceased.checked : true,
-            hideEliminated: hideEliminated ? hideEliminated.checked : true
+            hideEliminated: hideEliminated ? hideEliminated.checked : true,
+            hideFiller: getHideFillerFromDOM()
         };
     }
 
@@ -308,6 +387,7 @@
                 nameFilter: filters.name,
                 hideDeceased: filters.hideDeceased,
                 hideEliminated: filters.hideEliminated,
+                hideFiller: filters.hideFiller,
                 week: currentWeek
             });
         } catch (e) {
@@ -401,6 +481,28 @@
         return getFilterValues();
     }
 
+    /**
+     * Current "hide filler" state, read from the DOM when the
+     * checkbox is present, from storage otherwise.
+     */
+    function getHideFiller() {
+        return getHideFillerFromDOM();
+    }
+
+    /**
+     * Set the "hide filler" state. Writes to storage, updates the
+     * checkbox if present, and re-renders.
+     */
+    function setHideFiller(value) {
+        var boolValue = value !== false;
+        setHideFillerInStorage(boolValue);
+
+        var cb = document.getElementById('hide-filler');
+        if (cb) { cb.checked = boolValue; }
+
+        render();
+    }
+
     // ============================================================
     // REFRESH - Re-render with current data
     // ============================================================
@@ -430,6 +532,8 @@
         destroy: destroy,
         populateClassFilter: populateClassFilter,
         getFilterValues: getFilterValuesPublic,
+        getHideFiller: getHideFiller,
+        setHideFiller: setHideFiller,
         getCurrentEditId: getCurrentEditId
     };
 
@@ -446,7 +550,9 @@
             'refresh',
             'destroy',
             'populateClassFilter',
-            'getFilterValues'
+            'getFilterValues',
+            'getHideFiller',
+            'setHideFiller'
         ];
 
         for (var i = 0; i < required.length; i++) {
