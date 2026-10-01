@@ -1838,37 +1838,76 @@ main {
    from js/utils/notification.js; they now live here so a
    single stylesheet governs notification appearance in every
    theme.
+
+   LAYOUT:
+     Bottom-right corner, stacked upward. Newest toast sits at
+     the bottom of the stack. The container is click-through so
+     it never blocks UI underneath it; each toast is clickable
+     so it can be dismissed.
+
+   SIZE:
+     Toast width is capped at 260px, text at 0.72rem. This is
+     deliberately small: the toast is an acknowledgement, not a
+     document. Long messages wrap; the box does not grow past
+     the cap.
+
+   STACKING:
+     The container has max-height: 40vh and overflow: hidden.
+     Combined with the notification.js cap of 3 simultaneous
+     toasts, this means the stack can never cover more than
+     about two fifths of the viewport. The rest of the app is
+     always reachable.
+
+   PULSE:
+     When notification.js dedupes a duplicate message it adds
+     a `.pulse` class for 240ms. That animation lives here.
  */
 
 .notification-container {
     position: fixed;
-    top: 20px;
-    right: 20px;
+    bottom: 16px;
+    right: 16px;
+    top: auto;
+    left: auto;
     z-index: 10000;
+
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-width: 400px;
-    width: 100%;
-    pointer-events: none;
+    flex-direction: column-reverse; /* newest at bottom, stack upward */
+    align-items: flex-end;
+    gap: 6px;
+
+    max-width: 260px;
+    max-height: 40vh;
+    overflow: hidden;
+
+    pointer-events: none;           /* container is click-through */
 }
 
 .notification-container .notification {
-    pointer-events: auto;
-    padding: 12px 16px;
-    border-radius: 8px;
+    pointer-events: auto;           /* toast itself is clickable */
+
+    padding: 6px 10px;
+    border-radius: 5px;
+
     background: var(--panel);
     color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
+    align-items: center;
+    gap: 6px;
+
+    width: 100%;
+    max-width: 260px;
+    min-width: 0;
+
+    font-size: 0.72rem;
+    line-height: 1.3;
+
     opacity: 0;
-    transform: translateX(20px);
-    transition: opacity 0.3s ease, transform 0.3s ease;
-    max-width: 400px;
-    min-width: 200px;
+    transform: translateX(16px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
 .notification-container .notification.visible {
@@ -1878,22 +1917,24 @@ main {
 
 .notification-container .notification.hiding {
     opacity: 0;
-    transform: translateX(20px);
+    transform: translateX(16px);
 }
 
 .notification-container .notification .notification-icon {
-    font-size: 18px;
-    line-height: 1.4;
+    font-size: 0.85rem;
+    line-height: 1;
     flex-shrink: 0;
-    width: 24px;
+    width: 14px;
     text-align: center;
 }
 
 .notification-container .notification .notification-content {
     flex: 1;
-    font-size: 14px;
-    line-height: 1.4;
-    word-wrap: break-word;
+    min-width: 0;
+    font-size: 0.72rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .notification-container .notification .notification-close {
@@ -1901,11 +1942,11 @@ main {
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 16px;
-    padding: 0 4px;
-    line-height: 1.4;
+    font-size: 0.85rem;
+    padding: 0 3px;
+    line-height: 1;
     flex-shrink: 0;
-    opacity: 0.6;
+    opacity: 0.5;
     transition: opacity 0.2s;
 }
 
@@ -1915,51 +1956,87 @@ main {
     border-color: transparent;
 }
 
+/* ---- Type accents ---- */
+
 .notification-container .notification-success {
-    border-left: 4px solid var(--accent);
+    border-left: 3px solid var(--accent);
 }
 .notification-container .notification-success .notification-icon {
     color: var(--accent);
 }
 
 .notification-container .notification-error {
-    border-left: 4px solid var(--danger);
+    border-left: 3px solid var(--danger);
 }
 .notification-container .notification-error .notification-icon {
     color: var(--danger);
 }
 
 .notification-container .notification-warning {
-    border-left: 4px solid var(--warning);
+    border-left: 3px solid var(--warning);
 }
 .notification-container .notification-warning .notification-icon {
     color: var(--warning);
 }
 
 .notification-container .notification-info {
-    border-left: 4px solid var(--info);
+    border-left: 3px solid var(--info);
 }
 .notification-container .notification-info .notification-icon {
     color: var(--info);
 }
 
+/* ---- Dedup pulse ---- */
+/*
+ * Applied by notification.js for 240ms when a duplicate message
+ * is coalesced into an existing toast. The pulse is very subtle
+ * — a small scale bump — so it reads as "I heard you" rather
+ * than as a new event.
+ */
+
+.notification-container .notification.pulse {
+    animation: notif-pulse 240ms ease-out;
+}
+
+@keyframes notif-pulse {
+    0%   { transform: scale(1); }
+    45%  { transform: scale(1.025); }
+    100% { transform: scale(1); }
+}
+
+/* ---- Narrow viewports ---- */
+/*
+ * On phones the toast anchors to the bottom-left of the
+ * viewport instead of the bottom-right, and stretches across
+ * the width. The stack height cap stays; the stack simply
+ * occupies the full row.
+ */
+
 @media (max-width: 480px) {
     .notification-container {
-        top: 10px;
-        right: 10px;
+        bottom: 10px;
         left: 10px;
+        right: 10px;
         max-width: none;
         width: auto;
+        max-height: 34vh;
+        align-items: stretch;
     }
     .notification-container .notification {
         max-width: none;
-        min-width: auto;
+        min-width: 0;
+        width: 100%;
     }
 }
+
+/* ---- Reduced motion ---- */
 
 @media (prefers-reduced-motion: reduce) {
     .notification-container .notification {
         transition: none;
+    }
+    .notification-container .notification.pulse {
+        animation: none;
     }
     .modal {
         animation: none;
