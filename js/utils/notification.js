@@ -2,7 +2,7 @@
  * utils/notification.js - Notification System
  * Toast/notification system for the application
  * Path: js/utils/notification.js
- * 
+ *
  * This module provides:
  *   - Toast notifications with auto-dismiss
  *   - Notification types (success, error, warning, info)
@@ -10,7 +10,8 @@
  *   - Persistent notification support
  *   - Proper notification identity (dismiss by ID, not message text)
  *   - Reliable onDismiss callbacks (called exactly once)
- * 
+ *   - Duplicate coalescing (see DEDUP below)
+ *
  * IMPORTANT:
  *   - Owns notification UI lifecycle
  *   - Does not mutate application/domain data
@@ -19,7 +20,7 @@
  *   - Self-contained (direct DOM manipulation only)
  *   - Uses IdUtils for notification IDs (SINGLE SOURCE OF TRUTH)
  *   - No "pure" claims - this is a UI subsystem
- * 
+ *
  * STYLES:
  *   Notification appearance is governed by css/shared.css. This
  *   module no longer injects a stylesheet at runtime. The toast
@@ -27,23 +28,50 @@
  *   variants) is declared in shared.css alongside the theme
  *   tokens, so light and dark themes are handled by the same
  *   cascade.
- * 
+ *
+ * DEDUP:
+ *   When notify() is called and an identical (message, type) toast
+ *   is CURRENTLY VISIBLE, the existing toast is refreshed instead
+ *   of a new one being stacked. Refresh means:
+ *     - the auto-dismiss timer is reset
+ *     - a short visual pulse is applied so the user notices
+ *     - the returned handle points at the SAME notification ID
+ *
+ *   Duplicates that are QUEUED but not yet shown are NOT deduped.
+ *   A queued duplicate means the user already missed the first
+ *   one; a second toast is the right call.
+ *
+ *   This is what stops "click Roll Stats five times in a row" from
+ *   producing five toasts. It is the single biggest improvement to
+ *   the notification experience for keyboard-mashing users.
+ *
+ * DURATION DEFAULTS:
+ *   Success and info are acknowledgements: 1.5s is plenty.
+ *   Warning gets a bit more: 2.5s.
+ *   Error gets the most: 4s, because the user may need to read it.
+ *   Persistent toasts (duration 0) are unchanged.
+ *
+ * CAP:
+ *   Five simultaneous toasts was too many. Three is the new cap.
+ *   Past three, the container starts covering the UI even on a
+ *   desktop viewport.
+ *
  * DEPENDENCIES:
  *   - window.IdUtils (for notification IDs)
  *   - DOM APIs (document, window)
- * 
+ *
  * USAGE:
  *   // Simple toast
  *   var notif = NotificationSystem.notify('Hello world!');
- * 
+ *
  *   // With type and callback
  *   var notif = NotificationSystem.notify('Saved!', 'success', 3000, function() {
  *       console.log('Notification dismissed');
  *   });
- * 
+ *
  *   // Dismiss manually
  *   notif.dismiss();
- * 
+ *
  *   // Persistent (must be dismissed manually)
  *   var notif = NotificationSystem.notify('Important', 'warning', 0);
  *   notif.dismiss(); // Must be called explicitly
@@ -87,33 +115,33 @@
     // CONSTANTS
     // ============================================================
 
-    var DEFAULT_DURATION = 3000;
-    var _maxNotifications = 5;
+    var DEFAULT_DURATION = 1500;
+    var _maxNotifications = 3;
     var ANIMATION_DURATION = 300;
 
     var TYPES = {
         success: {
             icon: '✓',
             className: 'notification-success',
-            defaultDuration: 3000,
+            defaultDuration: 1500,
             ariaLabel: 'Success'
         },
         error: {
             icon: '✕',
             className: 'notification-error',
-            defaultDuration: 5000,
+            defaultDuration: 4000,
             ariaLabel: 'Error'
         },
         warning: {
             icon: '⚠',
             className: 'notification-warning',
-            defaultDuration: 4000,
+            defaultDuration: 2500,
             ariaLabel: 'Warning'
         },
         info: {
             icon: 'ℹ',
             className: 'notification-info',
-            defaultDuration: 3000,
+            defaultDuration: 1500,
             ariaLabel: 'Information'
         }
     };
@@ -163,7 +191,11 @@
 
     function createNotificationDOM(item) {
         var type = item.type || 'info';
-        var duration = item.duration !== undefined ? item.duration : TYPES[type] ? TYPES[type].defaultDuration : DEFAULT_DURATION;
+        var duration = item.duration !== undefined
+            ? item.duration
+            : (TYPES[type]
+                ? TYPES[type].defaultDuration
+                : DEFAULT_DURATION);
         var isPersistent = duration === 0;
 
         var typeConfig = TYPES[type] || TYPES.info;
@@ -209,6 +241,8 @@
         notification._timer = timer;
         notification._dismissed = false;
         notification._id = notificationId;
+        notification._message = item.message;
+        notification._type = type;
 
         return notification;
     }
@@ -289,6 +323,113 @@
     }
 
     // ============================================================
+    // DEDUP HELPERS
+    // ============================================================
+
+    /**
+     * Find a currently-visible notification with the given
+     * (message, type). Returns the notification DOM node, or null.
+     *
+     * Only ACTIVE notifications are considered. Queued-but-not-yet-
+     * shown duplicates are deliberately ignored: if the first was
+     * queued and the second arrives before the first is shown, the
+     * user deserves to see both. See the DEDUP note in the file
+     * header.
+     */
+    function findActiveDuplicate(message, type) {
+        for (var i = 0; i < _activeNotifications.length; i++) {
+            var n = _activeNotifications[i];
+            if (!n || n._dismissed) { continue; }
+            if (n._message !== message) { continue; }
+            if (n._type !== type) { continue; }
+            return n;
+        }
+        return null;
+    }
+
+    /**
+     * Refresh a visible duplicate: reset its timer, pulse it, and
+     * return a handle pointing at the same notification ID.
+     */
+    function refreshDuplicate(existing, type, duration, onDismiss) {
+        // Clear the old timer
+        if (existing._timer) {
+            clearTimeout(existing._timer);
+            existing._timer = null;
+        }
+
+        // Resolve the new duration
+        var resolvedDuration = duration !== undefined
+            ? duration
+            : (TYPES[type]
+                ? TYPES[type].defaultDuration
+                : DEFAULT_DURATION);
+
+        // Re-arm the timer if not persistent
+        if (resolvedDuration > 0) {
+            existing._timer = setTimeout(function() {
+                dismissNotification(existing._id);
+            }, resolvedDuration);
+        }
+
+        // Visual pulse. Two-step class toggle with a forced reflow
+        // so the animation restarts even if the class was already
+        // present from a very recent refresh.
+        existing.classList.remove('pulse');
+        // eslint-disable-next-line no-unused-expressions
+        void existing.offsetWidth;
+        existing.classList.add('pulse');
+
+        // Remove the pulse class when the animation finishes, so a
+        // subsequent refresh can re-trigger it.
+        setTimeout(function() {
+            if (existing && existing.classList) {
+                existing.classList.remove('pulse');
+            }
+        }, 260);
+
+        // If the caller supplied an onDismiss for this refresh,
+        // chain it onto the existing one rather than replacing.
+        // The existing notification may already have been dismissed
+        // by the time the new callback should fire.
+        if (typeof onDismiss === 'function') {
+            var priorId = existing._id;
+            // The old onDismiss will still fire on the old timer
+            // path; we do not attempt to merge them. The new
+            // callback fires when the refreshed notification is
+            // actually dismissed.
+            // Attach it by pushing a queued record keyed by the
+            // same id so dismissNotification finds it.
+            var alreadyQueued = false;
+            for (var q = 0; q < _queue.length; q++) {
+                if (_queue[q] && _queue[q].id === priorId) {
+                    alreadyQueued = true;
+                    break;
+                }
+            }
+            if (!alreadyQueued) {
+                _queue.push({
+                    id: priorId,
+                    message: existing._message,
+                    type: existing._type,
+                    duration: resolvedDuration,
+                    onDismiss: onDismiss
+                });
+            }
+        }
+
+        return {
+            id: existing._id,
+            dismiss: function() {
+                dismissNotification(existing._id);
+            },
+            isDismissed: function() {
+                return existing._dismissed === true;
+            }
+        };
+    }
+
+    // ============================================================
     // QUEUE MANAGEMENT
     // ============================================================
 
@@ -363,7 +504,11 @@
 
     /**
      * Show a notification toast.
-     * 
+     *
+     * DEDUP: if an identical (message, type) toast is currently
+     * visible, this refreshes it instead of stacking a new one.
+     * See the DEDUP note in the file header.
+     *
      * @param {string} message - The message to display
      * @param {string} type - 'success' | 'error' | 'warning' | 'info'
      * @param {number} duration - Duration in ms (0 = persistent)
@@ -379,14 +524,32 @@
         // Ensure container exists
         init();
 
-        // Generate unique ID for this notification
+        var messageStr = String(message);
+        var resolvedType = type || 'info';
+
+        // ---- Dedup ----
+        var existing = findActiveDuplicate(messageStr, resolvedType);
+        if (existing) {
+            return refreshDuplicate(
+                existing,
+                resolvedType,
+                duration,
+                onDismiss
+            );
+        }
+
+        // ---- No duplicate: enqueue as normal ----
         var id = generateNotificationId();
 
         var item = {
             id: id,
-            message: String(message),
-            type: type || 'info',
-            duration: duration !== undefined ? duration : TYPES[type] ? TYPES[type].defaultDuration : DEFAULT_DURATION,
+            message: messageStr,
+            type: resolvedType,
+            duration: duration !== undefined
+                ? duration
+                : (TYPES[resolvedType]
+                    ? TYPES[resolvedType].defaultDuration
+                    : DEFAULT_DURATION),
             onDismiss: onDismiss || null
         };
 
@@ -453,7 +616,7 @@
 
     /**
      * Clear all active notifications.
-     * 
+     *
      * @param {boolean} callCallbacks - Whether to call onDismiss for cleared notifications
      */
     function clearNotifications(callCallbacks) {
