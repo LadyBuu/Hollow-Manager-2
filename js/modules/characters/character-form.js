@@ -22,6 +22,19 @@
  *   CharacterCRUD.save). The Academy module's character form has
  *   its own copy of the same checkbox, bound to the same field.
  *
+ * CAREER WIZARD BUTTON (this revision):
+ *   The Professional tab's Career Status History section carries
+ *   a [⌂ Career Wizard] button next to [+ Add Status Entry].
+ *   Clicking it opens the CareerStatusWizard modal, which
+ *   generates a careerStatus timeline from a start year and a
+ *   route, and commits it via
+ *   CharacterCRUD.applyCareerStatusTimeline.
+ *
+ *   The button is a plain HTML element inside the form content.
+ *   CharacterEvents delegates the click; this module does not
+ *   bind listeners. See character-events.js
+ *   bindCareerStatusWizard().
+ *
  * CLASS OPTIONS (v30):
  *   Unchanged.
  *
@@ -1019,8 +1032,12 @@
     }
 
     // ============================================================
-    // PROFESSIONAL TAB (unchanged)
+    // PROFESSIONAL TAB
     // ============================================================
+    //
+    // This revision adds the Career Wizard button next to
+    // + Add Status Entry. The button opens the CareerStatusWizard
+    // modal via a delegated click handler in character-events.js.
 
     function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
@@ -1037,7 +1054,10 @@
                     <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Career Status History</label>
                     <div style="font-size:0.6rem;color:var(--text-dim);margin-bottom:6px;">Entries are sorted chronologically by start year.</div>
                     <div id="career-status-container" style="display:flex;flex-direction:column;gap:2px;"></div>
-                    <button type="button" id="add-career-entry-btn" class="small secondary" style="margin-top:6px;font-size:0.65rem;padding:3px 10px;">+ Add Status Entry</button>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center;">
+                        <button type="button" id="add-career-entry-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">+ Add Status Entry</button>
+                        <button type="button" id="career-wizard-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;" title="Auto-fill career status from a start year and a route">\u2302 Career Wizard</button>
+                    </div>
                 </div>
 
                 <div id="professional-view" style="margin-top:12px;"></div>
