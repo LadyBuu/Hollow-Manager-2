@@ -511,7 +511,6 @@
     min-width: 0;
 }
 
-/* === NEW === Name line holds name + age + optional tag on one row */
 .unassigned-name-line {
     display: flex;
     align-items: baseline;
@@ -529,7 +528,6 @@
     white-space: nowrap;
 }
 
-/* === NEW === Age chip in parentheses after the name */
 .unassigned-age {
     font-size: 0.65rem;
     color: var(--text-dim);
@@ -537,7 +535,6 @@
     white-space: nowrap;
 }
 
-/* === NEW === "Staff" tag on unassigned-staff candidates */
 .unassigned-staff-tag {
     font-size: 0.55rem;
     font-weight: 600;
@@ -579,14 +576,12 @@
     white-space: nowrap;
 }
 
-/* === NEW === Role cell (staff section) */
 .unassigned-role {
     font-size: 0.7rem;
     color: var(--text);
     white-space: nowrap;
 }
 
-/* === NEW === "Since" cell (staff section) */
 .unassigned-since {
     font-size: 0.72rem;
     color: var(--text-dim);
@@ -595,7 +590,6 @@
     white-space: nowrap;
 }
 
-/* === NEW === Subtype tags in the staff section */
 .unassigned-subtype-tag {
     font-size: 0.55rem;
     font-weight: 600;
@@ -852,6 +846,18 @@
 
 .timeline-event-instructor {
     border-left: 3px solid var(--danger);
+}
+
+/*
+ * Formation line at the top of a team group. Uses the accent
+ * colour to distinguish it from departures. Slightly bolder than
+ * a departure line so it reads as a header for the group.
+ */
+.timeline-event-formed {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+    color: var(--accent);
 }
 
 .timeline-event-leave {
