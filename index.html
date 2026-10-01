@@ -27,18 +27,13 @@
     <link rel="stylesheet" href="css/calendar.css" />
 
     <script>
-        // Apply theme before first paint to avoid a flash of the
-        // wrong theme. Any stored theme that is not the default
-        // 'dark' is applied as a data-theme attribute.
         (function() {
             try {
                 var stored = localStorage.getItem('hollow-manager-theme');
                 if (stored && stored !== 'dark') {
                     document.documentElement.setAttribute('data-theme', stored);
                 }
-            } catch (e) {
-                // localStorage unavailable — fall through to dark default
-            }
+            } catch (e) {}
         })();
     </script>
 </head>
@@ -79,7 +74,9 @@
         </main>
     </div>
 
-    <!-- Utilities -->
+    <!-- ============================================================
+         Utilities
+         ============================================================ -->
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
     <script src="js/utils/validation-utils.js"></script>
@@ -90,10 +87,11 @@
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
 
-    <!-- Theme management -->
     <script src="js/utils/theme-manager.js"></script>
 
-    <!-- Shared constants -->
+    <!-- ============================================================
+         Shared constants
+         ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
@@ -111,10 +109,11 @@
     <script src="js/utils/calendar-validation.js"></script>
     <script src="js/utils/range-utils.js"></script>
 
-    <!-- Tournament rules -->
     <script src="js/modules/tournaments/tournament-rules.js"></script>
 
-    <!-- Shared queries -->
+    <!-- ============================================================
+         Shared queries
+         ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
     <script src="js/modules/shared/queries/tournament-queries.js"></script>
@@ -124,21 +123,65 @@
     <script src="js/modules/shared/queries/location-queries.js"></script>
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
 
-    <!-- Core infrastructure -->
+    <!-- ============================================================
+         Core infrastructure (partial)
+         import-pipeline.js requires ActivityLog + MutationPipeline.
+         They must load before the import/export block.
+         ============================================================ -->
     <script src="js/core/activity-log.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+
+    <!-- ============================================================
+         IMPORT / EXPORT
+         Boundary layer. Loads before any domain module so that
+         every domain script that references ExportUtils, CSV,
+         JSONIO, or CharacterCSV at load time finds them.
+         ============================================================ -->
+
+    <!-- Core -->
+    <script src="js/import-export/export-utils.js"></script>
+    <script src="js/import-export/import-result.js"></script>
+    <script src="js/import-export/csv-parser.js"></script>
+    <script src="js/import-export/export-schema.js"></script>
+    <script src="js/import-export/export-envelope.js"></script>
+    <script src="js/import-export/format-migrations.js"></script>
+    <script src="js/import-export/cross-domain-validator.js"></script>
+    <script src="js/import-export/import-pipeline.js"></script>
+    <script src="js/import-export/json-io.js"></script>
+
+    <!-- CSV domain modules -->
+    <script src="js/import-export/character-csv.js"></script>
+    <script src="js/import-export/mission-csv.js"></script>
+
+    <!-- Text and grid exports -->
+    <script src="js/import-export/team-export.js"></script>
+    <script src="js/import-export/schedule-export.js"></script>
+    <script src="js/import-export/class-roster-export.js"></script>
+    <script src="js/import-export/character-export.js"></script>
+    <script src="js/import-export/character-roster-export.js"></script>
+
+    <!-- Character export picker (consolidates CSV / Roster / Template) -->
+    <script src="js/import-export/character-export-picker.js"></script>
+
+    <!-- Export pickers -->
+    <script src="js/import-export/graduates-export-picker.js"></script>
+    <script src="js/import-export/team-export-picker.js"></script>
+
+    <!-- ============================================================
+         Core infrastructure (remaining)
+         ============================================================ -->
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
     <script src="js/core/state.js"></script>
     <script src="js/core/tab-manager.js"></script>
-    <script src="js/core/mutation-pipeline.js"></script>
 
-    <!-- Shared components -->
     <script src="js/modules/shared/member-manager.js"></script>
 
-    <!-- Calendar renderer -->
     <script src="js/modules/calendar/calendar-renderer.js"></script>
 
-    <!-- Academy domain -->
+    <!-- ============================================================
+         Academy domain
+         ============================================================ -->
     <script src="js/modules/academy/academy-grade-schemes.js"></script>
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
@@ -154,7 +197,6 @@
 
     <script src="js/modules/academy/academy-ranking.js"></script>
 
-    <!-- Academy teaching model -->
     <script src="js/modules/academy/academy-class-disciplines-queries.js"></script>
     <script src="js/modules/academy/academy-class-disciplines.js"></script>
     <script src="js/modules/academy/academy-discipline-sessions-panel.js"></script>
@@ -165,10 +207,7 @@
     <script src="js/modules/academy/academy-teaching-collisions.js"></script>
     <script src="js/modules/academy/academy-teaching-validation.js"></script>
 
-    <!-- Academy schedule coordinator -->
     <script src="js/modules/academy/academy-schedule.js"></script>
-
-    <!-- Academy calendar aggregator -->
     <script src="js/modules/academy/academy-calendar-aggregator.js"></script>
 
     <script src="js/modules/academy/academy-weekly-teams.js"></script>
@@ -176,13 +215,12 @@
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
 
-    <!-- Academy member adapter -->
     <script src="js/modules/academy/member-adapter-academy.js"></script>
-
-    <!-- Academy balance suggestions -->
     <script src="js/modules/academy/academy-balance-suggestions.js"></script>
 
-    <!-- Social domain -->
+    <!-- ============================================================
+         Social domain
+         ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
     <script src="js/modules/social/social-matcher.js"></script>
@@ -192,19 +230,16 @@
     <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/index.js"></script>
 
-    <!-- Character domain -->
+    <!-- ============================================================
+         Character domain
+         ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-moves.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
 
-    <!-- Filler strip: helpers, then the maintenance modal. -->
     <script src="js/modules/characters/character-strip.js"></script>
     <script src="js/modules/characters/filler-manager-modal.js"></script>
-
-    <!-- Character roster text export. Must load before
-         character-events.js binds the header button. -->
-    <script src="js/import-export/character-roster-export.js"></script>
 
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
@@ -216,13 +251,17 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- Tournament domain -->
+    <!-- ============================================================
+         Tournament domain
+         ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-cascade.js"></script>
     <script src="js/modules/tournaments/tournament-matches.js"></script>
     <script src="js/modules/tournaments/tournament-core.js"></script>
 
-    <!-- Academy view shell -->
+    <!-- ============================================================
+         Academy view shell
+         ============================================================ -->
     <script src="js/modules/academy/academy-character-detail-aggregator.js"></script>
     <script src="js/modules/academy/academy-class-detail.js"></script>
     <script src="js/modules/academy/academy-grades-editor.js"></script>
@@ -239,7 +278,6 @@
     <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
     <script src="js/modules/academy/academy-crud-modals.js"></script>
 
-    <!-- Academy modals -->
     <script src="js/modules/academy/academy-class-disciplines-picker.js"></script>
     <script src="js/modules/academy/academy-enrollment-modal.js"></script>
     <script src="js/modules/academy/academy-schedule-assign-modal.js"></script>
@@ -251,7 +289,9 @@
 
     <script src="js/modules/academy/academy-view.js"></script>
 
-    <!-- Team domain -->
+    <!-- ============================================================
+         Team domain
+         ============================================================ -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
@@ -260,9 +300,6 @@
     <script src="js/modules/teams/team-matchmaking.js"></script>
     <script src="js/modules/teams/team-matchmaking-view.js"></script>
 
-    <!-- Timeline view: queries + view must load before team-events
-         binds to them, and before team-aggregator routes to them
-         at call time. -->
     <script src="js/modules/teams/timeline-queries.js"></script>
     <script src="js/modules/teams/timeline-view.js"></script>
 
@@ -271,10 +308,11 @@
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
-    <!-- Academy instructor repair view + controller -->
+    <!-- ============================================================
+         Academy instructor repair + controllers
+         ============================================================ -->
     <script src="js/modules/academy/academy-instructor-repair-view.js"></script>
 
-    <!-- Academy controllers -->
     <script src="js/modules/academy/controllers/controller-contract.js"></script>
     <script src="js/modules/academy/controllers/academy-controllers.js"></script>
 
@@ -290,7 +328,9 @@
 
     <script src="js/modules/academy/index.js"></script>
 
-    <!-- Missions domain -->
+    <!-- ============================================================
+         Missions domain
+         ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
     <script src="js/modules/missions/mission-cascade.js"></script>
@@ -301,39 +341,26 @@
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
-    <!-- Import / export -->
-    <script src="js/import-export/export-utils.js"></script>
-    <script src="js/import-export/import-result.js"></script>
-    <script src="js/import-export/csv-parser.js"></script>
-    <script src="js/import-export/export-schema.js"></script>
-    <script src="js/import-export/export-envelope.js"></script>
-    <script src="js/import-export/format-migrations.js"></script>
-    <script src="js/import-export/cross-domain-validator.js"></script>
-    <script src="js/import-export/import-pipeline.js"></script>
-    <script src="js/import-export/json-io.js"></script>
-    <script src="js/import-export/character-csv.js"></script>
-    <script src="js/import-export/mission-csv.js"></script>
-    <script src="js/import-export/team-export.js"></script>
-    <script src="js/import-export/schedule-export.js"></script>
-    <script src="js/import-export/class-roster-export.js"></script>
-    <script src="js/import-export/graduates-export-picker.js"></script>
-    <script src="js/import-export/team-export-picker.js"></script>
-    <script src="js/import-export/character-export.js"></script>
+    <!-- ============================================================
+         Import/export UI — binds header buttons.
+         Last of the import/export group. Requires TabManager,
+         NotificationSystem, and MutationPipeline, all of which are
+         loaded above.
+         ============================================================ -->
     <script src="js/import-export/ui.js"></script>
     <script src="js/import-export/index.js"></script>
 
-
-    <!-- Application settings -->
+    <!-- ============================================================
+         Application settings + dashboard + bootstrap
+         ============================================================ -->
     <script src="js/modules/application/application-settings-core.js"></script>
     <script src="js/modules/application/application-settings-queries.js"></script>
 
-    <!-- Dashboard -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
     <script src="js/modules/dashboard/dashboard-ui.js"></script>
     <script src="js/modules/dashboard/index.js"></script>
 
-    <!-- Bootstrap + app shell -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
