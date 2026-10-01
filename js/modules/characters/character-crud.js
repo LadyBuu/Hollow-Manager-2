@@ -53,25 +53,7 @@
  *     academy.enrolments[classId][charId] = [interval, ...].
  *
  * CHARACTER MODE / ROLE (v27, revised v31):
- *   Prior to v31, every character record carried a persisted `mode`
- *   field ('student' | 'instructor'). As of v31, the role is
- *   CLASS-SCOPED and lives on the enrolment interval:
- *
- *     { disciplineId, startWeek, endWeek,
- *       role: 'student' | 'instructor' }
- *
- *   The class-scoped question "is Alice an instructor of Class A?"
- *   is answered by AcademyClasses.getClassInstructorIdsAllTime
- *   ('class_a').
- *
- *   The mutation that changes a character's role for a class is
- *   setInstructorForClass(charId, classId, isInstructor). It
- *   rewrites every enrolment interval of charId in classId to the
- *   target role, in a single MutationPipeline transaction. It does
- *   NOT touch the character record itself.
- *
- *   setMode() is retained as a stub that returns a failure with a
- *   pointer to the new API.
+ *   Class-scoped role, as before. See the retired setMode stub.
  *
  * DEATH MODEL:
  *   - deathYear is the source of truth for "when does this character die"
@@ -79,63 +61,31 @@
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *
  * DEATH → PROFESSIONAL TEAM CASCADE:
- *   When a save leaves the character with a parseable deathYear,
- *   updateExistingCharacter calls
- *   TeamCore.endStintsForCharacter(data, charId, deathYear) inside
- *   the same pipeline transaction. Runs on EVERY save of a deceased
- *   character (idempotent), not just on the transition.
+ *   Unchanged from the previous revision.
+ *
+ * FILLER FLAG (this revision):
+ *   character.isFiller is a boolean. When true, the record is
+ *   written in its stripped form: every empty / default field is
+ *   dropped before the write lands in window.data.
+ *
+ *   The flag is set through CharacterCRUD.setFillerFlag(ids, value),
+ *   which:
+ *     - sets char.isFiller on every id
+ *     - when value === true, strips the empty fields from each
+ *       record in the same transaction
+ *     - when value === false, only clears the flag; the record
+ *       stays stripped, and the next save re-populates it through
+ *       the normal normaliseCharacterData path
+ *
+ *   The save path also honours the flag: a save of a character
+ *   with isFiller === true produces a stripped record.
+ *
+ *   The strip helper lives in character-strip.js. It is resolved
+ *   lazily so a missing module degrades to "no strip" rather than
+ *   blocking the save.
  *
  * DELETE CASCADE SEMANTICS:
- *   Deleting a character is a CASCADE. In a single transaction it:
- *     1. Removes the character from every team's members list.
- *     2. Removes the character from academy.weeklyTeams.
- *     3. Removes academy.grades records.
- *     4. Removes academy.rankings records.
- *     5. Removes academy.enrolments entries (class-scoped).
- *     6. Removes academy.socialScores entries.
- *     7. Removes social relationships.
- *     8. Removes mission support-personnel references.
- *     9. Removes tournament participant / elimination / winner /
- *        match references.
- *    10. Strips the deleted ID from every remaining character's
- *        parentIds array.
- *    11. Deletes the character entity itself.
- *
- *   Steps 2–9 are delegated to AcademyCascade.characterDeleted.
- *   Steps 1 and 10 stay inline.
- *
- * CHILD CREATION:
- *   createChild(parentAId, parentBId, options) is the DEDICATED
- *   mutation for producing a child from two parents. It:
- *     - Validates both parents exist and are distinct.
- *     - Builds a child DTO via SocialChildFactory.buildChildDto,
- *       which inherits stats, magic, physical traits, and
- *       personality from both parents.
- *     - In one transaction:
- *         . Pushes the child onto data.characters.
- *         . Sets child.parentIds.
- *         . Creates two 'familial' relationships (parent ↔ child)
- *           with two-sided clarifications ('Mother'/'Father' on the
- *           parent side, 'Daughter'/'Son' on the child side).
- *         . Creates 'familial' sibling relationships between the
- *           new child and every existing child of either parent.
- *     - Returns the new child record.
- *
- *   Relationship creation is done transaction-locally via
- *   SocialCore.addRelationshipsInTransaction, which pushes records
- *   onto appData.social.relationships without re-entering the
- *   pipeline.
- *
- * UPDATE PATH — OBJECT IDENTITY:
- *   updateExistingCharacter MERGES THE MERGED OBJECT'S KEYS BACK
- *   ONTO THE LIVE OBJECT IN PLACE. Object identity is preserved.
- *   The CharacterQueries id index — which holds the live object
- *   reference in its Map — sees the new values immediately.
- *
- *   As a belt-and-braces measure, invalidateCharacterIndex() is
- *   ALSO called after the merge. If any future code path slips a
- *   slot replacement past review, the next read rebuilds the
- *   index rather than returning a stale object.
+ *   Unchanged from the previous revision.
  *
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
@@ -145,11 +95,9 @@
  *   - window.AcademyCascade (from academy-cascade.js) - LAZY (optional)
  *   - window.TeamCore (from team-core.js) - LAZY (optional)
  *   - window.AcademyEnrolments (from academy-enrolments.js) - LAZY
- *     Required by setInstructorForClass.
- *   - window.SocialCore (from social-core.js) - LAZY, required by
- *     createChild for the transaction-local relationship adder.
- *   - window.SocialChildFactory (from social-child-factory.js) -
- *     LAZY, required by createChild for the DTO builder.
+ *   - window.SocialCore (from social-core.js) - LAZY
+ *   - window.SocialChildFactory (from social-child-factory.js) - LAZY
+ *   - window.CharacterStrip (from character-strip.js) - LAZY
  */
 
 (function() {
@@ -259,6 +207,10 @@
         return window.SocialChildFactory || null;
     }
 
+    function getCharacterStrip() {
+        return window.CharacterStrip || null;
+    }
+
     function parseDeathYear(value) {
         if (value === undefined || value === null || value === '') {
             return null;
@@ -297,6 +249,35 @@
                 '[CharacterCRUD] invalidateCharacterIndex threw:', e
             );
         }
+    }
+
+    /**
+     * Apply the strip to a normalised character object when the
+     * filler flag is set.
+     *
+     * Idempotent. Safe to call on a full record; safe to call on an
+     * already-stripped record.
+     *
+     * The flag itself always survives the strip.
+     */
+    function applyFillerStripIfSet(normalised, isFiller) {
+        if (!isFiller) {
+            return normalised;
+        }
+        var Strip = getCharacterStrip();
+        if (!Strip || typeof Strip.stripEmptyFields !== 'function') {
+            console.warn(
+                '[CharacterCRUD] CharacterStrip.stripEmptyFields is ' +
+                'unavailable; filler character will be saved ' +
+                'unstripped. Check the script load order.'
+            );
+            return normalised;
+        }
+        var stripped = Strip.stripEmptyFields(normalised);
+        // Belt and braces: the flag is a first-class field and must
+        // survive the strip even if the helper did not know about it.
+        stripped.isFiller = true;
+        return stripped;
     }
 
     // ============================================================
@@ -534,6 +515,11 @@
             data.graduatingClassInstructor = charData.graduatingClassInstructor === true;
         }
 
+        // Filler flag. First-class field. Preserved through
+        // normalisation so a save of a filler character keeps
+        // being a filler character.
+        data.isFiller = charData.isFiller === true;
+
         // NOTE: disciplineIds, classIds, parentIds, and mode are
         // deliberately NOT normalised here. They are owned by
         // dedicated mutations.
@@ -683,6 +669,8 @@
             name = CharacterQueries.getDisplayName(existingChar);
         }
 
+        var isFiller = normalised.isFiller === true;
+
         return MutationPipeline.performMutation({
             validate: function() {
                 var reValidation = validateCharacter(normalised);
@@ -700,9 +688,13 @@
             mutate: function(data) {
                 var result;
                 if (isEditing) {
-                    result = updateExistingCharacter(existingChar, normalised, data);
+                    result = updateExistingCharacter(
+                        existingChar, normalised, data, isFiller
+                    );
                 } else {
-                    result = createNewCharacter(normalised, data);
+                    result = createNewCharacter(
+                        normalised, data, isFiller
+                    );
                 }
                 if (!result.success) {
                     throw new Error(result.error || 'Failed to save character.');
@@ -731,7 +723,12 @@
     // UPDATE / CREATE
     // ============================================================
 
-    function updateExistingCharacter(existing, normalised, data) {
+    function updateExistingCharacter(
+        existing,
+        normalised,
+        data,
+        isFiller
+    ) {
         var index = data.characters.findIndex(function(c) {
             return c && String(c.id) === String(existing.id);
         });
@@ -755,18 +752,32 @@
             preserved.disciplineIds = current.disciplineIds.slice();
         }
 
-        // Preserve the legacy `mode` tombstone verbatim if present.
         if (current.mode !== undefined) {
             preserved.mode = current.mode;
         }
 
         var merged = Object.assign({}, current, normalised, preserved);
 
+        // Filler strip after merge so the flag drives the write
+        // shape. The strip drops empty/default keys, including any
+        // that were just re-populated by normaliseCharacterData.
+        var finalRecord = applyFillerStripIfSet(merged, isFiller);
+
         // Apply IN PLACE — preserve object identity so the id index
-        // sees the new values immediately.
-        var mergeKeys = Object.keys(merged);
-        for (var mk = 0; mk < mergeKeys.length; mk++) {
-            current[mergeKeys[mk]] = merged[mergeKeys[mk]];
+        // sees the new values immediately. We first delete keys
+        // that the strip removed, then assign the rest.
+        var existingKeys = Object.keys(current);
+        for (var ek = 0; ek < existingKeys.length; ek++) {
+            var key = existingKeys[ek];
+            if (!Object.prototype.hasOwnProperty.call(
+                finalRecord, key
+            )) {
+                delete current[key];
+            }
+        }
+        var mergedKeys = Object.keys(finalRecord);
+        for (var mk = 0; mk < mergedKeys.length; mk++) {
+            current[mergedKeys[mk]] = finalRecord[mergedKeys[mk]];
         }
 
         invalidateCharacterIndex();
@@ -783,7 +794,7 @@
         };
     }
 
-    function createNewCharacter(normalised, data) {
+    function createNewCharacter(normalised, data, isFiller) {
         var id = IdUtils.generateId('char');
 
         var newChar = Object.assign({}, normalised, {
@@ -799,6 +810,8 @@
             createdAt: new Date().toISOString()
         });
 
+        newChar = applyFillerStripIfSet(newChar, isFiller);
+
         data.characters.push(newChar);
         invalidateCharacterIndex();
 
@@ -808,6 +821,161 @@
         }
 
         return { success: true, id: id, character: newChar };
+    }
+
+    // ============================================================
+    // SET FILLER FLAG
+    // ============================================================
+
+    /**
+     * Set or clear the isFiller flag on a list of characters.
+     *
+     * value === true:
+     *   Set char.isFiller = true, then strip empty fields from
+     *   each affected record in place.
+     *
+     * value === false:
+     *   Set char.isFiller = false. Do NOT restore fields. The next
+     *   edit re-populates the record via the normal save path.
+     *
+     * Single pipeline transaction. The strip is applied to records
+     * already in window.data, in place, preserving object identity
+     * so the id index stays fresh.
+     *
+     * @param {string[]} ids
+     * @param {boolean} value
+     */
+    function setFillerFlag(ids, value) {
+        if (!checkDependencies()) {
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        if (!Array.isArray(ids)) {
+            return Promise.resolve({
+                success: false,
+                message: 'IDs must be an array.'
+            });
+        }
+
+        if (typeof value !== 'boolean') {
+            return Promise.resolve({
+                success: false,
+                message: 'Value must be true or false.'
+            });
+        }
+
+        // Normalise and dedupe.
+        var idList = [];
+        var seen = Object.create(null);
+        for (var i = 0; i < ids.length; i++) {
+            if (!ids[i]) { continue; }
+            var s = String(ids[i]);
+            if (seen[s]) { continue; }
+            seen[s] = true;
+            idList.push(s);
+        }
+
+        if (idList.length === 0) {
+            return Promise.resolve({
+                success: true,
+                data: { updated: 0, stripped: 0 }
+            });
+        }
+
+        var Strip = getCharacterStrip();
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                if (!data || !Array.isArray(data.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(data) {
+                if (!Array.isArray(data.characters)) {
+                    throw new Error('Character store is malformed.');
+                }
+
+                var updated = 0;
+                var stripped = 0;
+
+                for (var i = 0; i < idList.length; i++) {
+                    var id = idList[i];
+                    var char = null;
+                    for (var j = 0; j < data.characters.length; j++) {
+                        var c = data.characters[j];
+                        if (c && String(c.id) === id) {
+                            char = c;
+                            break;
+                        }
+                    }
+                    if (!char) { continue; }
+
+                    char.isFiller = value;
+                    char.updatedAt = new Date().toISOString();
+                    updated++;
+
+                    if (value === true &&
+                        Strip &&
+                        typeof Strip.stripEmptyFields === 'function') {
+                        var reduced = Strip.stripEmptyFields(char);
+                        reduced.isFiller = true;
+
+                        // Delete keys the strip removed, then copy
+                        // the rest. In place, identity preserved.
+                        var existingKeys = Object.keys(char);
+                        for (var ek = 0;
+                             ek < existingKeys.length; ek++) {
+                            var k = existingKeys[ek];
+                            if (!Object.prototype.hasOwnProperty.call(
+                                reduced, k
+                            )) {
+                                delete char[k];
+                            }
+                        }
+                        var rKeys = Object.keys(reduced);
+                        for (var rk = 0; rk < rKeys.length; rk++) {
+                            char[rKeys[rk]] = reduced[rKeys[rk]];
+                        }
+                        stripped++;
+                    }
+                }
+
+                invalidateCharacterIndex();
+
+                return {
+                    updated: updated,
+                    stripped: stripped
+                };
+            },
+            logMessage: function(result) {
+                var verb = value ? 'Flagged' : 'Unflagged';
+                return verb + ' ' + result.updated +
+                    ' character' + (result.updated === 1 ? '' : 's') +
+                    ' as filler' +
+                    (value && result.stripped > 0
+                        ? ' (' + result.stripped + ' stripped)'
+                        : '') + '.';
+            },
+            successMessage: function(result) {
+                if (value) {
+                    return 'Flagged ' + result.updated +
+                        ' character' +
+                        (result.updated === 1 ? '' : 's') +
+                        ' as filler.';
+                }
+                return 'Cleared filler flag on ' + result.updated +
+                    ' character' +
+                    (result.updated === 1 ? '' : 's') + '.';
+            },
+            failureMessage: 'Failed to update filler flag.'
+        });
     }
 
     // ============================================================
@@ -953,19 +1121,7 @@
 
     /**
      * Build the list of social relationships the child gets on
-     * creation. Two-sided clarifications:
-     *
-     *   parent -> child:
-     *     clarification1 = parent's role toward child
-     *                     ('Mother' | 'Father' | 'Parent')
-     *     clarification2 = child's role toward parent
-     *                     ('Daughter' | 'Son' | 'Child')
-     *
-     *   child -> parent: mirrored.
-     *
-     *   sibling -> child and child -> sibling:
-     *     clarification1 and clarification2 are the sibling term
-     *     from each side's own perspective.
+     * creation. Two-sided clarifications.
      */
     function buildChildRelationships(data, childRecord, parentA, parentB) {
         var list = [];
@@ -1434,8 +1590,6 @@
                     });
                 }
 
-                // Strip the deleted ID from every remaining
-                // character's parentIds.
                 if (Array.isArray(data.characters)) {
                     for (var ci = 0; ci < data.characters.length; ci++) {
                         var c = data.characters[ci];
@@ -1575,6 +1729,9 @@
 
         // One-time maintenance.
         backfillDeathCascades: backfillDeathCascades,
+
+        // Filler flag.
+        setFillerFlag: setFillerFlag,
 
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData
