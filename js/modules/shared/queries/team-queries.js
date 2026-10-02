@@ -4,222 +4,64 @@
  *
  * Path: js/modules/shared/queries/team-queries.js
  *
- * The canonical read surface for the Team domain:
- *   - Team lookup (by ID, by type, by class, by period)
- *   - Membership queries (active members at a period, character
- *     membership, character's teams)
- *   - Member predicates (is-member-active, is-member-former)
- *   - Period predicates (team-window, interval, bounds-based)
- *   - Ranking queries (sorted history, current rank, rank at
- *     period, summary)
- *   - Professional-team-eligible roster (with classification)
- *
- * IMPORTANT:
- *   - READ ONLY. This module never mutates.
- *   - Public reads return DEEP CLONES. No live reference escapes.
- *   - Period input goes through TeamConstants.parsePeriod. Invalid
- *     periods are rejected, not coerced.
- *   - Status and type semantics are owned by TeamConstants. This
- *     module validates against TeamConstants, it does not
- *     reimplement.
- *   - No presentation strings. Display text (type labels, period
- *     ranges, rank displays) belongs to TeamAggregator.
+ * WHAT THIS OWNS:
+ *   - Team lookup by id, type, class, period.
+ *   - Membership predicates (interval, active, former).
+ *   - Team-scoped membership reads.
+ *   - Character membership reads (all-time, current).
+ *   - Ranking queries.
+ *   - The professional personnel query: getProfessionalPersonnelAtPeriod.
  *
  * PERIOD PREDICATE OWNERSHIP:
- *   The three predicates below are the canonical answers to "does
- *   this window/interval contain this period?" Every consumer
- *   delegates to them:
+ *   teamWindowContains(team, period)
+ *   intervalContains(interval, period)
+ *   windowContains(start, end, period)
  *
- *     teamWindowContains(team, period)
- *       reads team.startPeriod / team.endPeriod
- *
- *     intervalContains(interval, period)
- *       reads interval.joinPeriod / interval.leavePeriod
- *
- *     windowContains(start, end, period)
- *       reads a bare pair of bounds
- *
- *   The bounds-based variant exists for callers that hold a pair of
- *   values without an enclosing object — most notably the
- *   academy.weeklyTeams window record, which stores startWeek /
- *   endWeek. AcademyWeeklyTeams uses it directly.
+ *   These are the canonical answers to "does this window contain
+ *   this period?" Every consumer delegates to them.
  *
  * MEMBER PREDICATE OWNERSHIP:
- *   isMemberActive(member, period) and isMemberFormer(member, period)
- *   are the canonical answers to "is this member entry active or
- *   former at this period?" They wrap the interval predicate.
+ *   isMemberActive(member, period)
+ *   isMemberFormer(member, period)
  *
- * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - Academic teams use bounded weeks (1-52) from CalendarConstants
- *     via TeamConstants.
- *   - Non-academic teams accept any integer >= 1.
+ *   Wrappers around intervalContains. Active and former are
+ *   mutually exclusive; an entry with only future intervals is
+ *   neither.
  *
- * OPERATIONAL SEMANTICS:
- *   A team is operational when it can still be operated on.
- *   Deprecated teams are excluded. Inactive teams are included.
+ * PROFESSIONAL PERSONNEL QUERY:
+ *   getProfessionalPersonnelAtPeriod(period) returns domain facts
+ *   about every character relevant to professional staffing at that
+ *   period. It is the canonical source for both the Professional
+ *   Pool UI and matchmaking.
  *
- *       status === 'active'     -> operational
- *       status === 'inactive'   -> operational
- *       status === 'deprecated' -> NOT operational
+ *   Its dependencies are MANDATORY: CharacterQueries,
+ *   CharacterConstants, EliminationQueries. When any is missing,
+ *   the query throws. An empty result and a missing dependency must
+ *   not look the same.
  *
- * RANKING SEMANTICS:
- *   Ranking history lives on the team entity as `rankingHistory`,
- *   an array of { period, rank }. Team-domain ranking, not Academy
- *   student ranking. `getCurrentRank()` is derived from
- *   `rankingHistory`; it is not a persisted field.
+ *   Output is domain facts only. No display strings.
  *
- * MEMBER SEMANTICS:
- *   A team's members live in `team.members[]`. Each member entry is:
+ *   Availability is a first-class interval:
+ *     { from, to } where to === null means open-ended.
  *
- *     {
- *       memberId,
- *       characterId,
- *       role,
- *       intervals: [{ joinPeriod, leavePeriod }, ...]
- *     }
- *
- *   Each interval describes one stint. Both bounds are inclusive.
- *   A blank bound means "unbounded on that side."
- *
- *   A member entry is ACTIVE at period P when at least one of its
- *   intervals contains P. It is FORMER at period P when no interval
- *   contains P and at least one interval has a leavePeriod strictly
- *   before P. The two predicates are mutually exclusive; an entry
- *   with no intervals or with only future intervals is neither.
- *
- * PROFESSIONAL-TEAM-ELIGIBLE ROSTER:
- *   getProfessionalTeamEligibleRoster(year) is the read behind the
- *   Teams tab's Unassigned view. It answers "who is a candidate
- *   for a professional team at year Y, and who is staff instead?"
- *
- *   A character is a CANDIDATE at year Y when ALL of:
- *     - isProfessionallyEligiblePhaseAtYear(char, Y):
- *         junior OR senior by year Y, NOT instructor by year Y.
- *     - Not deceased as of year Y.
- *     - No elimination record of any kind, any year, any week.
- *     - If support at year Y: NOT already placed on a professional
- *       team at any point.
- *
- *   The last condition is the team-history refinement. It is what
- *   distinguishes the three kinds of support:
- *
- *     PURE SUPPORT
- *       No junior year, no senior year. Excluded by the
- *       phase-eligibility clause. Never a candidate.
- *
- *     RETIRED
- *       Has a junior and/or senior year. Has been placed on a
- *       professional team. Support at Y. Excluded by the
- *       already-placed clause. Never a candidate at any year
- *       after their retirement.
- *
- *     UNASSIGNED STAFF (missing data)
- *       Has a junior and/or senior year. Support at Y. Has NO
- *       team history. INCLUDED. This is the case the previous
- *       predicate got wrong and the roster now handles.
- *
- *   The roster also returns STAFF. A character is staff at year Y
- *   when their status at Y classifies as 'instructor' or 'support'
- *   via CharacterQueries.getStatusAtYear + CharacterConstants
- *   .classifyStatus.
- *
- *   Staff rows carry `supportClass`, a classification string:
- *
- *     'none'        not staff at year Y
- *     'instructor'  instructor at year Y
- *     'support-pure'
- *                   support, no student phase, no team history
- *     'support-retired'
- *                   support, has a student phase, has team history
- *     'support-unassigned'
- *                   support, has a student phase, no team history
- *
- *   The 'support-unassigned' subclass is the one that also appears
- *   as a candidate. The other two support subclasses appear only
- *   in the staff section.
- *
- *   Every character returned by the roster has exactly one of
- *   `classification` set:
- *
- *     classification:  'active' | 'future' | 'former' | 'available'
- *
- *   And OPTIONALLY a staff tag:
- *
- *     staffRole:   'instructor' | 'support' | null
- *     staffSince:  year | null
- *
- *   Plus:
- *
- *     age:         number | null  (age at year Y)
- *     ageDisplay:  string         ('45' or '—')
- *     supportClass: string        (see above)
- *
- *   The consumer decides how to split the roster into candidates
- *   and staff. The Unassigned view does; other callers may not.
- *
- *   CLASSIFICATION PRIORITY: active > future > former > available.
- *
- *   The 'future' case exists so the Unassigned view can indicate
- *   that a character is already committed to a professional team
- *   at a later year. This is the "future stint" indicator.
- *
- * SORT ORDER:
- *   The roster is sorted by MILESTONE YEAR ASCENDING, then name.
- *
- *   The milestone is the EARLIEST of whichever of these career
- *   years the character has:
- *
- *     - juniorYear
- *     - seniorYear
- *     - supportYear
- *     - instructorYear
- *
- *   It answers "when did this character first become relevant to
- *   a professional team?" Characters who became relevant earlier
- *   sort first.
- *
- *   Characters with a milestone year sort before characters
- *   without one. Ties break alphabetically. Characters with no
- *   career status at all sort last, alphabetically among
- *   themselves.
+ *   Department: this query does NOT consult department data.
+ *   Departments are a separate domain with their own query module.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.data          (canonical state)
- *   - window.TeamConstants (mandatory)
- *   - window.ObjectUtils   (mandatory; for deepClone)
+ *   - window.TeamConstants
+ *   - window.ObjectUtils
  *
- * DEPENDENCIES (LAZY, read at call time):
- *   - window.CharacterQueries    (phase eligibility, junior/senior
- *                                 predicate, status at year, career
- *                                 status year, display name, age,
- *                                 deceased predicate)
- *   - window.CharacterConstants  (staff tier classifier)
- *   - window.EliminationQueries  (elimination presence)
- *
- *   When a lazy dependency is absent, the corresponding filter or
- *   tag is skipped rather than failing closed. The roster query
- *   still returns results; the staff tag is simply null.
- *
- * USAGE:
- *   var TQ = window.TeamQueries;
- *   var team = TQ.getTeamById('team_123');
- *   var teams = TQ.getTeams('professional', 'active');
- *   var members = TQ.getActiveTeamMembers(team, 5);
- *   var isActive = TQ.isTeamActiveAtPeriod(team, 2025);
- *   var rank = TQ.getCurrentRank(team);
- *   var isFormer = TQ.isMemberFormer(memberEntry, 5);
- *   var inWindow = TQ.windowContains(1, 20, 5);
- *   var everOnTeam = TQ.getTeamsForCharacterAllTime('char_1', 'professional');
- *   var roster = TQ.getProfessionalTeamEligibleRoster(1926);
+ * DEPENDENCIES (MANDATORY AT CALL TIME, checked by
+ * getProfessionalPersonnelAtPeriod):
+ *   - window.CharacterQueries
+ *   - window.CharacterConstants
+ *   - window.EliminationQueries
  */
 
 (function() {
     'use strict';
 
-    if (window.__teamQueriesLoaded) {
-        return;
-    }
+    if (window.__teamQueriesLoaded) { return; }
 
     // ============================================================
     // DEPENDENCIES
@@ -265,20 +107,12 @@
     window.__teamQueriesLoaded = true;
 
     // ============================================================
-    // LAZY DEPENDENCY ACCESSORS
+    // LAZY ACCESSORS
     // ============================================================
 
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
-
-    function getEliminationQueries() {
-        return window.EliminationQueries || null;
-    }
-
-    function getCharacterConstants() {
-        return window.CharacterConstants || null;
-    }
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getCharacterConstants() { return window.CharacterConstants || null; }
+    function getEliminationQueries() { return window.EliminationQueries || null; }
 
     // ============================================================
     // HELPERS
@@ -289,12 +123,8 @@
     }
 
     function clone(value) {
-        if (value === null || value === undefined) {
-            return value;
-        }
-        if (typeof value !== 'object') {
-            return value;
-        }
+        if (value === null || value === undefined) { return value; }
+        if (typeof value !== 'object') { return value; }
         var result = ObjectUtils.deepClone(value);
         if (result === value) {
             throw new Error(
@@ -306,9 +136,6 @@
     }
 
     function parsePeriod(value) {
-        if (typeof TeamConstants.parsePeriod !== 'function') {
-            return null;
-        }
         return TeamConstants.parsePeriod(value);
     }
 
@@ -317,9 +144,7 @@
     }
 
     function teamWindowContainsNum(team, periodNum) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
+        if (!team || typeof team !== 'object') { return false; }
 
         var hasStart = team.startPeriod !== undefined &&
                        team.startPeriod !== null &&
@@ -384,13 +209,9 @@
     // ============================================================
 
     function teamWindowContains(team, period) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
+        if (!team || typeof team !== 'object') { return false; }
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
         return teamWindowContainsNum(team, periodNum);
     }
 
@@ -399,17 +220,13 @@
             return false;
         }
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
         return intervalContainsNum(interval, periodNum);
     }
 
     function windowContains(start, end, period) {
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
 
         var hasStart = start !== undefined &&
                        start !== null &&
@@ -438,17 +255,11 @@
     // ============================================================
 
     function isMemberActive(member, period) {
-        if (!member || typeof member !== 'object') {
+        if (!member || !Array.isArray(member.intervals)) {
             return false;
         }
-        if (!Array.isArray(member.intervals)) {
-            return false;
-        }
-
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
 
         for (var i = 0; i < member.intervals.length; i++) {
             if (intervalContainsNum(member.intervals[i], periodNum)) {
@@ -459,17 +270,11 @@
     }
 
     function isMemberFormer(member, period) {
-        if (!member || typeof member !== 'object') {
+        if (!member || !Array.isArray(member.intervals)) {
             return false;
         }
-        if (!Array.isArray(member.intervals)) {
-            return false;
-        }
-
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
 
         for (var i = 0; i < member.intervals.length; i++) {
             if (intervalContainsNum(member.intervals[i], periodNum)) {
@@ -486,18 +291,12 @@
             var hasLeave = interval.leavePeriod !== undefined &&
                            interval.leavePeriod !== null &&
                            interval.leavePeriod !== '';
-            if (!hasLeave) {
-                continue;
-            }
+            if (!hasLeave) { continue; }
 
             var leave = parsePeriod(interval.leavePeriod);
-            if (leave === null) {
-                continue;
-            }
+            if (leave === null) { continue; }
 
-            if (leave < periodNum) {
-                return true;
-            }
+            if (leave < periodNum) { return true; }
         }
 
         return false;
@@ -508,25 +307,12 @@
     // ============================================================
 
     function getTeamById(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
-        var target = String(teamId);
-        var teams = getTeamArray();
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' &&
-                String(team.id) === target) {
-                return clone(team);
-            }
-        }
-        return null;
+        var team = getTeamByIdInternal(teamId);
+        return team ? clone(team) : null;
     }
 
     function getTeamByIdInternal(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
+        if (!isNonEmptyString(teamId)) { return null; }
         var target = String(teamId);
         var teams = getTeamArray();
         for (var i = 0; i < teams.length; i++) {
@@ -540,9 +326,7 @@
     }
 
     function getTeamName(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return 'Unassigned';
-        }
+        if (!isNonEmptyString(teamId)) { return 'Unassigned'; }
         var team = getTeamByIdInternal(teamId);
         return team ? (team.name || 'Unknown Team') : 'Unknown Team';
     }
@@ -552,33 +336,23 @@
     // ============================================================
 
     function isTeamOperational(team) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
+        if (!team || typeof team !== 'object') { return false; }
         return isOperationalStatus(team.status);
     }
 
     function isTeamActive(team) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
+        if (!team || typeof team !== 'object') { return false; }
         return team.status === 'active';
     }
 
     function isTeamActiveAtPeriod(team, period) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
+        if (!team || typeof team !== 'object') { return false; }
 
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return false;
-        }
+        if (periodNum === null) { return false; }
 
         var range = TeamConstants.getPeriodRange(team.type);
-        if (!range) {
-            return false;
-        }
+        if (!range) { return false; }
 
         if (periodNum < range.min || periodNum > range.max) {
             return false;
@@ -603,14 +377,14 @@
         }
 
         if (type) {
-            var normalizedType = TeamConstants.normalizeTeamType(type);
-            if (normalizedType === null) {
-                return [];
-            }
+            var normalizedType =
+                TeamConstants.normalizeTeamType(type);
+            if (normalizedType === null) { return []; }
             var typeFiltered = [];
             for (var j = 0; j < result.length; j++) {
-                if (TeamConstants.normalizeTeamType(result[j].type) ===
-                    normalizedType) {
+                if (TeamConstants.normalizeTeamType(
+                    result[j].type
+                ) === normalizedType) {
                     typeFiltered.push(result[j]);
                 }
             }
@@ -663,9 +437,7 @@
     }
 
     function getTeamsByClass(classId, status) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
+        if (!isNonEmptyString(classId)) { return []; }
 
         var teams = getTeams(null, status || 'operational', false);
         var target = String(classId);
@@ -684,9 +456,7 @@
 
     function getTeamsByPeriod(type, period, status) {
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return [];
-        }
+        if (periodNum === null) { return []; }
 
         var teams = getTeams(type, status, false);
         var result = [];
@@ -701,23 +471,17 @@
     }
 
     // ============================================================
-    // MEMBERSHIP — TEAM-SCOPED READS
+    // TEAM-SCOPED MEMBERSHIP
     // ============================================================
 
     function getActiveTeamMembers(team, period) {
-        if (!team || !Array.isArray(team.members)) {
-            return [];
-        }
+        if (!team || !Array.isArray(team.members)) { return []; }
 
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return [];
-        }
+        if (periodNum === null) { return []; }
 
         var range = TeamConstants.getPeriodRange(team.type);
-        if (!range) {
-            return [];
-        }
+        if (!range) { return []; }
 
         if (periodNum < range.min || periodNum > range.max) {
             return [];
@@ -730,9 +494,7 @@
         var result = [];
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (!member || typeof member !== 'object') {
-                continue;
-            }
+            if (!member || typeof member !== 'object') { continue; }
             if (isMemberActive(member, periodNum)) {
                 result.push(clone(member));
             }
@@ -784,9 +546,7 @@
         var target = String(memberId);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (!member || typeof member !== 'object') {
-                continue;
-            }
+            if (!member || typeof member !== 'object') { continue; }
             if (member.memberId !== undefined &&
                 member.memberId !== null &&
                 String(member.memberId) === target) {
@@ -802,21 +562,18 @@
             return null;
         }
         var targetChar = String(characterId);
-        var targetJoin = (joinPeriod === undefined || joinPeriod === null)
+        var targetJoin = (joinPeriod === undefined ||
+                          joinPeriod === null)
             ? ''
             : String(joinPeriod);
 
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
-            if (!member || typeof member !== 'object') {
-                continue;
-            }
+            if (!member || typeof member !== 'object') { continue; }
             if (String(member.characterId) !== targetChar) {
                 continue;
             }
-            if (!Array.isArray(member.intervals)) {
-                continue;
-            }
+            if (!Array.isArray(member.intervals)) { continue; }
 
             for (var j = 0; j < member.intervals.length; j++) {
                 var interval = member.intervals[j];
@@ -837,9 +594,7 @@
     }
 
     function getAllTeamMemberRecords(team) {
-        if (!team || !Array.isArray(team.members)) {
-            return [];
-        }
+        if (!team || !Array.isArray(team.members)) { return []; }
         var result = [];
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
@@ -850,24 +605,23 @@
         return result;
     }
 
+    // ============================================================
+    // CHARACTER-CENTRIC MEMBERSHIP
+    // ============================================================
+
     function getTeamsForCharacter(characterId, period, teamType) {
-        if (!isNonEmptyString(characterId)) {
-            return [];
-        }
+        if (!isNonEmptyString(characterId)) { return []; }
 
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return [];
-        }
+        if (periodNum === null) { return []; }
 
         var normalizedFilter = null;
         if (teamType !== undefined &&
             teamType !== null &&
             teamType !== '') {
-            normalizedFilter = TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) {
-                return [];
-            }
+            normalizedFilter =
+                TeamConstants.normalizeTeamType(teamType);
+            if (normalizedFilter === null) { return []; }
         }
 
         var teams = getTeamArray();
@@ -875,12 +629,8 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || typeof team !== 'object') {
-                continue;
-            }
-            if (!isTeamOperational(team)) {
-                continue;
-            }
+            if (!team || typeof team !== 'object') { continue; }
+            if (!isTeamOperational(team)) { continue; }
 
             if (normalizedFilter !== null) {
                 if (TeamConstants.normalizeTeamType(team.type) !==
@@ -889,7 +639,9 @@
                 }
             }
 
-            if (isCharacterInTeamAtPeriod(team, characterId, periodNum)) {
+            if (isCharacterInTeamAtPeriod(
+                team, characterId, periodNum
+            )) {
                 result.push(team);
             }
         }
@@ -906,134 +658,42 @@
     }
 
     /**
-     * Get every team a character has EVER been a member of, by
-     * their presence in the team's members array.
-     *
-     * ALL-TIME, not period-scoped. This does not consult team
-     * windows or member interval containment. A character is a
-     * member of a team if the team's members array contains any
-     * entry with their characterId.
-     *
-     * The all-time variant exists because the character detail
-     * panel needs the full history, not just the current period.
-     * It mirrors AcademyClasses.getClassInstructorIds vs
-     * getClassInstructorIdsAllTime: two queries, two questions.
-     *
-     * Deprecated teams are excluded, matching getTeamsForCharacter.
-     *
-     * @param {string} characterId
-     * @param {string} [teamType] - optional type filter
-     * @returns {array} Array of cloned team objects
+     * Every non-deprecated team the character has any member entry
+     * on. ALL-TIME, not period-scoped.
      */
     function getTeamsForCharacterAllTime(characterId, teamType) {
-        if (!isNonEmptyString(characterId)) {
-            return [];
-        }
-
-        var normalizedFilter = null;
-        if (teamType !== undefined &&
-            teamType !== null &&
-            teamType !== '') {
-            normalizedFilter = TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) {
-                return [];
-            }
-        }
-
-        var teams = getTeamArray();
-        var target = String(characterId);
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') {
-                continue;
-            }
-            if (!isTeamOperational(team)) {
-                continue;
-            }
-
-            if (normalizedFilter !== null) {
-                if (TeamConstants.normalizeTeamType(team.type) !==
-                    normalizedFilter) {
-                    continue;
-                }
-            }
-
-            if (!Array.isArray(team.members)) {
-                continue;
-            }
-
-            var found = false;
-            for (var m = 0; m < team.members.length; m++) {
-                var member = team.members[m];
-                if (!member || typeof member !== 'object') {
-                    continue;
-                }
-                if (String(member.characterId) === target) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (found) {
-                result.push(team);
-            }
-        }
-
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var out = [];
-        for (var k = 0; k < result.length; k++) {
-            out.push(clone(result[k]));
-        }
-        return out;
+        return _getTeamsForCharacterAllTime(
+            characterId, teamType, /* includeDeprecated */ false
+        );
     }
 
     /**
-     * Get every team a character has EVER been a member of, by their
-     * presence in the team's members array — INCLUDING deprecated
-     * teams.
-     *
-     * This is the historical-completeness variant of
-     * getTeamsForCharacterAllTime. The all-time variant excludes
-     * deprecated teams, because a deprecated team is not a thing a
-     * live caller should be shown. An export is not a live caller:
-     * "this character was on a team that was later deprecated" is
-     * exactly the kind of fact a historical report should carry.
-     *
-     * Deprecated teams are the ONLY difference. Archived missions,
-     * ended stints, and departed members are handled by the callers.
-     *
-     * Why this exists as a sibling rather than as an option on the
-     * original: the two functions have different audiences. A live
-     * caller wants the operational set; an export wants the complete
-     * set. An option would have to be documented at every call site
-     * of the original, and the default would be wrong for half of
-     * them. Two functions, two questions, no default to get wrong.
-     *
-     * @param {string} characterId
-     * @param {string} [teamType] - optional type filter
-     * @returns {array} Array of cloned team objects
+     * Same as above but INCLUDING deprecated teams.
+     * Used by historical reads (export, retirement detection).
      */
     function getTeamsForCharacterAllTimeIncludingDeprecated(
         characterId,
         teamType
     ) {
-        if (!isNonEmptyString(characterId)) {
-            return [];
-        }
+        return _getTeamsForCharacterAllTime(
+            characterId, teamType, /* includeDeprecated */ true
+        );
+    }
+
+    function _getTeamsForCharacterAllTime(
+        characterId,
+        teamType,
+        includeDeprecated
+    ) {
+        if (!isNonEmptyString(characterId)) { return []; }
 
         var normalizedFilter = null;
         if (teamType !== undefined &&
             teamType !== null &&
             teamType !== '') {
-            normalizedFilter = TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) {
-                return [];
-            }
+            normalizedFilter =
+                TeamConstants.normalizeTeamType(teamType);
+            if (normalizedFilter === null) { return []; }
         }
 
         var teams = getTeamArray();
@@ -1042,7 +702,8 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || typeof team !== 'object') {
+            if (!team || typeof team !== 'object') { continue; }
+            if (!includeDeprecated && !isTeamOperational(team)) {
                 continue;
             }
 
@@ -1053,24 +714,17 @@
                 }
             }
 
-            if (!Array.isArray(team.members)) {
-                continue;
-            }
+            if (!Array.isArray(team.members)) { continue; }
 
-            var found = false;
             for (var m = 0; m < team.members.length; m++) {
                 var member = team.members[m];
                 if (!member || typeof member !== 'object') {
                     continue;
                 }
                 if (String(member.characterId) === target) {
-                    found = true;
+                    result.push(team);
                     break;
                 }
-            }
-
-            if (found) {
-                result.push(team);
             }
         }
 
@@ -1085,602 +739,534 @@
         return out;
     }
 
+    /**
+     * Does the character have any member entry on any professional
+     * team, INCLUDING deprecated ones? Cheaper than fetching the
+     * full team list.
+     */
+    function hasCharacterBeenOnTeamAllTime(characterId, teamType) {
+        if (!isNonEmptyString(characterId)) { return false; }
+
+        var normalizedFilter = null;
+        if (teamType !== undefined &&
+            teamType !== null &&
+            teamType !== '') {
+            normalizedFilter =
+                TeamConstants.normalizeTeamType(teamType);
+            if (normalizedFilter === null) { return false; }
+        }
+
+        var teams = getTeamArray();
+        var target = String(characterId);
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') { continue; }
+
+            if (normalizedFilter !== null) {
+                if (TeamConstants.normalizeTeamType(team.type) !==
+                    normalizedFilter) {
+                    continue;
+                }
+            }
+
+            if (!Array.isArray(team.members)) { continue; }
+
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!member || typeof member !== 'object') {
+                    continue;
+                }
+                if (String(member.characterId) === target) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     function getCharacterTeamMembership(teamId, characterId) {
         var team = getTeamByIdInternal(teamId);
-        if (!team) {
-            return null;
-        }
+        if (!team) { return null; }
         return getTeamMember(team, characterId);
     }
 
     // ============================================================
-    // PROFESSIONAL-TEAM-ELIGIBLE ROSTER
+    // PROFESSIONAL PERSONNEL QUERY
     // ============================================================
+    //
+    // Single source of truth for professional staffing facts at a
+    // period. The Professional Pool UI and matchmaking both consume
+    // this. Dependencies are mandatory at call time; a missing
+    // dependency throws.
+
+    function requirePersonnelDependencies() {
+        var CharacterQueries = getCharacterQueries();
+        var CharacterConstants = getCharacterConstants();
+        var EliminationQueries = getEliminationQueries();
+
+        var missing = [];
+
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacters !== 'function') {
+            missing.push('CharacterQueries.getCharacters');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getStatusAtYear !== 'function') {
+            missing.push('CharacterQueries.getStatusAtYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.isDeceased !== 'function') {
+            missing.push('CharacterQueries.isDeceased');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.isJuniorOrSeniorByYear !==
+            'function') {
+            missing.push('CharacterQueries.isJuniorOrSeniorByYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.isInstructorByYear !== 'function') {
+            missing.push('CharacterQueries.isInstructorByYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getJuniorYear !== 'function') {
+            missing.push('CharacterQueries.getJuniorYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getSeniorYear !== 'function') {
+            missing.push('CharacterQueries.getSeniorYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getSupportYear !== 'function') {
+            missing.push('CharacterQueries.getSupportYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getInstructorYear !== 'function') {
+            missing.push('CharacterQueries.getInstructorYear');
+        }
+        if (!CharacterQueries ||
+            typeof CharacterQueries.calculateAge !== 'function') {
+            missing.push('CharacterQueries.calculateAge');
+        }
+
+        if (!CharacterConstants ||
+            typeof CharacterConstants.classifyStatus !== 'function') {
+            missing.push('CharacterConstants.classifyStatus');
+        }
+
+        if (!EliminationQueries ||
+            typeof EliminationQueries.getEliminationWeek !==
+            'function') {
+            missing.push('EliminationQueries.getEliminationWeek');
+        }
+
+        if (missing.length > 0) {
+            throw new Error(
+                '[TeamQueries] getProfessionalPersonnelAtPeriod ' +
+                'requires: ' + missing.join(', ')
+            );
+        }
+
+        return {
+            CharacterQueries: CharacterQueries,
+            CharacterConstants: CharacterConstants,
+            EliminationQueries: EliminationQueries
+        };
+    }
 
     /**
-     * Classify a character's professional-team state at year Y.
+     * Build a per-character professional-team history index once
+     * per call. Keyed by characterId.
      *
-     * Returns one of: 'active', 'future', 'former', 'available'.
-     *
-     * Priority order (highest first): active, future, former,
-     * available. A character with entries on multiple professional
-     * teams takes the highest classification, and the returned
-     * team name / join year correspond to that highest entry.
-     *
-     * @param {string} charId
-     * @param {number} yearNum
-     * @returns {{
-     *   classification: string,
-     *   activeTeamName: string|null,
-     *   futureTeamName: string|null,
-     *   futureJoinYear: number|null,
-     *   formerTeamName: string|null
-     * }}
+     * Each entry:
+     *   {
+     *     hasAnyEntry: bool,
+     *     teams: [ { team, member } ],
+     *     activeAtPeriod: teamId | null,
+     *     currentOpenStint: bool,   // any interval with blank leave
+     *     futureFrom: number | null, // earliest future join
+     *     futureTeamId: string | null,
+     *     formerTeams: [ teamId ]
+     *   }
      */
-    function classifyProfessionalState(charId, yearNum) {
-        var result = {
-            classification: 'available',
-            activeTeamName: null,
-            futureTeamName: null,
-            futureJoinYear: null,
-            formerTeamName: null
-        };
-
+    function buildProfessionalHistoryIndex(periodNum) {
         var teams = getTeamArray();
-        var target = String(charId);
-
-        var earliestFutureYear = null;
-        var earliestFutureTeamName = null;
+        var index = Object.create(null);
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team || typeof team !== 'object') { continue; }
             if (team.type !== 'professional') { continue; }
-            if (!isTeamOperational(team)) { continue; }
             if (!Array.isArray(team.members)) { continue; }
 
-            var member = null;
+            var teamId = String(team.id);
+
             for (var m = 0; m < team.members.length; m++) {
-                var entry = team.members[m];
-                if (entry && typeof entry === 'object' &&
-                    String(entry.characterId) === target) {
-                    member = entry;
-                    break;
+                var member = team.members[m];
+                if (!member || typeof member !== 'object') {
+                    continue;
+                }
+                if (!isNonEmptyString(member.characterId)) {
+                    continue;
+                }
+                var charId = String(member.characterId);
+
+                if (!index[charId]) {
+                    index[charId] = {
+                        hasAnyEntry: false,
+                        teams: [],
+                        activeAtPeriod: null,
+                        currentOpenStint: false,
+                        futureFrom: null,
+                        futureTeamId: null,
+                        formerTeams: []
+                    };
+                }
+
+                var entry = index[charId];
+                entry.hasAnyEntry = true;
+                entry.teams.push({ team: team, member: member });
+
+                var active = isMemberActive(member, periodNum);
+                var former = !active &&
+                    isMemberFormer(member, periodNum);
+
+                if (active) {
+                    entry.activeAtPeriod = teamId;
+                } else if (former) {
+                    if (entry.formerTeams.indexOf(teamId) === -1) {
+                        entry.formerTeams.push(teamId);
+                    }
+                }
+
+                if (!Array.isArray(member.intervals)) { continue; }
+
+                for (var iv = 0; iv < member.intervals.length; iv++) {
+                    var interval = member.intervals[iv];
+                    if (!interval ||
+                        typeof interval !== 'object') {
+                        continue;
+                    }
+
+                    var leaveRaw = interval.leavePeriod;
+                    var hasLeave = leaveRaw !== undefined &&
+                                   leaveRaw !== null &&
+                                   leaveRaw !== '';
+                    if (!hasLeave) {
+                        entry.currentOpenStint = true;
+                    }
+
+                    var joinNum = parsePeriod(interval.joinPeriod);
+                    if (joinNum === null) { continue; }
+                    if (joinNum <= periodNum) { continue; }
+
+                    if (entry.futureFrom === null ||
+                        joinNum < entry.futureFrom) {
+                        entry.futureFrom = joinNum;
+                        entry.futureTeamId = teamId;
+                    }
                 }
             }
-            if (!member) { continue; }
+        }
+
+        return index;
+    }
+
+    /**
+     * Availability interval: when is the character a usable
+     * professional candidate, around the query period?
+     *
+     * Walks all professional-team intervals for the character and
+     * finds the open span that contains the query period.
+     *
+     * Returns { from, to } where to === null means open-ended.
+     * Returns null when the query period falls inside an active
+     * stint (the character is not available).
+     */
+    function computeAvailability(historyEntry, periodNum) {
+        if (!historyEntry || historyEntry.teams.length === 0) {
+            return { from: null, to: null };
+        }
+
+        // Collect all intervals for this character on professional
+        // teams.
+        var spans = [];
+        for (var i = 0; i < historyEntry.teams.length; i++) {
+            var member = historyEntry.teams[i].member;
             if (!Array.isArray(member.intervals)) { continue; }
-
-            var teamName = team.name || 'Unnamed Team';
-
-            if (isMemberActive(member, yearNum)) {
-                result.classification = 'active';
-                result.activeTeamName = teamName;
-                return result;
-            }
-
-            for (var iv = 0; iv < member.intervals.length; iv++) {
-                var interval = member.intervals[iv];
-                if (!interval || typeof interval !== 'object') {
+            for (var j = 0; j < member.intervals.length; j++) {
+                var interval = member.intervals[j];
+                if (!interval ||
+                    typeof interval !== 'object') {
                     continue;
                 }
-                var joinRaw = interval.joinPeriod;
-                if (joinRaw === undefined || joinRaw === null ||
-                    String(joinRaw).trim() === '') {
-                    continue;
-                }
-                var joinNum = parsePeriod(joinRaw);
-                if (joinNum === null) { continue; }
-                if (joinNum <= yearNum) { continue; }
-
-                if (earliestFutureYear === null ||
-                    joinNum < earliestFutureYear) {
-                    earliestFutureYear = joinNum;
-                    earliestFutureTeamName = teamName;
-                }
-            }
-
-            if (isMemberFormer(member, yearNum)) {
-                if (result.formerTeamName === null) {
-                    result.formerTeamName = teamName;
-                }
+                var joinNum = parsePeriod(interval.joinPeriod);
+                if (joinNum === null) { joinNum = 0; }
+                var leaveNum = parsePeriod(interval.leavePeriod);
+                if (leaveNum === null) { leaveNum = Infinity; }
+                spans.push([joinNum, leaveNum]);
             }
         }
 
-        if (earliestFutureYear !== null) {
-            result.classification = 'future';
-            result.futureTeamName = earliestFutureTeamName;
-            result.futureJoinYear = earliestFutureYear;
-            return result;
+        if (spans.length === 0) {
+            return { from: null, to: null };
         }
 
-        if (result.formerTeamName !== null) {
-            result.classification = 'former';
-            return result;
+        spans.sort(function(a, b) { return a[0] - b[0]; });
+
+        var cursor = 0;
+        for (var s = 0; s < spans.length; s++) {
+            var span = spans[s];
+            if (span[0] > periodNum) {
+                // Query period sits inside the open gap [cursor,
+                // span.start - 1].
+                return {
+                    from: cursor === 0 ? null : cursor,
+                    to: span[0] - 1
+                };
+            }
+            if (span[1] >= periodNum) {
+                // Query period is inside this span: not available.
+                return null;
+            }
+            cursor = Math.max(cursor, span[1] + 1);
         }
 
-        return result;
+        return {
+            from: cursor === 0 ? null : cursor,
+            to: null
+        };
     }
 
     /**
-     * Is this character staff (instructor or support) as of the
-     * given year?
+     * Classify a character's professional personnel record at the
+     * given period.
      *
-     * Reads CharacterQueries.getStatusAtYear, then routes the
-     * result through CharacterConstants.classifyStatus to get the
-     * tier. The status-at-year read is year-scoped — a character
-     * who becomes an instructor in 1910 is not staff in 1905.
-     *
-     * Fail-open: when CharacterQueries or CharacterConstants is
-     * unavailable, returns false.
-     *
-     * @param {object} char
-     * @param {number} yearNum
-     * @returns {boolean}
+     * Returns domain facts, no display strings.
      */
-    function isCharacterStaffAtYear(char, yearNum) {
-        var info = getStaffInfoAtYear(char, yearNum);
-        return info.role !== null;
-    }
+    function buildPersonnelRecord(char, periodNum, deps, historyEntry) {
+        var CharacterQueries = deps.CharacterQueries;
+        var CharacterConstants = deps.CharacterConstants;
 
-    /**
-     * Get the character's staff classification at the given year.
-     *
-     * Returns:
-     *   { role: 'instructor' | 'support' | null, since: year | null }
-     *
-     * `role` is null when the character is not staff at the query
-     * year. `since` is the earliest year the character held that
-     * role (from getCareerStatusYear), or null when unavailable.
-     *
-     * Fail-open: when the year-scoped status query or the tier
-     * classifier is unavailable, returns { role: null, since: null }.
-     *
-     * @param {object} char
-     * @param {number} yearNum
-     * @returns {{ role: string|null, since: number|null }}
-     */
-    function getStaffInfoAtYear(char, yearNum) {
-        var result = { role: null, since: null };
+        var charId = String(char.id);
+        var name = CharacterQueries.getDisplayName(char);
+        var age = CharacterQueries.calculateAge(char, periodNum);
+        var statusAtPeriod =
+            CharacterQueries.getStatusAtYear(char, periodNum);
+        var tier = CharacterConstants.classifyStatus(statusAtPeriod);
+        var deceased =
+            CharacterQueries.isDeceased(char, periodNum) === true;
 
-        if (!char || typeof char !== 'object') {
-            return result;
-        }
+        var juniorYear = CharacterQueries.getJuniorYear(char);
+        var seniorYear = CharacterQueries.getSeniorYear(char);
+        var supportYear = CharacterQueries.getSupportYear(char);
+        var instructorYear =
+            CharacterQueries.getInstructorYear(char);
 
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getStatusAtYear !== 'function') {
-            return result;
-        }
+        var phaseEligible =
+            CharacterQueries.isJuniorOrSeniorByYear(char, periodNum) &&
+            !CharacterQueries.isInstructorByYear(char, periodNum);
 
-        var statusAtYear = null;
-        try {
-            statusAtYear = CharacterQueries.getStatusAtYear(
-                char, yearNum
-            );
-        } catch (e) {
-            return result;
-        }
+        var hasProfessionalHistory = historyEntry &&
+            historyEntry.hasAnyEntry === true;
 
-        if (typeof statusAtYear !== 'string' ||
-            statusAtYear.trim() === '') {
-            return result;
-        }
+        var isRetired = tier === 'support' &&
+            hasProfessionalHistory;
 
-        var CC = getCharacterConstants();
-        var tier = null;
+        // Assignment state.
+        var assignmentStatus = 'available';
+        var currentTeamId = null;
+        var currentTeamName = null;
+        var nextTeamId = null;
+        var nextTeamName = null;
+        var nextJoinYear = null;
 
-        if (CC && typeof CC.classifyStatus === 'function') {
-            try {
-                tier = CC.classifyStatus(statusAtYear);
-            } catch (e) {
-                tier = null;
-            }
-        }
-
-        // Fallback when CharacterConstants is missing: string match.
-        if (tier === null) {
-            var lowered = statusAtYear.toLowerCase();
-            if (lowered.indexOf('instructor') !== -1 ||
-                lowered.indexOf('teacher') !== -1 ||
-                lowered.indexOf('professor') !== -1) {
-                tier = 'instructor';
-            } else if (lowered.indexOf('support') !== -1) {
-                tier = 'support';
-            }
-        }
-
-        if (tier !== 'instructor' && tier !== 'support') {
-            return result;
-        }
-
-        result.role = tier;
-
-        // Earliest year the character held this role, if the
-        // query is available.
-        if (typeof CharacterQueries.getCareerStatusYear === 'function') {
-            var statusName = tier === 'instructor'
-                ? 'instructor'
-                : 'support';
-            try {
-                var since = CharacterQueries.getCareerStatusYear(
-                    char, statusName
+        if (historyEntry) {
+            if (historyEntry.activeAtPeriod) {
+                assignmentStatus = 'active';
+                currentTeamId = historyEntry.activeAtPeriod;
+                var activeTeam = findTeamByIdInternal(
+                    currentTeamId
                 );
-                if (since !== null && since !== undefined) {
-                    result.since = since;
+                if (activeTeam) {
+                    currentTeamName =
+                        activeTeam.name || 'Unnamed Team';
                 }
-            } catch (e) {
-                // Leave since null.
+            } else if (historyEntry.futureFrom !== null) {
+                assignmentStatus = 'future';
+                nextTeamId = historyEntry.futureTeamId;
+                nextJoinYear = historyEntry.futureFrom;
+                var futureTeam = findTeamByIdInternal(nextTeamId);
+                if (futureTeam) {
+                    nextTeamName =
+                        futureTeam.name || 'Unnamed Team';
+                }
             }
         }
 
-        return result;
+        var availability = computeAvailability(
+            historyEntry, periodNum
+        );
+
+        return {
+            characterId: charId,
+            name: name,
+            age: age,
+            statusAtPeriod: statusAtPeriod,
+
+            deceased: deceased,
+            retired: isRetired,
+            phaseEligible: phaseEligible,
+            tier: tier,
+
+            assignment: {
+                status: assignmentStatus,
+                currentTeamId: currentTeamId,
+                currentTeamName: currentTeamName,
+                nextTeamId: nextTeamId,
+                nextTeamName: nextTeamName,
+                nextJoinYear: nextJoinYear
+            },
+
+            availability: availability,
+
+            career: {
+                juniorYear: juniorYear,
+                seniorYear: seniorYear,
+                supportYear: supportYear,
+                instructorYear: instructorYear
+            },
+
+            history: {
+                hasProfessionalHistory: hasProfessionalHistory,
+                formerTeamCount: historyEntry
+                    ? historyEntry.formerTeams.length
+                    : 0
+            }
+        };
     }
 
     /**
-     * Classify a character's support subtype.
+     * Every character relevant to professional staffing at the
+     * given period. Includes retired, deceased, support, and
+     * already-assigned characters — the caller classifies.
      *
-     * Returns one of:
-     *   'instructor'         instructor at year Y
-     *   'support-pure'       support, no student phase, no team
-     *   'support-retired'    support, has student phase, has team
-     *   'support-unassigned' support, has student phase, no team
-     *   'none'               not staff at year Y
-     *
-     * The three support subclasses distinguish the three kinds of
-     * support in the system. See the roster note in the file
-     * header for the full contract.
-     *
-     * The student-phase signal is juniorYear or seniorYear
-     * (non-null). The team-history signal is
-     * getTeamsForCharacterAllTime(charId, 'professional').length > 0.
-     *
-     * @param {object} char
-     * @param {string} charId
-     * @param {number} yearNum
-     * @param {string|null} staffRole - 'instructor' | 'support' | null
-     * @returns {string}
+     * Depends on CharacterQueries, CharacterConstants, and
+     * EliminationQueries. Any missing throws.
      */
-    function classifySupportSubtype(char, charId, yearNum, staffRole) {
-        if (staffRole === 'instructor') {
-            return 'instructor';
-        }
-        if (staffRole !== 'support') {
-            return 'none';
-        }
-
-        var CharacterQueries = getCharacterQueries();
-        var hasStudentPhase = false;
-
-        if (CharacterQueries &&
-            typeof CharacterQueries.getJuniorYear === 'function') {
-            try {
-                if (CharacterQueries.getJuniorYear(char) !== null) {
-                    hasStudentPhase = true;
-                }
-            } catch (e) { /* leave false */ }
-        }
-        if (!hasStudentPhase &&
-            CharacterQueries &&
-            typeof CharacterQueries.getSeniorYear === 'function') {
-            try {
-                if (CharacterQueries.getSeniorYear(char) !== null) {
-                    hasStudentPhase = true;
-                }
-            } catch (e) { /* leave false */ }
-        }
-
-        // Team-history signal. Full all-time read, non-deprecated.
-        var hasTeamHistory = false;
-        try {
-            var teams = getTeamsForCharacterAllTime(
-                charId, 'professional'
+    function getProfessionalPersonnelAtPeriod(period) {
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            throw new Error(
+                '[TeamQueries] getProfessionalPersonnelAtPeriod ' +
+                'requires a valid period.'
             );
-            hasTeamHistory = Array.isArray(teams) && teams.length > 0;
-        } catch (e) {
-            hasTeamHistory = false;
         }
 
-        if (!hasStudentPhase && !hasTeamHistory) {
-            return 'support-pure';
-        }
-        if (hasStudentPhase && hasTeamHistory) {
-            return 'support-retired';
-        }
-        if (hasStudentPhase && !hasTeamHistory) {
-            return 'support-unassigned';
-        }
-
-        // No student phase but has team history. This is a data
-        // inconsistency: they played on a team without ever being
-        // a student in the record. Treat as retired so we do not
-        // accidentally put them back in the available pool.
-        return 'support-retired';
-    }
-
-    /**
-     * Get every character eligible for a professional team at the
-     * given year, with their professional-team state, staff
-     * classification, support subtype, and age.
-     *
-     * The roster returns EVERY candidate: characters who pass the
-     * eligibility filters, plus staff characters who are also
-     * candidates. The consumer splits the list.
-     *
-     * ELIGIBILITY (candidate filters — same for everyone):
-     *   - isProfessionallyEligiblePhaseAtYear(char, Y):
-     *       junior OR senior by year Y, NOT instructor by year Y.
-     *   - Not deceased as of year Y.
-     *   - No elimination record of any kind, any year, any week.
-     *   - If support at year Y: NOT already placed on a
-     *     professional team at any point.
-     *
-     * ADDITIONAL TAGS:
-     *   - staffRole:    'instructor' | 'support' | null
-     *   - staffSince:   year | null
-     *   - supportClass: see classifySupportSubtype
-     *   - age:          number | null
-     *   - ageDisplay:   string ('45' or '—')
-     *
-     * SORT:
-     *   Milestone year ascending, then name. See the SORT ORDER
-     *   note in the file header.
-     *
-     * @param {number|string} year
-     * @returns {array}
-     */
-    function getProfessionalTeamEligibleRoster(year) {
-        var yearNum = parsePeriod(year);
-        if (yearNum === null) {
-            return [];
-        }
-
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacters !== 'function') {
-            return [];
-        }
-
-        var EliminationQueries = getEliminationQueries();
-        var canCheckElimination = EliminationQueries &&
-            typeof EliminationQueries.getEliminationWeek === 'function';
-
-        // Phase predicate. Prefer the new name; fall back to the
-        // old alias if a consumer is running an older
-        // CharacterQueries. Both now return the same thing.
-        var canCheckPhase = false;
-        if (typeof CharacterQueries.isProfessionallyEligiblePhaseAtYear ===
-            'function') {
-            canCheckPhase = true;
-        } else if (typeof CharacterQueries
-            .isEligibleForProfessionalTeamAtYear === 'function') {
-            canCheckPhase = true;
-        }
-
-        var canCheckDeceased =
-            typeof CharacterQueries.isDeceased === 'function';
-        var canGetJuniorYear =
-            typeof CharacterQueries.getJuniorYear === 'function';
-        var canGetSeniorYear =
-            typeof CharacterQueries.getSeniorYear === 'function';
-        var canGetSupportYear =
-            typeof CharacterQueries.getSupportYear === 'function';
-        var canGetInstructorYear =
-            typeof CharacterQueries.getInstructorYear === 'function';
-        var canGetDisplayName =
-            typeof CharacterQueries.getDisplayName === 'function';
-        var canGetCurrentStatus =
-            typeof CharacterQueries.getCurrentStatus === 'function';
-        var canGetAge =
-            typeof CharacterQueries.calculateAge === 'function';
+        var deps = requirePersonnelDependencies();
+        var CharacterQueries = deps.CharacterQueries;
+        var EliminationQueries = deps.EliminationQueries;
 
         var allChars = CharacterQueries.getCharacters() || [];
-        var rows = [];
+        var historyIndex =
+            buildProfessionalHistoryIndex(periodNum);
+
+        var records = [];
 
         for (var i = 0; i < allChars.length; i++) {
             var char = allChars[i];
             if (!char || !char.id) { continue; }
-            var cid = String(char.id);
 
-            // 1. Phase eligibility.
-            if (canCheckPhase) {
-                var isEligiblePhase = false;
-                try {
-                    if (typeof CharacterQueries
-                        .isProfessionallyEligiblePhaseAtYear ===
-                        'function') {
-                        isEligiblePhase = CharacterQueries
-                            .isProfessionallyEligiblePhaseAtYear(
-                                char, yearNum
-                            ) === true;
-                    } else {
-                        isEligiblePhase = CharacterQueries
-                            .isEligibleForProfessionalTeamAtYear(
-                                char, yearNum
-                            ) === true;
-                    }
-                } catch (e) {
-                    isEligiblePhase = false;
-                }
-                if (!isEligiblePhase) { continue; }
+            var charId = String(char.id);
+
+            // Deceased at period: exclude.
+            var deceased = false;
+            try {
+                deceased =
+                    CharacterQueries.isDeceased(char, periodNum) ===
+                    true;
+            } catch (e) {
+                deceased = char.deceased === true;
             }
+            if (deceased) { continue; }
 
-            // 2. Deceased.
-            if (canCheckDeceased) {
-                var deceased = false;
-                try {
-                    deceased =
-                        CharacterQueries.isDeceased(char, yearNum) === true;
-                } catch (e) {
-                    deceased = char.deceased === true;
-                }
-                if (deceased) { continue; }
+            // Eliminated: exclude (presence-based).
+            var elimWeek = null;
+            try {
+                elimWeek =
+                    EliminationQueries.getEliminationWeek(charId);
+            } catch (e) {
+                throw new Error(
+                    '[TeamQueries] getEliminationWeek failed for ' +
+                    charId + ': ' + e.message
+                );
             }
-
-            // 3. Elimination (any year, any week, any kind).
-            if (canCheckElimination) {
-                var elimWeek = null;
-                try {
-                    elimWeek = EliminationQueries.getEliminationWeek(cid);
-                } catch (e) {
-                    elimWeek = null;
-                }
-                if (elimWeek !== null && elimWeek !== undefined) {
-                    continue;
-                }
-            }
-
-            // 4. Staff classification.
-            var staffInfo = getStaffInfoAtYear(char, yearNum);
-
-            // 5. Support subtype.
-            var supportClass = classifySupportSubtype(
-                char, cid, yearNum, staffInfo.role
-            );
-
-            // 6. Team-history refinement.
-            //
-            // A character who is support at year Y AND has already
-            // been placed on a professional team is retired.
-            // Excluded from the roster entirely — they are neither
-            // a candidate nor a fresh unassigned staff.
-            if (supportClass === 'support-retired') {
+            if (elimWeek !== null && elimWeek !== undefined) {
                 continue;
             }
 
-            // ---- Classification of the professional state. ----
-            var state = classifyProfessionalState(cid, yearNum);
-
-            // ---- Age at year. ----
-            var ageValue = null;
-            if (canGetAge) {
-                try {
-                    ageValue = CharacterQueries.calculateAge(
-                        char, yearNum
+            // Phase eligibility: junior-or-senior AND not instructor.
+            var phaseEligible = false;
+            try {
+                phaseEligible =
+                    CharacterQueries.isJuniorOrSeniorByYear(
+                        char, periodNum
+                    ) &&
+                    !CharacterQueries.isInstructorByYear(
+                        char, periodNum
                     );
-                } catch (e) {
-                    ageValue = null;
-                }
+            } catch (e) {
+                phaseEligible = false;
             }
-            var ageDisplay = (ageValue !== null &&
-                              ageValue !== undefined)
-                ? String(ageValue)
-                : '\u2014';
+            if (!phaseEligible) { continue; }
 
-            var juniorYear = null;
-            if (canGetJuniorYear) {
-                try { juniorYear = CharacterQueries.getJuniorYear(char); }
-                catch (e) { juniorYear = null; }
-            }
+            var historyEntry = historyIndex[charId] || null;
 
-            var seniorYear = null;
-            if (canGetSeniorYear) {
-                try { seniorYear = CharacterQueries.getSeniorYear(char); }
-                catch (e) { seniorYear = null; }
+            // Retired: support at period with professional history.
+            var statusAtPeriod =
+                CharacterQueries.getStatusAtYear(char, periodNum);
+            var tier =
+                deps.CharacterConstants.classifyStatus(
+                    statusAtPeriod
+                );
+            if (tier === 'support' && historyEntry &&
+                historyEntry.hasAnyEntry) {
+                continue;
             }
 
-            var supportYear = null;
-            if (canGetSupportYear) {
-                try { supportYear = CharacterQueries.getSupportYear(char); }
-                catch (e) { supportYear = null; }
-            }
-
-            var instructorYear = null;
-            if (canGetInstructorYear) {
-                try {
-                    instructorYear =
-                        CharacterQueries.getInstructorYear(char);
-                } catch (e) { instructorYear = null; }
-            }
-
-            // ---- Milestone: the earliest career year. ----
-            var milestoneYear = null;
-            var milestoneLabel = '';
-
-            if (juniorYear !== null) {
-                milestoneYear = juniorYear;
-                milestoneLabel = 'Junior ' + juniorYear;
-            }
-            if (seniorYear !== null &&
-                (milestoneYear === null ||
-                 seniorYear < milestoneYear)) {
-                milestoneYear = seniorYear;
-                milestoneLabel = 'Senior ' + seniorYear;
-            }
-            if (supportYear !== null &&
-                (milestoneYear === null ||
-                 supportYear < milestoneYear)) {
-                milestoneYear = supportYear;
-                milestoneLabel = 'Support ' + supportYear;
-            }
-            if (instructorYear !== null &&
-                (milestoneYear === null ||
-                 instructorYear < milestoneYear)) {
-                milestoneYear = instructorYear;
-                milestoneLabel = 'Instructor ' + instructorYear;
-            }
-
-            var displayName = 'Unknown';
-            if (canGetDisplayName) {
-                try { displayName = CharacterQueries.getDisplayName(char); }
-                catch (e) { displayName = 'Unknown'; }
-            }
-
-            var status = '';
-            if (canGetCurrentStatus) {
-                try { status = CharacterQueries.getCurrentStatus(char); }
-                catch (e) { status = ''; }
-            }
-
-            rows.push({
-                characterId: cid,
-                name: displayName,
-                status: status,
-
-                age: ageValue,
-                ageDisplay: ageDisplay,
-
-                juniorYear: juniorYear,
-                seniorYear: seniorYear,
-                supportYear: supportYear,
-                instructorYear: instructorYear,
-                milestoneYear: milestoneYear,
-                milestoneLabel: milestoneLabel,
-
-                classification: state.classification,
-                activeTeamName: state.activeTeamName,
-                futureTeamName: state.futureTeamName,
-                futureJoinYear: state.futureJoinYear,
-                formerTeamName: state.formerTeamName,
-
-                // Staff tag. Null when the character is not staff
-                // at the query year.
-                staffRole: staffInfo.role,
-                staffSince: staffInfo.since,
-
-                // Support subtype. 'none' when the character is not
-                // staff; 'instructor' when an instructor;
-                // 'support-pure' | 'support-retired' | 'support-unassigned'
-                // when support. See classifySupportSubtype.
-                supportClass: supportClass
-            });
+            records.push(
+                buildPersonnelRecord(
+                    char, periodNum, deps, historyEntry
+                )
+            );
         }
 
-        // ---- Sort: milestone year ascending, then name. ----
-        rows.sort(function(a, b) {
-            var aYear = a.milestoneYear;
-            var bYear = b.milestoneYear;
+        // Sort by availability.from ascending (null first), then
+        // name. A character with no availability window sorts after
+        // one with a concrete one.
+        records.sort(function(a, b) {
+            var aFrom = a.availability
+                ? a.availability.from
+                : null;
+            var bFrom = b.availability
+                ? b.availability.from
+                : null;
 
-            if (aYear !== null && bYear !== null) {
-                if (aYear !== bYear) { return aYear - bYear; }
+            if (aFrom === null && bFrom === null) {
                 return a.name.localeCompare(b.name);
             }
-            if (aYear !== null) { return -1; }
-            if (bYear !== null) { return 1; }
+            if (aFrom === null) { return 1; }
+            if (bFrom === null) { return -1; }
+            if (aFrom !== bFrom) { return aFrom - bFrom; }
             return a.name.localeCompare(b.name);
         });
 
-        return rows;
+        return records;
     }
 
     // ============================================================
@@ -1695,17 +1281,14 @@
         var history = [];
         for (var i = 0; i < team.rankingHistory.length; i++) {
             var entry = team.rankingHistory[i];
-            if (!entry || typeof entry !== 'object') {
-                continue;
-            }
+            if (!entry || typeof entry !== 'object') { continue; }
+
             var periodNum = parsePeriod(entry.period);
-            if (periodNum === null) {
-                continue;
-            }
+            if (periodNum === null) { continue; }
+
             var rank = parsePeriod(entry.rank);
-            if (rank === null) {
-                continue;
-            }
+            if (rank === null) { continue; }
+
             history.push({
                 period: String(periodNum),
                 rank: rank
@@ -1721,7 +1304,9 @@
 
     function getMostRecentRanking(team) {
         var history = getSortedRankings(team);
-        return history.length > 0 ? history[history.length - 1] : null;
+        return history.length > 0
+            ? history[history.length - 1]
+            : null;
     }
 
     function getCurrentRank(team) {
@@ -1735,25 +1320,19 @@
         }
 
         var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            return null;
-        }
+        if (periodNum === null) { return null; }
 
         var target = String(periodNum);
         var history = team.rankingHistory;
 
         for (var i = 0; i < history.length; i++) {
             var entry = history[i];
-            if (!entry) {
-                continue;
-            }
+            if (!entry) { continue; }
             var entryPeriod = parsePeriod(entry.period);
             if (entryPeriod !== null &&
                 String(entryPeriod) === target) {
                 var rank = parsePeriod(entry.rank);
-                if (rank !== null) {
-                    return rank;
-                }
+                if (rank !== null) { return rank; }
             }
         }
 
@@ -1761,9 +1340,7 @@
     }
 
     function hasRankings(team) {
-        if (!team) {
-            return false;
-        }
+        if (!team) { return false; }
         return getSortedRankings(team).length > 0;
     }
 
@@ -1782,7 +1359,9 @@
         var current = total > 0
             ? String(history[total - 1].rank)
             : '';
-        var mostRecent = total > 0 ? history[total - 1] : null;
+        var mostRecent = total > 0
+            ? history[total - 1]
+            : null;
 
         return {
             total: total,
@@ -1793,29 +1372,92 @@
     }
 
     // ============================================================
+    // STAFF / SUPPORT CLASSIFICATION (for callers that still need
+    // a lightweight per-character support check)
+    // ============================================================
+
+    function isCharacterStaffAtYear(char, yearNum) {
+        var info = getStaffInfoAtYear(char, yearNum);
+        return info.role !== null;
+    }
+
+    function getStaffInfoAtYear(char, yearNum) {
+        var result = { role: null, since: null };
+        if (!char || typeof char !== 'object') { return result; }
+
+        var CharacterQueries = getCharacterQueries();
+        var CharacterConstants = getCharacterConstants();
+        if (!CharacterQueries ||
+            !CharacterConstants) {
+            return result;
+        }
+
+        var statusAtYear = null;
+        try {
+            statusAtYear = CharacterQueries.getStatusAtYear(
+                char, yearNum
+            );
+        } catch (e) {
+            return result;
+        }
+
+        if (typeof statusAtYear !== 'string' ||
+            statusAtYear.trim() === '') {
+            return result;
+        }
+
+        var tier = null;
+        try {
+            tier = CharacterConstants.classifyStatus(statusAtYear);
+        } catch (e) {
+            tier = null;
+        }
+
+        if (tier !== 'instructor' && tier !== 'support') {
+            return result;
+        }
+
+        result.role = tier;
+
+        if (typeof CharacterQueries.getCareerStatusYear ===
+            'function') {
+            var statusName = tier === 'instructor'
+                ? 'instructor'
+                : 'support';
+            try {
+                var since = CharacterQueries.getCareerStatusYear(
+                    char, statusName
+                );
+                if (since !== null && since !== undefined) {
+                    result.since = since;
+                }
+            } catch (e) {
+                // Leave since null.
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.TeamQueries = Object.freeze({
-        // Team lookup
         getTeamById: getTeamById,
         getTeamName: getTeamName,
 
-        // Status predicates
         isTeamOperational: isTeamOperational,
         isTeamActive: isTeamActive,
         isTeamActiveAtPeriod: isTeamActiveAtPeriod,
 
-        // Period predicates
         teamWindowContains: teamWindowContains,
         intervalContains: intervalContains,
         windowContains: windowContains,
 
-        // Member predicates
         isMemberActive: isMemberActive,
         isMemberFormer: isMemberFormer,
 
-        // Team lists
         getTeams: getTeams,
         getAllOperationalTeams: getAllOperationalTeams,
         getAllActiveTeams: getAllActiveTeams,
@@ -1823,7 +1465,6 @@
         getTeamsByClass: getTeamsByClass,
         getTeamsByPeriod: getTeamsByPeriod,
 
-        // Membership
         getActiveTeamMembers: getActiveTeamMembers,
         getActiveTeamMemberCount: getActiveTeamMemberCount,
         isCharacterInTeamAtPeriod: isCharacterInTeamAtPeriod,
@@ -1835,17 +1476,16 @@
         getTeamsForCharacterAllTime: getTeamsForCharacterAllTime,
         getTeamsForCharacterAllTimeIncludingDeprecated:
             getTeamsForCharacterAllTimeIncludingDeprecated,
+        hasCharacterBeenOnTeamAllTime:
+            hasCharacterBeenOnTeamAllTime,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
-        // Professional-team-eligible roster
-        getProfessionalTeamEligibleRoster: getProfessionalTeamEligibleRoster,
+        getProfessionalPersonnelAtPeriod:
+            getProfessionalPersonnelAtPeriod,
 
-        // Staff classification helpers (exposed for consumers)
         isCharacterStaffAtYear: isCharacterStaffAtYear,
         getStaffInfoAtYear: getStaffInfoAtYear,
-        classifySupportSubtype: classifySupportSubtype,
 
-        // Rankings
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
@@ -1875,12 +1515,13 @@
             'getAllTeamMemberRecords',
             'getTeamsForCharacter', 'getTeamsForCharacterAllTime',
             'getTeamsForCharacterAllTimeIncludingDeprecated',
+            'hasCharacterBeenOnTeamAllTime',
             'getCharacterTeamMembership',
-            'getProfessionalTeamEligibleRoster',
+            'getProfessionalPersonnelAtPeriod',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
-            'classifySupportSubtype',
-            'getSortedRankings', 'getMostRecentRanking', 'getCurrentRank',
-            'getRankAtPeriod', 'hasRankings', 'getRankingSummary'
+            'getSortedRankings', 'getMostRecentRanking',
+            'getCurrentRank', 'getRankAtPeriod', 'hasRankings',
+            'getRankingSummary'
         ];
 
         for (var i = 0; i < required.length; i++) {
