@@ -14,8 +14,7 @@
  *     composes them.
  *   - UI. TeamEvents triggers the export; this module returns a
  *     result object.
- *   - Format selection. One format: plain text, matching
- *     CharacterRosterExport and CharacterExport.
+ *   - Format selection. One format: plain text.
  *
  * REPORT CONTENTS:
  *   - Team header: name, type, status, period, class, team number,
@@ -32,15 +31,15 @@
  *   - window.TeamQueries
  *   - window.TeamConstants
  *   - window.CharacterQueries
- *   - window.CharacterStats
- *   - window.IdUtils
  *
  * DEPENDENCIES (LAZY, at call time):
+ *   - window.CharacterStats     (stats line in character snapshot;
+ *                                absent = "(unavailable)")
  *   - window.MissionQueries     (mission title resolution)
- *   - window.TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated
- *                               (member cross-team memberships)
  *   - window.DepartmentQueries  (department memberships; absent
  *                                until Departments lands)
+ *   - window.AcademyClasses     (class name resolution; absent =
+ *                                raw class id)
  */
 
 (function() {
@@ -58,8 +57,6 @@
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
-    var CharacterStats = window.CharacterStats;
-    var IdUtils = window.IdUtils;
 
     var _missing = [];
 
@@ -87,12 +84,6 @@
         typeof CharacterQueries.getDisplayName !== 'function') {
         _missing.push('CharacterQueries.getDisplayName');
     }
-    if (!CharacterStats) {
-        _missing.push('CharacterStats (module)');
-    }
-    if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-        _missing.push('IdUtils.generateId');
-    }
 
     if (_missing.length > 0) {
         throw new Error(
@@ -105,12 +96,20 @@
     // LAZY DEPENDENCIES
     // ============================================================
 
+    function getCharacterStats() {
+        return window.CharacterStats || null;
+    }
+
     function getMissionQueries() {
         return window.MissionQueries || null;
     }
 
     function getDepartmentQueries() {
         return window.DepartmentQueries || null;
+    }
+
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
     }
 
     // ============================================================
@@ -268,7 +267,7 @@
     }
 
     function resolveClassName(classId) {
-        var AcademyClasses = window.AcademyClasses;
+        var AcademyClasses = getAcademyClasses();
         if (AcademyClasses &&
             typeof AcademyClasses.getDisplayName === 'function') {
             var name = AcademyClasses.getDisplayName(classId);
@@ -444,7 +443,6 @@
         lines.push('');
         lines.push('    Character snapshot:');
 
-        // ---- Identity ----
         lines.push('      Name:      ' +
             CharacterQueries.getDisplayName(char));
         lines.push('      Status:    ' +
@@ -456,20 +454,25 @@
         lines.push('      Gender:    ' +
             safeString(char.gender || '\u2014'));
 
-        // ---- Stats ----
         pushStats(lines, char);
-
-        // ---- Career status ----
         pushCareerStatus(lines, char);
-
-        // ---- Department memberships (when available) ----
         pushDepartmentMemberships(lines, char);
-
-        // ---- Other team memberships ----
         pushOtherTeamMemberships(lines, char);
     }
 
     function pushStats(lines, char) {
+        // CharacterStats is a lazy dependency. When it is not
+        // loaded — which can happen if the export is triggered
+        // before the character module hierarchy finishes loading
+        // — the line reports "(unavailable)" and the report
+        // continues.
+        var CharacterStats = getCharacterStats();
+        if (!CharacterStats ||
+            typeof CharacterStats.getCharacterStats !== 'function') {
+            lines.push('      Stats:     (unavailable)');
+            return;
+        }
+
         var stats;
         try {
             stats = CharacterStats.getCharacterStats(char);
@@ -521,7 +524,8 @@
 
     function pushDepartmentMemberships(lines, char) {
         var DQ = getDepartmentQueries();
-        if (!DQ || typeof DQ.getDepartmentsForCharacter !== 'function') {
+        if (!DQ ||
+            typeof DQ.getDepartmentsForCharacter !== 'function') {
             return;
         }
 
@@ -546,16 +550,18 @@
 
     function pushOtherTeamMemberships(lines, char) {
         if (!TeamQueries ||
-            typeof TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated !==
+            typeof TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated !==
             'function') {
             return;
         }
 
         var teams;
         try {
-            teams = TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated(
-                char.id
-            ) || [];
+            teams = TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated(
+                    char.id
+                ) || [];
         } catch (e) {
             return;
         }
@@ -622,13 +628,6 @@
     // PUBLIC API
     // ============================================================
 
-    /**
-     * Export one team as a plain-text report.
-     *
-     * @param {string} teamId
-     * @returns {object} { exported, filename, count?, text? } or
-     *   { error }
-     */
     function exportTeam(teamId) {
         if (!isNonEmptyString(teamId)) {
             return { error: 'Team ID is required.' };
@@ -663,15 +662,6 @@
         };
     }
 
-    /**
-     * Export a team without downloading. Returns the raw report
-     * text. Useful for testing and for callers that need to
-     * preview the content.
-     *
-     * @param {string} teamId
-     * @returns {object} { text, filename, memberCount } or
-     *   { error }
-     */
     function buildTeamReport(teamId) {
         if (!isNonEmptyString(teamId)) {
             return { error: 'Team ID is required.' };
