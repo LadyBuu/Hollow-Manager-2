@@ -5,100 +5,40 @@
  * Path: js/modules/teams/team-events.js
  *
  * RESPONSIBILITIES:
- *   - init / destroy: bind and unbind delegated listeners on the
- *     container.
+ *   - init / destroy: bind and unbind delegated listeners.
  *   - Route user interactions to TeamCore mutations.
  *   - Update TeamUI state.
- *   - Request fresh VMs from TeamAggregator and TeamQueries.
- *   - Hand VMs to TeamRender.
+ *   - Request fresh VMs from TeamAggregator; hand them to TeamRender.
  *   - Open and close modals.
- *   - Read and write form field values.
+ *   - Read form field values.
  *   - Own the matchmaking modal's proposal state.
- *   - Own the professional tab's view mode (Teams / Unassigned /
- *     Timeline).
- *   - Own the timeline's year-range and expanded-years state.
- *   - Open the team export picker (TeamExportPicker).
+ *   - Own the professional tab's view mode.
+ *   - Own the timeline's range and expanded-years state.
+ *   - Open the team export picker and the candidate export.
  *
- * IMPORTANT:
- *   - Orchestration only. No domain reads beyond TeamQueries,
- *     TeamAggregator, and the two scalar reads
- *     (window.data.currentYear, the tab's filterYear).
- *   - No HTML construction beyond the modal shells. All inner
- *     markup comes from the renderers.
- *   - TeamCore owns mutations; TeamAggregator owns projections;
- *     TeamUI owns transient state; TeamRender owns HTML.
- *   - Mutation results are Promises. On success, request a fresh
- *     VM and re-render. On failure, the pipeline has already
- *     notified; do not double-notify.
- *   - Delegation is scoped to the container. Modal shells are
- *     appended to document.body and are wired directly by the
- *     function that opens them.
+ * WHAT THIS DOES NOT OWN:
+ *   - Domain logic. TeamCore owns mutations; TeamQueries owns reads;
+ *     TeamAggregator owns projections.
+ *   - Rendering. TeamRender owns HTML.
+ *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
+ *     owns it, consumed via TeamAggregator.getProfessionalPoolViewModel.
  *
  * VIEW MODES:
- *   The professional tab carries a three-way toggle:
- *
- *     [ Teams | Unassigned | Timeline ]
- *
- *   The mode is a module-level string (`_viewMode`). It is NOT
- *   part of TeamUI's persisted state. Reset to 'teams' on init
- *   and on leaving the professional tab.
- *
- *   On the professional tab:
- *     'teams'      the default. List of teams with filters.
- *     'unassigned' the roster of candidates and staff.
- *     'timeline'   the vertical timeline.
- *
- *   On the Temporary and Civilian tabs, only 'teams' is
- *   meaningful. `_viewMode` is forced to 'teams' when the user
- *   switches to a non-professional tab.
+ *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
+ *   on non-professional tabs. Reset on init and destroy.
  *
  * TIMELINE STATE:
- *   Three pieces of module-level state:
+ *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
+ *   Defaults are (currentYear - 20, currentYear + 5) on first use.
+ *   Expanded map survives range changes; pruned when years fall out
+ *   of range.
  *
- *     _timelineYearStart      number | null
- *     _timelineYearEnd        number | null
- *     _timelineExpandedYears  { [year]: true }
- *
- *   The year range defaults to [currentYear - 20, currentYear + 5]
- *   the first time the Timeline view is shown. The user can edit
- *   the range with the two inputs at the top of the timeline. The
- *   Apply button rebuilds the VM with the new range.
- *
- *   The expanded-years map survives range changes. If the user
- *   expands 1918 and then changes the range, 1918 stays expanded
- *   if it is still in range.
- *
- *   The map is cleared on init and on leaving the timeline mode.
- *
- * TIMELINE INTERACTIONS:
- *   - Click a year circle (`.timeline-circle[data-year]`)
- *     toggles that year in the expanded map.
- *   - Click a team name (`.timeline-team-name[data-team-id]`)
- *     opens the member manager modal for that team at the year
- *     of the click.
- *   - Click `#timeline-apply-btn` rebuilds the VM with the
- *     current input values.
- *   - Click `#timeline-expand-all-btn` marks every year in the
- *     current VM as expanded.
- *   - Click `#timeline-collapse-all-btn` clears the expanded map.
- *
- *   All five are bound via `delegate()` on the container so they
- *   survive re-renders.
- *
- * TEAM EXPORT:
- *   The Export button lives in the Teams page header. It opens
- *   the team export picker (TeamExportPicker). The picker owns
- *   the format choice (JSON / CSV) and the status filter; this
- *   module only opens it.
- *
- *   The picker is resolved LAZILY at click time so a missing
- *   module produces a toast, not a boot-time crash.
- *
- * MATCHMAKING MODAL:
- *   Unchanged. The candidate rows carry the career milestone
- *   fields (juniorYear, seniorYear, supportYear, instructorYear,
- *   milestoneYear, milestoneLabel). This module preserves those
- *   fields when it augments the raw matcher output.
+ * MISSION ASSOCIATION:
+ *   When saving a team, `temporaryMission` is passed through from
+ *   the mission select regardless of team type. The domain accepts
+ *   a mission on any type; the type only affects which options are
+ *   shown by the form. This closes the "assigned mission doesn't
+ *   stick" symptom.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -113,9 +53,9 @@
  *   - window.MemberAdapterTeams
  *   - window.NotificationSystem
  *
- * DEPENDENCIES (LAZY, resolved at click time):
- *   - window.TeamExportPicker  (Export button)
- *   - window.TimelineQueries   (via TeamAggregator, for the VM)
+ * DEPENDENCIES (LAZY, at click time):
+ *   - window.TeamExportPicker
+ *   - window.CandidateExport
  */
 
 (function() {
@@ -182,7 +122,7 @@
     }
     if (!TeamAggregator ||
         typeof TeamAggregator.getRankingModalViewModel !==
-            'function') {
+        'function') {
         _missing.push('TeamAggregator.getRankingModalViewModel');
     }
     if (!TeamAggregator ||
@@ -191,24 +131,22 @@
     }
     if (!TeamAggregator ||
         typeof TeamAggregator.getTeamMatchmakingViewModel !==
-            'function') {
+        'function') {
         _missing.push(
             'TeamAggregator.getTeamMatchmakingViewModel'
         );
     }
     if (!TeamAggregator ||
-        typeof TeamAggregator.getUnassignedViewModel !==
-            'function') {
+        typeof TeamAggregator.getProfessionalPoolViewModel !==
+        'function') {
         _missing.push(
-            'TeamAggregator.getUnassignedViewModel'
+            'TeamAggregator.getProfessionalPoolViewModel'
         );
     }
     if (!TeamAggregator ||
         typeof TeamAggregator.getTimelineViewModel !==
-            'function') {
-        _missing.push(
-            'TeamAggregator.getTimelineViewModel'
-        );
+        'function') {
+        _missing.push('TeamAggregator.getTimelineViewModel');
     }
 
     if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
@@ -331,8 +269,15 @@
         return null;
     }
 
+    function cssEscape(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value).replace(/(["\\])/g, '\\$1');
+    }
+
     // ============================================================
-    // MODULE STATE
+    // STATE
     // ============================================================
 
     var _initialized = false;
@@ -342,13 +287,10 @@
     var _memberManagerModal = null;
     var _matchmakingModal = null;
 
-    // Professional-tab view mode. One of 'teams', 'unassigned',
-    // 'timeline'. Module-level, not persisted. See the VIEW MODES
-    // note in the file header.
+    // 'teams' | 'pool' | 'timeline'. Module-level; reset on init.
     var _viewMode = 'teams';
 
-    // Timeline state. See the TIMELINE STATE note in the file
-    // header.
+    // Timeline state.
     var _timelineYearStart = null;
     var _timelineYearEnd = null;
     var _timelineExpandedYears = Object.create(null);
@@ -365,7 +307,7 @@
                     item.eventName, item.handler
                 );
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
         }
         _eventListeners = [];
@@ -440,10 +382,7 @@
         var period = getCurrentPeriod(currentTab);
         var expandedTeamId = TeamUI.getExpandedTeamId();
 
-        // The unassigned and timeline modes are only meaningful on
-        // the professional tab. If the user is on another tab,
-        // force Teams mode. This keeps the toggle from leaking
-        // state across tabs.
+        // Non-professional tabs have no mode toggle. Force Teams.
         if (currentTab !== 'professional') {
             _viewMode = 'teams';
         }
@@ -455,58 +394,45 @@
                 _viewMode === 'teams' ? expandedTeamId : null
         });
 
-        // Restore the persisted expandedTeamId when we come back
-        // to Teams mode.
         if (_viewMode === 'teams' &&
             pageVM.expandedTeamId !== expandedTeamId) {
             TeamUI.setExpandedTeamId(pageVM.expandedTeamId);
         }
 
-        // Attach mode-specific VMs.
         pageVM.viewMode = _viewMode;
 
-        if (currentTab === 'professional' &&
-            _viewMode === 'unassigned') {
-            var unassignedVM = null;
-            try {
-                unassignedVM =
-                    TeamAggregator.getUnassignedViewModel();
-            } catch (e) {
-                console.warn(
-                    '[TeamEvents] getUnassignedViewModel failed:', e
+        // Pool VM.
+        if (currentTab === 'professional' && _viewMode === 'pool') {
+            if (period === null) {
+                throw new Error(
+                    '[TeamEvents] Cannot build pool without a ' +
+                    'period.'
                 );
-                unassignedVM = null;
             }
-            pageVM.unassignedVM = unassignedVM;
+            pageVM.professionalPoolVM =
+                TeamAggregator.getProfessionalPoolViewModel({
+                    period: period
+                });
         } else {
-            pageVM.unassignedVM = null;
+            pageVM.professionalPoolVM = null;
         }
 
+        // Timeline VM.
         if (currentTab === 'professional' &&
             _viewMode === 'timeline') {
             ensureTimelineRange();
-            var timelineVM = null;
-            try {
-                timelineVM =
-                    TeamAggregator.getTimelineViewModel({
-                        start: _timelineYearStart,
-                        end: _timelineYearEnd
-                    });
-            } catch (e) {
-                console.warn(
-                    '[TeamEvents] getTimelineViewModel failed:', e
-                );
-                timelineVM = null;
-            }
-            pageVM.timelineVM = timelineVM;
+            pageVM.timelineVM =
+                TeamAggregator.getTimelineViewModel({
+                    start: _timelineYearStart,
+                    end: _timelineYearEnd
+                });
             pageVM.timelineExpandedYears = _timelineExpandedYears;
         } else {
             pageVM.timelineVM = null;
             pageVM.timelineExpandedYears = null;
         }
 
-        _container.innerHTML =
-            TeamRender.renderContainer(pageVM);
+        _container.innerHTML = TeamRender.renderContainer(pageVM);
 
         var filterContainer =
             _container.querySelector('#filter-container');
@@ -519,14 +445,6 @@
         }
     }
 
-    /**
-     * Ensure the timeline year range has a value. Sets defaults on
-     * first use; does nothing once a range is present.
-     *
-     * Default: [currentYear - 20, currentYear + 5]. If the
-     * application year is unavailable, [1900, 1930] is used as a
-     * fallback so the user sees something.
-     */
     function ensureTimelineRange() {
         if (_timelineYearStart !== null &&
             _timelineYearEnd !== null) {
@@ -535,9 +453,10 @@
 
         var currentYear = getApplicationYear();
         if (currentYear === null) {
-            _timelineYearStart = 1900;
-            _timelineYearEnd = 1930;
-            return;
+            throw new Error(
+                '[TeamEvents] Application year is required to ' +
+                'build the timeline.'
+            );
         }
 
         _timelineYearStart = currentYear - 20;
@@ -564,7 +483,6 @@
         _container = container;
         removeAllEventListeners();
 
-        // Reset transient state. A remount is a fresh start.
         _viewMode = 'teams';
         _timelineYearStart = null;
         _timelineYearEnd = null;
@@ -575,6 +493,7 @@
         bindAddTeam();
         bindMatchmaking();
         bindTeamExport();
+        bindCandidateExport();
         bindTeamActions();
         bindFilters();
         bindTimelineActions();
@@ -587,7 +506,7 @@
             try {
                 Modal.closeModal(_memberManagerModal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
             _memberManagerModal = null;
         }
@@ -596,7 +515,7 @@
             try {
                 Modal.closeModal(_matchmakingModal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
             _matchmakingModal = null;
         }
@@ -619,7 +538,6 @@
             var tab = target.dataset.tab;
             if (!tab) { return; }
 
-            // Leaving the professional tab resets the view mode.
             if (tab !== 'professional') {
                 _viewMode = 'teams';
             }
@@ -630,22 +548,20 @@
     }
 
     // ============================================================
-    // MODE TOGGLE (professional tab only)
+    // MODE TOGGLE
     // ============================================================
 
     function bindModeToggle() {
         delegate('.mode-btn', 'click', function(e, target) {
             e.preventDefault();
 
-            // Guard: the toggle only makes sense on the
-            // professional tab.
             if (TeamUI.getCurrentTab() !== 'professional') {
                 return;
             }
 
             var mode = target.dataset.mode;
             if (mode !== 'teams' &&
-                mode !== 'unassigned' &&
+                mode !== 'pool' &&
                 mode !== 'timeline') {
                 return;
             }
@@ -654,15 +570,9 @@
 
             _viewMode = mode;
 
-            // When entering Unassigned or Timeline mode, collapse
-            // any expanded team. The expanded team is not rendered
-            // there.
             if (_viewMode !== 'teams') {
                 TeamUI.setExpandedTeamId(null);
             }
-
-            // Reset the expanded-years map when leaving Timeline
-            // mode. Re-entering starts from a clean slate.
             if (_viewMode !== 'timeline') {
                 _timelineExpandedYears = Object.create(null);
             }
@@ -674,20 +584,8 @@
     // ============================================================
     // TIMELINE ACTIONS
     // ============================================================
-    //
-    // Five handlers, all delegated on the container so they survive
-    // re-renders:
-    //
-    //   .timeline-circle[data-year]         toggle that year
-    //   .timeline-team-name[data-team-id]   open member manager
-    //   #timeline-apply-btn                 rebuild with new range
-    //   #timeline-expand-all-btn            expand every year
-    //   #timeline-collapse-all-btn          collapse every year
-    //
-    // See the TIMELINE INTERACTIONS note in the file header.
 
     function bindTimelineActions() {
-        // ---- Year circle ----
         delegate('.timeline-circle', 'click', function(e, target) {
             e.preventDefault();
 
@@ -703,7 +601,6 @@
             refreshUI();
         });
 
-        // ---- Team name in a composition line ----
         delegate('.timeline-team-name', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
@@ -711,9 +608,6 @@
             var teamId = target.dataset.teamId;
             if (!teamId) { return; }
 
-            // The team name lives inside a year row. Use the row's
-            // data-year to open the member manager at the year of
-            // the click, not at the current application year.
             var row = target.closest('.timeline-year');
             var year = row
                 ? parseInt(row.dataset.year, 10)
@@ -725,13 +619,11 @@
             );
         });
 
-        // ---- Apply range ----
         delegate('#timeline-apply-btn', 'click', function(e) {
             e.preventDefault();
             applyTimelineRange();
         });
 
-        // ---- Enter key on the range inputs ----
         delegate('#timeline-start-year', 'keydown', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -745,7 +637,6 @@
             }
         });
 
-        // ---- Expand all / collapse all ----
         delegate('#timeline-expand-all-btn', 'click', function(e) {
             e.preventDefault();
             expandAllTimelineYears();
@@ -778,16 +669,12 @@
             return;
         }
 
-        // Normalise an inverted range.
         var lo = Math.min(startNum, endNum);
         var hi = Math.max(startNum, endNum);
 
         _timelineYearStart = lo;
         _timelineYearEnd = hi;
 
-        // Drop expanded years that are now outside the range so the
-        // map does not grow without bound as the user scrolls
-        // through history.
         var keys = Object.keys(_timelineExpandedYears);
         for (var i = 0; i < keys.length; i++) {
             var y = parseInt(keys[i], 10);
@@ -800,9 +687,6 @@
     }
 
     function expandAllTimelineYears() {
-        // Read the range currently in the DOM so we expand exactly
-        // the years the user is looking at, not everything the
-        // aggregator could produce.
         if (!_container) { return; }
 
         var rows = _container.querySelectorAll(
@@ -953,6 +837,13 @@
         var type = typeEl ? typeEl.value : 'professional';
         var status = statusEl ? statusEl.value : 'active';
 
+        // `temporaryMission` is passed through regardless of type.
+        // The domain accepts a mission on any team; the type only
+        // controls which options the form offers.
+        var temporaryMission = missionEl
+            ? (missionEl.value || null)
+            : null;
+
         var teamData = {
             name: name,
             type: type,
@@ -961,11 +852,7 @@
             status: status,
             classId: classEl ? classEl.value : null,
             teamNumber: numberEl ? numberEl.value.trim() : '',
-            temporaryMission:
-                (type === 'temporary' ||
-                 type === 'professional')
-                ? (missionEl ? missionEl.value : null)
-                : null,
+            temporaryMission: temporaryMission,
             nameHistory: collectNameHistory(form)
         };
 
@@ -978,9 +865,7 @@
             closeModal(modal);
             refreshUI();
         }).catch(function(err) {
-            console.warn(
-                '[TeamEvents] saveTeam failed:', err
-            );
+            console.warn('[TeamEvents] saveTeam failed:', err);
             notify('Failed to save team.', 'error');
         });
     }
@@ -1036,7 +921,7 @@
             try {
                 Modal.closeModal(_matchmakingModal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
             _matchmakingModal = null;
         }
@@ -1090,7 +975,7 @@
             try {
                 Modal.closeModal(modal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
         }
 
@@ -1189,21 +1074,17 @@
         state.setupYear = year;
         state.setupTargetSize = targetSize;
 
-        var vm;
-        try {
-            vm = TeamAggregator.getTeamMatchmakingViewModel(
-                year, targetSize
-            );
-        } catch (e) {
-            console.warn(
-                '[TeamEvents] getTeamMatchmakingViewModel failed:',
-                e
-            );
+        var vm = TeamAggregator.getTeamMatchmakingViewModel({
+            period: year,
+            targetSize: targetSize
+        });
+
+        if (!vm) {
             notify('Failed to build matchmaking pool.', 'error');
             return;
         }
 
-        if (!vm || vm.candidates.length === 0) {
+        if (vm.candidates.length === 0) {
             notify(
                 'No eligible candidates for the selected year.',
                 'info'
@@ -1232,27 +1113,9 @@
             for (var j = 0; j < rawAsg.additions.length; j++) {
                 var addition = rawAsg.additions[j];
                 placedIds[addition.id] = true;
-
-                var full = candidatesById[addition.id];
-
                 additions.push({
                     id: addition.id,
-                    name: full ? full.name : addition.name,
-                    status: full ? full.status : '',
-                    history: full ? full.history : [],
-
-                    juniorYear: full ? full.juniorYear : null,
-                    seniorYear: full ? full.seniorYear : null,
-                    supportYear: full ? full.supportYear : null,
-                    instructorYear: full
-                        ? full.instructorYear
-                        : null,
-                    milestoneYear: full
-                        ? full.milestoneYear
-                        : null,
-                    milestoneLabel: full
-                        ? full.milestoneLabel
-                        : ''
+                    name: addition.name
                 });
             }
             assignments.push({
@@ -1330,21 +1193,6 @@
         if (candidate) {
             state.unassigned.push(candidate);
             state.unassigned.sort(function(a, b) {
-                var aYear = (a && a.milestoneYear !== undefined &&
-                             a.milestoneYear !== null)
-                    ? a.milestoneYear
-                    : null;
-                var bYear = (b && b.milestoneYear !== undefined &&
-                             b.milestoneYear !== null)
-                    ? b.milestoneYear
-                    : null;
-
-                if (aYear !== null && bYear !== null) {
-                    if (aYear !== bYear) { return aYear - bYear; }
-                    return a.name.localeCompare(b.name);
-                }
-                if (aYear !== null) { return -1; }
-                if (bYear !== null) { return 1; }
                 return a.name.localeCompare(b.name);
             });
         }
@@ -1437,9 +1285,7 @@
         }
 
         TeamCore.batchAddMembers(flat).then(function(result) {
-            if (!result || !result.success) {
-                return;
-            }
+            if (!result || !result.success) { return; }
             notify(
                 'Added ' + result.data.added +
                 ' member' +
@@ -1459,15 +1305,8 @@
         });
     }
 
-    function cssEscape(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value).replace(/(["\\])/g, '\\$1');
-    }
-
     // ============================================================
-    // TEAM EXPORT
+    // EXPORTS
     // ============================================================
 
     function bindTeamExport() {
@@ -1495,6 +1334,69 @@
         });
     }
 
+    function bindCandidateExport() {
+        delegate('#export-candidates-btn', 'click', function(e) {
+            e.preventDefault();
+
+            var Exporter = window.CandidateExport || null;
+            if (!Exporter || typeof Exporter.export !== 'function') {
+                notify(
+                    'Candidate export is not available.',
+                    'error'
+                );
+                return;
+            }
+
+            if (TeamUI.getCurrentTab() !== 'professional' ||
+                _viewMode !== 'pool') {
+                notify(
+                    'Candidate export is only available in the ' +
+                    'Professional Pool view.',
+                    'error'
+                );
+                return;
+            }
+
+            var period = getCurrentPeriod('professional');
+            if (period === null) {
+                notify(
+                    'No period available for candidate export.',
+                    'error'
+                );
+                return;
+            }
+
+            try {
+                var result = Exporter.export({
+                    period: period
+                });
+                if (result && result.exported) {
+                    notify(
+                        'Exported ' + result.count +
+                        ' candidate' +
+                        (result.count === 1 ? '' : 's') +
+                        ': ' + result.filename,
+                        'success'
+                    );
+                    return;
+                }
+                notify(
+                    'Candidate export failed: ' +
+                    ((result && result.error) || 'Unknown error'),
+                    'error'
+                );
+            } catch (err) {
+                console.warn(
+                    '[TeamEvents] CandidateExport.export threw:', err
+                );
+                notify(
+                    'Candidate export failed: ' + err.message,
+                    'error'
+                );
+            }
+        });
+    }
+
     // ============================================================
     // TEAM ROW ACTIONS
     // ============================================================
@@ -1503,33 +1405,31 @@
         delegate('.edit-team', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) {
-                showTeamForm(teamId);
-            }
+            if (teamId) { showTeamForm(teamId); }
         });
 
         delegate('.delete-team', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) {
-                deleteTeam(teamId);
-            }
+            if (teamId) { deleteTeam(teamId); }
         });
 
         delegate('.manage-members', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) {
-                openMemberManager(teamId);
-            }
+            if (teamId) { openMemberManager(teamId); }
         });
 
         delegate('.manage-rankings', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) {
-                showRankingModal(teamId);
-            }
+            if (teamId) { showRankingModal(teamId); }
+        });
+
+        delegate('.export-team', 'click', function(e, target) {
+            e.preventDefault();
+            var teamId = target.dataset.id;
+            if (teamId) { openTeamExportPicker(teamId); }
         });
 
         delegate('.toggle-members', 'click', function(e, target) {
@@ -1546,6 +1446,27 @@
 
             refreshUI();
         });
+    }
+
+    function openTeamExportPicker(teamId) {
+        var Picker = window.TeamExportPicker || null;
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notify('Team export is not available.', 'error');
+            return;
+        }
+
+        try {
+            Picker.openModal({ teamId: teamId });
+        } catch (err) {
+            console.warn(
+                '[TeamEvents] TeamExportPicker.openModal threw:',
+                err
+            );
+            notify(
+                'Team export failed: ' + err.message,
+                'error'
+            );
+        }
     }
 
     function deleteTeam(teamId) {
@@ -1598,7 +1519,7 @@
             try {
                 Modal.closeModal(_memberManagerModal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
             _memberManagerModal = null;
         }
@@ -1642,7 +1563,7 @@
             try {
                 Modal.closeModal(modal);
             } catch (e) {
-                // Ignore
+                // Ignore.
             }
         }
 
@@ -1867,7 +1788,7 @@
     }
 
     // ============================================================
-    // MODAL CLOSE
+    // MODAL CLOSE HELPER
     // ============================================================
 
     function closeModal(modal) {
