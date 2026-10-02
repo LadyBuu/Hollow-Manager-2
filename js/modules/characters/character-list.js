@@ -1,79 +1,42 @@
 /**
  * modules/characters/character-list.js - Character List
- * Renders the character list with filtering
+ * Renders the character list with filtering and sorting.
+ *
  * Path: js/modules/characters/character-list.js
  *
- * This module is responsible for:
- *   - Rendering the character list
- *   - Filtering characters by name, class, career status,
- *     deceased status, elimination status, and filler flag
- *   - Sorting characters by name
- *   - Displaying character status badges (deceased, eliminated,
- *     current professional team)
- *   - Handling character selection (delegates to index.js)
+ * RESPONSIBILITIES:
+ *   - Render the character list.
+ *   - Read filter controls from the DOM.
+ *   - Persist the sort and hide-filler toggles in sessionStorage.
+ *   - Hand filter values to CharacterAggregator; render the result.
  *
- * FILLER FILTER (this revision):
- *   The list carries a "Hide filler" checkbox (#hide-filler).
- *   When checked (the default), characters with `char.isFiller
- *   === true` are excluded from the list. When unchecked, they
- *   appear like any other character.
+ * FILTERS:
+ *   - Name (substring, case-insensitive)
+ *   - Class (dropdown; includes the __no_class__ sentinel)
+ *   - Career status (checkboxes, OR-combined)
+ *   - Hide deceased
+ *   - Hide eliminated
+ *   - Hide filler (sessionStorage-persisted)
  *
- *   The state is persisted to sessionStorage under
- *   `characters_hide_filler_v1`. It survives tab switches within
- *   the current browser session and is cleared on browser close,
- *   matching the other character-list filters.
+ * SORT:
+ *   - name-asc (default), name-desc, age-asc, age-desc
+ *   - sessionStorage-persisted under characters_sort_v1
+ *   - Sort is NOT reset by the Clear filter button
  *
- *   The flag is the sole signal. There is no heuristic at read
- *   time; the heuristic lives in character-strip.js.
- *
- * IMPORTANT:
- *   - RENDER ONLY - no event binding (handled by character-events.js)
- *   - No data mutations
- *   - No persistence calls other than the filler toggle
- *   - Uses LAZY LOADING for CharacterAggregator
- *   - Uses LAZY LOADING for getCurrentEditId
- *   - Uses CharacterQueries for simple character data
- *   - Uses DomUtils for safe DOM operations
- *   - Uses State for current week (delegates to CalendarConstants)
- *
- * ROW CONTENT:
- *   Each row shows:
- *     - Character name
- *     - Current status string (right-aligned)
- *     - Badge line:
- *         * team name (if the character is on a professional team
- *           right now)
- *         * "Deceased" (if applicable)
- *         * "Eliminated YYYY WkN" (if applicable)
- *
- * STATUS FILTER:
- *   The sidebar contains a "Career Status" group of checkboxes.
- *   Read in getFilterValues() as an array of lowercase status
- *   names. An empty array means "no status filter".
- *
- * CLASS FILTER (v30):
- *   The class filter dropdown reads AcademyClasses.getClasses()
- *   directly. The retired AcademyQueries facade is no longer
- *   consulted.
- *
- * LOAD-ORDER WARNING (B5, removed):
- *   The dependency check previously warned when
- *   `window.getCurrentEditId` was not yet defined. That function
- *   is installed by `characters/index.js`, which loads AFTER this
- *   module. The warning fired on every page load even though
- *   nothing was broken: `getCurrentEditId()` locally falls back
- *   to `window._currentEditId`, then to null. The warning has
- *   been removed. Nothing in this module depends on
- *   `getCurrentEditId` being defined at module-load time; the
- *   resolve happens per render.
+ * CLASS FILTER (__no_class__):
+ *   The sentinel value '__no_class__' matches characters with no
+ *   class entries, or with classIds that resolve to no live class.
+ *   The set of live classes is owned by AcademyClasses. If that
+ *   module is unavailable, the aggregator fails the projection
+ *   rather than guessing.
  *
  * DEPENDENCIES (lazily loaded):
- *   - window.CharacterAggregator (from character-aggregator.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.DomUtils (from dom-utils.js)
+ *   - window.CharacterAggregator
+ *   - window.CharacterQueries
+ *   - window.DomUtils
+ *   - window.AcademyClasses
+ *   - window.CalendarConstants
  *   - window.getCurrentEditId (from index.js) — resolved per render
- *   - window.CalendarConstants (from constants.js)
- *   - window.AcademyClasses (from academy-classes.js)
  */
 
 (function() {
@@ -89,30 +52,28 @@
     // ============================================================
 
     var HIDE_FILLER_STORAGE_KEY = 'characters_hide_filler_v1';
+    var SORT_STORAGE_KEY = 'characters_sort_v1';
+
+    var NO_CLASS_FILTER = '__no_class__';
+
+    var DEFAULT_SORT = 'name-asc';
+
+    var VALID_SORTS = {
+        'name-asc': true,
+        'name-desc': true,
+        'age-asc': true,
+        'age-desc': true
+    };
 
     // ============================================================
-    // LAZY LOADING HELPERS - Breaks circular dependencies
+    // LAZY DEPENDENCIES
     // ============================================================
 
-    function getCharacterAggregator() {
-        return window.CharacterAggregator || null;
-    }
-
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
-
-    function getDomUtils() {
-        return window.DomUtils || null;
-    }
-
-    function getAcademyClasses() {
-        return window.AcademyClasses || null;
-    }
-
-    function getCalendarConstants() {
-        return window.CalendarConstants || null;
-    }
+    function getCharacterAggregator() { return window.CharacterAggregator || null; }
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getDomUtils() { return window.DomUtils || null; }
+    function getAcademyClasses() { return window.AcademyClasses || null; }
+    function getCalendarConstants() { return window.CalendarConstants || null; }
 
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
@@ -125,81 +86,88 @@
     }
 
     // ============================================================
-    // FILLER FILTER PERSISTENCE
-    // ============================================================
-
-    /**
-     * Read the persisted "hide filler" state.
-     *
-     * Returns true (hide filler) when:
-     *   - nothing has been persisted (the default)
-     *   - the persisted value is not parseable
-     *   - sessionStorage is unavailable
-     *
-     * Returns false only when the persisted value is exactly the
-     * string 'false'.
-     */
-    function getHideFillerFromStorage() {
-        try {
-            var raw = sessionStorage.getItem(HIDE_FILLER_STORAGE_KEY);
-            if (raw === null) { return true; }
-            return raw !== 'false';
-        } catch (e) {
-            return true;
-        }
-    }
-
-    /**
-     * Persist the "hide filler" state.
-     *
-     * Silent on failure. sessionStorage is a cache; if it is
-     * unavailable, the checkbox still works for the current render
-     * pass.
-     */
-    function setHideFillerInStorage(value) {
-        try {
-            sessionStorage.setItem(
-                HIDE_FILLER_STORAGE_KEY,
-                value ? 'true' : 'false'
-            );
-        } catch (e) {
-            // Ignore. See the doc comment above.
-        }
-    }
-
-    // ============================================================
-    // DEPENDENCY CHECK - Warns but doesn't fail
+    // STORAGE
     // ============================================================
     //
-    // `getCurrentEditId` is deliberately NOT part of the check.
-    // It is defined by `characters/index.js`, which loads after
-    // this module.
+    // Both toggles persist in sessionStorage. Defaults are used when
+    // storage is unavailable or the stored value is invalid.
+
+    function readStoredFlag(key, defaultValue) {
+        try {
+            var raw = sessionStorage.getItem(key);
+            if (raw === null) { return defaultValue; }
+            return raw !== 'false';
+        } catch (e) {
+            return defaultValue;
+        }
+    }
+
+    function writeStoredFlag(key, value) {
+        try {
+            sessionStorage.setItem(key, value ? 'true' : 'false');
+        } catch (e) {
+            // Ignore. sessionStorage is a cache.
+        }
+    }
+
+    function getHideFillerFromStorage() {
+        return readStoredFlag(HIDE_FILLER_STORAGE_KEY, true);
+    }
+
+    function setHideFillerInStorage(value) {
+        writeStoredFlag(HIDE_FILLER_STORAGE_KEY, value);
+    }
+
+    function getSortFromStorage() {
+        try {
+            var raw = sessionStorage.getItem(SORT_STORAGE_KEY);
+            if (raw && VALID_SORTS[raw]) {
+                return raw;
+            }
+        } catch (e) {
+            // Fall through to default.
+        }
+        return DEFAULT_SORT;
+    }
+
+    function setSortInStorage(value) {
+        try {
+            sessionStorage.setItem(SORT_STORAGE_KEY, value);
+        } catch (e) {
+            // Ignore.
+        }
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
         if (!getCharacterAggregator()) {
-            missing.push('CharacterAggregator (lazy)');
+            missing.push('CharacterAggregator');
         }
         if (!getCharacterQueries()) {
-            missing.push('CharacterQueries (lazy)');
+            missing.push('CharacterQueries');
         }
         if (!getDomUtils()) {
-            missing.push('DomUtils (lazy)');
+            missing.push('DomUtils');
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterList] Some dependencies not yet loaded:', missing.join(', '));
+            console.warn(
+                '[CharacterList] Dependencies not loaded:',
+                missing.join(', ')
+            );
             return false;
         }
 
         return true;
     }
 
-    checkDependencies();
-
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -220,27 +188,7 @@
     }
 
     // ============================================================
-    // CONSTANTS - Lazy loaded from CalendarConstants
-    // ============================================================
-
-    function getConstants() {
-        var CC = getCalendarConstants();
-        if (CC) {
-            return {
-                MIN_WEEK: CC.MIN_WEEK || 1,
-                MAX_WEEK: CC.MAX_WEEK || 52,
-                DEFAULT_WEEK: 1
-            };
-        }
-        return {
-            MIN_WEEK: 1,
-            MAX_WEEK: 52,
-            DEFAULT_WEEK: 1
-        };
-    }
-
-    // ============================================================
-    // FILTER HELPERS
+    // FILTER READS
     // ============================================================
 
     function getStatusFilterValues() {
@@ -267,19 +215,24 @@
         return values;
     }
 
-    /**
-     * Read the "Hide filler" checkbox.
-     *
-     * When the checkbox is missing from the DOM (e.g. a caller
-     * renders the list without the sidebar), falls back to the
-     * persisted state so the behaviour is stable.
-     */
     function getHideFillerFromDOM() {
         var cb = document.getElementById('hide-filler');
         if (!cb) {
             return getHideFillerFromStorage();
         }
         return cb.checked === true;
+    }
+
+    function getSortFromDOM() {
+        var el = document.getElementById('char-sort');
+        if (!el) {
+            return getSortFromStorage();
+        }
+        var value = String(el.value || '');
+        if (VALID_SORTS[value]) {
+            return value;
+        }
+        return DEFAULT_SORT;
     }
 
     function getFilterValues() {
@@ -294,92 +247,104 @@
             statusFilter: getStatusFilterValues(),
             hideDeceased: hideDeceased ? hideDeceased.checked : true,
             hideEliminated: hideEliminated ? hideEliminated.checked : true,
-            hideFiller: getHideFillerFromDOM()
+            hideFiller: getHideFillerFromDOM(),
+            sort: getSortFromDOM()
         };
     }
 
     function getCurrentWeek() {
-        var constants = getConstants();
+        var CC = getCalendarConstants();
         var data = window.data || {};
         var week = data.currentWeek;
-        if (typeof week === 'number' && week >= constants.MIN_WEEK && week <= constants.MAX_WEEK) {
+
+        var minWeek = CC ? CC.MIN_WEEK || 1 : 1;
+        var maxWeek = CC ? CC.MAX_WEEK || 52 : 52;
+
+        if (typeof week === 'number' && week >= minWeek && week <= maxWeek) {
             return week;
         }
-        return constants.DEFAULT_WEEK;
+        return 1;
     }
 
     // ============================================================
-    // POPULATE CLASS FILTER - Uses AcademyClasses
+    // CLASS FILTER POPULATION
     // ============================================================
+    //
+    // Delegates to CharacterClassView.populateClassFilter if
+    // available, so the sentinel option and preservation logic live
+    // in one place. Falls back to a local implementation only when
+    // the class view module is not loaded.
 
     function populateClassFilter() {
-        var select = document.getElementById('char-class-filter');
-        if (!select) {
+        var ClassView = window.CharacterClassView;
+        if (ClassView &&
+            typeof ClassView.populateClassFilter === 'function') {
+            ClassView.populateClassFilter();
             return;
         }
 
-        var previousValue = select.value;
-        var AcademyClasses = getAcademyClasses();
+        var select = document.getElementById('char-class-filter');
+        if (!select) { return; }
 
+        var previousValue = select.value || 'all';
+
+        var AcademyClasses = getAcademyClasses();
         var classes = [];
         if (AcademyClasses &&
             typeof AcademyClasses.getClasses === 'function') {
             classes = AcademyClasses.getClasses() || [];
         }
 
-        select.innerHTML = '<option value="all">All Classes</option>';
+        var sorted = classes.slice().sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
 
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || typeof cls !== 'object') {
-                continue;
-            }
-            var option = document.createElement('option');
-            option.value = cls.id;
-            option.textContent = cls.name || 'Unknown Class';
-            select.appendChild(option);
+        var html = '';
+        html += '<option value="all">All Classes</option>';
+        html += '<option value="' + NO_CLASS_FILTER + '">No Class</option>';
+
+        for (var i = 0; i < sorted.length; i++) {
+            var cls = sorted[i];
+            if (!cls || !cls.id) { continue; }
+            html += '<option value="' +
+                        escapeHtml(cls.id) + '">' +
+                        escapeHtml(cls.name || 'Unnamed Class') +
+                    '</option>';
         }
 
-        if (previousValue && previousValue !== 'all') {
-            var exists = false;
-            for (var j = 0; j < select.options.length; j++) {
-                if (select.options[j].value === previousValue) {
-                    exists = true;
-                    break;
-                }
+        select.innerHTML = html;
+
+        var stillExists = false;
+        for (var j = 0; j < select.options.length; j++) {
+            if (select.options[j].value === previousValue) {
+                stillExists = true;
+                break;
             }
-            if (exists) {
-                select.value = previousValue;
-            } else {
-                select.value = 'all';
-            }
-        } else {
-            select.value = 'all';
         }
+        select.value = stillExists ? previousValue : 'all';
     }
 
     // ============================================================
-    // RENDER CHARACTER LIST
+    // RENDER
     // ============================================================
 
     function render() {
         var container = document.getElementById('characters-container');
-        if (!container) {
+        if (!container) { return; }
+
+        if (!checkDependencies()) {
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Character data not available. Please refresh the page.' +
+                '</p>';
             return;
         }
 
         var CharacterAggregator = getCharacterAggregator();
-        var CharacterQueries = getCharacterQueries();
-
-        if (!CharacterAggregator || !CharacterQueries) {
-            container.innerHTML = '<p class="empty-state">Character data not available. Please refresh the page.</p>';
-            return;
-        }
-
         var filters = getFilterValues();
         var currentWeek = getCurrentWeek();
 
-        var items = [];
+        var items;
         try {
             items = CharacterAggregator.getCharacterListViewModel({
                 classFilter: filters.classId,
@@ -388,111 +353,164 @@
                 hideDeceased: filters.hideDeceased,
                 hideEliminated: filters.hideEliminated,
                 hideFiller: filters.hideFiller,
+                sort: filters.sort,
                 week: currentWeek
             });
         } catch (e) {
-            console.warn('[CharacterList] Error getting list view model:', e);
-            container.innerHTML = '<p class="empty-state">Error loading character list.</p>';
+            console.warn('[CharacterList] Aggregator threw:', e);
+            container.innerHTML =
+                '<p class="empty-state">Error loading character list.</p>';
             return;
         }
 
         if (!Array.isArray(items)) {
-            items = [];
+            container.innerHTML =
+                '<p class="empty-state">Error loading character list.</p>';
+            return;
         }
 
         if (items.length === 0) {
-            container.innerHTML = '<p class="empty-state">No characters found.</p>';
+            container.innerHTML =
+                '<p class="empty-state">No characters found.</p>';
             return;
         }
 
         var currentEditId = getCurrentEditId();
-
         var html = '';
+
         for (var i = 0; i < items.length; i++) {
-            var item = items[i];
-            if (!item || typeof item !== 'object') {
-                continue;
-            }
-
-            var isSelected = currentEditId !== null && String(item.id) === String(currentEditId);
-
-            var safeId = escapeHtml(item.id);
-            var safeName = escapeHtml(item.name || 'Unknown');
-            var safeStatus = escapeHtml(item.status || '');
-
-            var selectedClass = isSelected ? ' selected' : '';
-            var deceasedClass = item.deceased ? ' deceased' : '';
-            var eliminatedClass = item.eliminated ? ' eliminated' : '';
-
-            html += '<div class="char-list-item' + selectedClass + deceasedClass + eliminatedClass + '" data-id="' + safeId + '" style="padding:4px 6px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
-                (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
-                (item.deceased ? 'opacity:0.4;' : '') + '">';
-
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
-            html += '<span style="font-size:0.75rem;">' + safeName + '</span>';
-            html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + safeStatus + '</span>';
-            html += '</div>';
-
-            var badges = [];
-
-            var teams = Array.isArray(item.teamObjects) ? item.teamObjects : [];
-            for (var t = 0; t < teams.length; t++) {
-                var team = teams[t];
-                if (!team || !team.name) { continue; }
-                badges.push(
-                    '<span style="font-size:0.5rem;color:var(--info);">' +
-                        escapeHtml(team.name) +
-                    '</span>'
-                );
-            }
-
-            if (item.deceased) {
-                badges.push('<span style="font-size:0.5rem;color:var(--danger);">Deceased</span>');
-            }
-
-            if (item.eliminated) {
-                var elimText = 'Eliminated';
-                if (item.eliminationYear) {
-                    elimText += ' ' + escapeHtml(String(item.eliminationYear));
-                    if (item.eliminationWeek) {
-                        elimText += ' Wk' + escapeHtml(String(item.eliminationWeek));
-                    }
-                } else if (item.eliminationWeek) {
-                    elimText += ' Wk' + escapeHtml(String(item.eliminationWeek));
-                }
-                badges.push('<span style="font-size:0.5rem;color:var(--warning);">' + elimText + '</span>');
-            }
-
-            if (badges.length > 0) {
-                html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;">' + badges.join(' ') + '</div>';
-            }
-
-            html += '</div>';
+            html += renderRow(items[i], currentEditId);
         }
 
         container.innerHTML = html;
     }
 
     // ============================================================
-    // GET FILTER VALUES (public for other modules)
+    // ROW
+    // ============================================================
+
+    function renderRow(item, currentEditId) {
+        var isSelected = currentEditId !== null &&
+            String(item.id) === String(currentEditId);
+
+        var safeId = escapeHtml(item.id);
+        var safeName = escapeHtml(item.name || 'Unknown');
+        var safeStatus = escapeHtml(item.status || '');
+
+        var nameLine = safeName;
+        if (item.ageDisplay) {
+            nameLine +=
+                ' <span style="color:var(--text-dim);' +
+                    'font-size:0.65rem;">(' +
+                    escapeHtml(item.ageDisplay) +
+                ')</span>';
+        }
+
+        var rowClass = 'char-list-item';
+        if (isSelected) { rowClass += ' selected'; }
+        if (item.deceased) { rowClass += ' deceased'; }
+        if (item.eliminated) { rowClass += ' eliminated'; }
+
+        var rowStyle = 'padding:4px 6px;' +
+            'border-bottom:1px solid var(--border-soft);' +
+            'cursor:pointer;';
+        if (isSelected) {
+            rowStyle += 'background:var(--accent-soft);' +
+                'border-left:3px solid var(--accent);';
+        }
+        if (item.deceased) {
+            rowStyle += 'opacity:0.4;';
+        }
+
+        var html = '';
+        html += '<div class="' + rowClass + '" ' +
+                    'data-id="' + safeId + '" ' +
+                    'style="' + rowStyle + '">';
+
+        html += '<div style="display:flex;' +
+                    'justify-content:space-between;' +
+                    'align-items:center;">';
+        html += '<span style="font-size:0.75rem;">' +
+                    nameLine +
+                '</span>';
+        html += '<span style="font-size:0.55rem;color:var(--text-dim);">' +
+                    safeStatus +
+                '</span>';
+        html += '</div>';
+
+        var badges = renderBadges(item);
+        if (badges) {
+            html += badges;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderBadges(item) {
+        var badges = [];
+
+        var teams = Array.isArray(item.teamObjects)
+            ? item.teamObjects
+            : [];
+        for (var t = 0; t < teams.length; t++) {
+            var team = teams[t];
+            if (!team || !team.name) { continue; }
+            badges.push(
+                '<span style="font-size:0.5rem;color:var(--info);">' +
+                    escapeHtml(team.name) +
+                '</span>'
+            );
+        }
+
+        if (item.deceased) {
+            badges.push(
+                '<span style="font-size:0.5rem;color:var(--danger);">' +
+                    'Deceased' +
+                '</span>'
+            );
+        }
+
+        if (item.eliminated) {
+            var elimText = 'Eliminated';
+            if (item.eliminationYear) {
+                elimText += ' ' +
+                    escapeHtml(String(item.eliminationYear));
+                if (item.eliminationWeek) {
+                    elimText += ' Wk' +
+                        escapeHtml(String(item.eliminationWeek));
+                }
+            } else if (item.eliminationWeek) {
+                elimText += ' Wk' +
+                    escapeHtml(String(item.eliminationWeek));
+            }
+            badges.push(
+                '<span style="font-size:0.5rem;color:var(--warning);">' +
+                    elimText +
+                '</span>'
+            );
+        }
+
+        if (badges.length === 0) { return ''; }
+
+        return '<div style="display:flex;flex-wrap:wrap;gap:4px;' +
+                    'margin-top:2px;">' +
+                    badges.join(' ') +
+                '</div>';
+    }
+
+    // ============================================================
+    // PUBLIC STATE ACCESS
     // ============================================================
 
     function getFilterValuesPublic() {
         return getFilterValues();
     }
 
-    /**
-     * Current "hide filler" state, read from the DOM when the
-     * checkbox is present, from storage otherwise.
-     */
     function getHideFiller() {
         return getHideFillerFromDOM();
     }
 
-    /**
-     * Set the "hide filler" state. Writes to storage, updates the
-     * checkbox if present, and re-renders.
-     */
     function setHideFiller(value) {
         var boolValue = value !== false;
         setHideFillerInStorage(boolValue);
@@ -503,17 +521,27 @@
         render();
     }
 
+    function getSort() {
+        return getSortFromDOM();
+    }
+
+    function setSort(value) {
+        if (!VALID_SORTS[value]) { return; }
+        setSortInStorage(value);
+
+        var el = document.getElementById('char-sort');
+        if (el) { el.value = value; }
+
+        render();
+    }
+
     // ============================================================
-    // REFRESH - Re-render with current data
+    // REFRESH / DESTROY
     // ============================================================
 
     function refresh() {
         render();
     }
-
-    // ============================================================
-    // DESTROY - Clean up (minimal for this module)
-    // ============================================================
 
     function destroy() {
         var container = document.getElementById('characters-container');
@@ -530,10 +558,16 @@
         render: render,
         refresh: refresh,
         destroy: destroy,
+
         populateClassFilter: populateClassFilter,
         getFilterValues: getFilterValuesPublic,
+
         getHideFiller: getHideFiller,
         setHideFiller: setHideFiller,
+
+        getSort: getSort,
+        setSort: setSort,
+
         getCurrentEditId: getCurrentEditId
     };
 
@@ -552,7 +586,9 @@
             'populateClassFilter',
             'getFilterValues',
             'getHideFiller',
-            'setHideFiller'
+            'setHideFiller',
+            'getSort',
+            'setSort'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -562,7 +598,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterList] Verification - some exports may be missing:', missing.join(', '));
+            console.warn(
+                '[CharacterList] Verification — some exports may be ' +
+                'missing:', missing.join(', ')
+            );
         }
     })();
 
