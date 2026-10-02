@@ -17,16 +17,9 @@
  *   intervalContains(interval, period)
  *   windowContains(start, end, period)
  *
- *   These are the canonical answers to "does this window contain
- *   this period?" Every consumer delegates to them.
- *
  * MEMBER PREDICATE OWNERSHIP:
  *   isMemberActive(member, period)
  *   isMemberFormer(member, period)
- *
- *   Wrappers around intervalContains. Active and former are
- *   mutually exclusive; an entry with only future intervals is
- *   neither.
  *
  * PROFESSIONAL PERSONNEL QUERY:
  *   getProfessionalPersonnelAtPeriod(period) returns domain facts
@@ -34,25 +27,16 @@
  *   period. It is the canonical source for both the Professional
  *   Pool UI and matchmaking.
  *
- *   Its dependencies are MANDATORY: CharacterQueries,
+ *   Its dependencies are MANDATORY at call time: CharacterQueries,
  *   CharacterConstants, EliminationQueries. When any is missing,
  *   the query throws. An empty result and a missing dependency must
  *   not look the same.
- *
- *   Output is domain facts only. No display strings.
- *
- *   Availability is a first-class interval:
- *     { from, to } where to === null means open-ended.
- *
- *   Department: this query does NOT consult department data.
- *   Departments are a separate domain with their own query module.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
  *   - window.ObjectUtils
  *
- * DEPENDENCIES (MANDATORY AT CALL TIME, checked by
- * getProfessionalPersonnelAtPeriod):
+ * DEPENDENCIES (MANDATORY AT CALL TIME):
  *   - window.CharacterQueries
  *   - window.CharacterConstants
  *   - window.EliminationQueries
@@ -657,20 +641,12 @@
         return out;
     }
 
-    /**
-     * Every non-deprecated team the character has any member entry
-     * on. ALL-TIME, not period-scoped.
-     */
     function getTeamsForCharacterAllTime(characterId, teamType) {
         return _getTeamsForCharacterAllTime(
             characterId, teamType, /* includeDeprecated */ false
         );
     }
 
-    /**
-     * Same as above but INCLUDING deprecated teams.
-     * Used by historical reads (export, retirement detection).
-     */
     function getTeamsForCharacterAllTimeIncludingDeprecated(
         characterId,
         teamType
@@ -739,11 +715,6 @@
         return out;
     }
 
-    /**
-     * Does the character have any member entry on any professional
-     * team, INCLUDING deprecated ones? Cheaper than fetching the
-     * full team list.
-     */
     function hasCharacterBeenOnTeamAllTime(characterId, teamType) {
         if (!isNonEmptyString(characterId)) { return false; }
 
@@ -795,11 +766,6 @@
     // ============================================================
     // PROFESSIONAL PERSONNEL QUERY
     // ============================================================
-    //
-    // Single source of truth for professional staffing facts at a
-    // period. The Professional Pool UI and matchmaking both consume
-    // this. Dependencies are mandatory at call time; a missing
-    // dependency throws.
 
     function requirePersonnelDependencies() {
         var CharacterQueries = getCharacterQueries();
@@ -879,21 +845,6 @@
         };
     }
 
-    /**
-     * Build a per-character professional-team history index once
-     * per call. Keyed by characterId.
-     *
-     * Each entry:
-     *   {
-     *     hasAnyEntry: bool,
-     *     teams: [ { team, member } ],
-     *     activeAtPeriod: teamId | null,
-     *     currentOpenStint: bool,   // any interval with blank leave
-     *     futureFrom: number | null, // earliest future join
-     *     futureTeamId: string | null,
-     *     formerTeams: [ teamId ]
-     *   }
-     */
     function buildProfessionalHistoryIndex(periodNum) {
         var teams = getTeamArray();
         var index = Object.create(null);
@@ -977,24 +928,11 @@
         return index;
     }
 
-    /**
-     * Availability interval: when is the character a usable
-     * professional candidate, around the query period?
-     *
-     * Walks all professional-team intervals for the character and
-     * finds the open span that contains the query period.
-     *
-     * Returns { from, to } where to === null means open-ended.
-     * Returns null when the query period falls inside an active
-     * stint (the character is not available).
-     */
     function computeAvailability(historyEntry, periodNum) {
         if (!historyEntry || historyEntry.teams.length === 0) {
             return { from: null, to: null };
         }
 
-        // Collect all intervals for this character on professional
-        // teams.
         var spans = [];
         for (var i = 0; i < historyEntry.teams.length; i++) {
             var member = historyEntry.teams[i].member;
@@ -1023,15 +961,12 @@
         for (var s = 0; s < spans.length; s++) {
             var span = spans[s];
             if (span[0] > periodNum) {
-                // Query period sits inside the open gap [cursor,
-                // span.start - 1].
                 return {
                     from: cursor === 0 ? null : cursor,
                     to: span[0] - 1
                 };
             }
             if (span[1] >= periodNum) {
-                // Query period is inside this span: not available.
                 return null;
             }
             cursor = Math.max(cursor, span[1] + 1);
@@ -1043,13 +978,12 @@
         };
     }
 
-    /**
-     * Classify a character's professional personnel record at the
-     * given period.
-     *
-     * Returns domain facts, no display strings.
-     */
-    function buildPersonnelRecord(char, periodNum, deps, historyEntry) {
+    function buildPersonnelRecord(
+        char,
+        periodNum,
+        deps,
+        historyEntry
+    ) {
         var CharacterQueries = deps.CharacterQueries;
         var CharacterConstants = deps.CharacterConstants;
 
@@ -1078,7 +1012,6 @@
         var isRetired = tier === 'support' &&
             hasProfessionalHistory;
 
-        // Assignment state.
         var assignmentStatus = 'available';
         var currentTeamId = null;
         var currentTeamName = null;
@@ -1090,9 +1023,10 @@
             if (historyEntry.activeAtPeriod) {
                 assignmentStatus = 'active';
                 currentTeamId = historyEntry.activeAtPeriod;
-                var activeTeam = findTeamByIdInternal(
-                    currentTeamId
-                );
+
+                // FIXED: was `findTeamByIdInternal`, which does not
+                // exist. The internal helper is `getTeamByIdInternal`.
+                var activeTeam = getTeamByIdInternal(currentTeamId);
                 if (activeTeam) {
                     currentTeamName =
                         activeTeam.name || 'Unnamed Team';
@@ -1101,7 +1035,9 @@
                 assignmentStatus = 'future';
                 nextTeamId = historyEntry.futureTeamId;
                 nextJoinYear = historyEntry.futureFrom;
-                var futureTeam = findTeamByIdInternal(nextTeamId);
+
+                // FIXED: same rename here.
+                var futureTeam = getTeamByIdInternal(nextTeamId);
                 if (futureTeam) {
                     nextTeamName =
                         futureTeam.name || 'Unnamed Team';
@@ -1151,14 +1087,6 @@
         };
     }
 
-    /**
-     * Every character relevant to professional staffing at the
-     * given period. Includes retired, deceased, support, and
-     * already-assigned characters — the caller classifies.
-     *
-     * Depends on CharacterQueries, CharacterConstants, and
-     * EliminationQueries. Any missing throws.
-     */
     function getProfessionalPersonnelAtPeriod(period) {
         var periodNum = parsePeriod(period);
         if (periodNum === null) {
@@ -1184,7 +1112,6 @@
 
             var charId = String(char.id);
 
-            // Deceased at period: exclude.
             var deceased = false;
             try {
                 deceased =
@@ -1195,7 +1122,6 @@
             }
             if (deceased) { continue; }
 
-            // Eliminated: exclude (presence-based).
             var elimWeek = null;
             try {
                 elimWeek =
@@ -1210,7 +1136,6 @@
                 continue;
             }
 
-            // Phase eligibility: junior-or-senior AND not instructor.
             var phaseEligible = false;
             try {
                 phaseEligible =
@@ -1227,7 +1152,6 @@
 
             var historyEntry = historyIndex[charId] || null;
 
-            // Retired: support at period with professional history.
             var statusAtPeriod =
                 CharacterQueries.getStatusAtYear(char, periodNum);
             var tier =
@@ -1246,9 +1170,6 @@
             );
         }
 
-        // Sort by availability.from ascending (null first), then
-        // name. A character with no availability window sorts after
-        // one with a concrete one.
         records.sort(function(a, b) {
             var aFrom = a.availability
                 ? a.availability.from
@@ -1372,8 +1293,7 @@
     }
 
     // ============================================================
-    // STAFF / SUPPORT CLASSIFICATION (for callers that still need
-    // a lightweight per-character support check)
+    // STAFF CLASSIFICATION
     // ============================================================
 
     function isCharacterStaffAtYear(char, yearNum) {
