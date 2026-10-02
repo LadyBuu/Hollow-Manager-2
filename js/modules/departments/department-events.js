@@ -6,7 +6,7 @@
  *
  * WHAT THIS OWNS:
  *   - init / destroy: bind and unbind delegated listeners on the
- *     tab container.
+ *     tab container, and mount/unmount the modal host.
  *   - Selected-department state (module-level).
  *   - Modal lifecycle for the department form and the add-staff
  *     form.
@@ -23,11 +23,13 @@
  *     and DepartmentRender.
  *
  * MODAL LIFECYCLE:
- *   Both modals (form, staff) are shells emitted by
- *   DepartmentRender.renderModals(). They are shown and hidden by
- *   toggling the `hidden` class. Content is written into the
- *   stable hosts `#department-form-content` and
- *   `#department-staff-content`, and cleared on close.
+ *   The modal shells are rendered ONCE per mount into a stable
+ *   host (#department-modals-host) appended to document.body.
+ *   They are NOT part of the tab subtree, so refreshUI() cannot
+ *   destroy them. Visibility is toggled via the `hidden` class.
+ *   Content is written into the stable hosts
+ *   #department-form-content and #department-staff-content, and
+ *   cleared on close.
  *
  * SELECTED DEPARTMENT:
  *   Module-level state. Reset on init / destroy. When the
@@ -40,8 +42,6 @@
  *   When the user clicks a member row or the head name, the
  *   events layer dispatches a `characterEdit` CustomEvent on
  *   document, matching the contract used by CharacterDetail.
- *   If the characters module is loaded, its listener opens the
- *   detail modal; if not, the event is ignored.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DepartmentCore
@@ -50,10 +50,7 @@
  *   - window.DepartmentRender
  *   - window.CharacterQueries
  *   - window.NotificationSystem
- *   - window.Modal (for nothing — modals are inline; the module
- *     does not call Modal. Included here only as a note.)
- *   - window.DomUtils (for escaping on a couple of hand-built
- *     option lists)
+ *   - window.DomUtils
  */
 
 (function() {
@@ -123,6 +120,7 @@
     } else {
         var renderRequired = [
             'renderContainer',
+            'renderModals',
             'renderDepartmentForm',
             'renderStaffForm'
         ];
@@ -164,6 +162,7 @@
 
     var _initialized = false;
     var _container = null;
+    var _modalHost = null;
     var _eventListeners = [];
     var _selectedDeptId = null;
     var _editingDeptId = null;
@@ -221,28 +220,68 @@
         _eventListeners = [];
     }
 
-    function delegate(selector, eventName, handler) {
-        if (!_container) { return; }
+    /**
+     * Delegate an event on a fixed element (usually _container).
+     * The element is captured at bind time so we never hold onto
+     * a stale reference.
+     */
+    function delegateOn(element, selector, eventName, handler) {
+        if (!element) { return; }
 
         function wrapped(e) {
-            if (!_container) { return; }
-            if (!_container.contains(e.target)) { return; }
+            if (!element.contains(e.target)) { return; }
 
             var target = e.target.closest
                 ? e.target.closest(selector)
                 : null;
             if (!target) { return; }
-            if (!_container.contains(target)) { return; }
+            if (!element.contains(target)) { return; }
 
             handler(e, target);
         }
 
-        _container.addEventListener(eventName, wrapped);
+        element.addEventListener(eventName, wrapped);
         _eventListeners.push({
-            element: _container,
+            element: element,
             eventName: eventName,
             handler: wrapped
         });
+    }
+
+    function delegate(selector, eventName, handler) {
+        delegateOn(_container, selector, eventName, handler);
+    }
+
+    // ============================================================
+    // MODAL HOST
+    // ============================================================
+    //
+    // The modal shells are rendered once per mount and appended to
+    // document.body. They live outside the tab subtree so that
+    // refreshUI() (which replaces _container.innerHTML) cannot
+    // destroy them.
+
+    var MODAL_HOST_ID = 'department-modals-host';
+
+    function mountModalHost() {
+        if (_modalHost && _modalHost.parentNode) { return; }
+
+        _modalHost = document.createElement('div');
+        _modalHost.id = MODAL_HOST_ID;
+        _modalHost.innerHTML = DepartmentRender.renderModals();
+        document.body.appendChild(_modalHost);
+    }
+
+    function unmountModalHost() {
+        if (_modalHost && _modalHost.parentNode) {
+            _modalHost.parentNode.removeChild(_modalHost);
+        }
+        _modalHost = null;
+    }
+
+    function queryModalHost(selector) {
+        if (!_modalHost) { return null; }
+        return _modalHost.querySelector(selector);
     }
 
     // ============================================================
@@ -285,6 +324,9 @@
         _selectedDeptId = null;
         _editingDeptId = null;
 
+        mountModalHost();
+
+        bindPageActions();
         bindSelectDepartment();
         bindDetailActions();
         bindMemberActions();
@@ -303,10 +345,23 @@
         closeStaffModal();
 
         removeAllEventListeners();
+        unmountModalHost();
+
         _initialized = false;
         _container = null;
         _selectedDeptId = null;
         _editingDeptId = null;
+    }
+
+    // ============================================================
+    // PAGE ACTIONS
+    // ============================================================
+
+    function bindPageActions() {
+        delegate('#add-department-btn', 'click', function(e) {
+            e.preventDefault();
+            openDepartmentFormModal(null);
+        });
     }
 
     // ============================================================
@@ -492,16 +547,6 @@
     // ============================================================
     // CHARACTER-OPEN HANDOFF
     // ============================================================
-    //
-    // The Departments tab does not own a character detail modal.
-    // When the user clicks a member name or the head's name, this
-    // handler dispatches a `characterEdit` event on document. The
-    // characters module listens for that event and opens its
-    // detail modal.
-    //
-    // When the characters module is not loaded, the event is
-    // ignored silently. That is a valid state — the Departments
-    // tab can function without the character detail modal.
 
     function bindCharacterOpeners() {
         delegate('[data-action="department-open-member"]', 'click',
@@ -545,17 +590,15 @@
     // ============================================================
 
     function bindFormModal() {
-        delegate('[data-action="department-form-close"]', 'click',
+        // Close buttons live inside the modal host, not the tab
+        // subtree. Delegate on the host directly.
+        delegateOn(_modalHost,
+            '[data-action="department-form-close"]', 'click',
             function(e) {
                 e.preventDefault();
                 closeDepartmentFormModal();
             }
         );
-
-        // Submit is bound per-open, on the form element that is
-        // written into the modal body. Delegation is not used for
-        // submit because submit events do not bubble through the
-        // container in all browsers.
     }
 
     function openDepartmentFormModal(deptId) {
@@ -573,15 +616,9 @@
 
         var formVM = buildDepartmentFormVM(dept);
 
-        var modalEl = _container.querySelector(
-            '#department-form-modal'
-        );
-        var titleEl = _container.querySelector(
-            '#department-form-title'
-        );
-        var contentEl = _container.querySelector(
-            '#department-form-content'
-        );
+        var modalEl = queryModalHost('#department-form-modal');
+        var titleEl = queryModalHost('#department-form-title');
+        var contentEl = queryModalHost('#department-form-content');
         if (!modalEl || !contentEl) {
             console.warn(
                 '[DepartmentEvents] form modal shell not found.'
@@ -610,7 +647,6 @@
             });
         }
 
-        // Focus the name field.
         setTimeout(function() {
             var nameInput = contentEl.querySelector(
                 '#department-name'
@@ -667,17 +703,13 @@
     }
 
     function closeDepartmentFormModal() {
-        if (!_container) {
+        if (!_modalHost) {
             _editingDeptId = null;
             return;
         }
 
-        var modalEl = _container.querySelector(
-            '#department-form-modal'
-        );
-        var contentEl = _container.querySelector(
-            '#department-form-content'
-        );
+        var modalEl = queryModalHost('#department-form-modal');
+        var contentEl = queryModalHost('#department-form-content');
 
         if (modalEl) { modalEl.classList.add('hidden'); }
         if (contentEl) { contentEl.innerHTML = ''; }
@@ -737,7 +769,6 @@
                     return;
                 }
 
-                // On create, select the new department.
                 if (!deptId && result.data &&
                     result.data.department) {
                     _selectedDeptId =
@@ -761,7 +792,8 @@
     // ============================================================
 
     function bindStaffModal() {
-        delegate('[data-action="department-staff-close"]', 'click',
+        delegateOn(_modalHost,
+            '[data-action="department-staff-close"]', 'click',
             function(e) {
                 e.preventDefault();
                 closeStaffModal();
@@ -778,15 +810,9 @@
 
         var formVM = buildStaffFormVM(dept);
 
-        var modalEl = _container.querySelector(
-            '#department-staff-modal'
-        );
-        var titleEl = _container.querySelector(
-            '#department-staff-title'
-        );
-        var contentEl = _container.querySelector(
-            '#department-staff-content'
-        );
+        var modalEl = queryModalHost('#department-staff-modal');
+        var titleEl = queryModalHost('#department-staff-title');
+        var contentEl = queryModalHost('#department-staff-content');
         if (!modalEl || !contentEl) {
             console.warn(
                 '[DepartmentEvents] staff modal shell not found.'
@@ -826,7 +852,6 @@
     }
 
     function buildStaffFormVM(dept) {
-        // Candidate characters: everyone not already a member.
         var existingIds = Object.create(null);
         if (Array.isArray(dept.members)) {
             for (var i = 0; i < dept.members.length; i++) {
@@ -861,14 +886,10 @@
     }
 
     function closeStaffModal() {
-        if (!_container) { return; }
+        if (!_modalHost) { return; }
 
-        var modalEl = _container.querySelector(
-            '#department-staff-modal'
-        );
-        var contentEl = _container.querySelector(
-            '#department-staff-content'
-        );
+        var modalEl = queryModalHost('#department-staff-modal');
+        var contentEl = queryModalHost('#department-staff-content');
 
         if (modalEl) { modalEl.classList.add('hidden'); }
         if (contentEl) { contentEl.innerHTML = ''; }
@@ -885,6 +906,8 @@
             '#department-staff-character'
         );
         var yearEl = form.querySelector(
+            '#department-staff-year'
+        ) || form.querySelector(
             '#department-staff-join-year'
         );
 
