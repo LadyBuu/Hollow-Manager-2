@@ -4,27 +4,52 @@
  *
  * Path: js/modules/characters/index.js
  *
- * HEADER CONTROLS (this revision):
- *   The character page header carries four labelled controls:
+ * WHAT THIS OWNS:
+ *   - TabManager registration.
+ *   - Mount / unmount lifecycle for the characters tab.
+ *   - The tab's outer HTML shell: sidebar, filter bar, form
+ *     container, and the two modal shells the tab uses.
+ *   - Current-edit-id state. Exposed as window.getCurrentEditId
+ *     and window.setCurrentEditId, which CharacterList and
+ *     CharacterEvents consume.
+ *   - The character list toggle (mobile sidebar).
  *
- *     #import-characters-csv-btn    Import   (opens CSV picker)
- *     #export-characters-btn        Export   (opens export picker)
- *     #manage-fillers-btn           Fillers  (opens filler manager)
- *     #add-character-btn            Add
+ * WHAT THIS DOES NOT OWN:
+ *   - Any domain logic. All character reads go through
+ *     CharacterQueries / CharacterAggregator; all writes go
+ *     through CharacterCRUD.
+ *   - Rendering of the list or the form. CharacterList and
+ *     CharacterForm own those.
+ *   - Event binding. CharacterEvents owns it.
  *
- *   The previous three export icons (CSV ↓, Template ▤, Roster ☰)
- *   collapsed into a single Export button that opens
- *   CharacterExportPicker. The picker offers Full CSV, Roster
- *   (text), and Blank template.
+ * FILTER BAR:
+ *   The filter bar carries:
+ *     #char-name-filter
+ *     #char-class-filter
+ *     #char-sort              (options: name-asc, name-desc,
+ *                              age-asc, age-desc)
+ *     #char-status-filter     (checkbox group, collapsible)
+ *     #hide-deceased
+ *     #hide-eliminated
+ *     #hide-filler
+ *     #clear-char-filter
  *
- *   The header uses text labels rather than glyphs. The icons were
- *   not self-describing and clipped on narrow sidebars.
+ *   The sort select's persisted value is restored at mount from
+ *   CharacterList.getSort(). When the character list is not yet
+ *   loaded, the select defaults to 'name-asc'.
  *
- * FILTERS:
- *   Unchanged.
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TabManager
+ *   - window.CharacterAggregator
+ *   - window.CharacterList
+ *   - window.CharacterForm
+ *   - window.CharacterEvents
+ *   - window.CharacterClassView
  *
- * LIFECYCLE:
- *   Unchanged. TabManager.register('characters') -> mountCharacters.
+ * DEPENDENCIES (OPTIONAL, resolved at call time):
+ *   - window.DataLoader
+ *   - window.CharacterViews
+ *   - window.UI_CONSTANTS
  */
 
 (function() {
@@ -36,7 +61,7 @@
     window.__charactersModuleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCIES
     // ============================================================
 
     var TabManager = window.TabManager;
@@ -48,13 +73,7 @@
     var CharacterClassView = window.CharacterClassView;
     var CharacterViews = window.CharacterViews;
 
-    // ============================================================
-    // LAZY ACCESSORS
-    // ============================================================
-
-    function getUI_CONSTANTS() {
-        return window.UI_CONSTANTS || null;
-    }
+    function getUI_CONSTANTS() { return window.UI_CONSTANTS || null; }
 
     function getMobileBreakpoint() {
         var UI = getUI_CONSTANTS();
@@ -78,37 +97,54 @@
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
         }
-        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
+        if (!CharacterAggregator ||
+            typeof CharacterAggregator.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
-        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
+        if (!CharacterAggregator ||
+            typeof CharacterAggregator.getCharacterListViewModel !==
+            'function') {
             missing.push('CharacterAggregator.getCharacterListViewModel');
         }
-        if (!CharacterList || typeof CharacterList.render !== 'function') {
+        if (!CharacterList ||
+            typeof CharacterList.render !== 'function') {
             missing.push('CharacterList.render');
         }
-        if (!CharacterForm || typeof CharacterForm.render !== 'function') {
+        if (!CharacterForm ||
+            typeof CharacterForm.render !== 'function') {
             missing.push('CharacterForm.render');
         }
-        if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
+        if (!CharacterForm ||
+            typeof CharacterForm.collect !== 'function') {
             missing.push('CharacterForm.collect');
         }
-        if (!CharacterEvents || typeof CharacterEvents.init !== 'function') {
+        if (!CharacterEvents ||
+            typeof CharacterEvents.init !== 'function') {
             missing.push('CharacterEvents.init');
         }
-        if (!CharacterEvents || typeof CharacterEvents.destroy !== 'function') {
+        if (!CharacterEvents ||
+            typeof CharacterEvents.destroy !== 'function') {
             missing.push('CharacterEvents.destroy');
         }
-        if (!CharacterClassView || typeof CharacterClassView.populateClassFilter !== 'function') {
+        if (!CharacterClassView ||
+            typeof CharacterClassView.populateClassFilter !==
+            'function') {
             missing.push('CharacterClassView.populateClassFilter');
         }
 
-        if (!CharacterViews || typeof CharacterViews.renderCharacterSocial !== 'function') {
-            console.warn('[CharactersModule] CharacterViews not loaded - Social tab will be empty.');
+        if (!CharacterViews ||
+            typeof CharacterViews.renderCharacterSocial !== 'function') {
+            console.warn(
+                '[CharactersModule] CharacterViews not loaded — ' +
+                'Social tab will be empty.'
+            );
         }
 
         if (missing.length > 0) {
-            console.warn('[CharactersModule] Missing dependencies:', missing.join(', '));
+            console.warn(
+                '[CharactersModule] Missing dependencies:',
+                missing.join(', ')
+            );
             return false;
         }
 
@@ -129,19 +165,23 @@
 
     function mountCharacters(container) {
         if (!checkDependencies()) {
-            console.warn('[CharactersModule] Dependencies not met, skipping mount');
+            console.warn(
+                '[CharactersModule] Dependencies not met, ' +
+                'skipping mount'
+            );
             return;
         }
 
         if (!container) {
             container = document.getElementById('tab-characters');
         }
-        if (!container) {
-            return;
-        }
+        if (!container) { return; }
 
         if (!window.data) {
-            container.innerHTML = '<p class="empty-state">Loading character data...</p>';
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Loading character data...' +
+                '</p>';
             return;
         }
 
@@ -151,57 +191,68 @@
 
         container.innerHTML = getCharactersHTML();
 
-        // Sync the filler checkbox with its persisted state.
-        if (CharacterList &&
-            typeof CharacterList.getHideFiller === 'function') {
-            try {
-                var hideFillerCb = document.getElementById('hide-filler');
-                if (hideFillerCb) {
-                    hideFillerCb.checked = CharacterList.getHideFiller();
-                }
-            } catch (e) {
-                // Non-fatal.
-            }
-        }
+        // Restore filter state from storage.
+        restoreFilterState();
 
-        if (CharacterList && typeof CharacterList.render === 'function') {
-            try {
-                CharacterList.render();
-            } catch (e) {
-                console.warn('[CharactersModule] CharacterList.render failed:', e);
-            }
-        }
-
-        if (CharacterClassView && typeof CharacterClassView.populateClassFilter === 'function') {
+        // Populate the class filter (emits the __no_class__ sentinel).
+        if (CharacterClassView &&
+            typeof CharacterClassView.populateClassFilter ===
+            'function') {
             try {
                 CharacterClassView.populateClassFilter();
             } catch (e) {
-                console.warn('[CharactersModule] populateClassFilter failed:', e);
+                console.warn(
+                    '[CharactersModule] populateClassFilter ' +
+                    'failed:', e
+                );
             }
         }
 
-        if (CharacterEvents && typeof CharacterEvents.init === 'function') {
+        // First render.
+        if (CharacterList &&
+            typeof CharacterList.render === 'function') {
+            try {
+                CharacterList.render();
+            } catch (e) {
+                console.warn(
+                    '[CharactersModule] CharacterList.render ' +
+                    'failed:', e
+                );
+            }
+        }
+
+        // Event wiring.
+        if (CharacterEvents &&
+            typeof CharacterEvents.init === 'function') {
             try {
                 CharacterEvents.init(container);
             } catch (e) {
-                console.warn('[CharactersModule] CharacterEvents.init failed:', e);
+                console.warn(
+                    '[CharactersModule] CharacterEvents.init ' +
+                    'failed:', e
+                );
             }
         }
 
+        // Re-render the form if an edit id is already set.
         var editId = getCurrentEditId();
-        if (editId && CharacterForm && typeof CharacterForm.render === 'function') {
+        if (editId &&
+            CharacterForm &&
+            typeof CharacterForm.render === 'function') {
             try {
                 CharacterForm.render(editId);
             } catch (e) {
-                console.warn('[CharactersModule] CharacterForm.render failed:', e);
+                console.warn(
+                    '[CharactersModule] CharacterForm.render ' +
+                    'failed:', e
+                );
             }
         }
 
         if (isMobileViewport()) {
-            var listPanel = document.getElementById('char-list-panel');
-            if (listPanel) {
-                listPanel.classList.add('open');
-            }
+            var listPanel =
+                document.getElementById('char-list-panel');
+            if (listPanel) { listPanel.classList.add('open'); }
         }
 
         _mounted = true;
@@ -211,16 +262,11 @@
     }
 
     function unmountCharacters() {
-        if (!_mounted) {
-            return;
-        }
+        if (!_mounted) { return; }
 
-        if (CharacterEvents && typeof CharacterEvents.destroy === 'function') {
-            try {
-                CharacterEvents.destroy();
-            } catch (e) {
-                // Ignore destroy errors
-            }
+        if (CharacterEvents &&
+            typeof CharacterEvents.destroy === 'function') {
+            try { CharacterEvents.destroy(); } catch (e) {}
         }
 
         _mounted = false;
@@ -228,13 +274,55 @@
     }
 
     // ============================================================
-    // HTML GENERATOR
+    // FILTER STATE RESTORE
+    // ============================================================
+
+    /**
+     * Restore the two persistence-backed controls from storage
+     * before the first render. Reads through CharacterList so the
+     * storage keys and validation live in one place.
+     */
+    function restoreFilterState() {
+        if (!CharacterList) { return; }
+
+        // Hide filler checkbox.
+        if (typeof CharacterList.getHideFiller === 'function') {
+            try {
+                var hideFillerCb =
+                    document.getElementById('hide-filler');
+                if (hideFillerCb) {
+                    hideFillerCb.checked =
+                        CharacterList.getHideFiller();
+                }
+            } catch (e) {
+                // Non-fatal.
+            }
+        }
+
+        // Sort select.
+        if (typeof CharacterList.getSort === 'function') {
+            try {
+                var sortEl =
+                    document.getElementById('char-sort');
+                if (sortEl) {
+                    sortEl.value = CharacterList.getSort();
+                }
+            } catch (e) {
+                // Non-fatal.
+            }
+        }
+    }
+
+    // ============================================================
+    // HTML SHELL
     // ============================================================
 
     function getCharactersHTML() {
         var careerStatusCollapsed = isMobileViewport();
-        var careerStatusBodyDisplay = careerStatusCollapsed ? 'none' : 'grid';
-        var careerStatusCaret = careerStatusCollapsed ? '\u25b8' : '\u25be';
+        var careerStatusBodyDisplay =
+            careerStatusCollapsed ? 'none' : 'grid';
+        var careerStatusCaret =
+            careerStatusCollapsed ? '\u25b8' : '\u25be';
 
         return `
             <div class="characters-layout">
@@ -260,7 +348,7 @@
                                     aria-label="Manage Filler Characters">Fillers</button>
                             <button id="toggle-char-list"
                                     class="secondary small"
-                                    aria-label="Toggle character list">☰</button>
+                                    aria-label="Toggle character list">\u2630</button>
                             <button id="add-character-btn"
                                     class="primary small">+ Add</button>
                         </div>
@@ -269,6 +357,13 @@
                         <input type="text" id="char-name-filter" placeholder="Filter by name..." />
                         <select id="char-class-filter">
                             <option value="all">All Classes</option>
+                        </select>
+
+                        <select id="char-sort">
+                            <option value="name-asc">Name (A\u2013Z)</option>
+                            <option value="name-desc">Name (Z\u2013A)</option>
+                            <option value="age-asc">Age (youngest)</option>
+                            <option value="age-desc">Age (oldest)</option>
                         </select>
 
                         <div id="career-status-filter-group"
@@ -392,19 +487,22 @@
     // ============================================================
 
     function showCharacterForm(id) {
-        var normalisedId = (id !== undefined && id !== null && id !== '') ? String(id) : null;
+        var normalisedId = (id !== undefined &&
+            id !== null &&
+            id !== '')
+            ? String(id)
+            : null;
         setCurrentEditId(normalisedId);
 
-        if (CharacterForm && typeof CharacterForm.render === 'function') {
+        if (CharacterForm &&
+            typeof CharacterForm.render === 'function') {
             CharacterForm.render(normalisedId);
         }
     }
 
     function toggleCharacterList(forceState) {
         var panel = document.getElementById('char-list-panel');
-        if (!panel) {
-            return;
-        }
+        if (!panel) { return; }
 
         if (forceState !== undefined) {
             panel.classList.toggle('open', forceState);
@@ -415,13 +513,14 @@
 
     function clearEditState() {
         setCurrentEditId(null);
-        if (CharacterForm && typeof CharacterForm.hide === 'function') {
+        if (CharacterForm &&
+            typeof CharacterForm.hide === 'function') {
             CharacterForm.hide();
         }
     }
 
     // ============================================================
-    // EVENT DISPATCH
+    // EVENTS
     // ============================================================
 
     function dispatchReady() {
@@ -437,16 +536,17 @@
             });
             document.dispatchEvent(event);
         } catch (e) {
-            // Ignore event dispatch errors
+            // Ignore event dispatch errors.
         }
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // TABMANAGER REGISTRATION
     // ============================================================
 
     function registerWithTabManager() {
-        if (TabManager && typeof TabManager.register === 'function') {
+        if (TabManager &&
+            typeof TabManager.register === 'function') {
             TabManager.register('characters', mountCharacters);
             return true;
         }
@@ -463,11 +563,14 @@
     // DATA LOADER INTEGRATION
     // ============================================================
 
-    if (DataLoader && typeof DataLoader.whenReady === 'function') {
+    if (DataLoader &&
+        typeof DataLoader.whenReady === 'function') {
         DataLoader.whenReady(function(data) {
             if (data && !_mounted) {
-                if (TabManager && TabManager.getCurrentTab() === 'characters') {
-                    var container = document.getElementById('tab-characters');
+                if (TabManager &&
+                    TabManager.getCurrentTab() === 'characters') {
+                    var container =
+                        document.getElementById('tab-characters');
                     if (container) {
                         mountCharacters(container);
                     }
@@ -477,7 +580,7 @@
     }
 
     // ============================================================
-    // EXPOSE - NAMESPACED API
+    // EXPOSE
     // ============================================================
 
     window.mountCharacters = mountCharacters;
