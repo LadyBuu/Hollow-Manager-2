@@ -2,8 +2,8 @@
  * css/teams.css - Hollow Blades Manager
  *
  * The Teams tab (Professional / Temporary / Civilian), the
- * professional tab's Unassigned view, and the professional tab's
- * Timeline view.
+ * professional tab's Professional Pool view, and the professional
+ * tab's Timeline view.
  *
  * Covers:
  *   - Team list header + rows (#team-list-container,
@@ -15,7 +15,7 @@
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
  *     including the professional tab's three-way mode toggle
  *     (.mode-toggle, .mode-btn)
- *   - Unassigned view (.unassigned-*)
+ *   - Professional Pool view (.pool-*)
  *   - Timeline view (.timeline-*)
  *   - Stats row (.stats-grid, .stat-card)
  *   - Shared member manager (.member-*)
@@ -88,6 +88,16 @@
     background: var(--panel-alt);
     padding: 1px 6px;
     border-radius: 3px;
+}
+
+.team-mission-label {
+    font-size: 0.6rem;
+    color: var(--info);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
 }
 
 .team-period {
@@ -254,6 +264,12 @@
     flex-wrap: wrap;
 }
 
+.team-card-mission {
+    font-size: 0.7rem;
+    color: var(--info);
+    margin-top: 4px;
+}
+
 .team-card-actions {
     display: flex;
     gap: 4px;
@@ -388,7 +404,7 @@
 }
 
 /* ============================================================
-   MODE TOGGLE (Professional tab: Teams | Unassigned | Timeline)
+   MODE TOGGLE (Professional tab: Teams | Professional Pool | Timeline)
    ============================================================ */
 
 .mode-toggle {
@@ -438,22 +454,16 @@
 }
 
 /* ============================================================
-   UNASSIGNED VIEW
+   PROFESSIONAL POOL
+   ============================================================
+   Replaces the retired "Unassigned" view. Answers "who is in
+   the professional personnel pool for this period, and when are
+   they available?" rather than "who isn't on a team right now?"
    ============================================================ */
 
-#team-list-container.unassigned,
-.team-list-container.unassigned {
-    --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
-}
-
-.list-header.unassigned-header,
-.list-item.unassigned-item {
-    --unassigned-columns: 2fr 1fr 0.8fr 0.8fr;
-}
-
-.unassigned-summary {
+.pool-summary {
     padding: 6px 12px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
     background: var(--panel-alt);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -461,28 +471,50 @@
     color: var(--text-dim);
 }
 
-.unassigned-summary strong {
+.pool-summary strong {
     color: var(--text);
     font-weight: 600;
 }
 
-.list-header.unassigned-header {
-    display: grid;
-    grid-template-columns: var(--unassigned-columns);
-    gap: 8px;
-    padding: 8px 12px;
+.pool-section {
+    margin-bottom: 16px;
+}
+
+.pool-section:last-child {
+    margin-bottom: 0;
+}
+
+.pool-section-header {
+    padding: 6px 12px;
     background: var(--panel-alt);
     border: 1px solid var(--border);
     border-bottom: none;
     border-radius: 6px 6px 0 0;
+    font-size: 0.72rem;
     font-weight: 600;
-    font-size: 0.7rem;
-    color: var(--text-dim);
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
 }
 
-.list-item.unassigned-item {
+.list-header.pool-header {
     display: grid;
-    grid-template-columns: var(--unassigned-columns);
+    grid-template-columns: 1.6fr 0.8fr 0.9fr 1.4fr 0.9fr;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    font-weight: 600;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.list-item.professional-pool-item {
+    display: grid;
+    grid-template-columns: 1.6fr 0.8fr 0.9fr 1.4fr 0.9fr;
     gap: 8px;
     padding: 6px 12px;
     background: var(--panel);
@@ -492,26 +524,22 @@
     transition: background 0.15s;
 }
 
-.list-item.unassigned-item:last-child {
+.list-item.professional-pool-item:last-child {
     border-radius: 0 0 var(--radius) var(--radius);
 }
 
-.list-item.unassigned-item:hover {
+.list-item.professional-pool-item:hover {
     background: var(--panel-alt);
 }
 
-.list-item.unassigned-item.has-future {
-    /* intentionally empty; hook */
+.pool-item-future {
+    border-left: 3px solid var(--info);
+    padding-left: 10px;
 }
 
-.unassigned-name-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-}
+/* ---------- Pool columns ---------- */
 
-.unassigned-name-line {
+.pool-character {
     display: flex;
     align-items: baseline;
     gap: 6px;
@@ -519,47 +547,16 @@
     min-width: 0;
 }
 
-.unassigned-name {
+.pool-name {
     font-size: 0.75rem;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.unassigned-age {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-.unassigned-staff-tag {
-    font-size: 0.55rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--info);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 8px;
-    padding: 0 6px;
-    line-height: 1.4;
-    cursor: help;
-}
-
-.unassigned-future {
-    font-size: 0.65rem;
-    color: var(--warning);
-    font-style: italic;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: help;
-}
-
-.unassigned-status {
+.pool-status {
     font-size: 0.7rem;
     color: var(--text-dim);
     overflow: hidden;
@@ -567,51 +564,26 @@
     white-space: nowrap;
 }
 
-.unassigned-junior,
-.unassigned-senior {
+.pool-availability {
     font-size: 0.72rem;
     color: var(--text);
     font-variant-numeric: tabular-nums;
-    text-align: right;
     white-space: nowrap;
 }
 
-.unassigned-role {
+.pool-assignment {
     font-size: 0.7rem;
-    color: var(--text);
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.unassigned-since {
-    font-size: 0.72rem;
+.pool-history {
+    font-size: 0.7rem;
     color: var(--text-dim);
-    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     text-align: right;
-    white-space: nowrap;
-}
-
-.unassigned-subtype-tag {
-    font-size: 0.55rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: 8px;
-    padding: 0 6px;
-    line-height: 1.4;
-    margin-left: 4px;
-    cursor: help;
-}
-
-.unassigned-subtype-pure {
-    color: var(--text-dim);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-}
-
-.unassigned-subtype-staff {
-    color: var(--info);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
 }
 
 /* ============================================================
@@ -720,12 +692,6 @@
     padding: 12px 0;
 }
 
-/*
- * The spine runs the full vertical extent of .timeline-rows.
- * Positioned absolutely so it never affects layout; the
- * circles have an opaque background that covers the spine
- * behind them.
- */
 .timeline-spine {
     position: absolute;
     left: 50%;
@@ -848,11 +814,6 @@
     border-left: 3px solid var(--danger);
 }
 
-/*
- * Formation line at the top of a team group. Uses the accent
- * colour to distinguish it from departures. Slightly bolder than
- * a departure line so it reads as a header for the group.
- */
 .timeline-event-formed {
     border-left: 3px solid var(--accent);
     background: var(--accent-soft);
@@ -1128,25 +1089,10 @@
     color: var(--text);
 }
 
-.matchmaking-addition-status {
-    font-size: 0.6rem;
+.matchmaking-addition-age {
+    font-size: 0.65rem;
     color: var(--text-dim);
-    background: var(--panel-alt);
-    padding: 1px 6px;
-    border-radius: 8px;
-}
-
-.matchmaking-addition-milestone {
-    font-size: 0.6rem;
-    font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
-                 'Roboto Mono', Consolas, monospace;
     font-variant-numeric: tabular-nums;
-    color: var(--text-dim);
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    padding: 1px 6px;
-    border-radius: 8px;
-    white-space: nowrap;
 }
 
 .matchmaking-addition-secondary {
@@ -1237,11 +1183,8 @@
     white-space: nowrap;
 }
 
-.matchmaking-unassigned-milestone {
+.matchmaking-unassigned-secondary {
     font-size: 0.58rem;
-    font-family: ui-monospace, 'SF Mono', 'Cascadia Code',
-                 'Roboto Mono', Consolas, monospace;
-    font-variant-numeric: tabular-nums;
     color: var(--text-dim);
     white-space: nowrap;
 }
@@ -1528,7 +1471,7 @@
 }
 
 /* ============================================================
-   MOBILE — TEAM LIST CARD LAYOUT + UNASSIGNED COLLAPSE
+   MOBILE — TEAM LIST CARD LAYOUT + POOL COLLAPSE
    ============================================================ */
 
 @media (max-width: 600px) {
@@ -1583,6 +1526,14 @@
     .list-item.team-item .team-type-label {
         font-size: 0.6rem;
         color: var(--text-dim);
+        background: var(--panel-alt);
+        padding: 1px 6px;
+        border-radius: 3px;
+    }
+
+    .list-item.team-item .team-mission-label {
+        font-size: 0.6rem;
+        color: var(--info);
         background: var(--panel-alt);
         padding: 1px 6px;
         border-radius: 3px;
@@ -1646,75 +1597,58 @@
         font-size: 0.68rem;
     }
 
-    .list-header.unassigned-header {
+    /* ---------- Pool (mobile collapse) ---------- */
+
+    .list-header.pool-header {
         display: none;
     }
 
-    .list-item.unassigned-item {
+    .pool-section-header {
+        border-radius: 6px 6px 0 0;
+    }
+
+    .list-item.professional-pool-item {
         display: flex;
         flex-direction: column;
         gap: 4px;
         padding: 10px 12px;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
         background: var(--panel);
         border: 1px solid var(--border);
         border-top: 1px solid var(--border);
         border-radius: var(--radius);
     }
 
-    .list-item.unassigned-item:last-child {
+    .list-item.professional-pool-item:last-child {
         border-radius: var(--radius);
+        margin-bottom: 0;
     }
 
-    .unassigned-name-cell {
-        gap: 3px;
+    .pool-item-future {
+        border-left: 3px solid var(--info);
+        padding-left: 10px;
     }
 
-    .unassigned-name {
+    .pool-name {
         font-size: 0.85rem;
-        font-weight: 700;
         white-space: normal;
+        overflow: visible;
     }
 
-    .unassigned-future {
-        font-size: 0.68rem;
-        white-space: normal;
-    }
-
-    .list-item.unassigned-item > .unassigned-status,
-    .list-item.unassigned-item > .unassigned-junior,
-    .list-item.unassigned-item > .unassigned-senior {
-        display: inline-block;
-        text-align: left;
+    .pool-status,
+    .pool-availability,
+    .pool-assignment,
+    .pool-history {
         font-size: 0.72rem;
-        color: var(--text-dim);
-        white-space: nowrap;
+        white-space: normal;
+        text-align: left;
     }
 
-    .list-item.unassigned-item > .unassigned-status::before {
-        content: "";
+    .pool-history {
+        text-align: left;
     }
 
-    .list-item.unassigned-item > .unassigned-junior::before {
-        content: "Junior since: ";
-        color: var(--text-dim);
-    }
-
-    .list-item.unassigned-item > .unassigned-senior::before {
-        content: "Senior since: ";
-        color: var(--text-dim);
-    }
-
-    .list-item.unassigned-item > .unassigned-junior,
-    .list-item.unassigned-item > .unassigned-senior {
-        color: var(--text);
-        font-weight: 500;
-    }
-
-    .unassigned-summary {
-        font-size: 0.7rem;
-        padding: 5px 10px;
-    }
+    /* ---------- Stats / filter / tabs ---------- */
 
     .stats-grid {
         grid-template-columns: repeat(3, 1fr);
@@ -1752,6 +1686,8 @@
         font-size: 0.68rem;
         padding: 5px 10px;
     }
+
+    /* ---------- Member manager ---------- */
 
     .member-form {
         flex-direction: column;
