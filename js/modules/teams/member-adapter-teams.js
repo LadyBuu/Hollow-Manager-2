@@ -1,27 +1,14 @@
 /**
  * modules/teams/member-adapter-teams.js
- * Teams Member Manager Adapter
+ * Teams Member Manager Adapter.
  *
  * Path: js/modules/teams/member-adapter-teams.js
  *
- * Binds the shared MemberManager to the professional Team domain.
- * This is one of two adapters; the other is member-adapter-academy.js.
- * Both implement the same six-method contract defined in
- * modules/shared/member-manager.js.
+ * Binds the shared MemberManager to the Team domain. The other
+ * adapter (member-adapter-academy.js) implements the same six-method
+ * contract for Academy Weekly Teams.
  *
- * RESPONSIBILITY:
- *   Translate MemberManager's domain-agnostic requests into
- *   TeamCore mutations and TeamAggregator reads.
- *
- * WHAT THIS ADAPTER DOES NOT DO:
- *   - Render.
- *   - Touch the DOM.
- *   - Own UI state.
- *   - Know about Academy Weekly Teams.
- *   - Reimplement the active/former partition. That predicate is
- *     owned by TeamQueries.
- *
- * ADAPTER CONTRACT (six methods):
+ * ADAPTER CONTRACT:
  *   fetchVM(teamId, period)
  *   addMember(teamId, period, { charId, role, join, leave })
  *   updateMembers(teamId, period, changes)
@@ -31,28 +18,28 @@
  *
  * IDENTIFIER FORMS:
  *   - composite { characterId, joinPeriod }
- *   - memberId string
+ *   - memberId (used for member-level operations, not stint-level)
  *
- *   `extractIdentifier` normalises either form to an object with
- *   characterId, joinPeriod, and memberId fields. Callers check
- *   the fields they need.
+ * STINT IDENTITY:
+ *   A stint is identified by (characterId, joinPeriod). A bare
+ *   memberId names a member entry, not a stint. Stint-level
+ *   operations require the composite form; a bare memberId is
+ *   rejected.
  *
  * JOIN IS IMMUTABLE:
- *   Changing a join is a purge-and-replace: remove the interval,
- *   add a new one with the new join and the same leave.
+ *   Changing a join is a purge-and-add, which is a destructive
+ *   sequence. The adapter requires the replacement's leave period
+ *   up front, and stops on purge failure rather than attempting
+ *   the add on top of a failed purge.
  *
  * ROLE IS PER-MEMBER:
- *   TeamCore stores role on the member entry, not on intervals.
- *   A role change routes to TeamCore.updateMember regardless of
- *   which row it came from.
+ *   TeamCore stores role on the member entry. A role change routes
+ *   to TeamCore.updateMember regardless of which row it came from.
  *
- * DISPATCH ORDER WITHIN updateMembers:
+ * DISPATCH ORDER (updateMembers):
  *   1. Role updates (deduplicated by characterId).
  *   2. Join replacements (purge + add).
  *   3. Leave-only edits.
- *
- *   If any stage fails, the chain stops and returns the first
- *   failure. Successful steps are already committed.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamAggregator
@@ -87,8 +74,7 @@
         typeof TeamCore.addMemberInterval !== 'function') {
         _missing.push('TeamCore.addMemberInterval');
     }
-    if (!TeamCore ||
-        typeof TeamCore.updateMember !== 'function') {
+    if (!TeamCore || typeof TeamCore.updateMember !== 'function') {
         _missing.push('TeamCore.updateMember');
     }
     if (!TeamCore ||
@@ -103,8 +89,7 @@
         typeof TeamCore.purgeMemberInterval !== 'function') {
         _missing.push('TeamCore.purgeMemberInterval');
     }
-    if (!TeamCore ||
-        typeof TeamCore.removeMember !== 'function') {
+    if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
         _missing.push('TeamCore.removeMember');
     }
     if (!TeamConstants ||
@@ -142,12 +127,8 @@
     }
 
     /**
-     * Normalise an identifier to an object with three fields:
-     * characterId, joinPeriod, and memberId. Missing fields are ''.
-     *
-     * Callers check the fields they need. The three-field shape is
-     * uniform so callers do not have to switch on the identifier's
-     * original form.
+     * Normalise an identifier to an object with three fields.
+     * Missing fields are ''. Callers check the fields they need.
      */
     function extractIdentifier(identifier) {
         if (identifier === null || identifier === undefined) {
@@ -161,21 +142,17 @@
             };
         }
         if (typeof identifier === 'object') {
-            var charId = isNonEmptyString(identifier.characterId)
-                ? String(identifier.characterId)
-                : '';
-            var joinPeriod =
-                (identifier.joinPeriod === undefined ||
-                 identifier.joinPeriod === null)
-                    ? ''
-                    : String(identifier.joinPeriod);
-            var memberId = isNonEmptyString(identifier.memberId)
-                ? String(identifier.memberId)
-                : '';
             return {
-                characterId: charId,
-                joinPeriod: joinPeriod,
-                memberId: memberId
+                characterId: isNonEmptyString(identifier.characterId)
+                    ? String(identifier.characterId)
+                    : '',
+                joinPeriod: (identifier.joinPeriod === undefined ||
+                             identifier.joinPeriod === null)
+                    ? ''
+                    : String(identifier.joinPeriod),
+                memberId: isNonEmptyString(identifier.memberId)
+                    ? String(identifier.memberId)
+                    : ''
             };
         }
         return { characterId: '', joinPeriod: '', memberId: '' };
@@ -185,50 +162,55 @@
     // VM TRANSLATION
     // ============================================================
     //
-    // TeamAggregator.getMemberModalViewModel returns members with
-    // `activeAtPeriod` set per interval, but does not partition
-    // them. The partition is computed here using TeamQueries
-    // predicates, which are the canonical owner of the active and
-    // former definitions.
-    //
-    // The manager expects:
-    //   { teamId, teamName, period, members, formerMembers,
-    //     candidates }
+    // TeamAggregator.getMemberModalViewModel returns member VMs with
+    // per-interval activeAtPeriod flags. This adapter partitions
+    // them into active/former using the TeamQueries predicates,
+    // which are the canonical owner of those definitions.
 
     function buildVM(teamId, period) {
-        var raw = TeamAggregator.getMemberModalViewModel(teamId, period);
-        if (!raw) {
-            return null;
-        }
+        var raw = TeamAggregator.getMemberModalViewModel(
+            teamId, period
+        );
+        if (!raw) { return null; }
 
         var periodNum = TeamConstants.parsePeriod(period);
+        if (periodNum === null) {
+            throw new Error(
+                '[MemberAdapterTeams] fetchVM requires a valid period.'
+            );
+        }
+
+        var membersRaw = raw.members;
+        if (!Array.isArray(membersRaw)) {
+            throw new Error(
+                '[MemberAdapterTeams] getMemberModalViewModel ' +
+                'returned a malformed members array.'
+            );
+        }
+
+        var candidatesRaw = raw.candidates;
+        if (!Array.isArray(candidatesRaw)) {
+            throw new Error(
+                '[MemberAdapterTeams] getMemberModalViewModel ' +
+                'returned a malformed candidates array.'
+            );
+        }
 
         var active = [];
         var former = [];
 
-        var membersRaw = Array.isArray(raw.members) ? raw.members : [];
         for (var i = 0; i < membersRaw.length; i++) {
             var m = membersRaw[i];
-            if (!m || !m.characterId) {
-                continue;
-            }
+            if (!m || !m.characterId) { continue; }
 
-            // The aggregator's member VM carries the same storage
-            // shape fields the predicates expect (intervals array,
-            // per-interval joinPeriod / leavePeriod). Casting to a
-            // member entry is a shape no-op.
-            if (periodNum !== null &&
-                TeamQueries.isMemberActive(m, periodNum)) {
+            if (TeamQueries.isMemberActive(m, periodNum)) {
                 active.push(buildMemberVM(m, periodNum, false));
                 continue;
             }
-
-            if (periodNum !== null &&
-                TeamQueries.isMemberFormer(m, periodNum)) {
+            if (TeamQueries.isMemberFormer(m, periodNum)) {
                 former.push(buildMemberVM(m, periodNum, true));
             }
-            // Members with no active interval and no leave before
-            // the period (future-only stints) are not shown.
+            // Neither: only-future stints. Not shown.
         }
 
         return {
@@ -237,30 +219,29 @@
             period: raw.period,
             members: active,
             formerMembers: former,
-            candidates: Array.isArray(raw.candidates)
-                ? raw.candidates
-                : []
+            candidates: candidatesRaw.slice()
         };
     }
 
-    /**
-     * Build a manager-shaped member VM.
-     *
-     * The input is the aggregator's member VM. This function renames
-     * `displayName` → `name` and copies the intervals array with
-     * their per-interval periodDisplay.
-     */
     function buildMemberVM(member, periodNum, isFormer) {
+        if (typeof member.displayName !== 'string') {
+            throw new Error(
+                '[MemberAdapterTeams] member VM missing displayName.'
+            );
+        }
+        if (!Array.isArray(member.intervals)) {
+            throw new Error(
+                '[MemberAdapterTeams] member VM missing intervals ' +
+                'array.'
+            );
+        }
+
         var intervals = [];
-        var rawIntervals = Array.isArray(member.intervals)
-            ? member.intervals
-            : [];
+        var rawIntervals = member.intervals;
 
         for (var i = 0; i < rawIntervals.length; i++) {
             var iv = rawIntervals[i];
-            if (!iv || typeof iv !== 'object') {
-                continue;
-            }
+            if (!iv || typeof iv !== 'object') { continue; }
 
             var joinStr = (iv.joinPeriod === undefined ||
                            iv.joinPeriod === null)
@@ -283,8 +264,8 @@
         return {
             characterId: member.characterId,
             memberId: member.memberId || '',
-            name: member.displayName || 'Unknown',
-            role: member.role || 'Member',
+            name: member.displayName,
+            role: member.role || '',
             deceased: member.deceased === true,
             status: member.status || '',
             statusLabel: member.statusLabel || '',
@@ -304,14 +285,11 @@
     /**
      * Add a member.
      *
-     * Flow:
-     *   1. addMemberInterval(teamId, charId, join, leave).
-     *   2. If role is non-empty and differs from the default, call
-     *      updateMember(teamId, charId, { role }).
-     *
-     * If step 1 succeeds but step 2 fails, the member exists with
-     * the default role. That is the correct outcome — the interval
-     * was created, the role assignment is a nicety.
+     * Role failure surfaces as a failure of the whole operation.
+     * TeamCore.addMemberInterval and TeamCore.updateMember are two
+     * separate pipeline transactions; the adapter cannot roll back
+     * the interval after a role failure. It reports the failure
+     * honestly so the caller knows the resulting state.
      */
     function addMember(teamId, period, opts) {
         if (!isNonEmptyString(teamId)) {
@@ -352,10 +330,11 @@
                 { role: role }
             ).then(function(roleResult) {
                 if (!roleResult || !roleResult.success) {
-                    console.warn(
-                        '[MemberAdapterTeams] addMember: interval ' +
-                        'created but role update failed.'
-                    );
+                    return {
+                        success: false,
+                        message: 'Member was added, but the ' +
+                            'requested role could not be assigned.'
+                    };
                 }
                 return result;
             });
@@ -369,7 +348,11 @@
      *   { characterId, joinPeriod, join, leave }
      *   { characterId, joinPeriod, join, leave, role }
      *
-     * Stages run in order. If any stage rejects, the chain stops.
+     * Join replacement requires both `join` and `leave`: replacing
+     * the start without knowing the end would silently discard the
+     * existing leave period. The adapter enforces this.
+     *
+     * Stages run in order. The chain stops on the first failure.
      */
     function updateMembers(teamId, period, changes) {
         if (!isNonEmptyString(teamId)) {
@@ -399,18 +382,25 @@
             var hasJoin = c.join !== undefined &&
                           c.join !== null &&
                           String(c.join) !== originalJoin;
-            var hasLeave = c.leave !== undefined && c.leave !== null;
+            var hasLeave = c.leave !== undefined &&
+                           c.leave !== null;
 
             if (hasRole) {
                 roleByChar[charId] = String(c.role);
             }
 
             if (hasJoin) {
+                if (!hasLeave) {
+                    return failure(
+                        'Changing a join period requires the ' +
+                        'replacement leave period.'
+                    );
+                }
                 joinReplacements.push({
                     characterId: charId,
                     oldJoin: originalJoin,
                     newJoin: String(c.join),
-                    newLeave: hasLeave ? String(c.leave) : ''
+                    newLeave: String(c.leave)
                 });
                 continue;
             }
@@ -431,9 +421,7 @@
         var roleCharIds = Object.keys(roleByChar);
         roleCharIds.forEach(function(charId) {
             chain = chain.then(function() {
-                if (failureResult) {
-                    return;
-                }
+                if (failureResult) { return; }
                 return TeamCore.updateMember(
                     teamId,
                     charId,
@@ -450,22 +438,24 @@
         });
 
         // ---- Stage 2: join replacements ----
+        //
+        // Purge failure stops the replacement. Attempting the add
+        // on top of a failed purge would produce two intervals.
         joinReplacements.forEach(function(jr) {
             chain = chain.then(function() {
-                if (failureResult) {
-                    return;
-                }
+                if (failureResult) { return; }
                 return TeamCore.purgeMemberInterval(
                     teamId,
                     jr.characterId,
                     jr.oldJoin
                 ).then(function(purgeResult) {
                     if (!purgeResult || !purgeResult.success) {
-                        console.warn(
-                            '[MemberAdapterTeams] purge before join ' +
-                            'replacement did not succeed; ' +
-                            'attempting add.'
-                        );
+                        failureResult = purgeResult || {
+                            success: false,
+                            message: 'Failed to remove the old ' +
+                                'interval before replacement.'
+                        };
+                        return;
                     }
                     return TeamCore.addMemberInterval(
                         teamId,
@@ -476,7 +466,8 @@
                         if (!addResult || !addResult.success) {
                             failureResult = addResult || {
                                 success: false,
-                                message: 'Failed to replace join.'
+                                message: 'Failed to add the ' +
+                                    'replacement interval.'
                             };
                         }
                     });
@@ -487,9 +478,7 @@
         // ---- Stage 3: leave-only edits ----
         leaveEdits.forEach(function(le) {
             chain = chain.then(function() {
-                if (failureResult) {
-                    return;
-                }
+                if (failureResult) { return; }
 
                 if (le.leave === '') {
                     return TeamCore.reopenMemberInterval(
@@ -523,53 +512,33 @@
         });
 
         return chain.then(function() {
-            if (failureResult) {
-                return failureResult;
-            }
+            if (failureResult) { return failureResult; }
             return { success: true };
         });
     }
 
     /**
      * Remove one stint.
+     *
+     * Stint identity is (characterId, joinPeriod). A bare memberId
+     * is not sufficient: a member entry can carry multiple stints,
+     * and picking one arbitrarily is not a substitute for naming
+     * the one the user asked for.
      */
     function removeStint(teamId, period, identifier) {
         var id = extractIdentifier(identifier);
 
-        if (id.characterId !== '' && id.joinPeriod !== '') {
-            return TeamCore.purgeMemberInterval(
-                teamId,
-                id.characterId,
-                id.joinPeriod
+        if (id.characterId === '' || id.joinPeriod === '') {
+            return failure(
+                'Cannot identify the stint to remove. ' +
+                '(characterId and joinPeriod are required.)'
             );
         }
 
-        if (id.memberId !== '') {
-            var vm = fetchVM(teamId, period);
-            if (!vm) {
-                return failure('Team not found.');
-            }
-            var match = findMemberByMemberId(vm, id.memberId);
-            if (!match) {
-                return failure('Member not found.');
-            }
-            if (!Array.isArray(match.intervals) ||
-                match.intervals.length === 0) {
-                return TeamCore.removeMember(
-                    teamId,
-                    match.characterId
-                );
-            }
-            var firstJoin = match.intervals[0].joinPeriod || '';
-            return TeamCore.purgeMemberInterval(
-                teamId,
-                match.characterId,
-                firstJoin
-            );
-        }
-
-        return failure(
-            'This stint does not carry enough identity to remove.'
+        return TeamCore.purgeMemberInterval(
+            teamId,
+            id.characterId,
+            id.joinPeriod
         );
     }
 
@@ -579,36 +548,18 @@
     function rejoinStint(teamId, period, identifier) {
         var id = extractIdentifier(identifier);
 
-        if (id.characterId !== '' && id.joinPeriod !== '') {
-            return TeamCore.reopenMemberInterval(
-                teamId,
-                id.characterId,
-                id.joinPeriod
+        if (id.characterId === '' || id.joinPeriod === '') {
+            return failure(
+                'Cannot identify the stint to rejoin. ' +
+                '(characterId and joinPeriod are required.)'
             );
         }
 
-        if (id.memberId !== '') {
-            var vm = fetchVM(teamId, period);
-            if (!vm) {
-                return failure('Team not found.');
-            }
-            var match = findMemberByMemberId(vm, id.memberId);
-            if (!match) {
-                return failure('Member not found.');
-            }
-            if (!Array.isArray(match.intervals) ||
-                match.intervals.length === 0) {
-                return failure('Member has no stints to rejoin.');
-            }
-            var firstJoin = match.intervals[0].joinPeriod || '';
-            return TeamCore.reopenMemberInterval(
-                teamId,
-                match.characterId,
-                firstJoin
-            );
-        }
-
-        return failure('Cannot identify the stint to rejoin.');
+        return TeamCore.reopenMemberInterval(
+            teamId,
+            id.characterId,
+            id.joinPeriod
+        );
     }
 
     /**
@@ -619,25 +570,6 @@
             return failure('Character ID is required.');
         }
         return TeamCore.removeMember(teamId, charId);
-    }
-
-    // ============================================================
-    // INTERNAL LOOKUPS
-    // ============================================================
-
-    function findMemberByMemberId(vm, memberId) {
-        var target = String(memberId);
-        var pools = [vm.members, vm.formerMembers];
-        for (var p = 0; p < pools.length; p++) {
-            var list = pools[p] || [];
-            for (var i = 0; i < list.length; i++) {
-                var m = list[i];
-                if (m && String(m.memberId || '') === target) {
-                    return m;
-                }
-            }
-        }
-        return null;
     }
 
     // ============================================================
