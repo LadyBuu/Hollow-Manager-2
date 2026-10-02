@@ -21,40 +21,54 @@
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
  *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
- *   display-shaped rows. Only professional candidates are
- *   included: records with phaseEligible === true and non-retired
- *   status. Deceased and eliminated characters are already
- *   filtered upstream by the query.
+ *   display-shaped rows.
  *
- *   Rows are partitioned by assignment.status:
- *     available -> pool.available
- *     future    -> pool.future
+ *   The query returns every character who has a junior-or-senior
+ *   phase and was never on a professional team during it, minus
+ *   the deceased / eliminated / retired. That set is INDEPENDENT
+ *   of the query period: a character whose student phase was
+ *   1895-1897 shows up at a 1920 query, with availability
+ *   "1895-1897".
  *
- *   Support staff are NOT included. Departments owns them.
+ *   The aggregator's only job is to partition the returned set
+ *   by where the query period sits relative to each character's
+ *   availability window:
+ *
+ *     available    query period is inside [from, to]
+ *     historical   query period is outside [from, to]
+ *
+ *   Both buckets carry the same row shape. The distinction is
+ *   purely informational, so the UI can show "Available" vs
+ *   "Previously available" section headers. No character is
+ *   dropped by this partition.
+ *
+ *   The row's availability.display is the student window. It
+ *   does not change with the query period.
  *
  * MATCHMAKING:
  *   getTeamMatchmakingViewModel({ period, targetSize }) consumes
  *   the same canonical personnel records via
  *   getProfessionalPoolViewModel. Candidates come from
- *   pool.available and pool.future (both are eligible; future
- *   candidates already have a next assignment but are still
- *   assignable up to that assignment's start).
+ *   pool.available plus pool.historical (both carry eligibility;
+ *   "historical" simply means the query year is outside the
+ *   candidate's window, which for a matchmaking run at year Y is
+ *   the interesting case — you are looking for someone whose
+ *   window contains Y).
  *
- *   Targets come from TeamQueries.getTeams('professional') filtered
- *   by team window and capacity.
- *
- *   No direct window.data.teams walk.
+ *   Targets come from TeamQueries.getTeams('professional')
+ *   filtered by team window and capacity.
  *
  * TEMPORARY MISSION DISPLAY:
  *   Team detail VMs surface `temporaryMission` and
- *   `temporaryMissionName` so the associated mission is visible in
- *   the Teams module. The mission name is resolved via
+ *   `temporaryMissionName` so the associated mission is visible
+ *   in the Teams module. The mission name is resolved via
  *   MissionQueries when available; when it is not, the raw ID is
  *   shown.
  *
  * DEATH / RETIREMENT SEMANTICS:
- *   The pool VM trusts TeamQueries to have applied death and
- *   retirement exclusions. It does not re-check them.
+ *   The pool VM trusts TeamQueries to have applied death,
+ *   elimination, retirement, student-phase, and stint-overlap
+ *   exclusions. It does not re-check them.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -1109,18 +1123,25 @@
     // PROFESSIONAL POOL VM
     // ============================================================
     //
-    // Consumes TeamQueries.getProfessionalPersonnelAtPeriod. Only
-    // records with phaseEligible === true are included; retired
-    // records are excluded. The query already excludes deceased
-    // and eliminated characters.
+    // Consumes TeamQueries.getProfessionalPersonnelAtPeriod.
     //
-    // Rows are split by assignment.status:
-    //   available -> pool.available
-    //   future    -> pool.future
+    // The query already applies every exclusion: deceased,
+    // eliminated, retired, no student phase, and stint overlapping
+    // the student window. What remains is the pool.
     //
-    // The `active` assignment status (character currently on a
-    // professional team) is not represented in the pool; those
-    // characters are already assigned.
+    // The pool is INDEPENDENT of the query period. A character
+    // whose student window was 1895-1897 and who was never on a
+    // professional team during those years is in the pool whether
+    // you query 1896 or 1920.
+    //
+    // The aggregator's only job is to partition that set by where
+    // the query period sits relative to each character's window:
+    //
+    //   available    query period is inside [from, to]
+    //   historical   query period is outside [from, to]
+    //
+    // Both buckets carry the same row shape. Neither bucket drops
+    // a character.
 
     function getProfessionalPoolViewModel(options) {
         options = options || {};
@@ -1138,35 +1159,46 @@
         );
 
         var available = [];
-        var future = [];
+        var historical = [];
 
         for (var i = 0; i < records.length; i++) {
             var r = records[i];
 
-            if (!r.phaseEligible) { continue; }
-            if (r.retired) { continue; }
+            var from = r.availability
+                ? r.availability.from
+                : null;
+            var to = r.availability
+                ? r.availability.to
+                : null;
+
+            // A record with no window start is not partitionable.
+            // The query should never emit one, but be explicit.
+            if (from === null) { continue; }
+
+            var isAvailableNow =
+                periodNum >= from &&
+                (to === null || periodNum <= to);
 
             var row = buildPoolRow(r, periodNum);
 
-            if (r.assignment.status === 'available') {
+            if (isAvailableNow) {
                 available.push(row);
-            } else if (r.assignment.status === 'future') {
-                future.push(row);
+            } else {
+                historical.push(row);
             }
-            // 'active' assignment is not shown in the pool.
         }
 
         available.sort(comparePoolRows);
-        future.sort(comparePoolRows);
+        historical.sort(comparePoolRows);
 
         return {
             period: periodNum,
             summary: {
                 available: available.length,
-                future: future.length
+                historical: historical.length
             },
             available: available,
-            future: future
+            historical: historical
         };
     }
 
@@ -1178,6 +1210,10 @@
             assignmentDisplay =
                 record.assignment.nextTeamName +
                 ' from ' + record.assignment.nextJoinYear;
+        } else if (record.assignment.status === 'active' &&
+            isNonEmptyString(record.assignment.currentTeamName)) {
+            assignmentDisplay =
+                record.assignment.currentTeamName;
         }
 
         return {
@@ -1274,13 +1310,15 @@
     // ============================================================
     //
     // Consumes the same canonical personnel records as the pool VM.
-    // Candidates come from pool.available and pool.future — both
-    // are eligible; a future assignment does not disqualify a
-    // character from being placed now, provided the new stint ends
-    // before the future one begins.
+    // Candidates come from pool.available and pool.historical —
+    // both are eligible; a "historical" row simply means the query
+    // year is outside the candidate's window, which for a
+    // matchmaking run at year Y means the window is either before
+    // or after Y. The matchmaking algorithm does not re-filter by
+    // window; it places whoever the caller supplies.
     //
-    // Targets come from professional teams whose window contains the
-    // query period and whose active member count is below the
+    // Targets come from professional teams whose window contains
+    // the query period and whose active member count is below the
     // requested target size.
 
     function getTeamMatchmakingViewModel(options) {
@@ -1308,9 +1346,9 @@
                 pool.available[a]
             ));
         }
-        for (var f = 0; f < pool.future.length; f++) {
+        for (var h = 0; h < pool.historical.length; h++) {
             candidates.push(buildMatchmakingCandidate(
-                pool.future[f]
+                pool.historical[h]
             ));
         }
 
