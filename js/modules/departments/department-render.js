@@ -29,7 +29,17 @@
  *   rendered once per mount by DepartmentEvents, into a stable
  *   host outside the refreshable tab subtree. renderModals() is
  *   exposed for that purpose and called exactly once per mount.
- *   This keeps a refreshUI() from destroying an open modal.
+ *
+ * STAFF FORM OPTIONS:
+ *   Each character <option> carries:
+ *     value                       characterId
+ *     data-status-tier            'support' | 'instructor' | 'other'
+ *     data-status-start-year      the startYear of the character's
+ *                                 current support/instructor entry,
+ *                                 or '' when they have none
+ *
+ *   DepartmentEvents reads data-status-start-year on change to
+ *   pre-fill the join-year input.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -81,17 +91,6 @@
     // TAB SHELL
     // ============================================================
 
-    /**
-     * Render the entire Departments tab.
-     *
-     * Does NOT include modal shells. Those are mounted once per
-     * mount by DepartmentEvents into a stable host outside the
-     * refreshable subtree, so a refresh cannot destroy them.
-     *
-     * @param {object} pageVM - from
-     *   DepartmentAggregator.getDepartmentPageViewModel
-     * @returns {string} HTML
-     */
     function renderContainer(pageVM) {
         if (!pageVM) {
             throw new Error(
@@ -214,7 +213,6 @@
 
         var html = '';
 
-        // ---- Header ----
         html += '<div class="department-detail-header">';
 
         html += '<div class="department-detail-title-row">';
@@ -249,13 +247,8 @@
 
         html += '</div>';
 
-        // ---- Members ----
         html += renderMembersSection(detail);
-
-        // ---- Mentoring ----
         html += renderMentorshipSection(detail);
-
-        // ---- Action row ----
         html += renderDetailActions(detail);
 
         return html;
@@ -497,15 +490,10 @@
     // ============================================================
     // MODALS
     // ============================================================
-    //
-    // renderModals() is called ONCE per mount by DepartmentEvents,
-    // into a stable host outside the refreshable tab subtree. It
-    // is deliberately NOT called from renderContainer().
 
     function renderModals() {
         var html = '';
 
-        // ---- Department form modal ----
         html += '<div id="department-form-modal" ' +
                     'class="modal hidden">' +
                     '<div class="modal-content">' +
@@ -523,7 +511,6 @@
                     '</div>' +
                 '</div>';
 
-        // ---- Add staff modal ----
         html += '<div id="department-staff-modal" ' +
                     'class="modal hidden">' +
                     '<div class="modal-content">' +
@@ -548,13 +535,6 @@
     // DEPARTMENT FORM
     // ============================================================
 
-    /**
-     * Render the department form.
-     *
-     * @param {object} formVM - { isEdit, departmentId, name,
-     *   description, headId, memberOptions }
-     * @returns {string} HTML
-     */
     function renderDepartmentForm(formVM) {
         if (!formVM) {
             throw new Error(
@@ -651,6 +631,11 @@
     /**
      * Render the add-staff form.
      *
+     * Each <option> carries the character's current status tier
+     * and, when that tier is support or instructor, the year the
+     * tier began. DepartmentEvents reads those on change to
+     * pre-fill the join-year input.
+     *
      * @param {object} formVM - { departmentId, departmentName,
      *   characterOptions, defaultJoinYear }
      * @returns {string} HTML
@@ -672,8 +657,21 @@
         for (var i = 0; i < characters.length; i++) {
             var opt = characters[i];
             if (!opt || !opt.id) { continue; }
+
+            var tier = isNonEmptyString(opt.statusTier)
+                ? opt.statusTier
+                : 'other';
+            var startYear = opt.statusStartYear !== undefined &&
+                            opt.statusStartYear !== null
+                ? String(opt.statusStartYear)
+                : '';
+
             characterOptions += '<option value="' +
-                                    escapeAttribute(opt.id) + '">' +
+                                    escapeAttribute(opt.id) + '" ' +
+                                    'data-status-tier="' +
+                                        escapeAttribute(tier) + '" ' +
+                                    'data-status-start-year="' +
+                                        escapeAttribute(startYear) + '">' +
                                     escapeHtml(opt.name) +
                                 '</option>';
         }
@@ -733,34 +731,5 @@
         renderDepartmentForm: renderDepartmentForm,
         renderStaffForm: renderStaffForm
     });
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.DepartmentRender;
-        var missing = [];
-
-        var required = [
-            'renderContainer',
-            'renderModals',
-            'renderDepartmentForm',
-            'renderStaffForm'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn(
-                '[DepartmentRender] Verification failed:',
-                missing.join(', ')
-            );
-        }
-    })();
 
 })();
