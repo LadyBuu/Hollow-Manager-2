@@ -19,6 +19,7 @@
  *   - Form primitives (form-group, form-grid, form-actions)
  *   - Section helpers (section-divider, section-label)
  *   - Modal shell
+ *   - Research modal (search + results)
  *   - Notification system
  *   - Generic badges + legacy badge aliases
  *
@@ -1828,6 +1829,185 @@ main {
     .modal-content {
         padding: 10px;
         max-height: 98vh;
+    }
+}
+
+/* ============================================================
+   RESEARCH MODAL
+   ============================================================
+   Profile-wide text search. Opened from the Research button
+   in the characters tab header. Uses the same .modal shell as
+   every other modal; the rules below only describe the search
+   input row, the results list, and the highlighted match span.
+
+   LAYOUT:
+     A single column. The input row is a flex strip with the
+     text input and a Clear button. The results host sits below
+     it, max-height capped so a long result set scrolls inside
+     the modal rather than pushing the modal off-screen.
+
+   RESULT GROUPING:
+     One .research-result-group per character, each with a
+     header (name + count) and one .research-result-row per
+     matched field. The whole group carries data-character-id;
+     the events layer reads it on click.
+
+   HIGHLIGHT:
+     The matched substring is wrapped in <mark class="research-match">.
+     The browser default yellow is replaced with a themed wash so
+     the highlight reads correctly against every palette.
+
+   Inert in every theme that does not open the modal.
+ */
+
+.research-content {
+    max-width: 780px;
+}
+
+.research-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.research-search-row {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+}
+
+.research-input {
+    flex: 1;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: 'Inter', sans-serif;
+    min-width: 0;
+}
+
+.research-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.research-clear-btn {
+    flex: 0 0 auto;
+}
+
+.research-results {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.research-empty {
+    margin: 0;
+}
+
+.research-summary {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    padding: 2px 0 6px 0;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 8px;
+}
+
+.research-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.research-result-group {
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.research-result-group:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.research-result-group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.research-result-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.research-result-count {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.research-result-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+
+.research-result-field {
+    flex: 0 0 110px;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.research-result-snippet {
+    flex: 1;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.research-match {
+    background: var(--accent-soft);
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 2px;
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+@media (max-width: 600px) {
+    .research-result-field {
+        flex: 0 0 80px;
+        font-size: 0.6rem;
+    }
+    .research-result-row {
+        font-size: 0.68rem;
+    }
+    .research-results {
+        max-height: 55vh;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .research-result-group {
+        transition: none;
     }
 }
 
