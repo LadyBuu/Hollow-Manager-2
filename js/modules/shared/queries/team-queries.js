@@ -27,10 +27,16 @@
  *   period. It is the canonical source for both the Professional
  *   Pool UI and matchmaking.
  *
- *   Its dependencies are MANDATORY at call time: CharacterQueries,
- *   CharacterConstants, EliminationQueries. When any is missing,
- *   the query throws. An empty result and a missing dependency must
- *   not look the same.
+ *   EXCLUSION RULES (all applied here, before the aggregator):
+ *     - deceased at the period
+ *     - eliminated at any point
+ *     - not in a professionally-eligible phase (must be
+ *       junior-or-senior, must not be instructor)
+ *     - retired (latest career status normalises to 'retired')
+ *     - support staff who are NOT currently junior-or-senior.
+ *       A support staffer who is ALSO in a student phase at the
+ *       period passes; that is the "support-unassigned" case
+ *       that legitimately needs a placement.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -177,6 +183,64 @@
         }
 
         return true;
+    }
+
+    /**
+     * Normalise a career status string: lowercase, strip a
+     * trailing ' (Former)' suffix, trim.
+     */
+    function normaliseCareerStatusKey(status) {
+        if (status === undefined || status === null) { return ''; }
+        var raw = String(status).trim().toLowerCase();
+        if (raw === '') { return ''; }
+        var formerIdx = raw.indexOf(' (former)');
+        if (formerIdx !== -1) {
+            raw = raw.substring(0, formerIdx).trim();
+        }
+        return raw;
+    }
+
+    /**
+     * Latest careerStatus entry's normalised status key.
+     *
+     * "Latest" means the entry with the highest startYear. Ties
+     * break on array order (later wins). A malformed startYear is
+     * treated as -Infinity, so it only wins a tie when no other
+     * entry has a real year — matching the tie-break used by
+     * CharacterQueries.getStatusAtYear.
+     *
+     * Returns '' when the array is empty or every entry is
+     * malformed.
+     */
+    function getLatestCareerStatusKey(char) {
+        if (!char || !Array.isArray(char.careerStatus) ||
+            char.careerStatus.length === 0) {
+            return '';
+        }
+
+        var latestKey = '';
+        var latestYear = -Infinity;
+        var latestIndex = -1;
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var key = normaliseCareerStatusKey(entry.status);
+            if (key === '') { continue; }
+
+            var year = parseInt(entry.startYear, 10);
+            if (isNaN(year)) { year = -Infinity; }
+
+            if (year > latestYear ||
+                (year === latestYear && i > latestIndex)) {
+                latestKey = key;
+                latestYear = year;
+                latestIndex = i;
+            }
+        }
+
+        return latestKey;
     }
 
     // ============================================================
@@ -1009,8 +1073,11 @@
         var hasProfessionalHistory = historyEntry &&
             historyEntry.hasAnyEntry === true;
 
-        var isRetired = tier === 'support' &&
-            hasProfessionalHistory;
+        // A character is retired when their LATEST career status
+        // entry normalises to 'retired'. This is independent of
+        // tier: a character whose latest status is 'retired' is
+        // retired regardless of what tier that status maps to.
+        var isRetired = getLatestCareerStatusKey(char) === 'retired';
 
         var assignmentStatus = 'available';
         var currentTeamId = null;
@@ -1023,9 +1090,6 @@
             if (historyEntry.activeAtPeriod) {
                 assignmentStatus = 'active';
                 currentTeamId = historyEntry.activeAtPeriod;
-
-                // FIXED: was `findTeamByIdInternal`, which does not
-                // exist. The internal helper is `getTeamByIdInternal`.
                 var activeTeam = getTeamByIdInternal(currentTeamId);
                 if (activeTeam) {
                     currentTeamName =
@@ -1035,8 +1099,6 @@
                 assignmentStatus = 'future';
                 nextTeamId = historyEntry.futureTeamId;
                 nextJoinYear = historyEntry.futureFrom;
-
-                // FIXED: same rename here.
                 var futureTeam = getTeamByIdInternal(nextTeamId);
                 if (futureTeam) {
                     nextTeamName =
@@ -1098,6 +1160,7 @@
 
         var deps = requirePersonnelDependencies();
         var CharacterQueries = deps.CharacterQueries;
+        var CharacterConstants = deps.CharacterConstants;
         var EliminationQueries = deps.EliminationQueries;
 
         var allChars = CharacterQueries.getCharacters() || [];
@@ -1112,6 +1175,7 @@
 
             var charId = String(char.id);
 
+            // ---- 1. Deceased at period: exclude. ----
             var deceased = false;
             try {
                 deceased =
@@ -1122,6 +1186,7 @@
             }
             if (deceased) { continue; }
 
+            // ---- 2. Eliminated: exclude (presence-based). ----
             var elimWeek = null;
             try {
                 elimWeek =
@@ -1136,6 +1201,8 @@
                 continue;
             }
 
+            // ---- 3. Phase eligibility: junior-or-senior AND not
+            //         instructor. ----
             var phaseEligible = false;
             try {
                 phaseEligible =
@@ -1150,18 +1217,43 @@
             }
             if (!phaseEligible) { continue; }
 
-            var historyEntry = historyIndex[charId] || null;
+            // ---- 4. Retired: exclude. ----
+            //
+            // Independent of tier. A character whose latest
+            // career status is 'retired' is off the professional
+            // pool entirely.
+            var isRetired = getLatestCareerStatusKey(char) === 'retired';
+            if (isRetired) { continue; }
 
+            // ---- 5. Support staff: exclude UNLESS they are
+            //         currently junior-or-senior. ----
+            //
+            // Support staff who are also in a student phase at
+            // this period are the "support-unassigned" case:
+            // they have a student history but no professional
+            // team placement. They are candidates.
+            //
+            // Support staff who are NOT in a student phase at
+            // this period are pure support or retired support.
+            // They are excluded from the professional pool.
             var statusAtPeriod =
                 CharacterQueries.getStatusAtYear(char, periodNum);
             var tier =
-                deps.CharacterConstants.classifyStatus(
-                    statusAtPeriod
-                );
-            if (tier === 'support' && historyEntry &&
-                historyEntry.hasAnyEntry) {
-                continue;
+                CharacterConstants.classifyStatus(statusAtPeriod);
+            if (tier === 'support') {
+                var isStudentNow = false;
+                try {
+                    isStudentNow =
+                        CharacterQueries.isJuniorOrSeniorByYear(
+                            char, periodNum
+                        );
+                } catch (e) {
+                    isStudentNow = false;
+                }
+                if (!isStudentNow) { continue; }
             }
+
+            var historyEntry = historyIndex[charId] || null;
 
             records.push(
                 buildPersonnelRecord(
