@@ -22,35 +22,28 @@
  *     MissionRules, MissionViews respectively). This module calls
  *     them and composes their results.
  *   - The mission label's grammar. MissionId owns the grammar and
- *     the derivation. This module attaches the derived label to
- *     VMs; it does not compute it.
+ *     the derivation.
  *
  * VM SHAPE PRINCIPLES:
  *   - Every VM is a plain data structure. No functions, no live
  *     references to mission, team, or character records.
  *   - Every reference to a cross-domain entity is either an ID or
- *     a resolved { id, name } pair. Never the whole entity.
+ *     a resolved { id, name } pair.
  *   - Derived values (missionId, progress, pay, capability flags)
  *     are present on VMs so renderers never compute them.
- *   - Missing or unresolvable references resolve to `null` or an
- *     explicit "Unknown"/"Unassigned" string, not to fabricated
- *     entity IDs.
  *
  * LABEL SEMANTICS:
  *   The mission label (YEAR-SEQ-DIFFICULTY) is a DERIVED value.
- *   It is never stored, and the form layer does not preview it.
- *   On an edit VM, the current label is exposed as `currentLabel`
- *   for display only; the form does not offer it as an input.
- *   Changing year or difficulty re-derives the label at read time;
- *   the stored `sequence` is frozen at creation and never changes.
+ *   The form does not preview it as an input. On an edit VM, the
+ *   current label is exposed as `currentLabel` for display only.
  *
  * DATE DEFAULTS:
- *   The form VM's date defaults are (currentYear, 1, 1). The
- *   current calendar year is the only "now"-dependent value; month
- *   and day are the fixed start of the year. The UI layer may
- *   reset untouched month/day when the year input changes; the
- *   aggregator does not do that — it just supplies the initial
- *   defaults.
+ *   The form VM's date defaults are (applicationYear, 1, 1).
+ *   `applicationYear` is `window.data.currentYear` when present,
+ *   else the current calendar year. The year is the only "now"-
+ *   dependent value; month and day are the fixed start of the
+ *   year. The UI layer may reset untouched month/day when the
+ *   year input changes; the aggregator does not.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
@@ -123,13 +116,16 @@
             _missing.push('MissionViews.getPriorityInfo');
         }
     }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
         _missing.push('CharacterQueries.getCharacterById');
     }
-    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getDisplayName !== 'function') {
         _missing.push('CharacterQueries.getDisplayName');
     }
-    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
     }
 
@@ -165,13 +161,24 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * The application year for date defaults: window.data.currentYear
+     * when it is a valid positive integer, else the current calendar
+     * year.
+     */
+    function getApplicationYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+        return new Date().getFullYear();
+    }
+
     // ============================================================
     // ENTITY RESOLUTION
     // ============================================================
-    //
-    // Cross-domain lookups. Each resolver returns a small
-    // { id, name } projection or null. It never returns the raw
-    // entity.
 
     function resolveCharacterRef(characterId) {
         if (!isNonEmptyString(characterId)) { return null; }
@@ -202,7 +209,9 @@
         }
         return {
             id: team.id,
-            name: isNonEmptyString(team.name) ? team.name : 'Unnamed Team'
+            name: isNonEmptyString(team.name)
+                ? team.name
+                : 'Unnamed Team'
         };
     }
 
@@ -268,8 +277,10 @@
 
         // Newest first, by createdAt desc, then id for stability.
         result.sort(function(a, b) {
-            var ta = isNonEmptyString(a.createdAt) ? a.createdAt : '';
-            var tb = isNonEmptyString(b.createdAt) ? b.createdAt : '';
+            var ta = isNonEmptyString(a.createdAt)
+                ? a.createdAt : '';
+            var tb = isNonEmptyString(b.createdAt)
+                ? b.createdAt : '';
             if (ta !== tb) {
                 return tb.localeCompare(ta);
             }
@@ -312,7 +323,7 @@
             return [];
         }
 
-        // Display order is newest first. The persistence order is
+        // Display order is newest first. Persistence order is
         // append order (oldest first). Presentation reverses.
         var result = [];
         for (var i = mission.log.length - 1; i >= 0; i--) {
@@ -354,14 +365,12 @@
     // ============================================================
     // CAPABILITY FLAGS
     // ============================================================
-    //
-    // Delegated to MissionRules. This module does not re-implement
-    // any rule.
 
     function buildCapabilitiesVM(mission) {
         return {
             edit: MissionRules.canEdit(mission),
-            modifyObjectives: MissionRules.canModifyObjectives(mission),
+            modifyObjectives:
+                MissionRules.canModifyObjectives(mission),
             complete: MissionRules.canComplete(mission),
             cancel: MissionRules.canCancel(mission),
             reactivate: MissionRules.canReactivate(mission)
@@ -375,18 +384,22 @@
     function buildDateDisplay(mission) {
         if (!mission) { return 'Not specified'; }
 
-        var hasYear = mission.year !== undefined && mission.year !== null;
-        var hasMonth = mission.month !== undefined && mission.month !== null;
-        var hasDay = mission.day !== undefined && mission.day !== null;
+        var hasYear = mission.year !== undefined &&
+                      mission.year !== null;
+        var hasMonth = mission.month !== undefined &&
+                       mission.month !== null;
+        var hasDay = mission.day !== undefined &&
+                     mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
             var monthNames = [
-                'January', 'February', 'March', 'April', 'May', 'June',
-                'July', 'August', 'September', 'October', 'November',
-                'December'
+                'January', 'February', 'March', 'April', 'May',
+                'June', 'July', 'August', 'September', 'October',
+                'November', 'December'
             ];
             var monthName = monthNames[mission.month - 1] || '';
-            return monthName + ' ' + mission.day + ', ' + mission.year;
+            return monthName + ' ' + mission.day + ', ' +
+                mission.year;
         }
 
         if (hasYear) {
@@ -428,21 +441,6 @@
     // LIST VM
     // ============================================================
 
-    /**
-     * Build the list view model.
-     *
-     * @param {object} [options]
-     * @param {string} [options.filter] - 'all' | 'active' |
-     *   'completed' | 'cancelled'
-     * @param {string} [options.search] - free-text search
-     * @param {string} [options.teamId] - filter by assigned team
-     * @param {string} [options.typeId] - filter by mission type
-     * @param {string} [options.sort] - 'date' | 'title' | 'priority'
-     *   | 'status' | 'progress'
-     * @param {string} [options.sortDirection] - 'asc' | 'desc'
-     * @param {boolean} [options.includeArchived]
-     * @returns {object} { missions, total, filtered, counts }
-     */
     function getMissionListViewModel(options) {
         options = options || {};
 
@@ -518,9 +516,6 @@
 
         items.sort(buildListComparator(sort, sortDirection));
 
-        // Counts are computed against the status-filtered set, before
-        // team/type/search filtering, so the sidebar shows "how many
-        // are active" independent of the current search.
         var counts = buildStatusCounts(missions);
 
         return {
@@ -532,9 +527,13 @@
     }
 
     function buildListItemVM(mission) {
-        var statusInfo = MissionViews.getStatusInfo(mission.status);
-        var priorityInfo = MissionViews.getPriorityInfo(mission.priority);
-        var progress = MissionRules.calculateProgress(mission.objectives);
+        var statusInfo =
+            MissionViews.getStatusInfo(mission.status);
+        var priorityInfo =
+            MissionViews.getPriorityInfo(mission.priority);
+        var progress = MissionRules.calculateProgress(
+            mission.objectives
+        );
         var supportCount = Array.isArray(mission.supportPersonnel)
             ? mission.supportPersonnel.length
             : 0;
@@ -560,7 +559,9 @@
             progress: progress,
 
             teamId: mission.assignedTeamId || null,
-            teamName: resolveTeamNameOrUnassigned(mission.assignedTeamId),
+            teamName: resolveTeamNameOrUnassigned(
+                mission.assignedTeamId
+            ),
 
             supportCount: supportCount,
 
@@ -575,9 +576,10 @@
                 mission.primaryType, mission.subtype
             ) || '',
             secondaryType: mission.secondaryType || '',
-            secondaryTypeLabel: MissionConstants.getMissionTypeLabel(
-                mission.secondaryType
-            ) || '',
+            secondaryTypeLabel:
+                MissionConstants.getMissionTypeLabel(
+                    mission.secondaryType
+                ) || '',
             typeDisplay: buildTypeDisplay(mission),
 
             escalation: mission.escalation,
@@ -595,9 +597,8 @@
             isCompleted: mission.status === 'completed',
             isCancelled: mission.status === 'cancelled',
 
-            isReadyForCompletion: MissionRules.isReadyForCompletion(
-                mission
-            )
+            isReadyForCompletion:
+                MissionRules.isReadyForCompletion(mission)
         };
     }
 
@@ -688,19 +689,17 @@
     // DETAIL VM
     // ============================================================
 
-    /**
-     * Build the detail view model for a single mission.
-     *
-     * @param {string} missionId - Mission UUID
-     * @returns {object|null}
-     */
     function getMissionDetailViewModel(missionId) {
         var mission = MissionQueries.getMission(missionId);
         if (!mission) { return null; }
 
-        var statusInfo = MissionViews.getStatusInfo(mission.status);
-        var priorityInfo = MissionViews.getPriorityInfo(mission.priority);
-        var progress = MissionRules.calculateProgress(mission.objectives);
+        var statusInfo =
+            MissionViews.getStatusInfo(mission.status);
+        var priorityInfo =
+            MissionViews.getPriorityInfo(mission.priority);
+        var progress = MissionRules.calculateProgress(
+            mission.objectives
+        );
 
         var supportPersonnel = buildSupportPersonnelVM(mission);
         var reports = buildReportsVM(mission);
@@ -718,7 +717,8 @@
 
             dateDisplay: buildDateDisplay(mission),
             year: mission.year !== undefined ? mission.year : null,
-            month: mission.month !== undefined ? mission.month : null,
+            month: mission.month !== undefined
+                ? mission.month : null,
             day: mission.day !== undefined ? mission.day : null,
             sequence: mission.sequence,
 
@@ -744,9 +744,10 @@
                 mission.primaryType, mission.subtype
             ) || '',
             secondaryType: mission.secondaryType || '',
-            secondaryTypeLabel: MissionConstants.getMissionTypeLabel(
-                mission.secondaryType
-            ) || '',
+            secondaryTypeLabel:
+                MissionConstants.getMissionTypeLabel(
+                    mission.secondaryType
+                ) || '',
             typeDisplay: buildTypeDisplay(mission),
 
             escalation: mission.escalation,
@@ -783,7 +784,8 @@
             log: log,
             logCount: log.length,
 
-            tags: Array.isArray(mission.tags) ? mission.tags.slice() : [],
+            tags: Array.isArray(mission.tags)
+                ? mission.tags.slice() : [],
 
             notes: mission.notes || '',
 
@@ -810,7 +812,8 @@
             capabilities: capabilities,
 
             graduatingClassId: mission.graduatingClassId || null,
-            classFilterEnabled: mission.classFilterEnabled === true
+            classFilterEnabled:
+                mission.classFilterEnabled === true
         };
     }
 
@@ -823,20 +826,16 @@
      *
      * The form does NOT preview the mission label. The label is a
      * derived value computed at read time by MissionId.derive from
-     * (year, sequence, difficulty); sequence is assigned at creation
-     * and never changes. On edit VMs, `currentLabel` carries the
-     * current derived label for display only. On create VMs,
-     * `currentLabel` is null.
+     * (year, sequence, difficulty). On edit VMs, `currentLabel`
+     * carries the current derived label for display only. On create
+     * VMs, `currentLabel` is null.
      *
      * DATE DEFAULTS:
-     *   `defaults` supplies the initial (year, month, day) for a new
-     *   mission: current calendar year, January, 1st. The UI layer
-     *   decides whether to reset month/day when the year changes;
-     *   the aggregator only supplies the starting values.
-     *
-     * @param {object} [options]
-     * @param {string} [options.editId] - Mission UUID to edit
-     * @returns {object|null}
+     *   `defaults.year` is the APPLICATION year (window.data
+     *   .currentYear), falling back to the calendar year only when
+     *   the application year is unavailable. Month and day are
+     *   fixed at 1. The UI layer may reset untouched month/day
+     *   when the year input changes.
      */
     function getMissionFormViewModel(options) {
         options = options || {};
@@ -845,14 +844,15 @@
             ? options.editId
             : null;
 
-        var mission = editId ? MissionQueries.getMission(editId) : null;
+        var mission = editId
+            ? MissionQueries.getMission(editId)
+            : null;
         if (editId && !mission) {
             return null;
         }
 
         var isEdit = mission !== null;
 
-        // Teams eligible for assignment.
         var teams = MissionRules.filterEligibleTeams(
             TeamQueries.getTeams ? TeamQueries.getTeams() : []
         );
@@ -860,14 +860,14 @@
         var teamOptions = teams.map(function(t) {
             return {
                 id: t.id,
-                name: isNonEmptyString(t.name) ? t.name : 'Unnamed Team'
+                name: isNonEmptyString(t.name)
+                    ? t.name : 'Unnamed Team'
             };
         });
         teamOptions.sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
 
-        // Characters available for support personnel.
         var charactersRaw = CharacterQueries.getCharacters
             ? CharacterQueries.getCharacters()
             : [];
@@ -884,7 +884,6 @@
             return a.name.localeCompare(b.name);
         });
 
-        // Enum lists.
         var difficulties = MissionConstants.getValidDifficulties()
             .map(function(id) {
                 return {
@@ -917,7 +916,8 @@
                 };
             });
 
-        var escalationTiers = MissionConstants.getValidEscalationTiers()
+        var escalationTiers =
+            MissionConstants.getValidEscalationTiers()
             .map(function(id) {
                 return {
                     id: id,
@@ -930,19 +930,17 @@
             return missionTypes[key];
         });
 
-        // currentLabel is a DISPLAY-ONLY field: the derived label for
-        // an existing mission, or null on create. The form does not
-        // offer it as an input, and MissionCore recomputes the label
-        // from stored fields on every read.
-        var currentLabel = isEdit ? MissionId.derive(mission) : null;
-
-        var now = new Date();
+        var currentLabel = isEdit
+            ? MissionId.derive(mission)
+            : null;
 
         return {
             isEdit: isEdit,
             editId: editId,
 
-            mission: mission ? buildFormMissionFields(mission) : null,
+            mission: mission
+                ? buildFormMissionFields(mission)
+                : null,
             currentLabel: currentLabel,
 
             teams: teamOptions,
@@ -956,25 +954,24 @@
             missionTypes: typeList,
 
             defaults: {
-                year: now.getFullYear(),
+                year: getApplicationYear(),
                 month: 1,
                 day: 1
             }
         };
     }
 
-    /**
-     * Project the fields the form needs from an existing mission.
-     * Does not expose the whole record.
-     */
     function buildFormMissionFields(mission) {
         return {
             id: mission.id,
             title: mission.title || '',
             description: mission.description || '',
-            year: mission.year !== undefined ? mission.year : null,
-            month: mission.month !== undefined ? mission.month : null,
-            day: mission.day !== undefined ? mission.day : null,
+            year: mission.year !== undefined
+                ? mission.year : null,
+            month: mission.month !== undefined
+                ? mission.month : null,
+            day: mission.day !== undefined
+                ? mission.day : null,
             primaryType: mission.primaryType || '',
             subtype: mission.subtype || '',
             secondaryType: mission.secondaryType || '',
@@ -989,14 +986,19 @@
             surchargePay: mission.surchargePay || '',
             billing: mission.billing || '',
             assignedTeamId: mission.assignedTeamId || null,
-            supportPersonnel: Array.isArray(mission.supportPersonnel)
+            supportPersonnel: Array.isArray(
+                mission.supportPersonnel
+            )
                 ? mission.supportPersonnel.slice()
                 : [],
             status: mission.status || '',
             objectives: buildObjectivesVM(mission),
             notes: mission.notes || '',
-            tags: Array.isArray(mission.tags) ? mission.tags.slice() : [],
-            classFilterEnabled: mission.classFilterEnabled === true
+            tags: Array.isArray(mission.tags)
+                ? mission.tags.slice()
+                : [],
+            classFilterEnabled:
+                mission.classFilterEnabled === true
         };
     }
 
@@ -1004,9 +1006,6 @@
     // STATISTICS VM
     // ============================================================
 
-    /**
-     * Statistics VM for dashboard display.
-     */
     function getMissionStatisticsViewModel() {
         var stats = MissionQueries.getStatistics();
 
