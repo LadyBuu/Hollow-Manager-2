@@ -2,7 +2,7 @@
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
  *
- * DATA_VERSION: 31
+ * DATA_VERSION: 32
  *
  * Version history (one line per version; the full narrative for each
  * lives on its migration function, or has been dropped once stable):
@@ -17,6 +17,7 @@
  *   30 — Per-class restDays field.
  *   31 — Enrolment role tagging (student / instructor per interval);
  *        character.mode becomes a legacy tombstone.
+ *   32 — Departments store (window.data.departments: []).
  *
  * RETIRED FIELDS (one line each):
  *   v23  tournament.winner, tournament.currentRound, tournament.teams,
@@ -39,7 +40,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 31;
+    var DATA_VERSION = 32;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -109,12 +110,9 @@
     }
 
     /**
-     * Default stats configuration.
-     *
-     * ICONS (v28): the icons are monochrome Unicode glyphs. They were
-     * previously emoji. The v28 migration rewrites any persisted
-     * record still carrying one of the legacy emoji. New configs
-     * emitted by this factory are already monochrome.
+     * Default stats configuration. Icons are monochrome Unicode
+     * glyphs (v28); the legacy emoji set is rewritten by the v28
+     * migration.
      */
     function getDefaultStatsConfig() {
         return {
@@ -159,6 +157,7 @@
             _dataVersion: DATA_VERSION,
             characters: [],
             teams: [],
+            departments: [],
             tournaments: [],
             missions: [],
             activities: [],
@@ -441,6 +440,7 @@
 
         if (!Array.isArray(data.characters)) data.characters = [];
         if (!Array.isArray(data.teams)) data.teams = [];
+        if (!Array.isArray(data.departments)) data.departments = [];
         if (!Array.isArray(data.tournaments)) data.tournaments = [];
         if (!Array.isArray(data.missions)) data.missions = [];
 
@@ -495,16 +495,13 @@
                 case 28: migrateToVersion29(data); break;
                 case 29: migrateToVersion30(data); break;
                 case 30: migrateToVersion31(data); break;
+                case 31: migrateToVersion32(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
 
         return originalVersion;
     }
-
-    // ---- Migrations v2 through v30 are unchanged from the previous
-    // ---- file. Their bodies are preserved verbatim. The function
-    // ---- body for v31 is new; see below.
 
     function migrateToVersion2(data) {
         data.characters.forEach(function(char) {
@@ -2101,12 +2098,9 @@
             disciplineId: discKey,
             startWeek: startWeek,
             endWeek: (endWeek === null || endWeek === undefined) ? null : endWeek,
-            // NOTE (v31): this enrolment was created by the v27
-            // conversion of a legacy instructor assignment. It is
-            // an instructor-role interval. It is tagged with
-            // role: 'instructor' so the v31 role-tagging pass
-            // does not have to re-derive the role from character
-            // mode for the same data.
+            // v27 conversion of a legacy instructor assignment.
+            // Tagged instructor so the v31 role-tagging pass does
+            // not have to re-derive the role from character mode.
             role: 'instructor'
         });
 
@@ -2234,27 +2228,8 @@
     }
 
     /**
-     * Version 30 migration — Per-class restDays field.
-     *
-     * WHY:
-     *   A class does not meet on every day of the week. Rest days
-     *   are a property of the class's timetable: Sat/Sun for one
-     *   class, Friday for another, all seven days for a class that
-     *   has no rest days at all. Storing rest days per-class is the
-     *   natural home for the fact.
-     *
-     * SHAPE:
-     *   class.restDays = [dayNumber, ...]
-     *   Day numbers are integers in [MIN_DAY, MAX_DAY] (1..7),
-     *   Monday=1 through Sunday=7. Duplicates are removed. An empty
-     *   array means "no rest days" and is the default.
-     *
-     * WHAT THIS MIGRATION DOES:
-     *   - Adds `restDays: []` to every class record that does not
-     *     carry the field.
-     *   - Normalises a present-but-malformed field.
-     *
-     * @param {object} data
+     * v30 — Add `restDays: []` to every class. See v30 migration
+     * narrative (now trimmed).
      */
     function migrateToVersion30(data) {
         var academy = data.academy;
@@ -2347,71 +2322,21 @@
     }
 
     /**
-     * Version 31 migration — Enrolment role tagging.
+     * v31 — Enrolment role tagging.
      *
-     * WHY:
-     *   A character's role — student or instructor — is CLASS-SCOPED.
-     *   Alice can teach Class of 2026 and study in Class of 2027.
-     *   Before this migration, the role was expressed by a single
-     *   character-wide flag (character.mode). That flag could not
-     *   distinguish "Alice teaches Class A" from "Alice teaches
-     *   Class A AND Class B", because it had one value for the whole
-     *   character.
+     * A role (student or instructor) is CLASS-SCOPED. It lives on
+     * the enrolment interval, not on the character. This migration
+     * tags any untagged interval based on the character's legacy
+     * `mode` field, and warns for every character who was marked
+     * instructor across multiple classes so the user can review.
      *
-     *   The correct model is that the role lives on the ENROLMENT.
-     *   An enrolment interval is a (character, class, discipline,
-     *   week-range) tuple; adding `role` to that interval expresses
-     *   "Alice teaches Combat for Class A during weeks 1–14" without
-     *   claiming anything about Class B.
-     *
-     * WHAT THIS MIGRATION DOES:
-     *   1. Builds a set of every character with mode === 'instructor'.
-     *      This is the migration's best signal about who was an
-     *      instructor at all.
-     *   2. Walks every enrolment interval in academy.enrolments.
-     *      For each interval without a `role`:
-     *        - if the owning character is in the instructor set:
-     *          tag role: 'instructor'
-     *        - otherwise: tag role: 'student'
-     *      For each interval with an existing role (from the v27
-     *      conversion, which already tagged role: 'instructor'):
-     *      leave it alone.
-     *   3. Logs a summary and warns about every character promoted
-     *      to instructor, listing which classes they were promoted
-     *      in. This is the "don't guess silently" path: the user
-     *      sees exactly which characters may have been over-marked
-     *      and can fix them via the repair view.
-     *
-     * WHY NOT FAIL ON A MISSING ROLE:
-     *   Refusing to migrate would leave the app unable to load on
-     *   any pre-v31 database. The default (student) is correct for
-     *   the overwhelming majority of intervals, and the migration
-     *   logs every interval it promotes to instructor. A missing
-     *   role is a normal state during upgrade, not a data-integrity
-     *   failure.
-     *
-     * WHAT THIS MIGRATION DOES NOT DO:
-     *   - It does NOT delete character.mode. That field is left in
-     *     place as a tombstone: nothing in the codebase reads it
-     *     after this pass, but it remains in the record until a
-     *     future migration removes it. Removing it now would
-     *     require re-deriving every ambiguity a second time and
-     *     risks a second, larger repair surface.
-     *   - It does NOT touch grades, rankings, social scores, weekly
-     *     teams, teaching groups, teaching sessions, or instructor
-     *     commitments. The role is an enrolment fact; only the
-     *     enrolment store changes.
-     *   - It does NOT normalise malformed intervals. An interval
-     *     that is not an object is left alone (and not tagged).
-     *     Fixing malformed intervals is a separate concern.
-     *
-     * @param {object} data
+     * `character.mode` is left in place as a tombstone; nothing
+     * reads it after this pass.
      */
     function migrateToVersion31(data) {
         var ROLE_STUDENT = 'student';
         var ROLE_INSTRUCTOR = 'instructor';
 
-        // ---- 1. Build the instructor-mode character set ----
         var instructorModeSet = Object.create(null);
 
         if (Array.isArray(data.characters)) {
@@ -2425,7 +2350,6 @@
             }
         }
 
-        // ---- 2. Walk every enrolment interval ----
         var intervalsSeen = 0;
         var alreadyTagged = 0;
         var taggedStudent = 0;
@@ -2467,14 +2391,12 @@
 
                         intervalsSeen++;
 
-                        // ---- Already tagged ----
                         if (interval.role === ROLE_STUDENT ||
                             interval.role === ROLE_INSTRUCTOR) {
                             alreadyTagged++;
                             continue;
                         }
 
-                        // ---- Tag by character mode ----
                         if (isInstructorMode) {
                             interval.role = ROLE_INSTRUCTOR;
                             taggedInstructor++;
@@ -2507,13 +2429,6 @@
             'Characters promoted to instructor: ' + promotedCharacters.length + '.'
         );
 
-        // ---- 3. Log the ambiguous characters ----
-        //
-        // A character with mode === 'instructor' who was enrolled in
-        // multiple classes gets every one of their classes tagged
-        // instructor. That is the migration's guess. The warning
-        // lists every affected character and their classes so the
-        // user can review and repair.
         for (var p = 0; p < promotedCharacters.length; p++) {
             var pcId = promotedCharacters[p];
             var pcClasses = characterClassesAffected[pcId];
@@ -2532,6 +2447,23 @@
         data._dataVersion = 31;
     }
 
+    /**
+     * v32 — Departments store.
+     *
+     * A new top-level array. Each department owns its own member
+     * list, the same shape as a team's members: characterId plus
+     * an intervals array. Existing data has no departments, so
+     * this migration adds the empty array and moves on. Future
+     * department writes go through DepartmentCore, which routes
+     * through MutationPipeline like every other domain.
+     */
+    function migrateToVersion32(data) {
+        if (!Array.isArray(data.departments)) {
+            data.departments = [];
+        }
+        data._dataVersion = 32;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
@@ -2542,6 +2474,7 @@
         if (!Array.isArray(data.tournaments)) { data.tournaments = []; repaired = true; }
         if (!Array.isArray(data.characters)) { data.characters = []; repaired = true; }
         if (!Array.isArray(data.teams)) { data.teams = []; repaired = true; }
+        if (!Array.isArray(data.departments)) { data.departments = []; repaired = true; }
         if (!Array.isArray(data.missions)) { data.missions = []; repaired = true; }
         if (!Array.isArray(data.activities)) { data.activities = []; repaired = true; }
         if (!Array.isArray(data.classes)) { data.classes = []; repaired = true; }
@@ -2625,10 +2558,8 @@
                 }
             }
 
-            // NOTE (v31): character.mode is a legacy tombstone. It is
-            // not normalised here anymore; nothing reads it. The
-            // field survives in the record until a future migration
-            // removes it.
+            // character.mode is a legacy tombstone (v31). Not
+            // normalised; nothing reads it.
         });
 
         data.teams.forEach(function(team) {
@@ -2641,6 +2572,51 @@
                 repaired = true;
             }
         });
+
+        // ---- Departments shape guard ----
+        //
+        // Every department must have an id, a name, and a members
+        // array. DepartmentSchema owns structural validation on
+        // write; this guard exists so a malformed imported record
+        // does not crash the Departments tab on first paint. A
+        // department missing a members array gets one; a
+        // department missing an id is dropped (nothing can address
+        // it).
+        (function ensureDepartmentShape() {
+            if (!Array.isArray(data.departments)) { return; }
+            var kept = [];
+            for (var i = 0; i < data.departments.length; i++) {
+                var dept = data.departments[i];
+                if (!dept || typeof dept !== 'object' || Array.isArray(dept)) {
+                    repaired = true;
+                    continue;
+                }
+                if (typeof dept.id !== 'string' || dept.id === '') {
+                    repaired = true;
+                    continue;
+                }
+                if (!Array.isArray(dept.members)) {
+                    dept.members = [];
+                    repaired = true;
+                }
+                if (typeof dept.name !== 'string') {
+                    dept.name = '';
+                    repaired = true;
+                }
+                if (dept.description === undefined || dept.description === null) {
+                    dept.description = '';
+                    repaired = true;
+                }
+                if (dept.headId === undefined) {
+                    dept.headId = null;
+                    repaired = true;
+                }
+                kept.push(dept);
+            }
+            if (kept.length !== data.departments.length) {
+                data.departments = kept;
+            }
+        })();
 
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
@@ -2704,12 +2680,6 @@
         }
 
         // ---- v31 shape guard: every enrolment interval has a role ----
-        //
-        // Symmetric with the v31 migration. Any imported envelope or
-        // direct write that reintroduces an untagged interval is
-        // repaired here, defaulting to 'student' (the migration-safe
-        // value). Malformed intervals are left alone; normalisation
-        // of malformed intervals is a separate concern.
         (function ensureEnrolmentRoleTags() {
             var ROLE_STUDENT = 'student';
             var ROLE_INSTRUCTOR = 'instructor';
@@ -3116,7 +3086,6 @@
             }
         })();
 
-        // ---- v30 shape guard: every class carries a valid restDays array ----
         (function ensureClassRestDays() {
             if (!data.academy ||
                 !data.academy.graduatingClasses ||
