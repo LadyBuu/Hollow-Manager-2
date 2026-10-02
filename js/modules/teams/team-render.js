@@ -7,7 +7,7 @@
  * WHAT THIS OWNS:
  *   - HTML string construction for the Teams tab.
  *   - Page shell, filter bar, team list, expanded members.
- *   - Professional Pool view (available / future sections).
+ *   - Professional Pool view (available / historical sections).
  *   - Timeline delegation (via TimelineView).
  *   - Modals: team form, ranking form/list, name history row.
  *
@@ -31,6 +31,14 @@
  *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
  *   three for the professional tab; Temporary and Civilian tabs
  *   have no mode toggle.
+ *
+ * PROFESSIONAL POOL:
+ *   Two sections. "Available" for characters whose student window
+ *   contains the query period. "Previously Available" for
+ *   characters whose window does not contain it, either because
+ *   the window is entirely in the past or entirely in the future.
+ *   Both sections carry the same row shape; the split is purely
+ *   informational.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -287,39 +295,48 @@
             return '<p class="empty-state">Pool is not available.</p>';
         }
 
-        var available = Array.isArray(vm.available) ? vm.available : [];
-        var future = Array.isArray(vm.future) ? vm.future : [];
+        var available = Array.isArray(vm.available)
+            ? vm.available
+            : [];
+        var historical = Array.isArray(vm.historical)
+            ? vm.historical
+            : [];
 
         var html = '';
 
         html += '<div class="pool-summary">';
-        html += 'Pool at year <strong>' +
+        html += 'Pool as of year <strong>' +
                     escapeHtml(String(vm.period)) +
                 '</strong> &mdash; ';
         html += '<strong>' + escapeHtml(String(available.length)) +
-                    '</strong> available, ';
-        html += '<strong>' + escapeHtml(String(future.length)) +
-                    '</strong> with future commitments.';
+                    '</strong> currently in their window, ';
+        html += '<strong>' + escapeHtml(String(historical.length)) +
+                    '</strong> outside it.';
         html += '</div>';
+
+        if (available.length === 0 && historical.length === 0) {
+            html += '<p class="empty-state">' +
+                        'No candidates in the professional pool.' +
+                    '</p>';
+            return html;
+        }
 
         html += renderPoolSection(
             'Available',
             available,
-            renderAvailablePoolRow
+            'pool-item-available'
         );
 
-        if (future.length > 0) {
-            html += renderPoolSection(
-                'Future Assignments',
-                future,
-                renderFuturePoolRow
-            );
-        }
+        html += renderPoolSection(
+            'Previously Available',
+            historical,
+            'pool-item-historical'
+        );
 
         return html;
     }
 
-    function renderPoolSection(heading, rows, rowRenderer) {
+    function renderPoolSection(heading, rows, variantClass) {
         if (rows.length === 0) { return ''; }
 
         var html = '';
@@ -339,7 +356,7 @@
         html += '</div>';
 
         for (var i = 0; i < rows.length; i++) {
-            html += rowRenderer(rows[i]);
+            html += renderPoolRow(rows[i], variantClass);
         }
 
         html += '</div>';
@@ -347,19 +364,11 @@
         return html;
     }
 
-    function renderAvailablePoolRow(row) {
-        return renderPoolRowBase(row, 'available');
-    }
-
-    function renderFuturePoolRow(row) {
-        return renderPoolRowBase(row, 'future');
-    }
-
-    function renderPoolRowBase(row, variant) {
+    function renderPoolRow(row, variantClass) {
         var html = '';
 
         html += '<div class="list-item professional-pool-item ' +
-                    'pool-item-' + variant + '" ' +
+                    variantClass + '" ' +
                     'data-id="' +
                         escapeAttribute(row.characterId) + '">';
 
