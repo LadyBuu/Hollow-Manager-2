@@ -1,39 +1,50 @@
 /**
  * js/modules/characters/character-form.js - Character Form
- * Handles form rendering, tab switching, and form field population
+ * Form rendering, tab switching, and field population.
+ *
  * Path: js/modules/characters/character-form.js
  *
- * IMPORTANT:
- *   - RENDER ONLY - no event binding (handled by CharacterEvents)
- *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
- *   - Magical section rendering delegates to CharacterStatsView
- *   - Physical stats, HP, MP, weapons rendered inline
- *   - Combat Notes (char.combatNotes) is SEPARATE from Notes tab (char.notes)
- *   - Social tab rendering delegates to CharacterViews.renderCharacterSocial
- *   - Professional tab team section delegates to
- *     CharacterViews.renderCharacterProfessional
- *   - Academic tab rendering delegates to
- *     CharacterClassView.renderAcademicTab
+ * WHAT THIS OWNS:
+ *   - The character form HTML (all eight tabs).
+ *   - Field population from a character record.
+ *   - Field collection into a save DTO.
+ *   - Tab switching.
  *
- * FILLER FLAG:
- *   The Name tab carries a checkbox, #char-is-filler, below the
- *   Character ID field. It is collected by collect() as
- *   dto.isFiller and drives the strip on save (see
- *   CharacterCRUD.save).
+ * WHAT THIS DOES NOT OWN:
+ *   - Event binding. CharacterEvents owns it, via delegation.
+ *   - Field value setting. FormUtils does the actual DOM writes.
+ *   - The Combat tab's magical section and moves section.
+ *     CharacterStatsView owns them.
+ *   - The Social tab body. CharacterViews owns it.
+ *   - The Academic tab body. CharacterClassView owns it.
+ *   - The Professional tab's team panel. CharacterViews owns it.
  *
- * CAREER WIZARD BUTTON:
- *   The Professional tab's Career Status History section carries
- *   a [⌂ Career Wizard] button (#career-wizard-btn) that opens
- *   the CareerStatusWizard modal.
+ * COLLECTION CONTRACT:
+ *   Every field is read via FormUtils.getField(id). Not getFormData().
  *
- * CAREER TRANSITION BUTTON (this revision):
- *   The same section carries a [⏹ Career Transition] button
- *   (#career-transition-btn) that opens an inline modal for
- *   marking the character Retired / Support / Instructor at a
- *   chosen year, with the professional-team cascade.
+ * NOTES:
+ *   - Combat Notes (char.combatNotes) is a separate field from
+ *     Notes (char.notes). They live on different tabs.
+ *   - The Name tab carries a #char-is-filler checkbox; collected as
+ *     dto.isFiller. CharacterCRUD uses it to decide whether to strip
+ *     the record on save.
+ *   - The Professional tab carries #career-wizard-btn and
+ *     #career-transition-btn. Both are bound by CharacterEvents via
+ *     delegation; this file only emits the markup.
  *
- *   Both buttons live inside #character-form-content and are
- *   bound by delegation in character-events.js.
+ * DEPENDENCIES (LAZILY LOADED):
+ *   - window.CharacterQueries
+ *   - window.CharacterCRUD
+ *   - window.CharacterGenerator
+ *   - window.CharacterConstants
+ *   - window.MagicConstants
+ *   - window.CharacterStats
+ *   - window.CharacterStatsView
+ *   - window.CharacterViews
+ *   - window.CharacterClassView
+ *   - window.AcademyClasses
+ *   - window.FormUtils
+ *   - window.DomUtils
  */
 
 (function() {
@@ -45,7 +56,7 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
-    // LAZY LOADING HELPERS
+    // LAZY DEPENDENCIES
     // ============================================================
 
     function getCharacterQueries() { return window.CharacterQueries || null; }
@@ -96,7 +107,10 @@
         if (!getDomUtils()) { missing.push('DomUtils'); }
 
         if (missing.length > 0) {
-            console.warn('[CharacterForm] Critical dependencies missing:', missing.join(', '));
+            console.warn(
+                '[CharacterForm] Critical dependencies missing:',
+                missing.join(', ')
+            );
             return false;
         }
         return true;
@@ -105,7 +119,7 @@
     checkDependencies();
 
     // ============================================================
-    // HTML ESCAPING
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -135,41 +149,58 @@
     }
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANT ACCESSORS
     // ============================================================
 
     function getStatKeys() {
         var CC = getCharacterConstants();
-        return CC ? CC.STAT_KEYS || ['str', 'dex', 'con', 'int', 'wis', 'cha'] : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        if (CC && Array.isArray(CC.STAT_KEYS)) {
+            return CC.STAT_KEYS;
+        }
+        return ['str', 'dex', 'con', 'int', 'wis', 'cha'];
     }
+
     function getStatDefinitions() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFINITIONS || {} : {};
     }
+
     function getStatMin() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_MIN || 1 : 1;
     }
+
     function getStatMax() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_MAX || 30 : 30;
     }
+
     function getStatDefault() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFAULT || 10 : 10;
     }
+
     function getPhysicalClasses() {
         var CC = getCharacterConstants();
-        return CC && typeof CC.getPhysicalClasses === 'function' ? CC.getPhysicalClasses() : [];
+        return CC && typeof CC.getPhysicalClasses === 'function'
+            ? CC.getPhysicalClasses()
+            : [];
     }
+
     function getWeaponTypes() {
         var CC = getCharacterConstants();
-        return CC && typeof CC.getWeaponTypes === 'function' ? CC.getWeaponTypes() : [];
+        return CC && typeof CC.getWeaponTypes === 'function'
+            ? CC.getWeaponTypes()
+            : [];
     }
+
     function getDefaultWeaponType() {
         var CC = getCharacterConstants();
-        return CC && CC.DEFAULT_WEAPON_TYPE ? CC.DEFAULT_WEAPON_TYPE : 'sharp';
+        return CC && CC.DEFAULT_WEAPON_TYPE
+            ? CC.DEFAULT_WEAPON_TYPE
+            : 'sharp';
     }
+
     function getCareerStatusOptions() {
         var CC = getCharacterConstants();
         if (CC && Array.isArray(CC.CAREER_STATUS_OPTIONS)) {
@@ -189,7 +220,7 @@
     }
 
     // ============================================================
-    // PER-FIELD RANDOM BUTTON
+    // PER-FIELD RANDOM
     // ============================================================
 
     function renderFieldRandomBtn(field) {
@@ -197,13 +228,15 @@
                     'class="field-random-btn" ' +
                     'data-field="' + escapeAttribute(field) + '" ' +
                     'title="Reroll this field" ' +
-                    'aria-label="Reroll ' + escapeAttribute(field) + '">' +
+                    'aria-label="Reroll ' + escapeAttribute(field) +
+                    '">' +
                     '\u27f3' +
                 '</button>';
     }
 
     function renderLabelWithRandom(labelText, field, extraStyle) {
-        var style = extraStyle || 'font-size:0.7rem;color:var(--text-dim);';
+        var style = extraStyle ||
+            'font-size:0.7rem;color:var(--text-dim);';
         return '<label style="' + style + '">' +
                     escapeHtml(labelText) +
                     ' ' + renderFieldRandomBtn(field) +
@@ -215,11 +248,13 @@
     // ============================================================
 
     var state = { currentTab: 'name' };
-
     var _lastRenderedEditId = undefined;
-
-    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
     var _initialized = false;
+
+    var VALID_TABS = [
+        'name', 'physical', 'personality',
+        'academic', 'professional', 'combat', 'social', 'notes'
+    ];
 
     function getCurrentYear() {
         if (window.data && typeof window.data.currentYear === 'number') {
@@ -234,7 +269,8 @@
 
     function getClassOptionsHTML(selectedId) {
         var AcademyClasses = getAcademyClasses();
-        if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
+        if (!AcademyClasses ||
+            typeof AcademyClasses.getClasses !== 'function') {
             return '<option value="">None</option>';
         }
 
@@ -245,7 +281,10 @@
             var cls = classes[i];
             if (!cls || typeof cls !== 'object') { continue; }
             var isSelected = String(cls.id) === String(selectedId);
-            html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
+            html += '<option value="' + escapeHtml(cls.id) + '"' +
+                (isSelected ? ' selected' : '') + '>' +
+                escapeHtml(cls.name) +
+                '</option>';
         }
         return html;
     }
@@ -266,7 +305,10 @@
         input.className = 'previous-name-input';
         input.placeholder = 'Previous name...';
         input.value = value || '';
-        input.style.cssText = 'flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;';
+        input.style.cssText =
+            'flex:1;padding:6px 8px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.75rem;';
 
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
@@ -290,11 +332,17 @@
 
         var row = document.createElement('div');
         row.className = 'career-status-entry';
-        row.style.cssText = 'display:grid;grid-template-columns:1.2fr 0.7fr 0.7fr 1.2fr auto;gap:6px;align-items:center;margin-bottom:6px;';
+        row.style.cssText =
+            'display:grid;' +
+            'grid-template-columns:1.2fr 0.7fr 0.7fr 1.2fr auto;' +
+            'gap:6px;align-items:center;margin-bottom:6px;';
 
         var select = document.createElement('select');
         select.className = 'career-status-select';
-        select.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        select.style.cssText =
+            'padding:4px 6px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.7rem;';
 
         var options = getCareerStatusOptions();
         var currentStatus = String(entry.status || '').toLowerCase();
@@ -312,28 +360,39 @@
         startInput.type = 'number';
         startInput.className = 'career-start-year';
         startInput.placeholder = 'Start';
-        startInput.value = entry.startYear !== undefined && entry.startYear !== null ? String(entry.startYear) : '';
-        startInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        startInput.value = entry.startYear !== undefined &&
+            entry.startYear !== null
+            ? String(entry.startYear)
+            : '';
+        startInput.style.cssText =
+            'padding:4px 6px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.7rem;';
 
         var endInput = document.createElement('input');
         endInput.type = 'number';
         endInput.className = 'career-end-year';
         endInput.placeholder = 'End';
-        endInput.value = entry.endYear !== undefined && entry.endYear !== null ? String(entry.endYear) : '';
-        endInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        endInput.value = entry.endYear !== undefined &&
+            entry.endYear !== null
+            ? String(entry.endYear)
+            : '';
+        endInput.style.cssText = startInput.style.cssText;
 
         var titleInput = document.createElement('input');
         titleInput.type = 'text';
         titleInput.className = 'career-title';
         titleInput.placeholder = 'Title';
         titleInput.value = entry.title ? String(entry.title) : '';
-        titleInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        titleInput.style.cssText = startInput.style.cssText;
 
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-career-entry small danger';
         removeBtn.textContent = '\u2715';
-        removeBtn.setAttribute('aria-label', 'Remove status entry');
+        removeBtn.setAttribute(
+            'aria-label', 'Remove status entry'
+        );
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
 
         row.appendChild(select);
@@ -355,7 +414,10 @@
 
         var row = document.createElement('div');
         row.className = 'weapon-entry';
-        row.style.cssText = 'display:grid;grid-template-columns:1.5fr 1fr 2fr auto;gap:6px;align-items:center;margin-bottom:6px;';
+        row.style.cssText =
+            'display:grid;' +
+            'grid-template-columns:1.5fr 1fr 2fr auto;' +
+            'gap:6px;align-items:center;margin-bottom:6px;';
         if (weapon.id) {
             row.dataset.weaponId = weapon.id;
         }
@@ -365,11 +427,14 @@
         nameInput.className = 'weapon-name';
         nameInput.placeholder = 'Weapon name';
         nameInput.value = weapon.name || '';
-        nameInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        nameInput.style.cssText =
+            'padding:4px 6px;background:var(--bg);' +
+            'border:1px solid var(--border);color:var(--text);' +
+            'border-radius:4px;font-size:0.7rem;';
 
         var typeSelect = document.createElement('select');
         typeSelect.className = 'weapon-type';
-        typeSelect.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        typeSelect.style.cssText = nameInput.style.cssText;
 
         var types = getWeaponTypes();
         var currentType = weapon.type || getDefaultWeaponType();
@@ -386,7 +451,7 @@
         notesInput.className = 'weapon-notes';
         notesInput.placeholder = 'Notes';
         notesInput.value = weapon.notes || '';
-        notesInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+        notesInput.style.cssText = nameInput.style.cssText;
 
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
@@ -409,9 +474,13 @@
 
     function render(editId) {
         if (!checkDependencies()) {
-            var container = document.getElementById('character-form-content');
+            var container = document.getElementById(
+                'character-form-content'
+            );
             if (container) {
-                container.innerHTML = '<p class="empty-state">Form dependencies not loaded. Please refresh the page.</p>';
+                container.innerHTML =
+                    '<p class="empty-state">Form dependencies ' +
+                    'not loaded. Please refresh the page.</p>';
             }
             return;
         }
@@ -425,13 +494,17 @@
             if (!char) { return; }
         }
 
-        var normalizedEditId = editId === undefined || editId === null || editId === ''
+        var normalizedEditId = editId === undefined ||
+            editId === null ||
+            editId === ''
             ? null
             : String(editId);
 
-        var openingNewCharacter = (_lastRenderedEditId !== undefined &&
-                                   _lastRenderedEditId !== null &&
-                                   normalizedEditId === null);
+        var openingNewCharacter = (
+            _lastRenderedEditId !== undefined &&
+            _lastRenderedEditId !== null &&
+            normalizedEditId === null
+        );
 
         if (openingNewCharacter) {
             state.currentTab = 'name';
@@ -441,13 +514,17 @@
 
         var title = document.getElementById('form-title');
         if (title) {
-            title.textContent = editId ? 'Edit Character' : 'New Character';
+            title.textContent = editId
+                ? 'Edit Character' : 'New Character';
         }
 
-        var nameDisplay = document.getElementById('current-char-name');
+        var nameDisplay = document.getElementById(
+            'current-char-name'
+        );
         if (nameDisplay) {
             if (char) {
-                nameDisplay.textContent = CharacterQueries.getDisplayName(char);
+                nameDisplay.textContent =
+                    CharacterQueries.getDisplayName(char);
                 nameDisplay.style.display = 'inline';
             } else {
                 nameDisplay.textContent = '';
@@ -456,7 +533,9 @@
         }
 
         var currentYear = getCurrentYear();
-        var content = document.getElementById('character-form-content');
+        var content = document.getElementById(
+            'character-form-content'
+        );
         if (!content) { return; }
 
         var html = getCharacterFormHTML(char, editId, currentYear);
@@ -465,82 +544,116 @@
         if (char) {
             populateFormFields(char);
         } else {
-            var prevContainer = document.getElementById('previous-names-container');
+            var prevContainer = document.getElementById(
+                'previous-names-container'
+            );
             if (prevContainer) {
                 prevContainer.textContent = '';
                 addPreviousNameRow(prevContainer, '');
             }
-            var careerContainer = document.getElementById('career-status-container');
+            var careerContainer = document.getElementById(
+                'career-status-container'
+            );
             if (careerContainer) {
                 careerContainer.textContent = '';
                 addCareerEntryRow(careerContainer);
             }
-            var weaponsContainer = document.getElementById('weapons-container');
+            var weaponsContainer = document.getElementById(
+                'weapons-container'
+            );
             if (weaponsContainer) {
                 weaponsContainer.textContent = '';
             }
             applyDeceasedState(false);
         }
 
+        // ---- Combat tab delegates ----
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView) {
             if (char) {
-                if (typeof CharacterStatsView.populateMagicalFields === 'function') {
+                if (typeof CharacterStatsView.populateMagicalFields ===
+                    'function') {
                     CharacterStatsView.populateMagicalFields(char);
                 }
-                if (typeof CharacterStatsView.updatePhysicalClassDisplay === 'function') {
+                if (typeof CharacterStatsView.updatePhysicalClassDisplay ===
+                    'function') {
                     CharacterStatsView.updatePhysicalClassDisplay(char);
                 }
-                if (typeof CharacterStatsView.updateMagicalClassDisplay === 'function') {
+                if (typeof CharacterStatsView.updateMagicalClassDisplay ===
+                    'function') {
                     CharacterStatsView.updateMagicalClassDisplay(char);
                 }
-                if (typeof CharacterStatsView.renderMovesSection === 'function') {
+                if (typeof CharacterStatsView.renderMovesSection ===
+                    'function') {
                     CharacterStatsView.renderMovesSection(char);
                 }
             } else {
-                if (typeof CharacterStatsView.updatePhysicalClassDisplay === 'function') {
+                if (typeof CharacterStatsView.updatePhysicalClassDisplay ===
+                    'function') {
                     CharacterStatsView.updatePhysicalClassDisplay(null);
                 }
-                if (typeof CharacterStatsView.updateMagicalClassDisplay === 'function') {
+                if (typeof CharacterStatsView.updateMagicalClassDisplay ===
+                    'function') {
                     CharacterStatsView.updateMagicalClassDisplay(null);
                 }
-                if (typeof CharacterStatsView.renderMovesSection === 'function') {
+                if (typeof CharacterStatsView.renderMovesSection ===
+                    'function') {
                     CharacterStatsView.renderMovesSection(null);
                 }
             }
         }
 
+        // ---- Academic tab delegates ----
         var CharacterClassView = getCharacterClassView();
-        if (CharacterClassView && typeof CharacterClassView.renderAcademicTab === 'function') {
-            var academicContainer = document.getElementById('academic-class-view');
+        if (CharacterClassView &&
+            typeof CharacterClassView.renderAcademicTab ===
+            'function') {
+            var academicContainer = document.getElementById(
+                'academic-class-view'
+            );
             if (academicContainer) {
                 try {
-                    CharacterClassView.renderAcademicTab(char, academicContainer);
+                    CharacterClassView.renderAcademicTab(
+                        char, academicContainer
+                    );
                 } catch (e) {
-                    console.warn('[CharacterForm] renderAcademicTab failed:', e);
+                    console.warn(
+                        '[CharacterForm] renderAcademicTab failed:', e
+                    );
                 }
             }
         }
 
-        var CharacterViewsForProfessional = getCharacterViews();
-        if (CharacterViewsForProfessional &&
-            typeof CharacterViewsForProfessional.renderCharacterProfessional === 'function') {
-            var professionalContainer = document.getElementById('professional-view');
+        // ---- Professional tab delegates ----
+        var CharacterViews = getCharacterViews();
+        if (CharacterViews &&
+            typeof CharacterViews.renderCharacterProfessional ===
+            'function') {
+            var professionalContainer = document.getElementById(
+                'professional-view'
+            );
             if (professionalContainer) {
                 try {
-                    CharacterViewsForProfessional.renderCharacterProfessional(char);
+                    CharacterViews.renderCharacterProfessional(char);
                 } catch (e) {
-                    console.warn('[CharacterForm] renderCharacterProfessional failed:', e);
+                    console.warn(
+                        '[CharacterForm] ' +
+                        'renderCharacterProfessional failed:', e
+                    );
                 }
             }
         }
 
-        var CharacterViews = getCharacterViews();
-        if (CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
+        // ---- Social tab delegates ----
+        if (CharacterViews &&
+            typeof CharacterViews.renderCharacterSocial ===
+            'function') {
             try {
                 CharacterViews.renderCharacterSocial(char);
             } catch (e) {
-                console.warn('[CharacterForm] renderCharacterSocial failed:', e);
+                console.warn(
+                    '[CharacterForm] renderCharacterSocial failed:', e
+                );
             }
         }
 
@@ -553,16 +666,25 @@
     function hide() {
         var form = document.getElementById('character-form');
         if (form) { form.style.display = 'none'; }
+
         var title = document.getElementById('form-title');
         if (title) { title.textContent = 'No Character Selected'; }
-        var nameDisplay = document.getElementById('current-char-name');
+
+        var nameDisplay = document.getElementById(
+            'current-char-name'
+        );
         if (nameDisplay) {
             nameDisplay.textContent = '';
             nameDisplay.style.display = 'none';
         }
-        var content = document.getElementById('character-form-content');
+
+        var content = document.getElementById(
+            'character-form-content'
+        );
         if (content) {
-            content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
+            content.innerHTML =
+                '<p class="empty-state">Select a character from ' +
+                'the list to view and edit details.</p>';
         }
 
         _lastRenderedEditId = undefined;
@@ -570,7 +692,9 @@
     }
 
     function applyDeceasedState(isDeceased) {
-        var fields = ['char-deathYear', 'char-deathAge', 'char-deathCause'];
+        var fields = [
+            'char-deathYear', 'char-deathAge', 'char-deathCause'
+        ];
         fields.forEach(function(id) {
             var el = document.getElementById(id);
             if (!el) { return; }
@@ -588,12 +712,18 @@
         var tabs = getTabsHTML();
 
         var leftActionsHTML = editId
-            ? ('<button type="button" id="delete-char-btn" class="danger small" ' +
-                    'style="font-size:0.75rem;padding:6px 12px;">Delete</button>' +
-                '<button type="button" id="export-character-report-btn" class="secondary small" ' +
+            ? (
+                '<button type="button" ' +
+                    'id="delete-char-btn" ' +
+                    'class="danger small" ' +
                     'style="font-size:0.75rem;padding:6px 12px;">' +
-                    'Export' +
-                '</button>')
+                    'Delete</button>' +
+                '<button type="button" ' +
+                    'id="export-character-report-btn" ' +
+                    'class="secondary small" ' +
+                    'style="font-size:0.75rem;padding:6px 12px;">' +
+                    'Export</button>'
+            )
             : '';
 
         return `
@@ -637,7 +767,19 @@
         for (var i = 0; i < VALID_TABS.length; i++) {
             var tab = VALID_TABS[i];
             var isActive = tab === state.currentTab;
-            html += '<button type="button" class="form-tab-btn ' + (isActive ? 'active' : '') + '" data-tab="' + tab + '" style="background:transparent;border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';color:' + (isActive ? 'var(--accent)' : 'var(--text-dim)') + ';padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">' + tabNames[tab] + '</button>';
+            html += '<button type="button" ' +
+                'class="form-tab-btn' +
+                (isActive ? ' active' : '') + '" ' +
+                'data-tab="' + tab + '" ' +
+                'style="background:transparent;border:none;' +
+                'border-bottom:2px solid ' +
+                (isActive ? 'var(--accent)' : 'transparent') + ';' +
+                'color:' +
+                (isActive ? 'var(--accent)' : 'var(--text-dim)') +
+                ';padding:4px 10px;cursor:pointer;' +
+                'font-size:0.7rem;transition:0.2s;">' +
+                tabNames[tab] +
+                '</button>';
         }
         return html;
     }
@@ -675,9 +817,7 @@
         }
 
         var charIdValue = c.id ? String(c.id) : '';
-        var charIdPlaceholder = c.id
-            ? ''
-            : 'Assigned on save';
+        var charIdPlaceholder = c.id ? '' : 'Assigned on save';
         var charIdDisabled = c.id ? '' : 'disabled';
 
         var isFiller = c.isFiller === true;
@@ -834,7 +974,7 @@
     }
 
     // ============================================================
-    // PHYSICAL TAB (unchanged)
+    // PHYSICAL TAB
     // ============================================================
 
     function getPhysicalTabHTML(c) {
@@ -896,7 +1036,7 @@
     }
 
     // ============================================================
-    // PERSONALITY TAB (unchanged)
+    // PERSONALITY TAB
     // ============================================================
 
     function getPersonalityTabHTML(c) {
@@ -994,7 +1134,7 @@
     }
 
     // ============================================================
-    // ACADEMIC TAB (unchanged)
+    // ACADEMIC TAB
     // ============================================================
 
     function getAcademicTabHTML(c) {
@@ -1010,12 +1150,6 @@
     // ============================================================
     // PROFESSIONAL TAB
     // ============================================================
-    //
-    // This revision adds the Career Transition button next to
-    // + Add Status Entry and Career Wizard. The button opens an
-    // inline modal (built by character-events.js) for marking the
-    // character Retired / Support / Instructor at a chosen year,
-    // with the professional-team cascade.
 
     function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
@@ -1045,7 +1179,7 @@
     }
 
     // ============================================================
-    // COMBAT TAB (unchanged)
+    // COMBAT TAB
     // ============================================================
 
     function getCombatTabHTML(c) {
@@ -1056,37 +1190,31 @@
         var movesHTML = '';
 
         if (CharacterStatsView) {
-            if (typeof CharacterStatsView.getMagicalSectionHTML === 'function') {
-                magicalHTML = CharacterStatsView.getMagicalSectionHTML(c);
+            if (typeof CharacterStatsView.getMagicalSectionHTML ===
+                'function') {
+                magicalHTML =
+                    CharacterStatsView.getMagicalSectionHTML(c);
             }
-            if (typeof CharacterStatsView.getMovesSectionHTML === 'function') {
+            if (typeof CharacterStatsView.getMovesSectionHTML ===
+                'function') {
                 movesHTML = CharacterStatsView.getMovesSectionHTML(c);
             }
         }
 
         return `
             <div class="tab-panel" data-tab="combat" style="display:${active};">
-
                 ${getPhysicalSectionHTML(c)}
-
                 ${magicalHTML}
-
                 ${movesHTML}
-
                 ${getWeaponsSectionHTML(c)}
 
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
                     <label style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:6px;">Combat Notes</label>
                     <textarea id="char-combat-notes" rows="4" placeholder="Combat-specific notes, tactics, observations..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.combatNotes || '')}</textarea>
                 </div>
-
             </div>
         `;
     }
-
-    // ============================================================
-    // COMBAT TAB - PHYSICAL SECTION (unchanged)
-    // ============================================================
 
     function getPhysicalSectionHTML(c) {
         var stats = c.stats || {};
@@ -1096,12 +1224,20 @@
         var statInputs = '';
         statKeys.forEach(function(key) {
             var definition = statDefinitions[key] || {};
-            var abbreviation = definition.abbreviation || key.toUpperCase();
-            var value = stats[key] !== undefined ? stats[key] : getStatDefault();
+            var abbreviation = definition.abbreviation ||
+                key.toUpperCase();
+            var value = stats[key] !== undefined
+                ? stats[key]
+                : getStatDefault();
 
             var modifier = Math.floor((value - 10) / 2);
-            var modifierDisplay = (modifier >= 0 ? '+' : '') + modifier;
-            var modColor = modifier > 0 ? 'var(--accent)' : (modifier < 0 ? 'var(--danger)' : 'var(--text-dim)');
+            var modifierDisplay =
+                (modifier >= 0 ? '+' : '') + modifier;
+            var modColor = modifier > 0
+                ? 'var(--accent)'
+                : (modifier < 0
+                    ? 'var(--danger)'
+                    : 'var(--text-dim)');
 
             statInputs += `
                 <div class="stat-block" style="display:flex;flex-direction:column;gap:2px;align-items:center;padding:6px;background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;">
@@ -1115,7 +1251,8 @@
         var classOptions = '<option value="">\u2014 Derived \u2014</option>';
         var physicalClasses = getPhysicalClasses();
         physicalClasses.forEach(function(cls) {
-            classOptions += '<option value="' + escapeHtml(cls.id) + '">' + escapeHtml(cls.label) + '</option>';
+            classOptions += '<option value="' + escapeHtml(cls.id) +
+                '">' + escapeHtml(cls.label) + '</option>';
         });
 
         return `
@@ -1162,10 +1299,6 @@
         `;
     }
 
-    // ============================================================
-    // COMBAT TAB - WEAPONS SECTION (unchanged)
-    // ============================================================
-
     function getWeaponsSectionHTML(c) {
         return `
             <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
@@ -1179,7 +1312,7 @@
     }
 
     // ============================================================
-    // SOCIAL TAB (unchanged)
+    // SOCIAL TAB
     // ============================================================
 
     function getSocialTabHTML(c) {
@@ -1205,7 +1338,7 @@
     }
 
     // ============================================================
-    // NOTES TAB (unchanged)
+    // NOTES TAB
     // ============================================================
 
     function getNotesTabHTML(c) {
@@ -1222,7 +1355,7 @@
     }
 
     // ============================================================
-    // FORM FIELD POPULATION
+    // POPULATE FIELDS
     // ============================================================
 
     function populateFormFields(char) {
@@ -1239,10 +1372,13 @@
 
         FormUtils.setField('char-is-filler', char.isFiller === true);
 
-        var prevNamesContainer = document.getElementById('previous-names-container');
+        var prevNamesContainer = document.getElementById(
+            'previous-names-container'
+        );
         if (prevNamesContainer) {
             prevNamesContainer.textContent = '';
-            var prevNames = Array.isArray(char.previousNames) ? char.previousNames : [];
+            var prevNames = Array.isArray(char.previousNames)
+                ? char.previousNames : [];
             if (prevNames.length === 0) {
                 addPreviousNameRow(prevNamesContainer, '');
             } else {
@@ -1253,18 +1389,20 @@
         }
 
         var dp = char.displayParts || {};
-        FormUtils.setField('char-displayFirst',    dp.first    !== false);
+        FormUtils.setField('char-displayFirst', dp.first !== false);
         FormUtils.setField('char-displayNickname', dp.nickname === true);
-        FormUtils.setField('char-displayMiddle',   dp.middle   !== false);
-        FormUtils.setField('char-displayLast',     dp.last     !== false);
-        FormUtils.setField('char-displayAlias',    dp.alias    === true);
+        FormUtils.setField('char-displayMiddle', dp.middle !== false);
+        FormUtils.setField('char-displayLast', dp.last !== false);
+        FormUtils.setField('char-displayAlias', dp.alias === true);
 
         FormUtils.setField('char-birthYear', char.birthYear || '');
         var currentYear = getCurrentYear();
         var ageField = document.getElementById('char-age');
         if (ageField) {
             var by = parseInt(char.birthYear, 10);
-            ageField.value = !isNaN(by) ? String(currentYear - by) : '';
+            ageField.value = !isNaN(by)
+                ? String(currentYear - by)
+                : '';
         }
 
         FormUtils.setField('char-gender', char.gender);
@@ -1278,7 +1416,8 @@
 
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
-            deathFields.style.display = isDeceased ? 'block' : 'none';
+            deathFields.style.display = isDeceased
+                ? 'block' : 'none';
         }
         applyDeceasedState(isDeceased);
 
@@ -1291,29 +1430,63 @@
         FormUtils.setField('char-appearanceNotes', char.appearanceNotes);
 
         if (char.personality) {
-            FormUtils.setField('char-personality-traits', char.personality.traits);
-            FormUtils.setField('char-personality-ideals', char.personality.ideals);
-            FormUtils.setField('char-personality-bonds', char.personality.bonds);
-            FormUtils.setField('char-personality-flaws', char.personality.flaws);
-            FormUtils.setField('char-personality-alignment', char.personality.alignment);
-            FormUtils.setField('char-personality-likes', char.personality.likes);
-            FormUtils.setField('char-personality-dislikes', char.personality.dislikes);
-            FormUtils.setField('char-personality-habits', char.personality.habits);
-            FormUtils.setField('char-personality-fears', char.personality.fears);
-            FormUtils.setField('char-personality-goals', char.personality.goals);
-
-            FormUtils.setField('char-personality-authority', char.personality.authority);
-            FormUtils.setField('char-personality-conflictStyle', char.personality.conflictStyle);
-            FormUtils.setField('char-personality-socialStyle', char.personality.socialStyle);
-            FormUtils.setField('char-personality-quirks', char.personality.quirks);
+            FormUtils.setField(
+                'char-personality-traits', char.personality.traits
+            );
+            FormUtils.setField(
+                'char-personality-ideals', char.personality.ideals
+            );
+            FormUtils.setField(
+                'char-personality-bonds', char.personality.bonds
+            );
+            FormUtils.setField(
+                'char-personality-flaws', char.personality.flaws
+            );
+            FormUtils.setField(
+                'char-personality-alignment',
+                char.personality.alignment
+            );
+            FormUtils.setField(
+                'char-personality-likes', char.personality.likes
+            );
+            FormUtils.setField(
+                'char-personality-dislikes', char.personality.dislikes
+            );
+            FormUtils.setField(
+                'char-personality-habits', char.personality.habits
+            );
+            FormUtils.setField(
+                'char-personality-fears', char.personality.fears
+            );
+            FormUtils.setField(
+                'char-personality-goals', char.personality.goals
+            );
+            FormUtils.setField(
+                'char-personality-authority',
+                char.personality.authority
+            );
+            FormUtils.setField(
+                'char-personality-conflictStyle',
+                char.personality.conflictStyle
+            );
+            FormUtils.setField(
+                'char-personality-socialStyle',
+                char.personality.socialStyle
+            );
+            FormUtils.setField(
+                'char-personality-quirks', char.personality.quirks
+            );
         }
 
         FormUtils.setField('char-specialty', char.specialty);
 
-        var careerContainer = document.getElementById('career-status-container');
+        var careerContainer = document.getElementById(
+            'career-status-container'
+        );
         if (careerContainer) {
             careerContainer.textContent = '';
-            var careerEntries = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+            var careerEntries = Array.isArray(char.careerStatus)
+                ? char.careerStatus : [];
             if (careerEntries.length === 0) {
                 addCareerEntryRow(careerContainer);
             } else {
@@ -1326,7 +1499,9 @@
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
-                var value = char.stats[key] !== undefined ? char.stats[key] : getStatDefault();
+                var value = char.stats[key] !== undefined
+                    ? char.stats[key]
+                    : getStatDefault();
                 FormUtils.setField('char-stat-' + key, value);
             });
         }
@@ -1334,26 +1509,30 @@
         FormUtils.setField('char-hp', char.hp || 0);
         FormUtils.setField('char-mp', char.mp || 0);
 
-        var weaponsContainer = document.getElementById('weapons-container');
+        var weaponsContainer = document.getElementById(
+            'weapons-container'
+        );
         if (weaponsContainer) {
             weaponsContainer.textContent = '';
-            var weapons = Array.isArray(char.weapons) ? char.weapons : [];
+            var weapons = Array.isArray(char.weapons)
+                ? char.weapons : [];
             weapons.forEach(function(w) {
                 addWeaponRow(weaponsContainer, w);
             });
         }
 
         FormUtils.setField('char-combat-notes', char.combatNotes || '');
-
         FormUtils.setField('char-notes-tab', char.notes || '');
     }
 
     // ============================================================
-    // FORM DATA COLLECTION
+    // COLLECT
     // ============================================================
 
     function collectCareerStatus(form) {
-        var rows = form.querySelectorAll('#career-status-container .career-status-entry');
+        var rows = form.querySelectorAll(
+            '#career-status-container .career-status-entry'
+        );
         var entries = [];
 
         for (var i = 0; i < rows.length; i++) {
@@ -1363,18 +1542,18 @@
             var endEl = row.querySelector('.career-end-year');
             var titleEl = row.querySelector('.career-title');
 
-            var status = statusEl ? String(statusEl.value || '').trim() : '';
+            var status = statusEl
+                ? String(statusEl.value || '').trim() : '';
             if (!status) { continue; }
-
-            var startYear = startEl ? String(startEl.value || '').trim() : '';
-            var endYear = endEl ? String(endEl.value || '').trim() : '';
-            var title = titleEl ? String(titleEl.value || '').trim() : '';
 
             entries.push({
                 status: status,
-                startYear: startYear,
-                endYear: endYear,
-                title: title
+                startYear: startEl
+                    ? String(startEl.value || '').trim() : '',
+                endYear: endEl
+                    ? String(endEl.value || '').trim() : '',
+                title: titleEl
+                    ? String(titleEl.value || '').trim() : ''
             });
         }
 
@@ -1393,7 +1572,9 @@
     }
 
     function collectWeapons(form) {
-        var rows = form.querySelectorAll('#weapons-container .weapon-entry');
+        var rows = form.querySelectorAll(
+            '#weapons-container .weapon-entry'
+        );
         var weapons = [];
 
         for (var i = 0; i < rows.length; i++) {
@@ -1402,14 +1583,18 @@
             var typeEl = row.querySelector('.weapon-type');
             var notesEl = row.querySelector('.weapon-notes');
 
-            var name = nameEl ? String(nameEl.value || '').trim() : '';
+            var name = nameEl
+                ? String(nameEl.value || '').trim() : '';
             if (!name) { continue; }
 
             weapons.push({
                 id: row.dataset.weaponId || undefined,
                 name: name,
-                type: typeEl ? String(typeEl.value || '').trim() : getDefaultWeaponType(),
-                notes: notesEl ? String(notesEl.value || '').trim() : ''
+                type: typeEl
+                    ? String(typeEl.value || '').trim()
+                    : getDefaultWeaponType(),
+                notes: notesEl
+                    ? String(notesEl.value || '').trim() : ''
             });
         }
 
@@ -1419,7 +1604,9 @@
     function collect() {
         var FormUtils = getFormUtils();
         if (!FormUtils) {
-            console.warn('[CharacterForm] FormUtils not available for collect');
+            console.warn(
+                '[CharacterForm] FormUtils not available for collect'
+            );
             return null;
         }
 
@@ -1432,7 +1619,9 @@
         var statDefault = getStatDefault();
 
         var previousNames = [];
-        var prevInputs = form.querySelectorAll('.previous-name-input');
+        var prevInputs = form.querySelectorAll(
+            '.previous-name-input'
+        );
         for (var i = 0; i < prevInputs.length; i++) {
             var val = prevInputs[i].value.trim();
             if (val) { previousNames.push(val); }
@@ -1446,7 +1635,8 @@
             alias:    FormUtils.getField('char-displayAlias') === true
         };
 
-        var isDeceased = FormUtils.getField('char-deceased') === true;
+        var isDeceased =
+            FormUtils.getField('char-deceased') === true;
 
         var deathYear = '';
         var deathAge = '';
@@ -1458,7 +1648,8 @@
             deathCause = FormUtils.getField('char-deathCause') || '';
         }
 
-        var birthYearRaw = FormUtils.getField('char-birthYear') || '';
+        var birthYearRaw =
+            FormUtils.getField('char-birthYear') || '';
 
         if (isDeceased && !deathAge && birthYearRaw && deathYear) {
             var by = parseInt(birthYearRaw, 10);
@@ -1495,7 +1686,8 @@
             height: FormUtils.getField('char-height') || '',
             weight: FormUtils.getField('char-weight') || '',
             build: FormUtils.getField('char-build') || '',
-            appearanceNotes: FormUtils.getField('char-appearanceNotes') || '',
+            appearanceNotes:
+                FormUtils.getField('char-appearanceNotes') || '',
 
             specialty: FormUtils.getField('char-specialty') || '',
             careerStatus: collectCareerStatus(form),
@@ -1507,36 +1699,60 @@
 
             weapons: collectWeapons(form),
 
-            combatNotes: FormUtils.getField('char-combat-notes') || '',
+            combatNotes:
+                FormUtils.getField('char-combat-notes') || '',
 
             notes: FormUtils.getField('char-notes-tab') || '',
 
             personality: {
-                traits: FormUtils.getField('char-personality-traits') || '',
-                ideals: FormUtils.getField('char-personality-ideals') || '',
-                bonds: FormUtils.getField('char-personality-bonds') || '',
-                flaws: FormUtils.getField('char-personality-flaws') || '',
-                alignment: FormUtils.getField('char-personality-alignment') || '',
-                likes: FormUtils.getField('char-personality-likes') || '',
-                dislikes: FormUtils.getField('char-personality-dislikes') || '',
-                habits: FormUtils.getField('char-personality-habits') || '',
-                fears: FormUtils.getField('char-personality-fears') || '',
-                goals: FormUtils.getField('char-personality-goals') || '',
+                traits:
+                    FormUtils.getField('char-personality-traits') || '',
+                ideals:
+                    FormUtils.getField('char-personality-ideals') || '',
+                bonds:
+                    FormUtils.getField('char-personality-bonds') || '',
+                flaws:
+                    FormUtils.getField('char-personality-flaws') || '',
+                alignment:
+                    FormUtils.getField('char-personality-alignment') || '',
+                likes:
+                    FormUtils.getField('char-personality-likes') || '',
+                dislikes:
+                    FormUtils.getField('char-personality-dislikes') || '',
+                habits:
+                    FormUtils.getField('char-personality-habits') || '',
+                fears:
+                    FormUtils.getField('char-personality-fears') || '',
+                goals:
+                    FormUtils.getField('char-personality-goals') || '',
 
-                authority: FormUtils.getField('char-personality-authority') || '',
-                conflictStyle: FormUtils.getField('char-personality-conflictStyle') || '',
-                socialStyle: FormUtils.getField('char-personality-socialStyle') || '',
-                quirks: FormUtils.getField('char-personality-quirks') || ''
+                authority:
+                    FormUtils.getField('char-personality-authority') || '',
+                conflictStyle:
+                    FormUtils.getField(
+                        'char-personality-conflictStyle'
+                    ) || '',
+                socialStyle:
+                    FormUtils.getField('char-personality-socialStyle') ||
+                    '',
+                quirks:
+                    FormUtils.getField('char-personality-quirks') || ''
             }
         };
 
         statKeys.forEach(function(key) {
-            var value = parseInt(FormUtils.getField('char-stat-' + key), 10);
-            dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
+            var value = parseInt(
+                FormUtils.getField('char-stat-' + key), 10
+            );
+            dto.stats[key] = !isNaN(value)
+                ? Math.max(statMin, Math.min(statMax, value))
+                : statDefault;
         });
 
         var CharacterStatsView = getCharacterStatsView();
-        if (CharacterStatsView && typeof CharacterStatsView.collectMagicalFields === 'function') {
+        if (CharacterStatsView &&
+            typeof CharacterStatsView.collectMagicalFields ===
+            'function') {
             dto.magic = CharacterStatsView.collectMagicalFields();
         }
 
@@ -1556,8 +1772,10 @@
         btns.forEach(function(btn) {
             var isActive = btn.dataset.tab === tab;
             btn.classList.toggle('active', isActive);
-            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
-            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
+            btn.style.color = isActive
+                ? 'var(--accent)' : 'var(--text-dim)';
+            btn.style.borderBottomColor = isActive
+                ? 'var(--accent)' : 'transparent';
         });
 
         var panels = document.querySelectorAll('.tab-panel');
@@ -1572,14 +1790,23 @@
             if (charId && CharacterQueries) {
                 var char = CharacterQueries.getCharacterById(charId);
                 var CharacterViews = getCharacterViews();
-                if (char && CharacterViews &&
-                    typeof CharacterViews.renderCharacterProfessional === 'function') {
-                    var professionalContainer = document.getElementById('professional-view');
+                if (char &&
+                    CharacterViews &&
+                    typeof CharacterViews.renderCharacterProfessional ===
+                    'function') {
+                    var professionalContainer =
+                        document.getElementById('professional-view');
                     if (professionalContainer) {
                         try {
-                            CharacterViews.renderCharacterProfessional(char);
+                            CharacterViews.renderCharacterProfessional(
+                                char
+                            );
                         } catch (e) {
-                            console.warn('[CharacterForm] renderCharacterProfessional failed on tab switch:', e);
+                            console.warn(
+                                '[CharacterForm] ' +
+                                'renderCharacterProfessional failed ' +
+                                'on tab switch:', e
+                            );
                         }
                     }
                 }
@@ -1588,19 +1815,23 @@
     }
 
     // ============================================================
-    // RANDOM GENERATION
+    // RANDOM
     // ============================================================
 
     function generateRandomPhysical() {
         var CharacterGenerator = getCharacterGenerator();
         if (!CharacterGenerator) { return null; }
-        return CharacterGenerator.generatePhysical ? CharacterGenerator.generatePhysical() : null;
+        return CharacterGenerator.generatePhysical
+            ? CharacterGenerator.generatePhysical()
+            : null;
     }
 
     function generateRandomPersonality() {
         var CharacterGenerator = getCharacterGenerator();
         if (!CharacterGenerator) { return null; }
-        return CharacterGenerator.generatePersonality ? CharacterGenerator.generatePersonality() : null;
+        return CharacterGenerator.generatePersonality
+            ? CharacterGenerator.generatePersonality()
+            : null;
     }
 
     // ============================================================
@@ -1654,7 +1885,10 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterForm] Verification - some exports may be missing:', missing.join(', '));
+            console.warn(
+                '[CharacterForm] Verification — some exports may ' +
+                'be missing:', missing.join(', ')
+            );
         }
     })();
 
