@@ -1,181 +1,72 @@
 /**
  * modules/teams/team-core.js - Team Core
- * CANONICAL mutation API for teams.
+ * Canonical mutation API for teams.
  *
  * Path: js/modules/teams/team-core.js
  *
- * This module provides:
- *   - Team CRUD (create, update, delete)
+ * WHAT THIS OWNS:
+ *   - Team CRUD (create, update, delete).
  *   - Member mutations: add interval, end interval, reopen interval,
- *     purge interval, remove whole member
- *   - Batch member mutation: batchAddMembers
- *   - Ranking mutation (add, remove)
- *   - Configuration (characterProvider injection)
- *   - Cross-domain cascade helpers:
- *       stripCharacterRefs      (hard delete of a character)
- *       endStintsForCharacter   (death of a character; see below)
+ *     purge interval, remove member.
+ *   - Batch member mutation (batchAddMembers).
+ *   - Ranking mutations (add, remove).
+ *   - Configuration (characterProvider injection).
+ *   - Cross-domain cascades:
+ *       stripCharacterRefs      (character deletion)
+ *       endStintsForCharacter   (character death, career transition)
  *
- * IMPORTANT:
- *   - This is the CANONICAL mutation API for teams.
- *   - All mutations go through MutationPipeline. The pipeline owns
- *     persistence, rollback, and activity logging.
- *   - This module does NOT expose public read APIs. Team reads are
- *     owned by TeamQueries.
- *   - Reads performed inside this module are for pre-flight checks
- *     and pipeline validate() callbacks. They are not part of the
- *     public surface.
- *   - The characterProvider is injected via configure(). TeamCore
- *     does not know how characters are stored.
- *   - This module does NOT call saveData.
- *   - This module does NOT render, notify, or touch the DOM.
+ * WHAT THIS DOES NOT OWN:
+ *   - Public read APIs. Team reads go through TeamQueries.
+ *   - Rendering, notifications, DOM.
+ *   - saveData. The pipeline owns persistence.
  *
  * MUTATION CONTRACT:
- *   All public mutations return a Promise that resolves to
- *   { success: boolean, data?: any, message?: string }.
- *
- *   Invalid inputs are REJECTED. The mutation validators check the
- *   FULL proposed state (candidate) before applying it.
- *
- *   Validations run twice:
- *     1. Pre-flight against window.data. Fast fail for obvious
- *        problems.
- *     2. Inside the pipeline's validate() callback against the
- *        snapshot. This IS authoritative. It re-derives the
- *        candidate from the snapshot and re-validates.
- *
- *   The mutate() callback ALSO re-derives the candidate from the
- *   snapshot, so the applied state can never diverge from what
- *   validate() saw.
- *
- * BATCH MUTATIONS:
- *   batchAddMembers is the ONLY compound mutation on this module.
- *   It adds several (team, character) intervals in one transaction.
- *   Either every pair is added, or none is. The pipeline's rollback
- *   guarantees this: if mutate() throws, the snapshot is discarded
- *   and window.data is untouched.
- *
- *   The validate() callback checks the FULL proposed set against
- *   the snapshot. The mutate() callback applies the set. If any
- *   pair fails validate, the whole batch is rejected.
- *
- * PERIOD SEMANTICS:
- *   - Periods are positive integers (or integer strings).
- *   - Periods are CANONICALISED on write: "02025" -> "2025".
- *   - Blank values ('', null, undefined) mean "unbounded on this
- *     side" and are written as ''. They are distinct from periods.
+ *   Every public mutation returns Promise<{ success, data?, message? }>.
+ *   Validation runs twice: pre-flight against window.data, then
+ *   snapshot-scoped inside pipeline.validate(). The candidate is
+ *   re-derived inside mutate() so applied state never diverges from
+ *   what was validated.
  *
  * MEMBER INTERVALS MODEL:
- *   Each team member entry is:
+ *   member = {
+ *     memberId, characterId, role,
+ *     intervals: [ { joinPeriod, leavePeriod }, ... ]
+ *   }
  *
- *     {
- *       memberId,        // stable per-entry identifier
- *       characterId,
- *       role,
- *       intervals: [
- *         { joinPeriod, leavePeriod },
- *         ...
- *       ]
- *     }
+ *   Both bounds are inclusive. Blank means unbounded on that side.
+ *   Intervals within one member must not overlap.
+ *   joinPeriod is IMMUTABLE once set: to move a stint start, purge
+ *   and add a new interval.
  *
- *   - `memberId` is generated once, at entry creation. It survives
- *     interval edits.
- *   - Each interval describes one stint. Both bounds are inclusive.
- *     Blank means "unbounded."
- *   - Intervals within one member entry must NOT overlap.
- *   - `joinPeriod` is IMMUTABLE once set. To move a stint's start,
- *     purge the interval and add a new one.
+ * PERIOD SEMANTICS:
+ *   Periods are positive integers. Blank ('', null, undefined) is
+ *   the "unbounded" sentinel, distinct from a period. All writes go
+ *   through canonicalisePeriod.
  *
- * ROLE SEMANTICS:
- *   - Role is a free-form string. Omission defaults to
- *     TeamConstants.DEFAULT_ROLE.
+ * DEATH / CAREER-TRANSITION CASCADE (endStintsForCharacter):
+ *   For every open professional-team stint, set leavePeriod to the
+ *   death/transition year. Idempotent. Never throws. Runs inside the
+ *   caller's pipeline transaction.
  *
- * DEATH CASCADE (endStintsForCharacter):
- *   When a character's deathYear transitions from blank to a
- *   parseable year, every active PROFESSIONAL-team stint for that
- *   character is ended at that year.
+ *   Scope: professional teams only.
+ *   Granularity: year. deathWeek is not read.
+ *   Non-reversible: clearing deathYear does not restore ended stints.
  *
- *   ADD-AFTER-DEATH GUARD (this revision):
- *     endStintsForCharacter only runs on save of the character
- *     record. A character added to a team AFTER their death was
- *     recorded would create an open stint that no future save
- *     would close (unless the user re-saved the character).
+ * ADD-AFTER-DEATH GUARD:
+ *   addMember and batchAddMembers reject assignments whose joinPeriod
+ *   is strictly after the character's deathYear. A stint starting
+ *   after death is a data error, not something the cascade repairs.
  *
- *     addMember and batchAddMembers now run endStintsForCharacter
- *     inline, against the pipeline snapshot, immediately after
- *     adding. Any newly-added stint that extends past the
- *     character's death year is closed at deathYear in the same
- *     transaction.
+ * DEPENDENCIES (MANDATORY):
+ *   - window.TeamConstants
+ *   - window.IdUtils
+ *   - window.MutationPipeline
+ *   - window.ObjectUtils
+ *   - characterProvider (injected via configure)
  *
- *     The guard is idempotent and narrow:
- *       - It only fires when the character has a parseable
- *         deathYear.
- *       - It only touches professional teams.
- *       - It only closes intervals whose leavePeriod is blank and
- *         whose joinPeriod is at or before deathYear.
- *
- *     The result: adding a dead character to a professional team
- *     produces a stint that ends at their death year. Adding a
- *     living character is unchanged.
- *
- *   SCOPE:
- *     Professional teams only. Academic, temporary, and civilian
- *     teams are not touched by this cascade. Academic teams are
- *     managed by the Academy module; temporary and civilian team
- *     membership does not participate in the death cascade.
- *
- *   GRANULARITY:
- *     Year. Professional team stints use year strings; there is no
- *     week concept. The helper ends at deathYear, full stop. It
- *     does not read deathWeek.
- *
- *   NON-REVERSIBLE:
- *     Clearing deathYear does NOT restore the ended stints.
- *     Ending a stint is a fact. If the user wants to undo a death,
- *     they also reopen the stints by hand from the member manager.
- *     This matches the semantics of `leave`.
- *
- *   WHAT IT WRITES:
- *     interval.leavePeriod is set to String(deathYear) on every
- *     active stint whose joinPeriod is strictly before deathYear.
- *
- *     - A stint whose leavePeriod is already set and <= deathYear
- *       is left alone. This makes the cascade idempotent: running
- *       it twice on the same character does nothing the second
- *       time.
- *
- *     - A stint whose joinPeriod is strictly greater than
- *       deathYear is left alone. Ending it would create a stint
- *       with leave before join, which validateMemberIntervals
- *       would reject. A stint that starts after the death year is
- *       a data error for the user to fix, not something the
- *       cascade silently rewrites.
- *
- *     - A stint whose joinPeriod EQUALS deathYear IS ended at
- *       deathYear. The result is a one-year stint [Y, Y]. This is
- *       a legitimate record: the character joined and died in the
- *       same year. Ending it at deathYear honours the rule that
- *       every professional stint a deceased character held ends
- *       at their death year.
- *
- *   PURITY:
- *     Pure with respect to `appData`. Mutates the snapshot. Never
- *     touches window.data. Never throws. Runs inside another
- *     module's pipeline transaction (CharacterCRUD.save, or the
- *     add-member transaction here).
- *
- *   IDEMPOTENCY:
- *     The cascade is idempotent. Running it twice on the same
- *     snapshot produces the same result. This is what makes
- *     CharacterCRUD.backfillDeathCascades safe to re-run.
- *
- * DEPENDENCIES:
- *   - window.TeamConstants    (from team-constants.js) - MANDATORY
- *   - window.IdUtils          (from id-utils.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.ObjectUtils      (from object-utils.js) - MANDATORY
- *
- *   characterProvider is injected via configure(). Only member
- *   mutations require it. Cascade helpers do not.
+ * DEPENDENCIES (LAZY, at call time):
+ *   - window.TournamentCore (deleteTeam cascade; mandatory at that
+ *     call, throws if unavailable)
  */
 
 (function() {
@@ -187,7 +78,7 @@
     window.__teamCoreLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCIES
     // ============================================================
 
     var TeamConstants = window.TeamConstants;
@@ -211,7 +102,8 @@
 
         if (typeof deps.characterProvider.exists !== 'function') {
             console.warn(
-                '[TeamCore] characterProvider must have an exists() method.'
+                '[TeamCore] characterProvider must have an exists() ' +
+                'method.'
             );
             return false;
         }
@@ -226,15 +118,13 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECKS
     // ============================================================
 
     function checkBaseDependencies() {
         var missing = [];
 
-        if (!TeamConstants) {
-            missing.push('TeamConstants');
-        }
+        if (!TeamConstants) { missing.push('TeamConstants'); }
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
@@ -242,7 +132,8 @@
             typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+        if (!ObjectUtils ||
+            typeof ObjectUtils.deepClone !== 'function') {
             missing.push('ObjectUtils.deepClone');
         }
 
@@ -254,7 +145,8 @@
         if (!_characterProvider ||
             typeof _characterProvider.exists !== 'function') {
             missing.push(
-                'characterProvider.exists (call TeamCore.configure() first)'
+                'characterProvider.exists ' +
+                '(call TeamCore.configure() first)'
             );
         }
         return missing;
@@ -263,8 +155,8 @@
     function failIfMissing(missing, operationName) {
         if (missing.length > 0) {
             console.warn(
-                '[TeamCore] ' + operationName + ' missing dependencies: ' +
-                missing.join(', ')
+                '[TeamCore] ' + operationName +
+                ' missing dependencies:', missing.join(', ')
             );
             return true;
         }
@@ -289,13 +181,12 @@
         return ObjectUtils.deepClone(value);
     }
 
-    function generateId() {
+    function generateTeamId() {
         return IdUtils.generateId('team');
     }
 
     function generateMemberId() {
-        return 'mem_' + Date.now() + '_' +
-            Math.random().toString(36).slice(2, 8);
+        return IdUtils.generateId('team-member');
     }
 
     function failure(message) {
@@ -318,19 +209,23 @@
         return TeamConstants.parsePeriod(value);
     }
 
+    /**
+     * Canonicalise a period for storage.
+     *   - blank sentinel -> ''
+     *   - valid integer  -> String(n)
+     *   - anything else  -> null (caller rejects)
+     */
     function canonicalisePeriod(value) {
         if (value === undefined || value === null || value === '') {
             return '';
         }
         var parsed = parsePeriod(value);
-        if (parsed === null) {
-            return null;
-        }
+        if (parsed === null) { return null; }
         return String(parsed);
     }
 
     // ============================================================
-    // STORE ACCESS - PRIVATE
+    // STORE ACCESS
     // ============================================================
 
     function getDataStore() {
@@ -375,25 +270,17 @@
         return null;
     }
 
-    /**
-     * Parse a character's deathYear to an integer >= 1, or null.
-     *
-     * Blank, malformed, and sub-1 values all return null. Used by
-     * the add-after-death guard.
-     */
     function parseDeathYear(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
         var n = parseInt(String(value).trim(), 10);
-        if (isNaN(n) || n < 1) {
-            return null;
-        }
+        if (isNaN(n) || n < 1) { return null; }
         return n;
     }
 
     // ============================================================
-    // NAME HISTORY HELPERS
+    // NAME HISTORY
     // ============================================================
 
     function validateNameHistory(history) {
@@ -409,15 +296,42 @@
             if (!isObject(entry)) {
                 return {
                     valid: false,
-                    message: 'Invalid name history entry at index ' + i + '.'
+                    message: 'Invalid name history entry at index ' + i +
+                        '.'
                 };
             }
             if (!isNonEmptyString(entry.name)) {
                 return {
                     valid: false,
                     message: 'Name history entry at index ' + i +
-                             ' requires a name.'
+                        ' requires a name.'
                 };
+            }
+
+            var startCanon = canonicalisePeriod(entry.startPeriod);
+            if (startCanon === null) {
+                return {
+                    valid: false,
+                    message: 'Name history entry at index ' + i +
+                        ' has an invalid start period.'
+                };
+            }
+            var endCanon = canonicalisePeriod(entry.endPeriod);
+            if (endCanon === null) {
+                return {
+                    valid: false,
+                    message: 'Name history entry at index ' + i +
+                        ' has an invalid end period.'
+                };
+            }
+            if (startCanon !== '' && endCanon !== '') {
+                if (parseInt(endCanon, 10) < parseInt(startCanon, 10)) {
+                    return {
+                        valid: false,
+                        message: 'Name history entry at index ' + i +
+                            ' ends before it starts.'
+                    };
+                }
             }
         }
 
@@ -425,16 +339,16 @@
     }
 
     function normaliseNameHistory(history) {
-        if (!Array.isArray(history)) {
-            return [];
-        }
+        if (!Array.isArray(history)) { return []; }
         var result = [];
         for (var i = 0; i < history.length; i++) {
             var entry = history[i];
+            var startCanon = canonicalisePeriod(entry.startPeriod);
+            var endCanon = canonicalisePeriod(entry.endPeriod);
             result.push({
                 name: String(entry.name).trim(),
-                startPeriod: canonicalisePeriod(entry.startPeriod) || '',
-                endPeriod: canonicalisePeriod(entry.endPeriod) || ''
+                startPeriod: startCanon === null ? '' : startCanon,
+                endPeriod: endCanon === null ? '' : endCanon
             });
         }
         return result;
@@ -444,37 +358,40 @@
     // INTERVAL HELPERS
     // ============================================================
 
-    function intervalHasAnyBound(interval) {
-        var hasJoin = interval.joinPeriod !== undefined &&
-                      interval.joinPeriod !== null &&
-                      interval.joinPeriod !== '';
-        var hasLeave = interval.leavePeriod !== undefined &&
-                       interval.leavePeriod !== null &&
-                       interval.leavePeriod !== '';
-        return hasJoin || hasLeave;
-    }
-
-    function effectiveIntervalEnd(interval) {
-        var leave = canonicalisePeriod(interval.leavePeriod);
-        if (leave === '' || leave === null) {
-            return Infinity;
-        }
-        return parseInt(leave, 10);
-    }
-
-    function effectiveIntervalStart(interval) {
+    /**
+     * Numeric interval bounds for overlap comparison.
+     *
+     * Malformed periods THROW. This is deliberate: a malformed
+     * interval in stored data is a bug, and treating it as
+     * [0, Infinity] would silently produce "member forever" state.
+     * Callers that might encounter malformed data must validate
+     * first (validateMemberIntervals does).
+     */
+    function intervalStart(interval) {
         var join = canonicalisePeriod(interval.joinPeriod);
-        if (join === '' || join === null) {
-            return 0;
+        if (join === null) {
+            throw new Error(
+                'Malformed joinPeriod in interval.'
+            );
         }
-        return parseInt(join, 10);
+        return join === '' ? 0 : parseInt(join, 10);
+    }
+
+    function intervalEnd(interval) {
+        var leave = canonicalisePeriod(interval.leavePeriod);
+        if (leave === null) {
+            throw new Error(
+                'Malformed leavePeriod in interval.'
+            );
+        }
+        return leave === '' ? Infinity : parseInt(leave, 10);
     }
 
     function intervalsOverlap(a, b) {
-        var aStart = effectiveIntervalStart(a);
-        var aEnd = effectiveIntervalEnd(a);
-        var bStart = effectiveIntervalStart(b);
-        var bEnd = effectiveIntervalEnd(b);
+        var aStart = intervalStart(a);
+        var aEnd = intervalEnd(a);
+        var bStart = intervalStart(b);
+        var bEnd = intervalEnd(b);
         return aStart <= bEnd && bStart <= aEnd;
     }
 
@@ -508,7 +425,8 @@
             if (l < j) {
                 return {
                     valid: false,
-                    message: 'Leave period cannot be before join period.'
+                    message: 'Leave period cannot be before join ' +
+                        'period.'
                 };
             }
         }
@@ -536,7 +454,8 @@
             }
             return {
                 valid: false,
-                message: 'A member entry must contain at least one interval.'
+                message: 'A member entry must contain at least one ' +
+                    'interval.'
             };
         }
 
@@ -546,7 +465,8 @@
             if (!check.valid) {
                 return {
                     valid: false,
-                    message: 'Interval ' + (i + 1) + ': ' + check.message
+                    message: 'Interval ' + (i + 1) + ': ' +
+                        check.message
                 };
             }
 
@@ -557,7 +477,8 @@
                 return {
                     valid: false,
                     message: 'Interval ' + (i + 1) +
-                        ': join period is out of bounds for team type.'
+                        ': join period is out of bounds for team ' +
+                        'type.'
                 };
             }
             if (check.interval.leavePeriod !== '' &&
@@ -567,7 +488,8 @@
                 return {
                     valid: false,
                     message: 'Interval ' + (i + 1) +
-                        ': leave period is out of bounds for team type.'
+                        ': leave period is out of bounds for team ' +
+                        'type.'
                 };
             }
 
@@ -589,13 +511,6 @@
         return { valid: true, intervals: cleaned };
     }
 
-    function buildCanonicalInterval(raw) {
-        return {
-            joinPeriod: canonicalisePeriod(raw.joinPeriod),
-            leavePeriod: canonicalisePeriod(raw.leavePeriod)
-        };
-    }
-
     function buildCanonicalMember(characterId, role, intervals) {
         return {
             memberId: generateMemberId(),
@@ -610,9 +525,7 @@
     // ============================================================
 
     function extractIntervalsFromMemberInput(memberData) {
-        if (!isObject(memberData)) {
-            return null;
-        }
+        if (!isObject(memberData)) { return null; }
 
         if (Array.isArray(memberData.intervals)) {
             return memberData.intervals;
@@ -630,10 +543,7 @@
             }];
         }
 
-        return [{
-            joinPeriod: '',
-            leavePeriod: ''
-        }];
+        return [{ joinPeriod: '', leavePeriod: '' }];
     }
 
     function resolveRole(memberData) {
@@ -644,7 +554,8 @@
             };
         }
 
-        if (memberData.role === undefined || memberData.role === null) {
+        if (memberData.role === undefined ||
+            memberData.role === null) {
             return { valid: true, role: TeamConstants.DEFAULT_ROLE };
         }
 
@@ -664,7 +575,7 @@
     }
 
     // ============================================================
-    // TEAM VALIDATION
+    // VALIDATION
     // ============================================================
 
     function validateRankingEntry(entry, teamType) {
@@ -699,6 +610,19 @@
         }
 
         return { valid: true, period: period, rank: rank };
+    }
+
+    function validateMemberRole(member) {
+        if (!member || member.role === undefined) {
+            return { valid: true };
+        }
+        if (typeof member.role !== 'string') {
+            return {
+                valid: false,
+                message: 'Member role must be a string.'
+            };
+        }
+        return { valid: true };
     }
 
     function validateCompleteTeam(team) {
@@ -764,7 +688,8 @@
 
         var startNum = parsePeriod(team.startPeriod);
         var endNum = parsePeriod(team.endPeriod);
-        if (startNum !== null && endNum !== null && startNum > endNum) {
+        if (startNum !== null && endNum !== null &&
+            startNum > endNum) {
             return {
                 valid: false,
                 message: 'Start period cannot be after end period.'
@@ -772,9 +697,7 @@
         }
 
         var nameCheck = validateNameHistory(team.nameHistory);
-        if (!nameCheck.valid) {
-            return nameCheck;
-        }
+        if (!nameCheck.valid) { return nameCheck; }
 
         var seenMemberIds = Object.create(null);
         for (var i = 0; i < team.members.length; i++) {
@@ -789,14 +712,14 @@
                 return {
                     valid: false,
                     message: 'Member at index ' + i +
-                             ' missing characterId.'
+                        ' missing characterId.'
                 };
             }
-
             if (!isNonEmptyString(member.memberId)) {
                 return {
                     valid: false,
-                    message: 'Member at index ' + i + ' missing memberId.'
+                    message: 'Member at index ' + i +
+                        ' missing memberId.'
                 };
             }
             var memberIdKey = String(member.memberId);
@@ -809,49 +732,30 @@
             seenMemberIds[memberIdKey] = true;
 
             var roleCheck = validateMemberRole(member);
-            if (!roleCheck.valid) {
-                return roleCheck;
-            }
+            if (!roleCheck.valid) { return roleCheck; }
 
             var intervalCheck = validateMemberIntervals(
-                member.intervals, team.type, /* allowEmpty */ true
+                member.intervals, team.type, true
             );
-            if (!intervalCheck.valid) {
-                return intervalCheck;
-            }
+            if (!intervalCheck.valid) { return intervalCheck; }
         }
 
         var seenPeriods = Object.create(null);
         for (var j = 0; j < team.rankingHistory.length; j++) {
             var entry = team.rankingHistory[j];
             var rankCheck = validateRankingEntry(entry, team.type);
-            if (!rankCheck.valid) {
-                return rankCheck;
-            }
+            if (!rankCheck.valid) { return rankCheck; }
             var periodKey = String(rankCheck.period);
             if (seenPeriods[periodKey]) {
                 return {
                     valid: false,
                     message: 'Duplicate ranking entry for period ' +
-                             periodKey + '.'
+                        periodKey + '.'
                 };
             }
             seenPeriods[periodKey] = true;
         }
 
-        return { valid: true };
-    }
-
-    function validateMemberRole(member) {
-        if (!member || member.role === undefined) {
-            return { valid: true };
-        }
-        if (typeof member.role !== 'string') {
-            return {
-                valid: false,
-                message: 'Member role must be a string.'
-            };
-        }
         return { valid: true };
     }
 
@@ -864,12 +768,12 @@
         var endCanon = canonicalisePeriod(teamData.endPeriod);
 
         return {
-            id: generateId(),
+            id: generateTeamId(),
             name: String(teamData.name).trim(),
             type: teamData.type,
             startPeriod: startCanon === null ? '' : startCanon,
             endPeriod: endCanon === null ? '' : endCanon,
-            status: teamData.status || TeamConstants.DEFAULT_TEAM_STATUS,
+            status: teamData.status,
             nameHistory: normaliseNameHistory(teamData.nameHistory),
             members: [],
             rankingHistory: [],
@@ -906,7 +810,8 @@
         }
 
         if (updates.type !== undefined) {
-            var normalized = TeamConstants.normalizeTeamType(updates.type);
+            var normalized =
+                TeamConstants.normalizeTeamType(updates.type);
             if (normalized === null) {
                 return {
                     valid: false,
@@ -927,7 +832,8 @@
         }
 
         if (updates.startPeriod !== undefined) {
-            var startCanon = canonicalisePeriod(updates.startPeriod);
+            var startCanon =
+                canonicalisePeriod(updates.startPeriod);
             if (startCanon === null) {
                 return {
                     valid: false,
@@ -936,6 +842,7 @@
             }
             candidate.startPeriod = startCanon;
         }
+
         if (updates.endPeriod !== undefined) {
             var endCanon = canonicalisePeriod(updates.endPeriod);
             if (endCanon === null) {
@@ -948,10 +855,9 @@
         }
 
         if (updates.nameHistory !== undefined) {
-            var historyCheck = validateNameHistory(updates.nameHistory);
-            if (!historyCheck.valid) {
-                return historyCheck;
-            }
+            var historyCheck =
+                validateNameHistory(updates.nameHistory);
+            if (!historyCheck.valid) { return historyCheck; }
             candidate.nameHistory = normaliseNameHistory(
                 updates.nameHistory
             );
@@ -966,8 +872,8 @@
         }
 
         if (updates.classId !== undefined) {
-            candidate.classId = updates.classId !== null &&
-                updates.classId !== ''
+            candidate.classId =
+                updates.classId !== null && updates.classId !== ''
                 ? String(updates.classId).trim()
                 : null;
         }
@@ -977,15 +883,19 @@
                          updates.teamNumber !== ''
                 ? String(updates.teamNumber).trim()
                 : '';
-            if (numStr && !/^[a-zA-Z0-9\-_ ]+$/.test(numStr)) {
+            if (numStr &&
+                !/^[a-zA-Z0-9\-_ ]+$/.test(numStr)) {
                 return {
                     valid: false,
-                    message: 'Team identifier contains invalid characters.'
+                    message: 'Team identifier contains invalid ' +
+                        'characters.'
                 };
             }
             candidate.teamNumber = numStr;
         }
 
+        // Type change revalidates existing intervals and rankings
+        // against the new type's period bounds.
         if (Array.isArray(candidate.members)) {
             for (var m = 0; m < candidate.members.length; m++) {
                 var member = candidate.members[m];
@@ -998,8 +908,9 @@
                 if (!intervalCheck.valid) {
                     return {
                         valid: false,
-                        message: 'Type change would invalidate existing ' +
-                            'member intervals: ' + intervalCheck.message
+                        message: 'Type change would invalidate ' +
+                            'existing member intervals: ' +
+                            intervalCheck.message
                     };
                 }
             }
@@ -1013,8 +924,9 @@
                 if (!rankCheck.valid) {
                     return {
                         valid: false,
-                        message: 'Type change would invalidate existing ' +
-                            'ranking periods: ' + rankCheck.message
+                        message: 'Type change would invalidate ' +
+                            'existing ranking periods: ' +
+                            rankCheck.message
                     };
                 }
             }
@@ -1042,7 +954,8 @@
                 function() { return { valid: true }; },
             mutate: config.mutate,
             logMessage: config.logMessage,
-            successMessage: config.successMessage || 'Team updated.',
+            successMessage: config.successMessage ||
+                'Team updated.',
             failureMessage: config.failureMessage ||
                 'Failed to update team.'
         });
@@ -1055,7 +968,7 @@
     function createTeam(teamData) {
         if (failIfMissing(checkBaseDependencies(), 'createTeam')) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -1069,14 +982,16 @@
             return Promise.resolve(failure('Team name is required.'));
         }
 
-        var normalizedType = TeamConstants.normalizeTeamType(teamData.type);
+        var normalizedType =
+            TeamConstants.normalizeTeamType(teamData.type);
         if (normalizedType === null) {
             return Promise.resolve(
                 failure('Invalid team type: ' + teamData.type)
             );
         }
 
-        var status = teamData.status || TeamConstants.DEFAULT_TEAM_STATUS;
+        var status = teamData.status ||
+            TeamConstants.DEFAULT_TEAM_STATUS;
         if (!TeamConstants.isValidTeamStatus(status)) {
             return Promise.resolve(
                 failure('Invalid team status: ' + status)
@@ -1085,11 +1000,16 @@
 
         var nameHistory = [];
         if (teamData.nameHistory !== undefined) {
-            var historyCheck = validateNameHistory(teamData.nameHistory);
+            var historyCheck =
+                validateNameHistory(teamData.nameHistory);
             if (!historyCheck.valid) {
-                return Promise.resolve(failure(historyCheck.message));
+                return Promise.resolve(
+                    failure(historyCheck.message)
+                );
             }
-            nameHistory = normaliseNameHistory(teamData.nameHistory);
+            nameHistory = normaliseNameHistory(
+                teamData.nameHistory
+            );
         }
 
         var candidate = buildNewTeam({
@@ -1127,6 +1047,7 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 if (!Array.isArray(snapshot.teams)) {
                     snapshot.teams = [];
@@ -1134,6 +1055,7 @@
                 snapshot.teams.push(deepClone(candidate));
                 return { team: candidate, id: targetId };
             },
+
             logMessage: 'Created team: ' + candidate.name,
             successMessage: 'Team created successfully!',
             failureMessage: 'Failed to create team.'
@@ -1143,7 +1065,7 @@
     function updateTeam(id, updates) {
         if (failIfMissing(checkBaseDependencies(), 'updateTeam')) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -1172,9 +1094,12 @@
         if (!preflight.valid) {
             return Promise.resolve(failure(preflight.message));
         }
-        var preflightCheck = validateCompleteTeam(preflight.candidate);
+        var preflightCheck =
+            validateCompleteTeam(preflight.candidate);
         if (!preflightCheck.valid) {
-            return Promise.resolve(failure(preflightCheck.message));
+            return Promise.resolve(
+                failure(preflightCheck.message)
+            );
         }
 
         var updatesCopy = deepClone(updates);
@@ -1187,9 +1112,8 @@
                         message: 'Team data store is not available.'
                     };
                 }
-                var currentInSnapshot = findTeamInData(
-                    snapshot, targetId
-                );
+                var currentInSnapshot =
+                    findTeamInData(snapshot, targetId);
                 if (!currentInSnapshot) {
                     return {
                         valid: false,
@@ -1218,10 +1142,13 @@
 
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var snapshotBuild = buildUpdatedTeam(
@@ -1240,9 +1167,9 @@
                 var candidate = snapshotBuild.candidate;
 
                 var updateableProps = [
-                    'name', 'type', 'startPeriod', 'endPeriod', 'status',
-                    'classId', 'teamNumber', 'temporaryMission',
-                    'nameHistory', 'updatedAt'
+                    'name', 'type', 'startPeriod', 'endPeriod',
+                    'status', 'classId', 'teamNumber',
+                    'temporaryMission', 'nameHistory', 'updatedAt'
                 ];
                 for (var i = 0; i < updateableProps.length; i++) {
                     var key = updateableProps[i];
@@ -1253,6 +1180,7 @@
 
                 return { team: target, id: targetId };
             },
+
             logMessage: 'Updated team: ' + preflight.candidate.name,
             successMessage: 'Team updated successfully!',
             failureMessage: 'Failed to update team.'
@@ -1262,7 +1190,7 @@
     function deleteTeam(id) {
         if (failIfMissing(checkBaseDependencies(), 'deleteTeam')) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -1278,6 +1206,18 @@
         }
 
         var teamName = current.name || 'Unknown Team';
+
+        // The tournament-reference cascade is a mutation invariant.
+        // If TournamentCore is not available, the delete would leave
+        // dangling references. Fail rather than produce corrupt state.
+        var TournamentCore = window.TournamentCore;
+        if (!TournamentCore ||
+            typeof TournamentCore.stripTeamRefs !== 'function') {
+            return Promise.resolve(failure(
+                'TournamentCore.stripTeamRefs is required to delete ' +
+                'a team. It is not available.'
+            ));
+        }
 
         return runMutation({
             validate: function(snapshot) {
@@ -1295,6 +1235,7 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var idx = -1;
                 for (var i = 0; i < snapshot.teams.length; i++) {
@@ -1305,60 +1246,16 @@
                     }
                 }
                 if (idx === -1) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
-                // ---- CROSS-DOMAIN CASCADE ----
-                //
-                // Strip the team from every tournament before the
-                // team record disappears. Same pattern
-                // TournamentCore.purgeTournament uses for its
-                // elimination reversal.
-                //
-                // The cascade removes:
-                //   - tournament.participants[] entries whose type
-                //     is 'team' and whose id is this team.
-                //   - tournament.eliminations[] records whose
-                //     participantType is 'team' and whose
-                //     participantId is this team.
-                //   - match.participants[] slots referencing this
-                //     team.
-                //   - match.teamResults{} keys for this team.
-                //
-                // It does NOT touch match.individualResults{} —
-                // those are keyed by character IDs and belong to
-                // the team's members.
-                //
-                // TournamentCore is resolved lazily so a load-order
-                // edge case degrades to the pre-fix behaviour
-                // rather than blocking the delete. The cascade is
-                // important but not so important that a missing
-                // dependency should leave the user unable to
-                // delete a team.
-                var TournamentCore = window.TournamentCore;
-                if (TournamentCore &&
-                    typeof TournamentCore.stripTeamRefs === 'function') {
-                    try {
-                        TournamentCore.stripTeamRefs(
-                            snapshot,
-                            targetId
-                        );
-                    } catch (e) {
-                        console.warn(
-                            '[TeamCore] stripTeamRefs failed during ' +
-                            'deleteTeam; tournament references may ' +
-                            'remain dangling:', e
-                        );
-                        // Non-fatal: proceed with the delete. The
-                        // alternative is to fail the transaction,
-                        // which would block the user. See the file
-                        // header for the rationale.
-                    }
-                }
-
+                TournamentCore.stripTeamRefs(snapshot, targetId);
                 snapshot.teams.splice(idx, 1);
                 return { id: targetId };
             },
+
             logMessage: 'Deleted team: ' + teamName,
             successMessage: 'Team deleted successfully!',
             failureMessage: 'Failed to delete team.'
@@ -1372,22 +1269,22 @@
     function addMember(teamId, memberData) {
         if (failIfMissing(checkMemberDependencies(), 'addMember')) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
         if (!isNonEmptyString(teamId)) {
             return Promise.resolve(failure('Team ID is required.'));
         }
-
         if (!isObject(memberData)) {
             return Promise.resolve(
                 failure('Member data must be an object.')
             );
         }
-
         if (!isNonEmptyString(memberData.characterId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
         var roleRes = resolveRole(memberData);
@@ -1395,11 +1292,12 @@
             return Promise.resolve(failure(roleRes.message));
         }
 
-        var rawIntervals = extractIntervalsFromMemberInput(memberData);
+        var rawIntervals =
+            extractIntervalsFromMemberInput(memberData);
         if (rawIntervals === null) {
-            return Promise.resolve(
-                failure('Could not read intervals from member data.')
-            );
+            return Promise.resolve(failure(
+                'Could not read intervals from member data.'
+            ));
         }
 
         var targetId = String(teamId).trim();
@@ -1411,12 +1309,13 @@
         }
 
         var incomingCheck = validateMemberIntervals(
-            rawIntervals, current.type, /* allowEmpty */ false
+            rawIntervals, current.type, false
         );
         if (!incomingCheck.valid) {
             return Promise.resolve(failure(incomingCheck.message));
         }
 
+        // Pre-flight: no-overlap check against the live store.
         var existingEntry = null;
         if (Array.isArray(current.members)) {
             for (var i = 0; i < current.members.length; i++) {
@@ -1428,7 +1327,8 @@
             }
         }
 
-        if (existingEntry && Array.isArray(existingEntry.intervals)) {
+        if (existingEntry &&
+            Array.isArray(existingEntry.intervals)) {
             for (var a = 0; a < incomingCheck.intervals.length; a++) {
                 for (var b = 0;
                      b < existingEntry.intervals.length;
@@ -1438,8 +1338,34 @@
                         existingEntry.intervals[b]
                     )) {
                         return Promise.resolve(failure(
-                            'The new interval overlaps an existing one ' +
-                            'for this character on this team.'
+                            'The new interval overlaps an existing ' +
+                            'one for this character on this team.'
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Pre-flight: reject an assignment that starts after the
+        // character's death year.
+        var preflightChar = findCharacterInData(
+            getDataStore(), targetChar
+        );
+        if (preflightChar) {
+            var preflightDeathYear =
+                parseDeathYear(preflightChar.deathYear);
+            if (preflightDeathYear !== null) {
+                for (var pi = 0;
+                     pi < incomingCheck.intervals.length; pi++) {
+                    var pJoin = parsePeriod(
+                        incomingCheck.intervals[pi].joinPeriod
+                    );
+                    if (pJoin !== null &&
+                        pJoin > preflightDeathYear) {
+                        return Promise.resolve(failure(
+                            'Cannot assign a stint that starts ' +
+                            'after the character\'s death year (' +
+                            preflightDeathYear + ').'
                         ));
                     }
                 }
@@ -1447,12 +1373,14 @@
         }
 
         var roleCopy = roleRes.role;
-        var intervalsCopy = incomingCheck.intervals.map(function(iv) {
-            return {
-                joinPeriod: iv.joinPeriod,
-                leavePeriod: iv.leavePeriod
-            };
-        });
+        var intervalsCopy = incomingCheck.intervals.map(
+            function(iv) {
+                return {
+                    joinPeriod: iv.joinPeriod,
+                    leavePeriod: iv.leavePeriod
+                };
+            }
+        );
 
         return runMutation({
             validate: function(snapshot) {
@@ -1470,11 +1398,42 @@
                     };
                 }
 
-                if (!_characterProvider.exists(snapshot, targetChar)) {
+                if (!_characterProvider.exists(
+                    snapshot, targetChar
+                )) {
                     return {
                         valid: false,
                         message: 'Character not found.'
                     };
+                }
+
+                // Snapshot-scoped: add-after-death guard.
+                var snapshotChar = findCharacterInData(
+                    snapshot, targetChar
+                );
+                if (snapshotChar) {
+                    var snapshotDeathYear = parseDeathYear(
+                        snapshotChar.deathYear
+                    );
+                    if (snapshotDeathYear !== null) {
+                        for (var di = 0;
+                             di < intervalsCopy.length; di++) {
+                            var dJoin = parsePeriod(
+                                intervalsCopy[di].joinPeriod
+                            );
+                            if (dJoin !== null &&
+                                dJoin > snapshotDeathYear) {
+                                return {
+                                    valid: false,
+                                    message: 'Cannot assign a ' +
+                                        'stint that starts after ' +
+                                        'the character\'s death ' +
+                                        'year (' +
+                                        snapshotDeathYear + ').'
+                                };
+                            }
+                        }
+                    }
                 }
 
                 for (var i = 0; i < target.members.length; i++) {
@@ -1485,7 +1444,9 @@
                     }
                     if (!Array.isArray(m.intervals)) { continue; }
 
-                    for (var a = 0; a < intervalsCopy.length; a++) {
+                    for (var a = 0;
+                         a < intervalsCopy.length;
+                         a++) {
                         for (var b = 0;
                              b < m.intervals.length;
                              b++) {
@@ -1497,8 +1458,8 @@
                                     valid: false,
                                     message: 'The new interval ' +
                                         'overlaps an existing one ' +
-                                        'for this character on this ' +
-                                        'team.'
+                                        'for this character on ' +
+                                        'this team.'
                                 };
                             }
                         }
@@ -1507,10 +1468,13 @@
 
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
                 if (!Array.isArray(target.members)) {
                     target.members = [];
@@ -1533,62 +1497,38 @@
                          a < intervalsCopy.length;
                          a++) {
                         entry.intervals.push({
-                            joinPeriod: intervalsCopy[a].joinPeriod,
-                            leavePeriod: intervalsCopy[a].leavePeriod
+                            joinPeriod:
+                                intervalsCopy[a].joinPeriod,
+                            leavePeriod:
+                                intervalsCopy[a].leavePeriod
                         });
                     }
                 } else {
-                    var newEntry = buildCanonicalMember(
+                    entry = buildCanonicalMember(
                         targetChar, roleCopy, intervalsCopy
                     );
-                    target.members.push(newEntry);
-                    entry = newEntry;
+                    target.members.push(entry);
                 }
 
                 target.updatedAt = new Date().toISOString();
 
-                // ---- ADD-AFTER-DEATH GUARD ----
-                //
-                // If the character has a parseable deathYear, run
-                // endStintsForCharacter against this same snapshot.
-                // Any newly-added interval that extends past the
-                // death year is closed at deathYear, in this same
-                // transaction.
-                //
-                // The guard is:
-                //   - idempotent (safe to run on every add),
-                //   - narrow (only touches professional teams, only
-                //     closes intervals whose leavePeriod is blank
-                //     and whose joinPeriod is at or before
-                //     deathYear),
-                //   - non-fatal (a throw here would roll back the
-                //     entire add; we do not want adding a living
-                //     character to fail because of an unrelated
-                //     corrupt record on a different team).
-                //
-                // endStintsForCharacter itself never throws. The
-                // try/catch is belt-and-braces for a future
-                // refactor.
+                // Add-after-death guard runs the death cascade
+                // against this snapshot. Since the validator has
+                // already rejected joinPeriod > deathYear, this is
+                // a belt-and-braces call that only closes an
+                // interval whose joinPeriod is at or before
+                // deathYear but whose leavePeriod is blank.
                 var character = findCharacterInData(
                     snapshot, targetChar
                 );
                 if (character) {
-                    var deathYear = parseDeathYear(character.deathYear);
+                    var deathYear = parseDeathYear(
+                        character.deathYear
+                    );
                     if (deathYear !== null) {
-                        try {
-                            endStintsForCharacter(
-                                snapshot,
-                                targetChar,
-                                deathYear
-                            );
-                        } catch (e) {
-                            console.warn(
-                                '[TeamCore] endStintsForCharacter ' +
-                                'failed during addMember; newly-' +
-                                'added stint may remain open past ' +
-                                'the character\'s death year:', e
-                            );
-                        }
+                        endStintsForCharacter(
+                            snapshot, targetChar, deathYear
+                        );
                     }
                 }
 
@@ -1598,6 +1538,7 @@
                     teamId: targetId
                 };
             },
+
             logMessage: 'Added member interval to team: ' +
                 (current.name || targetId),
             successMessage: 'Member added successfully!',
@@ -1621,48 +1562,24 @@
     }
 
     /**
-     * Add several (team, character) intervals in ONE transaction.
+     * Add several (team, character) intervals in one transaction.
      *
-     * Either every assignment lands or none does. The pipeline
-     * rollback guarantees atomicity: if the mutate() callback
-     * throws, the snapshot is discarded and window.data is
-     * untouched.
+     * A (teamId, charId) pair may appear more than once in the
+     * batch provided the intervals do not overlap. The batch
+     * validates the full proposed set against itself and against
+     * the snapshot.
      *
-     * assignments: [ { teamId, charId, joinPeriod, leavePeriod,
-     *                  role? } ]
-     *
-     * VALIDATION (pre-flight + snapshot):
-     *   - Every entry must be an object with teamId and charId.
-     *   - Every teamId must resolve to a live team.
-     *   - Every charId must exist (via characterProvider).
-     *   - No (teamId, charId) pair may appear twice.
-     *   - No incoming interval may overlap an existing interval
-     *     for the same (team, character) pair.
-     *   - No incoming interval may overlap another incoming
-     *     interval for the same (team, character) pair (i.e. two
-     *     assignments to the same team and character in one
-     *     batch).
-     *
-     * ADD-AFTER-DEATH GUARD:
-     *   After the batch is applied, each distinct character in the
-     *   batch is checked once for a parseable deathYear. If
-     *   present, endStintsForCharacter is run for that character
-     *   against the same snapshot. This closes any newly-added
-     *   stint that extends past the character's death year, in the
-     *   same transaction.
-     *
-     *   The check is deduplicated: a character assigned to multiple
-     *   teams in one batch is cascaded once, after all their
-     *   intervals have been added.
-     *
-     *   endStintsForCharacter is idempotent, so this is safe even
-     *   when the character already had closed stints on some of
-     *   the affected teams.
+     * Add-after-death guard: intervals whose joinPeriod is strictly
+     * after the character's deathYear are rejected outright. The
+     * cascade then runs once per distinct character after all their
+     * intervals have been added.
      */
     function batchAddMembers(assignments) {
-        if (failIfMissing(checkMemberDependencies(), 'batchAddMembers')) {
+        if (failIfMissing(
+            checkMemberDependencies(), 'batchAddMembers'
+        )) {
             return Promise.resolve(failure(
-                'Dependencies not loaded. Please refresh the page.'
+                'Dependencies not loaded. Please refresh.'
             ));
         }
 
@@ -1679,9 +1596,9 @@
             }));
         }
 
-        // ---- Normalise and pre-validate each row. ----
+        // Normalise each row. Duplicates are allowed; overlap is
+        // checked later.
         var cleanRows = [];
-        var seenPairs = Object.create(null);
 
         for (var i = 0; i < assignments.length; i++) {
             var row = assignments[i];
@@ -1702,17 +1619,6 @@
                     failure(rowLabel + ': charId is required.')
                 );
             }
-
-            var teamId = String(row.teamId).trim();
-            var charId = String(row.charId).trim();
-            var pairKey = teamId + '::' + charId;
-
-            if (seenPairs[pairKey]) {
-                return Promise.resolve(failure(
-                    rowLabel + ': duplicate (team, character) pair.'
-                ));
-            }
-            seenPairs[pairKey] = true;
 
             var joinCanon = canonicalisePeriod(row.joinPeriod);
             if (joinCanon === null) {
@@ -1735,22 +1641,20 @@
                     ));
                 }
                 var trimmedRole = row.role.trim();
-                if (trimmedRole !== '') {
-                    role = trimmedRole;
-                }
+                if (trimmedRole !== '') { role = trimmedRole; }
             }
 
             cleanRows.push({
                 index: i,
-                teamId: teamId,
-                charId: charId,
+                teamId: String(row.teamId).trim(),
+                charId: String(row.charId).trim(),
                 joinPeriod: joinCanon,
                 leavePeriod: leaveCanon,
                 role: role
             });
         }
 
-        // ---- Pre-flight against window.data. ----
+        // Pre-flight against live store.
         var preflightStore = getDataStore();
         if (!preflightStore) {
             return Promise.resolve(failure(
@@ -1758,7 +1662,6 @@
             ));
         }
 
-        var preflightByTeam = Object.create(null);
         for (var p = 0; p < cleanRows.length; p++) {
             var pr = cleanRows[p];
             var preflightTeam = findTeamInData(
@@ -1770,12 +1673,30 @@
                     ': team no longer exists.'
                 ));
             }
-            if (!preflightByTeam[pr.teamId]) {
-                preflightByTeam[pr.teamId] = preflightTeam;
+
+            var preflightChar = findCharacterInData(
+                preflightStore, pr.charId
+            );
+            if (preflightChar) {
+                var preflightDeath = parseDeathYear(
+                    preflightChar.deathYear
+                );
+                if (preflightDeath !== null) {
+                    var preflightJoin = parsePeriod(
+                        pr.joinPeriod
+                    );
+                    if (preflightJoin !== null &&
+                        preflightJoin > preflightDeath) {
+                        return Promise.resolve(failure(
+                            'Assignment ' + (pr.index + 1) +
+                            ': join period is after the character\'s ' +
+                            'death year (' + preflightDeath + ').'
+                        ));
+                    }
+                }
             }
         }
 
-        // ---- Validation + mutation, snapshot-scoped. ----
         var rowsCopy = deepClone(cleanRows);
 
         return runMutation({
@@ -1812,11 +1733,38 @@
                         };
                     }
 
+                    // Add-after-death guard.
+                    var snapshotChar = findCharacterInData(
+                        snapshot, row.charId
+                    );
+                    if (snapshotChar) {
+                        var snapshotDeath = parseDeathYear(
+                            snapshotChar.deathYear
+                        );
+                        if (snapshotDeath !== null) {
+                            var snapshotJoin = parsePeriod(
+                                row.joinPeriod
+                            );
+                            if (snapshotJoin !== null &&
+                                snapshotJoin > snapshotDeath) {
+                                return {
+                                    valid: false,
+                                    message: rowLabel +
+                                        ': join period is after ' +
+                                        'the character\'s death ' +
+                                        'year (' + snapshotDeath +
+                                        ').'
+                                };
+                            }
+                        }
+                    }
+
                     var incoming = {
                         joinPeriod: row.joinPeriod,
                         leavePeriod: row.leavePeriod
                     };
 
+                    // Overlap against existing intervals on the team.
                     if (Array.isArray(team.members)) {
                         for (var m = 0;
                              m < team.members.length;
@@ -1840,16 +1788,17 @@
                                     return {
                                         valid: false,
                                         message: rowLabel +
-                                            ': interval ' +
-                                            'overlaps an existing ' +
-                                            'one for this character ' +
-                                            'on this team.'
+                                            ': interval overlaps ' +
+                                            'an existing one for ' +
+                                            'this character on this ' +
+                                            'team.'
                                     };
                                 }
                             }
                         }
                     }
 
+                    // Overlap within the batch, per pair.
                     var pairKey = row.teamId + '::' + row.charId;
                     var prior = pendingByPair[pairKey];
                     if (prior) {
@@ -1875,6 +1824,7 @@
 
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 if (!Array.isArray(snapshot.teams)) {
                     throw new Error('Team store is malformed.');
@@ -1919,7 +1869,7 @@
                             leavePeriod: row.leavePeriod
                         });
                     } else {
-                        var newEntry = buildCanonicalMember(
+                        entry = buildCanonicalMember(
                             row.charId,
                             row.role,
                             [{
@@ -1927,7 +1877,7 @@
                                 leavePeriod: row.leavePeriod
                             }]
                         );
-                        team.members.push(newEntry);
+                        team.members.push(entry);
                     }
 
                     team.updatedAt = new Date().toISOString();
@@ -1936,15 +1886,8 @@
                     added++;
                 }
 
-                // ---- ADD-AFTER-DEATH GUARD ----
-                //
-                // For each distinct character touched by the batch,
-                // if they have a parseable deathYear, close any
-                // stint that now extends past the death year. Runs
-                // once per character, after all their intervals
-                // have been added, so a character assigned to
-                // multiple teams in one batch is cascaded once
-                // against the final state.
+                // Run the death cascade once per distinct character
+                // after all their intervals have been added.
                 var charIdsTouched = Object.keys(charactersTouched);
                 for (var c = 0; c < charIdsTouched.length; c++) {
                     var charId = charIdsTouched[c];
@@ -1953,23 +1896,14 @@
                     );
                     if (!character) { continue; }
 
-                    var deathYear = parseDeathYear(character.deathYear);
+                    var deathYear = parseDeathYear(
+                        character.deathYear
+                    );
                     if (deathYear === null) { continue; }
 
-                    try {
-                        endStintsForCharacter(
-                            snapshot,
-                            charId,
-                            deathYear
-                        );
-                    } catch (e) {
-                        console.warn(
-                            '[TeamCore] endStintsForCharacter ' +
-                            'failed during batchAddMembers; some ' +
-                            'newly-added stints may remain open ' +
-                            'past the character\'s death year:', e
-                        );
-                    }
+                    endStintsForCharacter(
+                        snapshot, charId, deathYear
+                    );
                 }
 
                 return {
@@ -1977,12 +1911,14 @@
                     teamsTouched: Object.keys(teamsTouched).length
                 };
             },
+
             logMessage: function(result) {
-                var n = result && typeof result.added === 'number'
+                var n = result &&
+                    typeof result.added === 'number'
                     ? result.added
                     : rowsCopy.length;
                 var t = result &&
-                        typeof result.teamsTouched === 'number'
+                    typeof result.teamsTouched === 'number'
                     ? result.teamsTouched
                     : 0;
                 return 'Added ' + n + ' member interval' +
@@ -1990,31 +1926,31 @@
                     ' across ' + t + ' team' +
                     (t === 1 ? '' : 's') + ' (batch).';
             },
+
             successMessage: function(result) {
-                var n = result && typeof result.added === 'number'
+                var n = result &&
+                    typeof result.added === 'number'
                     ? result.added
                     : rowsCopy.length;
+                var t = result &&
+                    typeof result.teamsTouched === 'number'
+                    ? result.teamsTouched
+                    : 0;
                 return 'Added ' + n + ' member' +
-                    (n === 1 ? '' : 's') + ' to ' +
-                    (result &&
-                     typeof result.teamsTouched === 'number'
-                        ? result.teamsTouched
-                        : 0) +
-                    ' team' +
-                    ((result &&
-                      typeof result.teamsTouched === 'number'
-                        ? result.teamsTouched
-                        : 0) === 1 ? '' : 's') +
-                    '.';
+                    (n === 1 ? '' : 's') + ' to ' + t + ' team' +
+                    (t === 1 ? '' : 's') + '.';
             },
+
             failureMessage: 'Failed to add members.'
         });
     }
 
     function updateMember(teamId, charId, updates) {
-        if (failIfMissing(checkBaseDependencies(), 'updateMember')) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'updateMember'
+        )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2022,7 +1958,9 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
         if (!isObject(updates)) {
             return Promise.resolve(
@@ -2094,10 +2032,13 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target || !Array.isArray(target.members)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var liveMember = null;
@@ -2119,6 +2060,7 @@
 
                 return { member: liveMember, teamId: targetId };
             },
+
             logMessage: 'Updated member role on team: ' +
                 (current.name || targetId),
             successMessage: 'Member updated successfully!',
@@ -2127,9 +2069,11 @@
     }
 
     function removeMember(teamId, charId) {
-        if (failIfMissing(checkBaseDependencies(), 'removeMember')) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'removeMember'
+        )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2137,7 +2081,9 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(charId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
         var targetId = String(teamId).trim();
@@ -2184,18 +2130,27 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target || !Array.isArray(target.members)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
-                target.members = target.members.filter(function(m) {
-                    return !m ||
-                        String(m.characterId) !== targetChar;
-                });
+                target.members = target.members.filter(
+                    function(m) {
+                        return !m ||
+                            String(m.characterId) !== targetChar;
+                    }
+                );
                 target.updatedAt = new Date().toISOString();
-                return { characterId: targetChar, teamId: targetId };
+                return {
+                    characterId: targetChar,
+                    teamId: targetId
+                };
             },
+
             logMessage: 'Removed member from team: ' +
                 (current.name || targetId),
             successMessage: 'Member removed successfully!',
@@ -2213,7 +2168,7 @@
             checkBaseDependencies(), 'endMemberInterval'
         )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2221,13 +2176,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(characterId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
-        var targetJoin = (joinPeriod === undefined ||
-                          joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
+        var targetJoin = canonicalisePeriod(joinPeriod);
+        if (targetJoin === null) {
+            return Promise.resolve(
+                failure('Invalid join period.')
+            );
+        }
 
         var leaveCanon = canonicalisePeriod(leaveWeek);
         if (leaveCanon === null || leaveCanon === '') {
@@ -2262,10 +2221,7 @@
         for (var j = 0; j < entry.intervals.length; j++) {
             var iv = entry.intervals[j];
             if (!iv) { continue; }
-            var ivJoin = (iv.joinPeriod === undefined ||
-                          iv.joinPeriod === null)
-                ? ''
-                : String(iv.joinPeriod);
+            var ivJoin = canonicalisePeriod(iv.joinPeriod);
             if (ivJoin === targetJoin) {
                 targetInterval = iv;
                 break;
@@ -2290,7 +2246,9 @@
             }
         }
 
-        var joinCanon = canonicalisePeriod(targetInterval.joinPeriod);
+        var joinCanon = canonicalisePeriod(
+            targetInterval.joinPeriod
+        );
         if (joinCanon !== '' && joinCanon !== null) {
             var joinNum = parseInt(joinCanon, 10);
             var leaveNumCheck = parseInt(leaveCanon, 10);
@@ -2335,10 +2293,9 @@
                      j++) {
                     var iv = liveEntry.intervals[j];
                     if (!iv) { continue; }
-                    var ivJoin = (iv.joinPeriod === undefined ||
-                                  iv.joinPeriod === null)
-                        ? ''
-                        : String(iv.joinPeriod);
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
                     if (ivJoin === targetJoin) {
                         liveIv = iv;
                         break;
@@ -2352,10 +2309,13 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target || !Array.isArray(target.members)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var liveEntry = null;
@@ -2377,10 +2337,9 @@
                      j++) {
                     var iv = liveEntry.intervals[j];
                     if (!iv) { continue; }
-                    var ivJoin = (iv.joinPeriod === undefined ||
-                                  iv.joinPeriod === null)
-                        ? ''
-                        : String(iv.joinPeriod);
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
                     if (ivJoin === targetJoin) {
                         liveIv = iv;
                         break;
@@ -2400,6 +2359,7 @@
                     leavePeriod: leaveCanonCopy
                 };
             },
+
             logMessage: 'Ended member interval on team: ' +
                 (current.name || targetId),
             successMessage: 'Member left successfully.',
@@ -2412,7 +2372,7 @@
             checkBaseDependencies(), 'reopenMemberInterval'
         )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2420,13 +2380,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(characterId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
-        var targetJoin = (joinPeriod === undefined ||
-                          joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
+        var targetJoin = canonicalisePeriod(joinPeriod);
+        if (targetJoin === null) {
+            return Promise.resolve(
+                failure('Invalid join period.')
+            );
+        }
 
         var targetId = String(teamId).trim();
         var targetChar = String(characterId).trim();
@@ -2461,16 +2425,16 @@
                             'of this team.'
                     };
                 }
+
                 var liveIv = null;
                 for (var j = 0;
                      j < liveEntry.intervals.length;
                      j++) {
                     var iv = liveEntry.intervals[j];
                     if (!iv) { continue; }
-                    var ivJoin = (iv.joinPeriod === undefined ||
-                                  iv.joinPeriod === null)
-                        ? ''
-                        : String(iv.joinPeriod);
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
                     if (ivJoin === targetJoin) {
                         liveIv = iv;
                         break;
@@ -2491,35 +2455,39 @@
                     };
                 }
 
+                // Reopening makes the target interval [join, Infinity].
+                // It must not overlap any sibling interval.
+                var reopened = {
+                    joinPeriod: canonicalisePeriod(
+                        liveIv.joinPeriod
+                    ),
+                    leavePeriod: ''
+                };
+
                 for (var k = 0;
                      k < liveEntry.intervals.length;
                      k++) {
-                    if (liveEntry.intervals[k] === liveIv) {
-                        continue;
-                    }
                     var other = liveEntry.intervals[k];
-                    if (!other) { continue; }
-                    var otherStart = effectiveIntervalStart(other);
-                    var thisStart = effectiveIntervalStart(liveIv);
-                    if (thisStart <= effectiveIntervalEnd(other) &&
-                        otherStart <= Infinity) {
-                        if (otherStart >= thisStart) {
-                            return {
-                                valid: false,
-                                message: 'Reopening this interval ' +
-                                    'would overlap a later ' +
-                                    'interval.'
-                            };
-                        }
+                    if (!other || other === liveIv) { continue; }
+
+                    if (intervalsOverlap(reopened, other)) {
+                        return {
+                            valid: false,
+                            message: 'Reopening this interval ' +
+                                'would overlap a later interval.'
+                        };
                     }
                 }
 
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target || !Array.isArray(target.members)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var liveEntry = null;
@@ -2540,10 +2508,9 @@
                      j++) {
                     var iv = liveEntry.intervals[j];
                     if (!iv) { continue; }
-                    var ivJoin = (iv.joinPeriod === undefined ||
-                                  iv.joinPeriod === null)
-                        ? ''
-                        : String(iv.joinPeriod);
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
                     if (ivJoin === targetJoin) {
                         iv.leavePeriod = '';
                         target.updatedAt =
@@ -2558,6 +2525,7 @@
 
                 throw new Error('Interval not found.');
             },
+
             logMessage: 'Reopened member interval on team: ' +
                 (current.name || targetId),
             successMessage: 'Interval reopened.',
@@ -2570,7 +2538,7 @@
             checkBaseDependencies(), 'purgeMemberInterval'
         )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2578,13 +2546,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
         if (!isNonEmptyString(characterId)) {
-            return Promise.resolve(failure('Character ID is required.'));
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
         }
 
-        var targetJoin = (joinPeriod === undefined ||
-                          joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
+        var targetJoin = canonicalisePeriod(joinPeriod);
+        if (targetJoin === null) {
+            return Promise.resolve(
+                failure('Invalid join period.')
+            );
+        }
 
         var targetId = String(teamId).trim();
         var targetChar = String(characterId).trim();
@@ -2624,11 +2596,16 @@
                      j < liveEntry.intervals.length;
                      j++) {
                     var iv = liveEntry.intervals[j];
-                    if (!iv) { continue; }
-                    var ivJoin = (iv.joinPeriod === undefined ||
-                                  iv.joinPeriod === null)
-                        ? ''
-                        : String(iv.joinPeriod);
+                    if (!iv || typeof iv !== 'object') {
+                        return {
+                            valid: false,
+                            message: 'Team member contains a ' +
+                                'malformed interval.'
+                        };
+                    }
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
                     if (ivJoin === targetJoin) {
                         found = true;
                         break;
@@ -2642,10 +2619,13 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target || !Array.isArray(target.members)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var idx = -1;
@@ -2668,21 +2648,27 @@
                 }
 
                 var before = liveEntry.intervals.length;
+                var found = false;
+
                 liveEntry.intervals = liveEntry.intervals.filter(
                     function(iv) {
                         if (!iv || typeof iv !== 'object') {
+                            // Preserve malformed entries; the
+                            // caller did not ask to clean them.
+                            return true;
+                        }
+                        var ivJoin = canonicalisePeriod(
+                            iv.joinPeriod
+                        );
+                        if (ivJoin === targetJoin) {
+                            found = true;
                             return false;
                         }
-                        var ivJoin = (iv.joinPeriod === undefined ||
-                                      iv.joinPeriod === null)
-                            ? ''
-                            : String(iv.joinPeriod);
-                        return ivJoin !== targetJoin;
+                        return true;
                     }
                 );
-                var removed =
-                    before - liveEntry.intervals.length;
-                if (removed === 0) {
+
+                if (!found) {
                     throw new Error('Interval not found.');
                 }
 
@@ -2699,6 +2685,7 @@
                         liveEntry.intervals.length === 0
                 };
             },
+
             logMessage: 'Purged member interval on team: ' +
                 (current.name || targetId),
             successMessage: 'Interval removed.',
@@ -2711,9 +2698,11 @@
     // ============================================================
 
     function addRanking(teamId, period, rank) {
-        if (failIfMissing(checkBaseDependencies(), 'addRanking')) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'addRanking'
+        )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2772,10 +2761,13 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
                 if (!Array.isArray(target.rankingHistory)) {
                     target.rankingHistory = [];
@@ -2809,7 +2801,10 @@
                 target.rankingHistory.sort(function(a, b) {
                     var ap = parsePeriod(a.period);
                     var bp = parsePeriod(b.period);
-                    return (ap || 0) - (bp || 0);
+                    if (ap === null && bp === null) { return 0; }
+                    if (ap === null) { return 1; }
+                    if (bp === null) { return -1; }
+                    return ap - bp;
                 });
 
                 target.updatedAt = new Date().toISOString();
@@ -2820,6 +2815,7 @@
                     teamId: targetId
                 };
             },
+
             logMessage: 'Added ranking to team: ' +
                 (current.name || targetId),
             successMessage: 'Ranking added successfully!',
@@ -2828,9 +2824,11 @@
     }
 
     function removeRanking(teamId, period) {
-        if (failIfMissing(checkBaseDependencies(), 'removeRanking')) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'removeRanking'
+        )) {
             return Promise.resolve(
-                failure('Dependencies not loaded. Please refresh the page.')
+                failure('Dependencies not loaded. Please refresh.')
             );
         }
 
@@ -2865,17 +2863,20 @@
                 }
                 return { valid: true };
             },
+
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
                 if (!target ||
                     !Array.isArray(target.rankingHistory)) {
-                    throw new Error('Team not found in data store.');
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
                 }
 
                 var found = false;
                 target.rankingHistory =
                     target.rankingHistory.filter(function(entry) {
-                        if (!entry) return true;
+                        if (!entry) { return true; }
                         var entryPeriod =
                             parsePeriod(entry.period);
                         if (entryPeriod !== null &&
@@ -2887,14 +2888,13 @@
                     });
 
                 if (!found) {
-                    throw new Error(
-                        'Ranking entry not found.'
-                    );
+                    throw new Error('Ranking entry not found.');
                 }
 
                 target.updatedAt = new Date().toISOString();
                 return { period: periodStr, teamId: targetId };
             },
+
             logMessage: 'Removed ranking from team: ' +
                 (current.name || targetId),
             successMessage: 'Ranking removed successfully!',
@@ -2903,70 +2903,33 @@
     }
 
     // ============================================================
-    // CASCADE HELPERS
+    // CROSS-DOMAIN CASCADES
     // ============================================================
 
     /**
-     * End every active PROFESSIONAL-team stint for a character at
-     * the given year.
+     * End every open professional-team stint for a character at the
+     * given year.
      *
      * Called from:
-     *   - CharacterCRUD.save (on every save of a character with a
-     *     parseable deathYear — see character-crud.js).
-     *   - CharacterCRUD.backfillDeathCascades (one-time maintenance
-     *     for pre-cascade data).
-     *   - addMember and batchAddMembers (add-after-death guard; a
-     *     character added to a team after their death was recorded
-     *     has the newly-added stint closed in the same
-     *     transaction).
+     *   - CharacterCRUD.save (death cascade)
+     *   - CharacterCRUD.backfillDeathCascades
+     *   - CharacterCRUD.setCareerTransition
+     *   - CharacterCRUD.applyCareerStatusTimeline
+     *   - addMember / batchAddMembers (add-after-death guard)
      *
-     * SCOPE:
-     *   Professional teams only. Academic teams are managed by the
-     *   Academy module; temporary and civilian team membership does
-     *   not participate in the death cascade.
-     *
-     * GRANULARITY:
-     *   Year. Professional team stints use year strings. There is
-     *   no week concept on this side. deathWeek is NOT read.
-     *
-     * NON-REVERSIBLE:
-     *   Clearing deathYear does NOT restore the ended stints.
-     *   Ending a stint is a fact, matching the semantics of
-     *   `leave`. The user reopens stints by hand if they want to
-     *   undo a death.
-     *
-     * IDEMPOTENT:
-     *   Running twice on the same snapshot produces the same
-     *   result. A stint already ended at or before deathYear is
-     *   left alone.
+     * Scope: professional teams only.
+     * Granularity: year. deathWeek is not read.
+     * Never throws. Idempotent.
      *
      * SEMANTICS:
-     *   For each professional team:
-     *     For each member entry with characterId === charId:
-     *       For each interval:
-     *         - Skip if leavePeriod is already set and <= deathYear.
-     *         - Skip if joinPeriod is strictly greater than
-     *           deathYear. A stint starting after death cannot be
-     *           ended at death without producing leave < join.
-     *         - Otherwise, set leavePeriod = String(deathYear).
-     *           This includes the joinPeriod === deathYear case:
-     *           a stint that starts in the death year is ended at
-     *           the death year, producing a one-year stint [Y, Y].
+     *   For each open professional stint with parseable joinPeriod:
+     *     - leavePeriod already set and <= deathYear: skip.
+     *     - joinPeriod strictly > deathYear: skip (would produce
+     *       leave < join; validators reject that elsewhere).
+     *     - otherwise: set leavePeriod = String(deathYear).
      *
-     * PURE with respect to `appData`:
-     *   - Mutates the snapshot.
-     *   - Never touches window.data.
-     *   - Never throws.
-     *
-     * @param {object} appData
-     * @param {string} charId
-     * @param {number|string} deathYear
-     * @returns {object} {
-     *   stintsEnded: number,
-     *   teamsTouched: number,
-     *   skippedAlreadyEnded: number,
-     *   skippedStartsAfterDeath: number
-     * }
+     *   joinPeriod === deathYear is ended at deathYear, producing
+     *   [Y, Y].
      */
     function endStintsForCharacter(appData, charId, deathYear) {
         var result = {
@@ -2984,9 +2947,7 @@
         }
 
         var deathNum = parsePeriod(deathYear);
-        if (deathNum === null) {
-            return result;
-        }
+        if (deathNum === null) { return result; }
 
         var target = String(charId);
         var deathStr = String(deathNum);
@@ -2995,15 +2956,12 @@
 
         for (var t = 0; t < appData.teams.length; t++) {
             var team = appData.teams[t];
-            if (!team || typeof team !== 'object') {
-                continue;
-            }
-            if (team.type !== 'professional') {
-                continue;
-            }
-            if (!Array.isArray(team.members)) {
-                continue;
-            }
+            if (!team || typeof team !== 'object') { continue; }
+            if (team.type !== 'professional') { continue; }
+            if (!Array.isArray(team.members)) { continue; }
+
+            var teamIdStr = String(team.id);
+            var touchedThisTeam = false;
 
             for (var m = 0; m < team.members.length; m++) {
                 var member = team.members[m];
@@ -3013,9 +2971,7 @@
                 if (String(member.characterId) !== target) {
                     continue;
                 }
-                if (!Array.isArray(member.intervals)) {
-                    continue;
-                }
+                if (!Array.isArray(member.intervals)) { continue; }
 
                 for (var i = 0; i < member.intervals.length; i++) {
                     var iv = member.intervals[i];
@@ -3029,8 +2985,8 @@
                         : String(iv.leavePeriod);
                     var leaveNum = parsePeriod(leaveRaw);
 
-                    // Already ended at or before the death year.
-                    if (leaveNum !== null && leaveNum <= deathNum) {
+                    if (leaveNum !== null &&
+                        leaveNum <= deathNum) {
                         result.skippedAlreadyEnded++;
                         continue;
                     }
@@ -3041,13 +2997,6 @@
                         : String(iv.joinPeriod);
                     var joinNum = parsePeriod(joinRaw);
 
-                    // Stint starts strictly after the death year.
-                    // Ending it would be leave < join.
-                    //
-                    // NOTE: joinNum === deathNum is NOT skipped.
-                    // A stint that starts the year the character
-                    // dies is ended at the death year, producing a
-                    // one-year stint [Y, Y].
                     if (joinNum !== null && joinNum > deathNum) {
                         result.skippedStartsAfterDeath++;
                         continue;
@@ -3055,14 +3004,13 @@
 
                     iv.leavePeriod = deathStr;
                     result.stintsEnded++;
-                    teamsTouchedSet[String(team.id)] = true;
+                    touchedThisTeam = true;
                 }
+            }
 
-                // Touch the team's updatedAt only if we changed
-                // something on it.
-                if (teamsTouchedSet[String(team.id)]) {
-                    team.updatedAt = new Date().toISOString();
-                }
+            if (touchedThisTeam) {
+                team.updatedAt = new Date().toISOString();
+                teamsTouchedSet[teamIdStr] = true;
             }
         }
 
@@ -3073,12 +3021,8 @@
     function stripCharacterRefs(appData, charId) {
         var result = { membershipsRemoved: 0 };
 
-        if (!appData || !charId) {
-            return result;
-        }
-        if (!Array.isArray(appData.teams)) {
-            return result;
-        }
+        if (!appData || !charId) { return result; }
+        if (!Array.isArray(appData.teams)) { return result; }
 
         var target = String(charId);
 
@@ -3104,15 +3048,12 @@
     // ============================================================
 
     window.TeamCore = {
-        // Configuration
         configure: configure,
 
-        // Team CRUD
         createTeam: createTeam,
         updateTeam: updateTeam,
         deleteTeam: deleteTeam,
 
-        // Member mutations
         addMember: addMember,
         addMemberInterval: addMemberInterval,
         batchAddMembers: batchAddMembers,
@@ -3122,11 +3063,9 @@
         reopenMemberInterval: reopenMemberInterval,
         purgeMemberInterval: purgeMemberInterval,
 
-        // Ranking mutation
         addRanking: addRanking,
         removeRanking: removeRanking,
 
-        // Cross-domain cascade
         stripCharacterRefs: stripCharacterRefs,
         endStintsForCharacter: endStintsForCharacter
     };
