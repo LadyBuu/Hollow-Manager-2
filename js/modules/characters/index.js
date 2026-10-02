@@ -13,6 +13,10 @@
  *     and window.setCurrentEditId, which CharacterList and
  *     CharacterEvents consume.
  *   - The character list toggle (mobile sidebar).
+ *   - The Research button. Opens window.Research (the profile
+ *     search modal). The modal itself is owned by the research
+ *     module; this module only emits the button and wires the
+ *     click.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -21,6 +25,8 @@
  *   - Rendering of the list or the form. CharacterList and
  *     CharacterForm own those.
  *   - Event binding. CharacterEvents owns it.
+ *   - The research feature. ResearchQueries / ResearchView /
+ *     ResearchEvents own it.
  *
  * FILTER BAR:
  *   The filter bar carries:
@@ -33,6 +39,7 @@
  *     #hide-eliminated
  *     #hide-filler
  *     #clear-char-filter
+ *     #research-btn           (opens the research modal)
  *
  *   The sort select's persisted value is restored at mount from
  *   CharacterList.getSort(). When the character list is not yet
@@ -49,6 +56,7 @@
  * DEPENDENCIES (OPTIONAL, resolved at call time):
  *   - window.DataLoader
  *   - window.CharacterViews
+ *   - window.Research
  *   - window.UI_CONSTANTS
  */
 
@@ -137,6 +145,14 @@
             console.warn(
                 '[CharactersModule] CharacterViews not loaded — ' +
                 'Social tab will be empty.'
+            );
+        }
+
+        if (!window.Research ||
+            typeof window.Research.open !== 'function') {
+            console.warn(
+                '[CharactersModule] Research module not loaded — ' +
+                'Research button will be inactive.'
             );
         }
 
@@ -234,6 +250,11 @@
             }
         }
 
+        // Research button: opens the research modal. The modal
+        // itself is owned by window.Research; this button is just
+        // the entry point.
+        bindResearchButton(container);
+
         // Re-render the form if an edit id is already set.
         var editId = getCurrentEditId();
         if (editId &&
@@ -271,6 +292,39 @@
 
         _mounted = false;
         _initialized = false;
+    }
+
+    // ============================================================
+    // RESEARCH BUTTON
+    // ============================================================
+
+    function bindResearchButton(container) {
+        if (!container) { return; }
+
+        var btn = container.querySelector('#research-btn');
+        if (!btn) { return; }
+
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+
+            var Research = window.Research || null;
+            if (!Research ||
+                typeof Research.open !== 'function') {
+                console.warn(
+                    '[CharactersModule] Research module is not ' +
+                    'loaded.'
+                );
+                return;
+            }
+
+            try {
+                Research.open();
+            } catch (err) {
+                console.warn(
+                    '[CharactersModule] Research.open threw:', err
+                );
+            }
+        });
     }
 
     // ============================================================
@@ -346,6 +400,10 @@
                                     class="small secondary"
                                     title="Manage Filler Characters"
                                     aria-label="Manage Filler Characters">Fillers</button>
+                            <button id="research-btn"
+                                    class="small secondary"
+                                    title="Search character profiles"
+                                    aria-label="Search character profiles">Research</button>
                             <button id="toggle-char-list"
                                     class="secondary small"
                                     aria-label="Toggle character list">\u2630</button>
