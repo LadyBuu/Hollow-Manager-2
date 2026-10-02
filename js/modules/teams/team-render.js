@@ -4,72 +4,40 @@
  *
  * Path: js/modules/teams/team-render.js
  *
- * Provides:
- *   - renderContainer(vm)          full page shell
- *   - renderList(teams, options)   team rows
- *   - renderUnassigned(vm)         unassigned-character rows
- *   - renderExpandedMembers(vm)    expanded member section
- *   - renderTeamCard(vm)           compact card (single team)
- *   - renderTeamSummary(vm)        single-line summary
- *   - renderFilterBar(vm)          filter bar (per tab)
- *   - renderRankingList(vm)        ranking rows
- *   - renderTeamForm(vm)           team creation/edit form
- *   - renderRankingForm()          ranking entry form
- *   - renderNameHistoryRow(entry)  one name-history row
+ * WHAT THIS OWNS:
+ *   - HTML string construction for the Teams tab.
+ *   - Page shell, filter bar, team list, expanded members.
+ *   - Professional Pool view (available / future sections).
+ *   - Timeline delegation (via TimelineView).
+ *   - Modals: team form, ranking form/list, name history row.
  *
- * IMPORTANT:
- *   - RENDER ONLY. No queries, no state, no mutations, no domain
- *     calculations.
- *   - Every input is a view model already produced by
- *     TeamAggregator.
- *   - Uses DomUtils for escaping.
- *   - Display strings (type label, period display, rank display)
- *     arrive on the VM. The renderer does not derive them.
+ * WHAT THIS DOES NOT OWN:
+ *   - Reads, mutations, projections. Every input is a view model.
+ *   - Event binding. TeamEvents owns it.
+ *   - Domain calculations. Everything is display-ready on the VM.
+ *
+ * VM CONTRACT:
+ *   The renderer trusts the VM shape. It does not default missing
+ *   fields to fabricated values and does not skip malformed rows.
+ *   A broken VM produces a visible failure, not a plausible empty
+ *   list.
  *
  * PAGE HEADER ACTIONS:
- *   The page header carries three actions on the professional tab:
+ *   Export / Matchmaking / Add Team appear on the Professional tab.
+ *   Temporary and Civilian tabs show only Add Team. Matchmaking and
+ *   Export are professional-scoped features.
  *
- *     [Export] [Matchmaking] [+ Add Team]
- *
- *   All three are hidden while the Unassigned or Timeline view is
- *   active, and on the Temporary and Civilian tabs.
- *
- * VIEW MODES:
- *   The professional tab carries a mode toggle:
- *
- *     [ Teams | Unassigned | Timeline ]
- *
- *   `pageVM.viewMode` is one of 'teams' | 'unassigned' | 'timeline'.
- *   The renderer branches on it:
- *
- *     'teams'       normal team list
- *     'unassigned'  the unassigned-character view
- *     'timeline'    the timeline view (rendered by TimelineView)
- *
- *   The timeline content is delegated to TimelineView
- *   (window.TimelineView.renderTimeline). If that module is
- *   unavailable, the renderer falls back to an error message.
- *
- * UNASSIGNED VIEW:
- *   Four columns: Character | Status | Junior Since | Senior Since.
- *   Each row carries an age chip next to the name and, for staff,
- *   a small tag. See the previous revisions of this file for the
- *   full contract.
- *
- * MEMBER VM:
- *   Unchanged from the previous revision.
- *
- * NO INLINE STYLES:
- *   Layout lives in CSS classes where possible. The renderer emits
- *   class names. A few presentation-only inline styles remain for
- *   elements that predate the stylesheet split.
+ * VIEW MODES (professional only):
+ *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
+ *   three for the professional tab; Temporary and Civilian tabs
+ *   have no mode toggle.
  *
  * DEPENDENCIES:
- *   - window.DomUtils      (escaping)
- *   - window.TeamConstants (type/status vocabulary for the form)
+ *   - window.DomUtils
+ *   - window.TeamConstants
  *
  * DEPENDENCIES (LAZY):
- *   - window.TimelineView  (timeline renderer)
+ *   - window.TimelineView (timeline renderer)
  */
 
 (function() {
@@ -88,6 +56,7 @@
     var TeamConstants = window.TeamConstants;
 
     var _missing = [];
+
     if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
         _missing.push('DomUtils.escapeHtml');
     }
@@ -132,11 +101,18 @@
             : String(value);
     }
 
-    function safeCount(value) {
-        if (typeof value === 'number' && isFinite(value)) {
-            return String(value);
+    function isCount(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
+    function renderCount(value) {
+        if (!isCount(value)) {
+            throw new Error(
+                '[TeamRender] Expected a numeric count, got: ' +
+                typeof value
+            );
         }
-        return '0';
+        return String(value);
     }
 
     function getFormTeamTypes() {
@@ -184,6 +160,9 @@
         html += '<button type="button" ' +
                     'class="small manage-rankings" ' +
                     'data-id="' + idAttr + '">Rankings</button>';
+        html += '<button type="button" ' +
+                    'class="small export-team" ' +
+                    'data-id="' + idAttr + '">Export</button>';
         html += '<button type="button" ' +
                     'class="small edit-team" ' +
                     'data-id="' + idAttr + '">Edit</button>';
@@ -235,7 +214,6 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || !team.id) { continue; }
 
             var isExpanded = expandedTeamId &&
                 String(expandedTeamId) === String(team.id);
@@ -259,13 +237,17 @@
                         ']</span>';
             }
             html += ' <span class="team-type-label">' +
-                        escapeHtml(
-                            team.typeLabel || team.type || ''
-                        ) +
+                        escapeHtml(team.typeLabel || team.type || '') +
                     '</span>';
             if (team.isActive === false) {
                 html += ' <span class="team-status-inactive">' +
                             '(Inactive)' +
+                        '</span>';
+            }
+            if (isNonEmptyString(team.temporaryMissionName)) {
+                html += ' <span class="team-mission-label" ' +
+                            'title="Associated mission">' +
+                            escapeHtml(team.temporaryMissionName) +
                         '</span>';
             }
             html += '</span>';
@@ -279,7 +261,7 @@
                     '</span>';
 
             html += '<span class="team-member-count">' +
-                        safeCount(team.activeMemberCount) +
+                        renderCount(team.activeMemberCount) +
                     '</span>';
 
             html += '<span class="actions">' +
@@ -297,204 +279,121 @@
     }
 
     // ============================================================
-    // UNASSIGNED VIEW
+    // PROFESSIONAL POOL
     // ============================================================
 
-    function renderUnassigned(vm) {
-        if (!vm || !Array.isArray(vm.rows)) {
-            return '';
+    function renderProfessionalPool(vm) {
+        if (!vm) {
+            return '<p class="empty-state">Pool is not available.</p>';
         }
 
-        var yearLabel = vm.year !== null && vm.year !== undefined
-            ? String(vm.year)
-            : '';
+        var available = Array.isArray(vm.available) ? vm.available : [];
+        var future = Array.isArray(vm.future) ? vm.future : [];
 
         var html = '';
 
-        html += renderUnassignedCandidates(vm, yearLabel);
-
-        if (Array.isArray(vm.staffRows) && vm.staffRows.length > 0) {
-            html += renderUnassignedStaff(vm, yearLabel);
-        }
-
-        return html;
-    }
-
-    function renderUnassignedCandidates(vm, yearLabel) {
-        if (vm.rows.length === 0) {
-            return '<p class="empty-state team-list-empty">' +
-                        'No unassigned characters' +
-                        (yearLabel
-                            ? ' for ' + escapeHtml(yearLabel)
-                            : '') +
-                        '.' +
-                    '</p>';
-        }
-
-        var html = '';
-
-        html += '<div class="unassigned-summary">' +
-                    'Unassigned at year ' +
-                    '<strong>' + escapeHtml(yearLabel) + '</strong>' +
-                    ' &mdash; ' +
-                    '<strong>' + safeCount(vm.total) + '</strong>' +
-                    ' character' +
-                    (vm.total === 1 ? '' : 's') +
-                '</div>';
-
-        html += '<div class="list-header unassigned-header">';
-        html += '<span>Character</span>';
-        html += '<span>Status</span>';
-        html += '<span>Junior Since</span>';
-        html += '<span>Senior Since</span>';
+        html += '<div class="pool-summary">';
+        html += 'Pool at year <strong>' +
+                    escapeHtml(String(vm.period)) +
+                '</strong> &mdash; ';
+        html += '<strong>' + escapeHtml(String(available.length)) +
+                    '</strong> available, ';
+        html += '<strong>' + escapeHtml(String(future.length)) +
+                    '</strong> with future commitments.';
         html += '</div>';
 
-        for (var i = 0; i < vm.rows.length; i++) {
-            var row = vm.rows[i];
-            if (!row || !row.characterId) { continue; }
+        html += renderPoolSection(
+            'Available',
+            available,
+            renderAvailablePoolRow
+        );
 
-            var rowClass = 'list-item unassigned-item';
-            var hasFuture = isNonEmptyString(row.futureDisplay);
-            if (hasFuture) {
-                rowClass += ' has-future';
-            }
-
-            var staffTagHtml = '';
-            if (row.supportClass === 'support-unassigned') {
-                staffTagHtml = ' <span class="unassigned-staff-tag" ' +
-                                    'title="Support member with a ' +
-                                        'student phase and no team ' +
-                                        'history. Still needs a ' +
-                                        'placement.">Staff</span>';
-            }
-
-            html += '<div class="' + rowClass + '" ' +
-                        'data-id="' +
-                            escapeAttribute(row.characterId) + '">';
-
-            html += '<span class="unassigned-name-cell">';
-            html += '<span class="unassigned-name-line">';
-            html += '<strong class="unassigned-name">' +
-                        escapeHtml(row.displayName || 'Unknown') +
-                    '</strong> ';
-            html += renderAgeChip(row.ageDisplay);
-            html += staffTagHtml;
-            html += '</span>';
-
-            if (hasFuture) {
-                html += '<span class="unassigned-future" ' +
-                            'title="Already committed to a ' +
-                                'professional team in a future year">' +
-                            '&rarr; ' +
-                            escapeHtml(row.futureDisplay) +
-                        '</span>';
-            }
-            html += '</span>';
-
-            html += '<span class="unassigned-status">' +
-                        escapeHtml(row.status || '') +
-                    '</span>';
-
-            html += '<span class="unassigned-junior">' +
-                        escapeHtml(row.juniorDisplay || '\u2014') +
-                    '</span>';
-
-            html += '<span class="unassigned-senior">' +
-                        escapeHtml(row.seniorDisplay || '\u2014') +
-                    '</span>';
-
-            html += '</div>';
+        if (future.length > 0) {
+            html += renderPoolSection(
+                'Future Assignments',
+                future,
+                renderFuturePoolRow
+            );
         }
 
         return html;
     }
 
-    function renderUnassignedStaff(vm, yearLabel) {
-        var rows = vm.staffRows;
+    function renderPoolSection(heading, rows, rowRenderer) {
+        if (rows.length === 0) { return ''; }
 
         var html = '';
 
-        html += '<div class="unassigned-summary unassigned-staff-summary">' +
-                    'Staff at year ' +
-                    '<strong>' + escapeHtml(yearLabel) + '</strong>' +
-                    ' &mdash; ' +
-                    '<strong>' + safeCount(vm.staffTotal) + '</strong>' +
-                    ' character' +
-                    (vm.staffTotal === 1 ? '' : 's') +
+        html += '<div class="pool-section">';
+        html += '<div class="pool-section-header">' +
+                    escapeHtml(heading) +
+                    ' (' + escapeHtml(String(rows.length)) + ')' +
                 '</div>';
 
-        html += '<div class="list-header unassigned-header ' +
-                    'unassigned-staff-header">';
+        html += '<div class="list-header pool-header">';
         html += '<span>Character</span>';
         html += '<span>Status</span>';
-        html += '<span>Role</span>';
-        html += '<span>Since</span>';
+        html += '<span>Available</span>';
+        html += '<span>Assignment</span>';
+        html += '<span>History</span>';
         html += '</div>';
 
         for (var i = 0; i < rows.length; i++) {
-            var row = rows[i];
-            if (!row || !row.characterId) { continue; }
-
-            var roleLabel = row.staffRole === 'support'
-                ? 'Support'
-                : 'Instructor';
-
-            var subtypeTagHtml = '';
-            if (row.staffRole === 'support') {
-                if (row.supportClass === 'support-pure') {
-                    subtypeTagHtml = ' <span ' +
-                        'class="unassigned-subtype-tag ' +
-                        'unassigned-subtype-pure" ' +
-                        'title="Never a student, no team history. ' +
-                        'Not available for placement.">' +
-                        'Pure</span>';
-                } else if (row.supportClass === 'support-unassigned') {
-                    subtypeTagHtml = ' <span ' +
-                        'class="unassigned-subtype-tag ' +
-                        'unassigned-subtype-staff" ' +
-                        'title="Has a student phase but no team ' +
-                        'history. Also appears in the candidate ' +
-                        'section.">' +
-                        'Staff</span>';
-                }
-            }
-
-            html += '<div class="list-item unassigned-item ' +
-                        'unassigned-staff-item" ' +
-                        'data-id="' +
-                            escapeAttribute(row.characterId) + '">';
-
-            html += '<span class="unassigned-name-cell">';
-            html += '<span class="unassigned-name-line">';
-            html += '<strong class="unassigned-name">' +
-                        escapeHtml(row.displayName || 'Unknown') +
-                    '</strong> ';
-            html += renderAgeChip(row.ageDisplay);
-            html += '</span>';
-
-            if (isNonEmptyString(row.teamName)) {
-                html += '<span class="unassigned-future" ' +
-                            'title="Former professional team">' +
-                            escapeHtml(row.teamName) +
-                        '</span>';
-            }
-            html += '</span>';
-
-            html += '<span class="unassigned-status">' +
-                        escapeHtml(row.status || '') +
-                    '</span>';
-
-            html += '<span class="unassigned-role">' +
-                        escapeHtml(roleLabel) +
-                        subtypeTagHtml +
-                    '</span>';
-
-            html += '<span class="unassigned-since">' +
-                        escapeHtml(row.staffSinceDisplay || '\u2014') +
-                    '</span>';
-
-            html += '</div>';
+            html += rowRenderer(rows[i]);
         }
+
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderAvailablePoolRow(row) {
+        return renderPoolRowBase(row, 'available');
+    }
+
+    function renderFuturePoolRow(row) {
+        return renderPoolRowBase(row, 'future');
+    }
+
+    function renderPoolRowBase(row, variant) {
+        var html = '';
+
+        html += '<div class="list-item professional-pool-item ' +
+                    'pool-item-' + variant + '" ' +
+                    'data-id="' +
+                        escapeAttribute(row.characterId) + '">';
+
+        html += '<span class="pool-character">';
+        html += '<strong class="pool-name">' +
+                    escapeHtml(row.displayName) +
+                '</strong>';
+        html += ' ' + renderAgeChip(row.ageDisplay);
+        html += '</span>';
+
+        html += '<span class="pool-status">' +
+                    escapeHtml(row.statusAtPeriod || '') +
+                '</span>';
+
+        html += '<span class="pool-availability">' +
+                    escapeHtml(row.availability.display) +
+                '</span>';
+
+        html += '<span class="pool-assignment">' +
+                    escapeHtml(row.assignment.display) +
+                '</span>';
+
+        html += '<span class="pool-history">';
+        if (row.history.hasProfessionalHistory) {
+            html += 'Former: ' + escapeHtml(
+                String(row.history.formerTeamCount)
+            ) + ' team' +
+            (row.history.formerTeamCount === 1 ? '' : 's');
+        } else {
+            html += '\u2014';
+        }
+        html += '</span>';
+
+        html += '</div>';
 
         return html;
     }
@@ -506,31 +405,22 @@
     function renderTimelineContent(pageVM) {
         var TV = window.TimelineView;
         if (!TV || typeof TV.renderTimeline !== 'function') {
-            return '<p class="empty-state">' +
-                        'Timeline view module not loaded.' +
-                    '</p>';
+            throw new Error(
+                '[TeamRender] TimelineView is not available.'
+            );
         }
 
-        var timelineVM = pageVM.timelineVM || null;
+        var timelineVM = pageVM.timelineVM;
         var expandedYears = pageVM.timelineExpandedYears ||
                             Object.create(null);
 
         if (!timelineVM) {
-            return '<p class="empty-state">' +
-                        'Timeline data is unavailable.' +
-                    '</p>';
+            throw new Error(
+                '[TeamRender] pageVM.timelineVM is missing.'
+            );
         }
 
-        try {
-            return TV.renderTimeline(timelineVM, expandedYears);
-        } catch (e) {
-            console.warn(
-                '[TeamRender] renderTimeline threw:', e
-            );
-            return '<p class="empty-state">' +
-                        'Failed to render the timeline.' +
-                    '</p>';
-        }
+        return TV.renderTimeline(timelineVM, expandedYears);
     }
 
     // ============================================================
@@ -538,9 +428,7 @@
     // ============================================================
 
     function renderExpandedMembers(membersVM) {
-        if (!membersVM) {
-            return '';
-        }
+        if (!membersVM) { return ''; }
 
         var periodLabel = membersVM.periodLabel || 'Period';
         var period = membersVM.period;
@@ -677,10 +565,6 @@
     // ============================================================
 
     function renderTeamCard(team) {
-        if (!team || !team.id) {
-            return '';
-        }
-
         var cardClass = 'team-card';
         if (team.isActive === false) {
             cardClass += ' inactive';
@@ -717,9 +601,15 @@
                     escapeHtml(team.currentRank || '-') +
                 '</span>';
         html += '<span class="team-member-count">Members: ' +
-                    safeCount(team.activeMemberCount) +
+                    renderCount(team.activeMemberCount) +
                 '</span>';
         html += '</div>';
+
+        if (isNonEmptyString(team.temporaryMissionName)) {
+            html += '<div class="team-card-mission">' +
+                        escapeHtml(team.temporaryMissionName) +
+                    '</div>';
+        }
 
         html += '<div class="team-card-actions">' +
                     renderTeamActions(team.id, false, false) +
@@ -734,10 +624,6 @@
     // ============================================================
 
     function renderTeamSummary(team) {
-        if (!team || !team.id) {
-            return '';
-        }
-
         return '<div class="team-summary">' +
                     '<span class="team-name">' +
                         escapeHtml(team.name || 'Unnamed Team') +
@@ -751,7 +637,7 @@
                         escapeHtml(team.currentRank || '-') +
                     '</span>' +
                     '<span class="team-members">' +
-                        safeCount(team.activeMemberCount) +
+                        renderCount(team.activeMemberCount) +
                         ' active members' +
                     '</span>' +
                 '</div>';
@@ -762,9 +648,7 @@
     // ============================================================
 
     function renderFilterBar(filterVM) {
-        if (!filterVM || !filterVM.tab) {
-            return '';
-        }
+        if (!filterVM || !filterVM.tab) { return ''; }
 
         var tab = filterVM.tab;
         var periodLabel = filterVM.periodLabel || 'Year';
@@ -779,12 +663,11 @@
         // ---- Professional tab: mode toggle + filters ----
         if (tab === 'professional') {
             var viewMode = filterVM.viewMode || 'teams';
-            var isUnassigned = viewMode === 'unassigned';
+            var isPool = viewMode === 'pool';
             var isTimeline = viewMode === 'timeline';
 
             html += '<div class="filter-row filter-row-professional">';
 
-            // Mode toggle
             html += '<div class="mode-toggle" role="tablist">';
             html += '<button type="button" ' +
                         'class="mode-btn' +
@@ -797,13 +680,13 @@
                         '">Teams</button>';
             html += '<button type="button" ' +
                         'class="mode-btn' +
-                            (isUnassigned ? ' active' : '') +
+                            (isPool ? ' active' : '') +
                         '" ' +
-                        'data-mode="unassigned" ' +
+                        'data-mode="pool" ' +
                         'role="tab" ' +
                         'aria-selected="' +
-                            (isUnassigned ? 'true' : 'false') +
-                        '">Unassigned</button>';
+                            (isPool ? 'true' : 'false') +
+                        '">Professional Pool</button>';
             html += '<button type="button" ' +
                         'class="mode-btn' +
                             (isTimeline ? ' active' : '') +
@@ -815,9 +698,7 @@
                         '">Timeline</button>';
             html += '</div>';
 
-            // Year and status filters: only meaningful in Teams mode.
-            // The timeline has its own range controls inside its
-            // header. The unassigned view has no filters.
+            // Year and status filters apply only to the Teams mode.
             if (viewMode === 'teams') {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
@@ -931,7 +812,7 @@
 
     function renderTeamForm(formVM) {
         if (!formVM) {
-            return '';
+            return '<p class="empty-state">Form data is not available.</p>';
         }
 
         var isEdit = formVM.isEdit === true;
@@ -1202,30 +1083,23 @@
     function renderContainer(pageVM) {
         if (!pageVM) {
             throw new Error(
-                '[TeamRender] renderContainer requires a page ' +
-                'view model.'
+                '[TeamRender] renderContainer requires a page VM.'
             );
         }
 
-        var activeTab = pageVM.activeTab || 'professional';
+        var activeTab = pageVM.activeTab;
         var viewMode = pageVM.viewMode || 'teams';
-        var counts = pageVM.counts || {
-            professional: 0,
-            temporary: 0,
-            civilian: 0
-        };
-        var teams = Array.isArray(pageVM.teams)
-            ? pageVM.teams
-            : [];
+        var counts = pageVM.counts;
+        var teams = pageVM.teams;
         var expandedTeamId = pageVM.expandedTeamId || null;
         var expandedTeam = pageVM.expandedTeam || null;
         var period = pageVM.period;
-        var unassignedVM = pageVM.unassignedVM || null;
+        var poolVM = pageVM.professionalPoolVM || null;
 
-        var isUnassigned =
-            activeTab === 'professional' && viewMode === 'unassigned';
-        var isTimeline =
-            activeTab === 'professional' && viewMode === 'timeline';
+        var isPool = activeTab === 'professional' &&
+            viewMode === 'pool';
+        var isTimeline = activeTab === 'professional' &&
+            viewMode === 'timeline';
 
         var expandedMembersVM = null;
         if (expandedTeam && Array.isArray(expandedTeam.members)) {
@@ -1243,25 +1117,21 @@
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
-        if (activeTab === 'professional' &&
-            !isUnassigned &&
-            !isTimeline) {
+        if (activeTab === 'professional') {
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
                         'class="secondary">Export</button>';
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
-            html += '<button type="button" id="add-team-btn" ' +
-                        'class="primary">+ Add Team</button>';
         }
+        html += '<button type="button" id="add-team-btn" ' +
+                    'class="primary">+ Add Team</button>';
         html += '</div>';
         html += '</div>';
 
         html += renderStats(counts);
-
         html += renderTabNav(activeTab, counts);
-
         html += '<div id="filter-container" ' +
                     'class="filter-container"></div>';
 
@@ -1270,11 +1140,11 @@
                     (isTimeline ? ' timeline-container' : '') +
                     '">';
 
-        // ---- Body: team list, unassigned, or timeline ----
+        // ---- Body ----
         if (isTimeline) {
             html += renderTimelineContent(pageVM);
-        } else if (isUnassigned) {
-            html += renderUnassigned(unassignedVM);
+        } else if (isPool) {
+            html += renderProfessionalPool(poolVM);
         } else {
             html += renderList(teams, {
                 type: activeTab,
@@ -1293,15 +1163,15 @@
         html += '<div class="stats-grid">';
         html += '<div class="stat-card"><h3>Professional</h3>' +
                     '<p class="stat-number">' +
-                        safeCount(counts.professional) +
+                        renderCount(counts.professional) +
                     '</p></div>';
         html += '<div class="stat-card"><h3>Temporary</h3>' +
                     '<p class="stat-number">' +
-                        safeCount(counts.temporary) +
+                        renderCount(counts.temporary) +
                     '</p></div>';
         html += '<div class="stat-card"><h3>Civilian</h3>' +
                     '<p class="stat-number">' +
-                        safeCount(counts.civilian) +
+                        renderCount(counts.civilian) +
                     '</p></div>';
         html += '</div>';
         return html;
@@ -1314,7 +1184,7 @@
                         'class="tab-btn' + active + '" ' +
                         'data-tab="' + escapeAttribute(tab) + '">' +
                         escapeHtml(label) +
-                        ' (' + safeCount(count) + ')' +
+                        ' (' + renderCount(count) + ')' +
                     '</button>';
         }
 
@@ -1341,7 +1211,7 @@
         renderContainer: renderContainer,
 
         renderList: renderList,
-        renderUnassigned: renderUnassigned,
+        renderProfessionalPool: renderProfessionalPool,
         renderExpandedMembers: renderExpandedMembers,
         renderTeamCard: renderTeamCard,
         renderTeamSummary: renderTeamSummary,
