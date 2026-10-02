@@ -23,20 +23,31 @@
  *
  * PROFESSIONAL PERSONNEL QUERY:
  *   getProfessionalPersonnelAtPeriod(period) returns domain facts
- *   about every character relevant to professional staffing at that
- *   period. It is the canonical source for both the Professional
- *   Pool UI and matchmaking.
+ *   about every character relevant to professional staffing.
  *
- *   EXCLUSION RULES (all applied here, before the aggregator):
- *     - deceased at the period
- *     - eliminated at any point
- *     - not in a professionally-eligible phase (must be
- *       junior-or-senior, must not be instructor)
- *     - retired (latest career status normalises to 'retired')
- *     - support staff who are NOT currently junior-or-senior.
- *       A support staffer who is ALSO in a student phase at the
- *       period passes; that is the "support-unassigned" case
- *       that legitimately needs a placement.
+ *   INCLUSION RULES (all applied here, before the aggregator):
+ *     - not deceased at the period
+ *     - not eliminated
+ *     - not retired (latest career status normalises to 'retired')
+ *     - has a junior-or-senior phase in careerStatus
+ *     - their student window does NOT overlap any professional
+ *       team stint they held. A character whose student phase
+ *       was 1895-1897 and who was never placed on a professional
+ *       team during those years is a pool candidate FOREVER,
+ *       not only when the query period falls inside 1895-1897.
+ *
+ *   The query period is used for:
+ *     - the deceased check
+ *     - assignment.status (active / future / available) at the
+ *       period
+ *     - statusAtPeriod and age for display
+ *
+ *   The query period is NOT used to filter who appears. Pool
+ *   membership is a fact about the character, not about the year
+ *   you are looking at.
+ *
+ *   availability.from / availability.to describe the student
+ *   window. They do not depend on the query period.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -129,6 +140,21 @@
         return TeamConstants.parsePeriod(value);
     }
 
+    function parseYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value) || value < 1) { return null; }
+            return value;
+        }
+        var trimmed = String(value).trim();
+        if (trimmed === '' || !/^\d+$/.test(trimmed)) { return null; }
+        var n = Number(trimmed);
+        if (!Number.isInteger(n) || n < 1) { return null; }
+        return n;
+    }
+
     function isOperationalStatus(status) {
         return status === 'active' || status === 'inactive';
     }
@@ -202,15 +228,6 @@
 
     /**
      * Latest careerStatus entry's normalised status key.
-     *
-     * "Latest" means the entry with the highest startYear. Ties
-     * break on array order (later wins). A malformed startYear is
-     * treated as -Infinity, so it only wins a tie when no other
-     * entry has a real year — matching the tie-break used by
-     * CharacterQueries.getStatusAtYear.
-     *
-     * Returns '' when the array is empty or every entry is
-     * malformed.
      */
     function getLatestCareerStatusKey(char) {
         if (!char || !Array.isArray(char.careerStatus) ||
@@ -855,40 +872,13 @@
             missing.push('CharacterQueries.isDeceased');
         }
         if (!CharacterQueries ||
-            typeof CharacterQueries.isJuniorOrSeniorByYear !==
-            'function') {
-            missing.push('CharacterQueries.isJuniorOrSeniorByYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.isInstructorByYear !== 'function') {
-            missing.push('CharacterQueries.isInstructorByYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getJuniorYear !== 'function') {
-            missing.push('CharacterQueries.getJuniorYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getSeniorYear !== 'function') {
-            missing.push('CharacterQueries.getSeniorYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getSupportYear !== 'function') {
-            missing.push('CharacterQueries.getSupportYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getInstructorYear !== 'function') {
-            missing.push('CharacterQueries.getInstructorYear');
-        }
-        if (!CharacterQueries ||
             typeof CharacterQueries.calculateAge !== 'function') {
             missing.push('CharacterQueries.calculateAge');
         }
-
         if (!CharacterConstants ||
             typeof CharacterConstants.classifyStatus !== 'function') {
             missing.push('CharacterConstants.classifyStatus');
         }
-
         if (!EliminationQueries ||
             typeof EliminationQueries.getEliminationWeek !==
             'function') {
@@ -907,6 +897,128 @@
             CharacterConstants: CharacterConstants,
             EliminationQueries: EliminationQueries
         };
+    }
+
+    // ============================================================
+    // STUDENT WINDOW
+    // ============================================================
+    //
+    // The student window is derived from the character's own
+    // careerStatus entries. It is the span from the earliest
+    // junior-or-senior start to the latest junior-or-senior end
+    // (or open when any junior-or-senior entry has a blank end).
+    //
+    // Returns { from, to, hasPhase }:
+    //   hasPhase false when the character has no junior or senior
+    //     entry at all. from and to are null.
+    //   hasPhase true with from = a year, to = a year or null
+    //     (null means still open).
+
+    function computeStudentWindow(char) {
+        var result = {
+            hasPhase: false,
+            from: null,
+            to: null
+        };
+
+        if (!char || !Array.isArray(char.careerStatus) ||
+            char.careerStatus.length === 0) {
+            return result;
+        }
+
+        var earliestStart = null;
+        var latestEnd = null;
+        var anyOpenEnded = false;
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var key = normaliseCareerStatusKey(entry.status);
+            if (key !== 'junior' && key !== 'senior') { continue; }
+
+            result.hasPhase = true;
+
+            var start = parseYear(entry.startYear);
+            if (start !== null) {
+                if (earliestStart === null ||
+                    start < earliestStart) {
+                    earliestStart = start;
+                }
+            }
+
+            var endRaw = entry.endYear;
+            if (endRaw === undefined ||
+                endRaw === null ||
+                String(endRaw).trim() === '') {
+                anyOpenEnded = true;
+            } else {
+                var end = parseYear(endRaw);
+                if (end !== null) {
+                    if (latestEnd === null || end > latestEnd) {
+                        latestEnd = end;
+                    }
+                }
+            }
+        }
+
+        result.from = earliestStart;
+        result.to = anyOpenEnded ? null : latestEnd;
+        return result;
+    }
+
+    /**
+     * Does any professional-team stint for this character overlap
+     * the given student window?
+     *
+     * "Overlap" is inclusive: a stint 1890-1897 overlaps a window
+     * 1895-1897. A stint 1890-1894 does NOT overlap 1895-1897.
+     *
+     * A window with from=null (no parseable start) is treated as
+     * unbounded on the left. A window with to=null is unbounded on
+     * the right. In both cases, "overlap" is decided by the side
+     * that is bounded.
+     */
+    function stintOverlapsStudentWindow(historyEntry, window) {
+        if (!historyEntry ||
+            !Array.isArray(historyEntry.teams)) {
+            return false;
+        }
+
+        var windowFrom = window.from;   // number or null
+        var windowTo = window.to;       // number or null (open)
+
+        for (var i = 0; i < historyEntry.teams.length; i++) {
+            var member = historyEntry.teams[i].member;
+            if (!member || !Array.isArray(member.intervals)) {
+                continue;
+            }
+
+            for (var j = 0; j < member.intervals.length; j++) {
+                var interval = member.intervals[j];
+                if (!interval || typeof interval !== 'object') {
+                    continue;
+                }
+
+                var stintFrom = parsePeriod(interval.joinPeriod);
+                if (stintFrom === null) { stintFrom = 0; }
+
+                var stintTo = parsePeriod(interval.leavePeriod);
+                if (stintTo === null) { stintTo = Infinity; }
+
+                var windowFromEff =
+                    windowFrom === null ? -Infinity : windowFrom;
+                var windowToEff =
+                    windowTo === null ? Infinity : windowTo;
+
+                if (stintFrom <= windowToEff &&
+                    windowFromEff <= stintTo) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     function buildProfessionalHistoryIndex(periodNum) {
@@ -992,92 +1104,47 @@
         return index;
     }
 
-    function computeAvailability(historyEntry, periodNum) {
-        if (!historyEntry || historyEntry.teams.length === 0) {
-            return { from: null, to: null };
-        }
-
-        var spans = [];
-        for (var i = 0; i < historyEntry.teams.length; i++) {
-            var member = historyEntry.teams[i].member;
-            if (!Array.isArray(member.intervals)) { continue; }
-            for (var j = 0; j < member.intervals.length; j++) {
-                var interval = member.intervals[j];
-                if (!interval ||
-                    typeof interval !== 'object') {
-                    continue;
-                }
-                var joinNum = parsePeriod(interval.joinPeriod);
-                if (joinNum === null) { joinNum = 0; }
-                var leaveNum = parsePeriod(interval.leavePeriod);
-                if (leaveNum === null) { leaveNum = Infinity; }
-                spans.push([joinNum, leaveNum]);
-            }
-        }
-
-        if (spans.length === 0) {
-            return { from: null, to: null };
-        }
-
-        spans.sort(function(a, b) { return a[0] - b[0]; });
-
-        var cursor = 0;
-        for (var s = 0; s < spans.length; s++) {
-            var span = spans[s];
-            if (span[0] > periodNum) {
-                return {
-                    from: cursor === 0 ? null : cursor,
-                    to: span[0] - 1
-                };
-            }
-            if (span[1] >= periodNum) {
-                return null;
-            }
-            cursor = Math.max(cursor, span[1] + 1);
-        }
-
-        return {
-            from: cursor === 0 ? null : cursor,
-            to: null
-        };
-    }
-
     function buildPersonnelRecord(
         char,
         periodNum,
         deps,
-        historyEntry
+        historyEntry,
+        studentWindow
     ) {
         var CharacterQueries = deps.CharacterQueries;
-        var CharacterConstants = deps.CharacterConstants;
 
         var charId = String(char.id);
         var name = CharacterQueries.getDisplayName(char);
         var age = CharacterQueries.calculateAge(char, periodNum);
         var statusAtPeriod =
             CharacterQueries.getStatusAtYear(char, periodNum);
-        var tier = CharacterConstants.classifyStatus(statusAtPeriod);
         var deceased =
             CharacterQueries.isDeceased(char, periodNum) === true;
 
-        var juniorYear = CharacterQueries.getJuniorYear(char);
-        var seniorYear = CharacterQueries.getSeniorYear(char);
-        var supportYear = CharacterQueries.getSupportYear(char);
-        var instructorYear =
-            CharacterQueries.getInstructorYear(char);
+        var juniorYear = null;
+        var seniorYear = null;
+        var supportYear = null;
+        var instructorYear = null;
 
-        var phaseEligible =
-            CharacterQueries.isJuniorOrSeniorByYear(char, periodNum) &&
-            !CharacterQueries.isInstructorByYear(char, periodNum);
+        if (typeof CharacterQueries.getJuniorYear === 'function') {
+            juniorYear = CharacterQueries.getJuniorYear(char);
+        }
+        if (typeof CharacterQueries.getSeniorYear === 'function') {
+            seniorYear = CharacterQueries.getSeniorYear(char);
+        }
+        if (typeof CharacterQueries.getSupportYear === 'function') {
+            supportYear = CharacterQueries.getSupportYear(char);
+        }
+        if (typeof CharacterQueries.getInstructorYear === 'function') {
+            instructorYear =
+                CharacterQueries.getInstructorYear(char);
+        }
 
         var hasProfessionalHistory = historyEntry &&
             historyEntry.hasAnyEntry === true;
 
-        // A character is retired when their LATEST career status
-        // entry normalises to 'retired'. This is independent of
-        // tier: a character whose latest status is 'retired' is
-        // retired regardless of what tier that status maps to.
-        var isRetired = getLatestCareerStatusKey(char) === 'retired';
+        var isRetired =
+            getLatestCareerStatusKey(char) === 'retired';
 
         var assignmentStatus = 'available';
         var currentTeamId = null;
@@ -1107,10 +1174,6 @@
             }
         }
 
-        var availability = computeAvailability(
-            historyEntry, periodNum
-        );
-
         return {
             characterId: charId,
             name: name,
@@ -1119,8 +1182,6 @@
 
             deceased: deceased,
             retired: isRetired,
-            phaseEligible: phaseEligible,
-            tier: tier,
 
             assignment: {
                 status: assignmentStatus,
@@ -1131,7 +1192,10 @@
                 nextJoinYear: nextJoinYear
             },
 
-            availability: availability,
+            availability: {
+                from: studentWindow ? studentWindow.from : null,
+                to: studentWindow ? studentWindow.to : null
+            },
 
             career: {
                 juniorYear: juniorYear,
@@ -1160,7 +1224,6 @@
 
         var deps = requirePersonnelDependencies();
         var CharacterQueries = deps.CharacterQueries;
-        var CharacterConstants = deps.CharacterConstants;
         var EliminationQueries = deps.EliminationQueries;
 
         var allChars = CharacterQueries.getCharacters() || [];
@@ -1201,63 +1264,47 @@
                 continue;
             }
 
-            // ---- 3. Phase eligibility: junior-or-senior AND not
-            //         instructor. ----
-            var phaseEligible = false;
-            try {
-                phaseEligible =
-                    CharacterQueries.isJuniorOrSeniorByYear(
-                        char, periodNum
-                    ) &&
-                    !CharacterQueries.isInstructorByYear(
-                        char, periodNum
-                    );
-            } catch (e) {
-                phaseEligible = false;
-            }
-            if (!phaseEligible) { continue; }
-
-            // ---- 4. Retired: exclude. ----
-            //
-            // Independent of tier. A character whose latest
-            // career status is 'retired' is off the professional
-            // pool entirely.
-            var isRetired = getLatestCareerStatusKey(char) === 'retired';
-            if (isRetired) { continue; }
-
-            // ---- 5. Support staff: exclude UNLESS they are
-            //         currently junior-or-senior. ----
-            //
-            // Support staff who are also in a student phase at
-            // this period are the "support-unassigned" case:
-            // they have a student history but no professional
-            // team placement. They are candidates.
-            //
-            // Support staff who are NOT in a student phase at
-            // this period are pure support or retired support.
-            // They are excluded from the professional pool.
-            var statusAtPeriod =
-                CharacterQueries.getStatusAtYear(char, periodNum);
-            var tier =
-                CharacterConstants.classifyStatus(statusAtPeriod);
-            if (tier === 'support') {
-                var isStudentNow = false;
-                try {
-                    isStudentNow =
-                        CharacterQueries.isJuniorOrSeniorByYear(
-                            char, periodNum
-                        );
-                } catch (e) {
-                    isStudentNow = false;
-                }
-                if (!isStudentNow) { continue; }
+            // ---- 3. Retired: exclude. ----
+            if (getLatestCareerStatusKey(char) === 'retired') {
+                continue;
             }
 
+            // ---- 4. Student phase must exist. ----
+            //
+            // The student window is computed from careerStatus.
+            // A character with no junior or senior entry at all
+            // is not a professional candidate ever: pure support
+            // staff, pure instructors, pure civilians.
+            var studentWindow = computeStudentWindow(char);
+            if (!studentWindow.hasPhase) { continue; }
+
+            // ---- 5. Student window must not overlap any
+            //         professional stint. ----
+            //
+            // A character who was actually on a professional
+            // team during their student years is not "available
+            // for assignment" during those years. They are
+            // excluded entirely.
+            //
+            // A character whose student phase is untouched by
+            // any professional stint is a candidate forever,
+            // not only when the query period falls inside the
+            // window. The window is a fact about the character,
+            // not about the year you are looking at.
             var historyEntry = historyIndex[charId] || null;
+            if (stintOverlapsStudentWindow(
+                historyEntry, studentWindow
+            )) {
+                continue;
+            }
 
             records.push(
                 buildPersonnelRecord(
-                    char, periodNum, deps, historyEntry
+                    char,
+                    periodNum,
+                    deps,
+                    historyEntry,
+                    studentWindow
                 )
             );
         }
