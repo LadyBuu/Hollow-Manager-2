@@ -13,35 +13,30 @@
  *   - Dispatching user actions to DepartmentCore mutations.
  *   - Requesting fresh VMs from DepartmentAggregator and handing
  *     them to DepartmentRender.
- *   - Emitting CustomEvents on document for cross-domain actions
- *     (opening a character's detail modal) that the Departments
- *     tab does not own.
  *
  * WHAT THIS DOES NOT OWN:
- *   - Reads, mutations, projections, or HTML. Those live in
- *     DepartmentQueries, DepartmentCore, DepartmentAggregator,
- *     and DepartmentRender.
+ *   - Reads, mutations, projections, or HTML.
  *
  * MODAL LIFECYCLE:
  *   The modal shells are rendered ONCE per mount into a stable
  *   host (#department-modals-host) appended to document.body.
- *   They are NOT part of the tab subtree, so refreshUI() cannot
- *   destroy them. Visibility is toggled via the `hidden` class.
- *   Content is written into the stable hosts
- *   #department-form-content and #department-staff-content, and
- *   cleared on close.
  *
- * SELECTED DEPARTMENT:
- *   Module-level state. Reset on init / destroy. When the
- *   selected department disappears (deleted elsewhere, or the
- *   list is replaced), the page VM resolves the fallback
- *   internally — see DepartmentAggregator.
+ * STAFF PICKER:
+ *   Candidates are characters who are not already members of the
+ *   department, not eliminated, and not deceased at the current
+ *   application year. They are sorted:
+ *     1. support tier first
+ *     2. instructor tier second
+ *     3. everyone else, alphabetical within each group
+ *
+ *   When a candidate is selected, the join-year input is
+ *   pre-filled with the year their current support/instructor
+ *   status began. If they have no such status, the current
+ *   application year is used. The user can override either.
  *
  * CHARACTER DETAIL HANDOFF:
- *   The Departments tab does not own a character detail modal.
- *   When the user clicks a member row or the head name, the
- *   events layer dispatches a `characterEdit` CustomEvent on
- *   document, matching the contract used by CharacterDetail.
+ *   Clicking a member row or the head name dispatches
+ *   `characterEdit` on document.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DepartmentCore
@@ -51,6 +46,10 @@
  *   - window.CharacterQueries
  *   - window.NotificationSystem
  *   - window.DomUtils
+ *
+ * DEPENDENCIES (LAZY, resolved at call time):
+ *   - window.EliminationQueries
+ *   - window.CharacterConstants
  */
 
 (function() {
@@ -142,6 +141,9 @@
         if (typeof CharacterQueries.getDisplayName !== 'function') {
             _missing.push('CharacterQueries.getDisplayName');
         }
+        if (typeof CharacterQueries.getStatusAtYear !== 'function') {
+            _missing.push('CharacterQueries.getStatusAtYear');
+        }
     }
 
     if (!NotificationSystem ||
@@ -202,6 +204,95 @@
         return new Date().getFullYear();
     }
 
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
+
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
+    function normaliseCareerStatusKey(raw) {
+        if (raw === undefined || raw === null) { return ''; }
+        var s = String(raw).trim().toLowerCase();
+        if (s === '') { return ''; }
+        var idx = s.indexOf(' (former)');
+        if (idx !== -1) { s = s.substring(0, idx).trim(); }
+        return s;
+    }
+
+    function getStatusTierAt(char, year) {
+        var CC = getCharacterConstants();
+        if (!CC || typeof CC.classifyStatus !== 'function') {
+            return 'other';
+        }
+        if (!char) { return 'other'; }
+
+        var status = '';
+        try {
+            status = CharacterQueries.getStatusAtYear(char, year);
+        } catch (e) {
+            return 'other';
+        }
+        if (typeof status !== 'string' || status.trim() === '') {
+            return 'other';
+        }
+
+        var tier = null;
+        try {
+            tier = CC.classifyStatus(status);
+        } catch (e) {
+            return 'other';
+        }
+        if (tier === 'support' || tier === 'instructor') {
+            return tier;
+        }
+        return 'other';
+    }
+
+    /**
+     * Start year of the character's latest support or instructor
+     * entry, or null when they have none. Only entries whose
+     * normalised key is exactly the requested tier are considered.
+     */
+    function getStatusStartYear(char, tier) {
+        if (!char || !Array.isArray(char.careerStatus)) {
+            return null;
+        }
+        if (tier !== 'support' && tier !== 'instructor') {
+            return null;
+        }
+
+        var latestStart = null;
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var key = normaliseCareerStatusKey(entry.status);
+            if (key !== tier) { continue; }
+
+            var start = parseInt(entry.startYear, 10);
+            if (isNaN(start) || start < 1) { continue; }
+
+            if (latestStart === null || start > latestStart) {
+                latestStart = start;
+            }
+        }
+
+        return latestStart;
+    }
+
+    function getEliminationYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+        return null;
+    }
+
     // ============================================================
     // LISTENER BOOKKEEPING
     // ============================================================
@@ -220,11 +311,6 @@
         _eventListeners = [];
     }
 
-    /**
-     * Delegate an event on a fixed element (usually _container).
-     * The element is captured at bind time so we never hold onto
-     * a stale reference.
-     */
     function delegateOn(element, selector, eventName, handler) {
         if (!element) { return; }
 
@@ -255,11 +341,6 @@
     // ============================================================
     // MODAL HOST
     // ============================================================
-    //
-    // The modal shells are rendered once per mount and appended to
-    // document.body. They live outside the tab subtree so that
-    // refreshUI() (which replaces _container.innerHTML) cannot
-    // destroy them.
 
     var MODAL_HOST_ID = 'department-modals-host';
 
@@ -590,8 +671,6 @@
     // ============================================================
 
     function bindFormModal() {
-        // Close buttons live inside the modal host, not the tab
-        // subtree. Delegate on the host directly.
         delegateOn(_modalHost,
             '[data-action="department-form-close"]', 'click',
             function(e) {
@@ -840,6 +919,8 @@
             });
         }
 
+        bindStaffPickerEvents(contentEl);
+
         setTimeout(function() {
             var charSelect = contentEl.querySelector(
                 '#department-staff-character'
@@ -851,6 +932,60 @@
         }, 50);
     }
 
+    /**
+     * Wire the character select to update the join-year input.
+     * When the selected option carries data-status-start-year,
+     * that becomes the new value. Otherwise, fall back to the
+     * current application year.
+     */
+    function bindStaffPickerEvents(contentEl) {
+        var select = contentEl.querySelector(
+            '#department-staff-character'
+        );
+        var yearInput = contentEl.querySelector(
+            '#department-staff-join-year'
+        );
+        if (!select || !yearInput) { return; }
+
+        select.addEventListener('change', function() {
+            var option = select.options[select.selectedIndex];
+            if (!option) { return; }
+
+            var startYear = option.getAttribute(
+                'data-status-start-year'
+            );
+            if (startYear && startYear.trim() !== '') {
+                yearInput.value = startYear;
+                return;
+            }
+
+            yearInput.value = String(getCurrentYear());
+        });
+    }
+
+    /**
+     * Build the add-staff form view model.
+     *
+     * Excludes:
+     *   - characters already members of the department
+     *   - characters eliminated at the current application year
+     *   - deceased characters
+     *
+     * Sorts:
+     *   1. support tier first
+     *   2. instructor tier second
+     *   3. everyone else
+     *   alphabetical within each tier
+     *
+     * Attaches to each option:
+     *   statusTier         'support' | 'instructor' | 'other'
+     *   statusStartYear    startYear of their current support or
+     *                      instructor entry, or null
+     *
+     * The default join year is the start year of the first
+     * candidate's current support/instructor status, or the
+     * current application year when that candidate has neither.
+     */
     function buildStaffFormVM(dept) {
         var existingIds = Object.create(null);
         if (Array.isArray(dept.members)) {
@@ -862,27 +997,85 @@
             }
         }
 
+        var currentYear = getCurrentYear();
+        var eliminationYear = getEliminationYear();
+        var EQ = getEliminationQueries();
+        var canCheckElimination = EQ &&
+            typeof EQ.isCharacterEliminatedByYear === 'function' &&
+            eliminationYear !== null;
+
         var allChars = CharacterQueries.getCharacters() || [];
         var options = [];
+
         for (var c = 0; c < allChars.length; c++) {
             var char = allChars[c];
             if (!char || !char.id) { continue; }
-            if (existingIds[String(char.id)]) { continue; }
+
+            var charId = String(char.id);
+
+            if (existingIds[charId]) { continue; }
+
+            if (char.deceased === true) { continue; }
+
+            if (canCheckElimination) {
+                var eliminated = false;
+                try {
+                    eliminated = EQ.isCharacterEliminatedByYear(
+                        charId,
+                        eliminationYear
+                    ) === true;
+                } catch (e) {
+                    eliminated = false;
+                }
+                if (eliminated) { continue; }
+            }
+
+            var tier = getStatusTierAt(char, currentYear);
+            var startYear = null;
+            if (tier === 'support' || tier === 'instructor') {
+                startYear = getStatusStartYear(char, tier);
+            }
+
             options.push({
-                id: String(char.id),
-                name: CharacterQueries.getDisplayName(char)
+                id: charId,
+                name: CharacterQueries.getDisplayName(char),
+                statusTier: tier,
+                statusStartYear: startYear
             });
         }
+
         options.sort(function(a, b) {
+            var tierRank = tierSortRank(a.statusTier) -
+                tierSortRank(b.statusTier);
+            if (tierRank !== 0) { return tierRank; }
             return a.name.localeCompare(b.name);
         });
+
+        // Default join year: the first candidate's status start
+        // year when they are support or instructor, otherwise the
+        // current application year.
+        var defaultJoinYear = currentYear;
+        if (options.length > 0) {
+            var first = options[0];
+            if ((first.statusTier === 'support' ||
+                 first.statusTier === 'instructor') &&
+                first.statusStartYear !== null) {
+                defaultJoinYear = first.statusStartYear;
+            }
+        }
 
         return {
             departmentId: String(dept.id),
             departmentName: dept.name || 'Department',
             characterOptions: options,
-            defaultJoinYear: getCurrentYear()
+            defaultJoinYear: defaultJoinYear
         };
+    }
+
+    function tierSortRank(tier) {
+        if (tier === 'support') { return 0; }
+        if (tier === 'instructor') { return 1; }
+        return 2;
     }
 
     function closeStaffModal() {
@@ -906,8 +1099,6 @@
             '#department-staff-character'
         );
         var yearEl = form.querySelector(
-            '#department-staff-year'
-        ) || form.querySelector(
             '#department-staff-join-year'
         );
 
