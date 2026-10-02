@@ -24,6 +24,13 @@
  *   Every interactive element carries data-action. The events
  *   layer reads the attribute and dispatches.
  *
+ * MODAL OWNERSHIP:
+ *   renderContainer() does NOT emit modals. The modal shells are
+ *   rendered once per mount by DepartmentEvents, into a stable
+ *   host outside the refreshable tab subtree. renderModals() is
+ *   exposed for that purpose and called exactly once per mount.
+ *   This keeps a refreshUI() from destroying an open modal.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils
  */
@@ -77,6 +84,10 @@
     /**
      * Render the entire Departments tab.
      *
+     * Does NOT include modal shells. Those are mounted once per
+     * mount by DepartmentEvents into a stable host outside the
+     * refreshable subtree, so a refresh cannot destroy them.
+     *
      * @param {object} pageVM - from
      *   DepartmentAggregator.getDepartmentPageViewModel
      * @returns {string} HTML
@@ -105,8 +116,6 @@
         html += renderDetailColumn(pageVM);
 
         html += '</div>';
-
-        html += renderModals();
 
         return html;
     }
@@ -488,6 +497,10 @@
     // ============================================================
     // MODALS
     // ============================================================
+    //
+    // renderModals() is called ONCE per mount by DepartmentEvents,
+    // into a stable host outside the refreshable tab subtree. It
+    // is deliberately NOT called from renderContainer().
 
     function renderModals() {
         var html = '';
