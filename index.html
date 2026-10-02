@@ -263,6 +263,28 @@
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
+         Research domain
+         ============================================================
+         Modal-based profile search. Opened from the Research
+         button in the characters tab header. Loads after the
+         character domain (uses CharacterQueries, and calls
+         CharacterDetail.open on result click). No TabManager
+         registration; the module is a modal, not a tab.
+
+         Ordering within this block:
+           1. research-queries.js   needs CharacterQueries
+           2. research-view.js      needs DomUtils
+           3. research-events.js    needs Modal, ResearchQueries,
+                                    ResearchView; reads
+                                    CharacterDetail lazily
+           4. index.js              asserts the above three
+         ============================================================ -->
+    <script src="js/modules/research/research-queries.js"></script>
+    <script src="js/modules/research/research-view.js"></script>
+    <script src="js/modules/research/research-events.js"></script>
+    <script src="js/modules/research/index.js"></script>
+
+    <!-- ============================================================
          Tournament domain
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-elimination-cascade.js"></script>
