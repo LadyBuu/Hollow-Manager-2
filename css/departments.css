@@ -1,0 +1,661 @@
+/**
+ * css/departments.css - Hollow Blades Manager
+ *
+ * The Departments tab.
+ *
+ * Covers:
+ *   - Tab shell (.departments-layout, sidebar, detail column)
+ *   - Sidebar rows (.department-sidebar-row)
+ *   - Detail header (name, head, description)
+ *   - Staff section (.department-members, .department-member-row)
+ *   - Member status colors (.dept-status-*)
+ *   - Mentoring section (.department-mentorships,
+ *     .department-mentorship-row)
+ *   - Detail action row (.department-detail-actions)
+ *   - Modals: new/edit department, add staff
+ *     (reuses .modal, .modal-content, .modal-body from shared.css)
+ *
+ * Load order: shared.css → departments.css
+ */
+
+/* ============================================================
+   TWO-COLUMN LAYOUT
+   ============================================================ */
+
+.departments-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .departments-layout {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+.departments-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .departments-sidebar {
+        max-height: 320px;
+    }
+}
+
+.departments-sidebar-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.department-sidebar-row {
+    padding: 8px 10px;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.department-sidebar-row:hover {
+    background: var(--panel-alt);
+}
+
+.department-sidebar-row-selected {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+}
+
+.department-sidebar-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.department-sidebar-meta {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.department-sidebar-no-head {
+    font-style: italic;
+    opacity: 0.75;
+}
+
+/* ============================================================
+   DETAIL COLUMN
+   ============================================================ */
+
+.departments-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    min-height: 200px;
+}
+
+@media (max-width: 480px) {
+    .departments-detail {
+        padding: 10px;
+    }
+}
+
+.department-detail-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 12px;
+}
+
+.department-detail-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.department-detail-name {
+    font-size: 1.05rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.department-detail-meta {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.department-head-name {
+    color: var(--accent);
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+}
+
+.department-head-name:hover {
+    color: var(--accent-hover);
+}
+
+.department-no-head {
+    font-style: italic;
+    opacity: 0.75;
+}
+
+.department-detail-description {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    line-height: 1.45;
+    margin: 6px 0 0 0;
+    white-space: pre-wrap;
+}
+
+/* ============================================================
+   SECTIONS (Staff, Mentoring)
+   ============================================================ */
+
+.department-section {
+    margin-bottom: 16px;
+}
+
+.department-section:last-of-type {
+    margin-bottom: 12px;
+}
+
+.department-section-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.department-section-header strong {
+    font-size: 0.82rem;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.department-section-count {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   STAFF TABLE
+   ============================================================ */
+
+.list-header.department-members-header {
+    display: grid;
+    grid-template-columns: 1.6fr 0.6fr 0.9fr 1fr;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    font-weight: 600;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.department-member-row {
+    display: grid;
+    grid-template-columns: 1.6fr 0.6fr 0.9fr 1fr;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    align-items: center;
+    transition: background 0.15s;
+}
+
+.department-member-row:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.department-member-row:hover {
+    background: var(--panel-alt);
+}
+
+.department-member-row.department-member-is-head {
+    border-left: 3px solid var(--accent);
+    padding-left: 7px;
+}
+
+.department-member-row.department-member-inactive {
+    opacity: 0.72;
+}
+
+.department-members-divider {
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ---------- Columns ---------- */
+
+.department-member-name {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.department-member-name-text {
+    font-size: 0.76rem;
+    font-weight: 500;
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.department-member-name-text:hover {
+    color: var(--accent);
+}
+
+.department-head-badge {
+    font-size: 0.55rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 0 6px;
+    line-height: 1.4;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.department-member-join {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.department-member-actions {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.department-member-actions button {
+    font-size: 0.62rem;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Status colors ---------- */
+
+.department-member-status {
+    font-size: 0.68rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.dept-status-active {
+    color: var(--accent);
+}
+
+.dept-status-former {
+    color: var(--text-dim);
+}
+
+.dept-status-deceased {
+    color: var(--danger);
+}
+
+.dept-status-retired {
+    color: var(--warning);
+}
+
+.dept-status-future {
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ============================================================
+   MENTORING
+   ============================================================ */
+
+.department-mentorship-subheader {
+    padding: 4px 0;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.department-mentorship-subheader.department-mentorship-former-header {
+    color: var(--text-dim);
+    margin-top: 10px;
+}
+
+.department-mentorship-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 10px;
+    margin-bottom: 3px;
+    background: var(--bg);
+    border-radius: 4px;
+    border-left: 3px solid var(--accent);
+    font-size: 0.72rem;
+    flex-wrap: wrap;
+}
+
+.department-mentorship-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.department-mentorship-mentor {
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.department-mentorship-arrow {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    line-height: 1;
+}
+
+.department-mentorship-apprentice {
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.department-mentorship-period {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   DETAIL ACTIONS
+   ============================================================ */
+
+.department-detail-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    margin-top: 4px;
+}
+
+.department-detail-actions button {
+    font-size: 0.7rem;
+    padding: 5px 14px;
+}
+
+.department-detail-actions .danger {
+    margin-left: auto;
+}
+
+@media (max-width: 480px) {
+    .department-detail-actions {
+        flex-direction: column;
+    }
+    .department-detail-actions button {
+        width: 100%;
+    }
+    .department-detail-actions .danger {
+        margin-left: 0;
+    }
+}
+
+/* ============================================================
+   MODALS
+   ============================================================
+   The modal shells themselves use the shared .modal and
+   .modal-content rules from shared.css. The classes below
+   cover only the department-specific form contents.
+   ============================================================ */
+
+#department-form-modal .modal-content {
+    max-width: 520px;
+}
+
+#department-staff-modal .modal-content {
+    max-width: 460px;
+}
+
+#department-form-inner,
+#department-staff-form-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#department-form-inner .form-group,
+#department-staff-form-inner .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+#department-form-inner .form-group label,
+#department-staff-form-inner .form-group label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+#department-form-inner .form-group input,
+#department-form-inner .form-group select,
+#department-form-inner .form-group textarea,
+#department-staff-form-inner .form-group input,
+#department-staff-form-inner .form-group select {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+#department-form-inner .form-group input:focus,
+#department-form-inner .form-group select:focus,
+#department-form-inner .form-group textarea:focus,
+#department-staff-form-inner .form-group input:focus,
+#department-staff-form-inner .form-group select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#department-form-inner .form-group textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+#department-form-inner .form-group select:disabled,
+#department-staff-form-inner .form-group select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#department-form-inner .field-hint,
+#department-staff-form-inner .field-hint {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+    line-height: 1.4;
+}
+
+#department-form-inner .form-actions,
+#department-staff-form-inner .form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+#department-form-inner .form-actions button,
+#department-staff-form-inner .form-actions button {
+    font-size: 0.75rem;
+    padding: 6px 16px;
+}
+
+@media (max-width: 480px) {
+    #department-form-inner .form-actions,
+    #department-staff-form-inner .form-actions {
+        flex-direction: column-reverse;
+    }
+    #department-form-inner .form-actions button,
+    #department-staff-form-inner .form-actions button {
+        width: 100%;
+    }
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    /* The staff table collapses to a stacked card list, mirroring
+       the team-item collapse in teams.css. */
+
+    .list-header.department-members-header {
+        display: none;
+    }
+
+    .department-member-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        margin-bottom: 6px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-top: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+
+    .department-member-row:last-child {
+        border-radius: var(--radius);
+        margin-bottom: 0;
+    }
+
+    .department-member-row.department-member-is-head {
+        border-left: 3px solid var(--accent);
+        padding-left: 10px;
+    }
+
+    .department-member-name {
+        font-size: 0.85rem;
+    }
+
+    .department-member-name-text {
+        font-size: 0.85rem;
+        white-space: normal;
+        overflow: visible;
+    }
+
+    .department-member-join {
+        font-size: 0.7rem;
+    }
+
+    .department-member-status {
+        font-size: 0.72rem;
+    }
+
+    .department-member-actions {
+        justify-content: flex-start;
+        margin-top: 4px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+    }
+
+    .department-member-actions button {
+        flex: 1 1 auto;
+        font-size: 0.68rem;
+        padding: 4px 10px;
+    }
+
+    .departments-sidebar {
+        max-height: 260px;
+    }
+
+    .departments-detail {
+        padding: 10px;
+    }
+
+    .department-detail-name {
+        font-size: 0.95rem;
+    }
+
+    .department-section-header strong {
+        font-size: 0.78rem;
+    }
+
+    .department-mentorship-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        padding: 6px 10px;
+    }
+
+    .department-mentorship-period {
+        font-size: 0.62rem;
+    }
+}
