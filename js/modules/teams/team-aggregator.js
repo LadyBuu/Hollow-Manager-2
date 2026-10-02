@@ -4,95 +4,68 @@
  *
  * Path: js/modules/teams/team-aggregator.js
  *
- * Projections that compose TeamQueries, CharacterQueries,
- * AcademyClasses, AcademyAggregator, and MissionQueries into
- * Team-shaped view models.
+ * WHAT THIS OWNS:
+ *   - Building Team-shaped view models from canonical reads.
+ *   - The Professional Pool VM (getProfessionalPoolViewModel).
+ *   - The Matchmaking VM (getTeamMatchmakingViewModel).
+ *   - Team list, team detail, member modal, ranking modal VMs.
+ *   - Unassigned view removed; replaced by the pool VM.
  *
- * IMPORTANT:
- *   - Projection builder, not a query registry.
- *   - Composes query modules; never walks raw storage.
- *   - Returns Team-shaped view models. No raw domain entities
- *     escape.
- *   - Never mutates data. No UI dependencies. No passthrough
- *     methods.
+ * WHAT THIS DOES NOT OWN:
+ *   - Reads. TeamQueries owns them.
+ *   - Mutations. TeamCore owns them.
+ *   - Rendering. TeamRender owns it.
+ *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
+ *     owns it; this module projects the resulting records.
  *
- * EXCEPTION — MATCHMAKING HISTORY:
- *   getTeamMatchmakingViewModel performs ONE direct walk of
- *   window.data.teams. The walk is deliberate: the matchmaking
- *   modal needs a per-character "professional-team years" map for
- *   the whole candidate pool, and there is no query that produces
- *   it. Adding one would put a matchmaking-specific read on the
- *   canonical query surface. The aggregator owns the projection,
- *   so the walk lives here, is documented, and is the ONLY direct
- *   team-store walk in this file.
+ * PROFESSIONAL POOL:
+ *   getProfessionalPoolViewModel({ period }) projects
+ *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
+ *   display-shaped rows. Only professional candidates are
+ *   included: records with phaseEligible === true and non-retired
+ *   status. Deceased and eliminated characters are already
+ *   filtered upstream by the query.
  *
- * TIMELINE:
- *   getTimelineViewModel delegates to TimelineQueries
- *   (buildTimelineViewModel). The timeline's projection logic
- *   lives in its own module; the aggregator only routes.
+ *   Rows are partitioned by assignment.status:
+ *     available -> pool.available
+ *     future    -> pool.future
  *
- * PERIOD SEMANTICS:
- *   - Periods are REQUIRED. No fallback to 1.
- *   - An invalid period produces an empty list or a null selected
- *     team; the aggregator does not invent a period.
- *   - Callers that want the current application year read it from
- *     window.data.currentYear and pass it in.
+ *   Support staff are NOT included. Departments owns them.
  *
- * STATUS SEMANTICS:
- *   - Operational status is owned by TeamQueries. This module does
- *     not reimplement the predicate.
+ * MATCHMAKING:
+ *   getTeamMatchmakingViewModel({ period, targetSize }) consumes
+ *   the same canonical personnel records via
+ *   getProfessionalPoolViewModel. Candidates come from
+ *   pool.available and pool.future (both are eligible; future
+ *   candidates already have a next assignment but are still
+ *   assignable up to that assignment's start).
  *
- * MEMBER INTERVALS MODEL:
- *   A team member entry carries an `intervals` array:
+ *   Targets come from TeamQueries.getTeams('professional') filtered
+ *   by team window and capacity.
  *
- *     {
- *       memberId,
- *       characterId,
- *       role,
- *       intervals: [{ joinPeriod, leavePeriod }, ...]
- *     }
+ *   No direct window.data.teams walk.
  *
- *   Interval containment is owned by TeamQueries.intervalContains.
- *   This module does not reimplement it.
+ * TEMPORARY MISSION DISPLAY:
+ *   Team detail VMs surface `temporaryMission` and
+ *   `temporaryMissionName` so the associated mission is visible in
+ *   the Teams module. The mission name is resolved via
+ *   MissionQueries when available; when it is not, the raw ID is
+ *   shown.
  *
- * UNASSIGNED VIEW SEMANTICS:
- *   getUnassignedViewModel() reads
- *   TeamQueries.getProfessionalTeamEligibleRoster(currentYear) and
- *   projects it into two lists:
- *
- *     rows:      candidates — characters who can be placed on a
- *                professional team at the query year. This
- *                includes UNASSIGNED STAFF (the support members
- *                who have a student phase but no team history).
- *     staffRows: staff — the support and instructor characters
- *                at the query year. This includes PURE SUPPORT
- *                and UNASSIGNED STAFF. Retired support is not in
- *                the roster at all — the query has already
- *                excluded them.
- *
- *   The two lists OVERLAP at 'support-unassigned'. Those
- *   characters appear in both. Pure support appears only in
- *   staffRows.
- *
- *   A character currently active on a professional team is
- *   excluded from BOTH sections.
- *
- *   When window.data.currentYear is unavailable, the projection
- *   returns empty lists and a null year. It does NOT invent a
- *   year.
+ * DEATH / RETIREMENT SEMANTICS:
+ *   The pool VM trusts TeamQueries to have applied death and
+ *   retirement exclusions. It does not re-check them.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
  *   - window.TeamConstants
  *   - window.CharacterQueries
  *   - window.AcademyClasses
- *   - window.AcademyAggregator           (getClassStudentsViewModel)
  *
- * DEPENDENCIES (LAZY, read at call time):
- *   - window.TeamUI             (filter bar VM defaults)
- *   - window.EliminationQueries (candidate elimination filters)
- *   - window.MissionQueries     (mission options for the team form)
- *   - window.TimelineQueries    (timeline VM builder)
+ * DEPENDENCIES (LAZY, at call time):
+ *   - window.MissionQueries     (temporaryMission name resolution)
+ *   - window.CharacterConstants (status tier classification)
+ *   - window.EliminationQueries (matchmaking eligibility check)
  */
 
 (function() {
@@ -103,21 +76,22 @@
     }
 
     // ============================================================
-    // MANDATORY DEPENDENCIES
+    // DEPENDENCIES
     // ============================================================
 
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var CharacterQueries = window.CharacterQueries;
     var AcademyClasses = window.AcademyClasses;
-    var AcademyAggregator = window.AcademyAggregator;
 
     var _missing = [];
 
-    if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
     }
-    if (!TeamQueries || typeof TeamQueries.getTeams !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeams !== 'function') {
         _missing.push('TeamQueries.getTeams');
     }
     if (!TeamQueries ||
@@ -129,14 +103,11 @@
         _missing.push('TeamQueries.getRankingSummary');
     }
     if (!TeamQueries ||
-        typeof TeamQueries.getSortedRankings !== 'function') {
-        _missing.push('TeamQueries.getSortedRankings');
-    }
-    if (!TeamQueries ||
         typeof TeamQueries.isTeamOperational !== 'function') {
         _missing.push('TeamQueries.isTeamOperational');
     }
-    if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamName !== 'function') {
         _missing.push('TeamQueries.getTeamName');
     }
     if (!TeamQueries ||
@@ -152,15 +123,13 @@
         _missing.push('TeamQueries.getAllTeamMemberRecords');
     }
     if (!TeamQueries ||
-        typeof TeamQueries.getProfessionalTeamEligibleRoster !==
-            'function') {
-        _missing.push('TeamQueries.getProfessionalTeamEligibleRoster');
+        typeof TeamQueries.getProfessionalPersonnelAtPeriod !==
+        'function') {
+        _missing.push(
+            'TeamQueries.getProfessionalPersonnelAtPeriod'
+        );
     }
 
-    if (!TeamConstants ||
-        typeof TeamConstants.getPeriodRange !== 'function') {
-        _missing.push('TeamConstants.getPeriodRange');
-    }
     if (!TeamConstants ||
         typeof TeamConstants.parsePeriod !== 'function') {
         _missing.push('TeamConstants.parsePeriod');
@@ -195,6 +164,10 @@
         _missing.push('CharacterQueries.getCharacterAge');
     }
     if (!CharacterQueries ||
+        typeof CharacterQueries.getStatusAtYear !== 'function') {
+        _missing.push('CharacterQueries.getStatusAtYear');
+    }
+    if (!CharacterQueries ||
         typeof CharacterQueries.getCharacters !== 'function') {
         _missing.push('CharacterQueries.getCharacters');
     }
@@ -221,14 +194,10 @@
     }
     if (!AcademyClasses ||
         typeof AcademyClasses.getClassInstructorIdsAllTime !==
-            'function') {
-        _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
-    }
-
-    if (!AcademyAggregator ||
-        typeof AcademyAggregator.getClassStudentsViewModel !==
-            'function') {
-        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+        'function') {
+        _missing.push(
+            'AcademyClasses.getClassInstructorIdsAllTime'
+        );
     }
 
     if (_missing.length > 0) {
@@ -241,19 +210,23 @@
     window.__teamAggregatorLoaded = true;
 
     // ============================================================
-    // LAZY DEPENDENCY ACCESSORS
+    // LAZY DEPENDENCIES
     // ============================================================
 
-    function getTeamUI() {
-        return window.TeamUI || null;
+    function getMissionQueries() {
+        return window.MissionQueries || null;
+    }
+
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
     }
 
     function getEliminationQueries() {
         return window.EliminationQueries || null;
     }
 
-    function getMissionQueries() {
-        return window.MissionQueries || null;
+    function getTeamUI() {
+        return window.TeamUI || null;
     }
 
     function getTimelineQueries() {
@@ -266,6 +239,46 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function parsePeriod(value) {
+        return TeamConstants.parsePeriod(value);
+    }
+
+    function parsePositiveInteger(value) {
+        if (typeof value === 'number') {
+            if (!Number.isInteger(value) || value < 1) {
+                return null;
+            }
+            return value;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
+            }
+            var n = Number(trimmed);
+            if (!Number.isInteger(n) || n < 1) {
+                return null;
+            }
+            return n;
+        }
+        return null;
+    }
+
+    function getClassDisplayName(classId) {
+        if (!isNonEmptyString(classId)) { return ''; }
+        var name = AcademyClasses.getDisplayName(classId);
+        if (!name || name === 'Unknown Class') { return ''; }
+        return name;
+    }
+
+    function getTypeLabel(type) {
+        return TeamConstants.getTypeLabel(type);
+    }
+
+    function getPeriodLabel(type) {
+        return TeamConstants.getPeriodLabel(type);
     }
 
     function buildCharacterSummary(charId) {
@@ -299,52 +312,9 @@
         };
     }
 
-    function getClassDisplayName(classId) {
-        if (!isNonEmptyString(classId)) {
-            return '';
-        }
-        var name = AcademyClasses.getDisplayName(classId);
-        if (!name || name === 'Unknown Class') {
-            return '';
-        }
-        return name;
-    }
-
-    function getTypeLabel(type) {
-        return TeamConstants.getTypeLabel(type);
-    }
-
-    function getPeriodLabel(type) {
-        return TeamConstants.getPeriodLabel(type);
-    }
-
-    /**
-     * Build the set of character IDs that belong to the class, for
-     * the member-modal "in class" tier signal.
-     */
     function buildClassMembershipSet(classId) {
         var result = Object.create(null);
-        if (!isNonEmptyString(classId)) {
-            return result;
-        }
-
-        var students = [];
-        try {
-            students =
-                AcademyAggregator.getClassStudentsViewModel(
-                    classId, null
-                ) || [];
-        } catch (e) {
-            students = [];
-        }
-        if (Array.isArray(students)) {
-            for (var s = 0; s < students.length; s++) {
-                var st = students[s];
-                if (st && st.id) {
-                    result[String(st.id)] = true;
-                }
-            }
-        }
+        if (!isNonEmptyString(classId)) { return result; }
 
         var instructorIds = [];
         try {
@@ -371,9 +341,7 @@
     // ============================================================
 
     function getTeamPeriodDisplay(team) {
-        if (!team || typeof team !== 'object') {
-            return '-';
-        }
+        if (!team || typeof team !== 'object') { return '-'; }
 
         var normalizedType = TeamConstants.normalizeTeamType(team.type);
         var start = team.startPeriod || '';
@@ -383,24 +351,14 @@
             if (start && end) {
                 return 'Wk ' + start + ' - Wk ' + end;
             }
-            if (start) {
-                return 'From Wk ' + start;
-            }
-            if (end) {
-                return 'Until Wk ' + end;
-            }
+            if (start) { return 'From Wk ' + start; }
+            if (end) { return 'Until Wk ' + end; }
             return '-';
         }
 
-        if (start && end) {
-            return start + ' - ' + end;
-        }
-        if (start) {
-            return 'From ' + start;
-        }
-        if (end) {
-            return 'Until ' + end;
-        }
+        if (start && end) { return start + ' - ' + end; }
+        if (start) { return 'From ' + start; }
+        if (end) { return 'Until ' + end; }
         return '-';
     }
 
@@ -420,18 +378,35 @@
     }
 
     // ============================================================
+    // MISSION NAME RESOLUTION
+    // ============================================================
+
+    function resolveMissionName(missionId) {
+        if (!isNonEmptyString(missionId)) { return null; }
+        var MQ = getMissionQueries();
+        if (!MQ || typeof MQ.getMission !== 'function') {
+            return null;
+        }
+        try {
+            var mission = MQ.getMission(missionId);
+            if (mission && isNonEmptyString(mission.title)) {
+                return mission.title;
+            }
+        } catch (e) {
+            return null;
+        }
+        return null;
+    }
+
+    // ============================================================
     // MEMBER VM
     // ============================================================
 
     function buildMemberVM(member, periodNum) {
-        if (!member || typeof member !== 'object') {
-            return null;
-        }
+        if (!member || typeof member !== 'object') { return null; }
 
         var charId = member.characterId;
-        if (!charId) {
-            return null;
-        }
+        if (!charId) { return null; }
 
         var summary = buildCharacterSummary(charId);
 
@@ -443,18 +418,14 @@
         if (Array.isArray(member.intervals)) {
             for (var i = 0; i < member.intervals.length; i++) {
                 var iv = member.intervals[i];
-                if (!iv || typeof iv !== 'object') {
-                    continue;
-                }
+                if (!iv || typeof iv !== 'object') { continue; }
 
                 var ivJoin = (iv.joinPeriod !== undefined &&
                               iv.joinPeriod !== null)
-                    ? String(iv.joinPeriod)
-                    : '';
+                    ? String(iv.joinPeriod) : '';
                 var ivLeave = (iv.leavePeriod !== undefined &&
                                iv.leavePeriod !== null)
-                    ? String(iv.leavePeriod)
-                    : '';
+                    ? String(iv.leavePeriod) : '';
 
                 var active = false;
                 if (periodNum !== null) {
@@ -468,9 +439,7 @@
                     firstLeave = ivLeave;
                 }
 
-                if (active) {
-                    anyActive = true;
-                }
+                if (active) { anyActive = true; }
 
                 intervalsVM.push({
                     joinPeriod: ivJoin,
@@ -483,8 +452,7 @@
         return {
             characterId: charId,
             memberId: isNonEmptyString(member.memberId)
-                ? String(member.memberId)
-                : '',
+                ? String(member.memberId) : '',
             displayName: summary.displayName,
             status: summary.status,
             age: summary.age,
@@ -498,13 +466,11 @@
     }
 
     // ============================================================
-    // TEAM DETAIL VIEW MODEL
+    // TEAM DETAIL VM
     // ============================================================
 
     function getTeamViewModel(teamId, options) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
+        if (!isNonEmptyString(teamId)) { return null; }
 
         options = options || {};
         var periodNum = TeamConstants.parsePeriod(options.period);
@@ -513,9 +479,7 @@
         var includeClass = options.includeClass !== false;
 
         var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
+        if (!team) { return null; }
 
         var typeLabel = getTypeLabel(team.type);
         var periodLabel = getPeriodLabel(team.type);
@@ -527,6 +491,11 @@
 
         var rankingSummary = TeamQueries.getRankingSummary(team);
         var periodDisplay = getTeamPeriodDisplay(team);
+
+        var temporaryMissionId = team.temporaryMission || null;
+        var temporaryMissionName = temporaryMissionId
+            ? resolveMissionName(temporaryMissionId)
+            : null;
 
         var viewModel = {
             id: team.id,
@@ -541,7 +510,8 @@
             classId: team.classId || null,
             classDisplay: classDisplay,
             teamNumber: team.teamNumber || '',
-            temporaryMission: team.temporaryMission || null,
+            temporaryMission: temporaryMissionId,
+            temporaryMissionName: temporaryMissionName,
             nameHistory: Array.isArray(team.nameHistory)
                 ? team.nameHistory.slice()
                 : [],
@@ -555,29 +525,24 @@
             if (periodNum !== null) {
                 var activeMembers =
                     TeamQueries.getActiveTeamMembers(
-                        team,
-                        periodNum
+                        team, periodNum
                     );
                 var memberVMs = [];
                 for (var i = 0; i < activeMembers.length; i++) {
                     var vm = buildMemberVM(
                         activeMembers[i], periodNum
                     );
-                    if (vm) {
-                        memberVMs.push(vm);
-                    }
+                    if (vm) { memberVMs.push(vm); }
                 }
                 viewModel.members = memberVMs;
                 viewModel.activeMemberCount = memberVMs.length;
                 viewModel.totalMemberCount = team.members
-                    ? team.members.length
-                    : 0;
+                    ? team.members.length : 0;
             } else {
                 viewModel.members = [];
                 viewModel.activeMemberCount = 0;
                 viewModel.totalMemberCount = team.members
-                    ? team.members.length
-                    : 0;
+                    ? team.members.length : 0;
             }
         }
 
@@ -585,15 +550,14 @@
             viewModel.rankingHistory = rankingSummary.history;
             viewModel.rankingCount = rankingSummary.total;
             viewModel.currentRank = rankingSummary.current;
-            viewModel.mostRecentRanking =
-                rankingSummary.mostRecent;
+            viewModel.mostRecentRanking = rankingSummary.mostRecent;
         }
 
         return viewModel;
     }
 
     // ============================================================
-    // TEAM LIST VIEW MODEL
+    // TEAM LIST VM
     // ============================================================
 
     function getTeamListViewModel(options) {
@@ -614,8 +578,7 @@
             var lowerSearch = search.toLowerCase();
             teams = teams.filter(function(team) {
                 return team.name &&
-                    team.name.toLowerCase().indexOf(lowerSearch) !==
-                        -1;
+                    team.name.toLowerCase().indexOf(lowerSearch) !== -1;
             });
         }
 
@@ -628,12 +591,16 @@
                     );
             }
 
-            var rankingSummary =
-                TeamQueries.getRankingSummary(team);
+            var rankingSummary = TeamQueries.getRankingSummary(team);
             var typeLabel = getTypeLabel(team.type);
             var classDisplay = team.classId
                 ? getClassDisplayName(team.classId)
                 : '';
+
+            var temporaryMissionId = team.temporaryMission || null;
+            var temporaryMissionName = temporaryMissionId
+                ? resolveMissionName(temporaryMissionId)
+                : null;
 
             return {
                 id: team.id,
@@ -644,14 +611,14 @@
                 currentRank: rankingSummary.current || '',
                 activeMemberCount: activeMemberCount,
                 totalMemberCount: team.members
-                    ? team.members.length
-                    : 0,
+                    ? team.members.length : 0,
                 periodDisplay: getTeamPeriodDisplay(team),
                 isActive: team.status === 'active',
                 isOperational: TeamQueries.isTeamOperational(team),
                 classDisplay: classDisplay,
                 teamNumber: team.teamNumber || '',
-                temporaryMission: team.temporaryMission || null,
+                temporaryMission: temporaryMissionId,
+                temporaryMissionName: temporaryMissionName,
                 createdAt: team.createdAt || ''
             };
         });
@@ -709,30 +676,23 @@
     }
 
     // ============================================================
-    // TEAM MEMBERS VIEW MODEL
+    // TEAM MEMBERS VM
     // ============================================================
 
     function getTeamMembersViewModel(teamId, period) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
+        if (!isNonEmptyString(teamId)) { return null; }
 
         var periodNum = TeamConstants.parsePeriod(period);
-        if (periodNum === null) {
-            return null;
-        }
+        if (periodNum === null) { return null; }
 
         var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
+        if (!team) { return null; }
 
         var typeLabel = getTypeLabel(team.type);
         var periodLabel = getPeriodLabel(team.type);
 
         var activeMembers = TeamQueries.getActiveTeamMembers(
-            team,
-            periodNum
+            team, periodNum
         );
 
         var activeIds = Object.create(null);
@@ -747,9 +707,7 @@
         var memberViewModels = [];
         for (var j = 0; j < allMembers.length; j++) {
             var vm = buildMemberVM(allMembers[j], periodNum);
-            if (!vm) {
-                continue;
-            }
+            if (!vm) { continue; }
             vm.activeAtPeriod =
                 activeIds[String(vm.characterId)] === true;
             memberViewModels.push(vm);
@@ -776,7 +734,7 @@
     }
 
     // ============================================================
-    // TEAM PAGE VIEW MODEL
+    // TEAM PAGE VM
     // ============================================================
 
     function getTeamPageViewModel(options) {
@@ -862,7 +820,7 @@
     }
 
     // ============================================================
-    // FORM / MODAL VIEW MODELS
+    // FORM / MODAL VMs
     // ============================================================
 
     function getTeamFormViewModel(teamId) {
@@ -926,12 +884,8 @@
         var options = [];
         for (var i = 0; i < missions.length; i++) {
             var mission = missions[i];
-            if (!mission || !mission.id) {
-                continue;
-            }
-            if (mission.status === 'cancelled') {
-                continue;
-            }
+            if (!mission || !mission.id) { continue; }
+            if (mission.status === 'cancelled') { continue; }
             options.push({
                 id: mission.id,
                 title: mission.title || 'Untitled',
@@ -953,18 +907,14 @@
     }
 
     // ============================================================
-    // MEMBER MODAL VIEW MODEL
+    // MEMBER MODAL VM
     // ============================================================
 
     function getMemberModalViewModel(teamId, period) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
+        if (!isNonEmptyString(teamId)) { return null; }
 
         var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
+        if (!team) { return null; }
 
         var periodNum = TeamConstants.parsePeriod(period);
 
@@ -1000,8 +950,7 @@
                     for (var t = 0; t < allTeams.length; t++) {
                         var sibling = allTeams[t];
                         if (!sibling ||
-                            String(sibling.id) ===
-                                String(team.id)) {
+                            String(sibling.id) === String(team.id)) {
                             continue;
                         }
                         var siblingMembers =
@@ -1050,15 +999,11 @@
 
         for (var c = 0; c < allChars.length; c++) {
             var char = allChars[c];
-            if (!char || !char.id) {
-                continue;
-            }
+            if (!char || !char.id) { continue; }
 
             var charId = String(char.id);
 
-            if (currentIds[charId]) {
-                continue;
-            }
+            if (currentIds[charId]) { continue; }
 
             if (CharacterQueries.isInstructor(char) !== true) {
                 var isCivilian = false;
@@ -1073,9 +1018,7 @@
                         String(statusStr).toLowerCase() ===
                             'civilian';
                 }
-                if (isCivilian) {
-                    continue;
-                }
+                if (isCivilian) { continue; }
             }
 
             if (canCheckElimination && eliminationYear !== null) {
@@ -1088,9 +1031,7 @@
                 } catch (e) {
                     eliminated = false;
                 }
-                if (eliminated) {
-                    continue;
-                }
+                if (eliminated) { continue; }
             }
 
             candidates.push({
@@ -1107,9 +1048,7 @@
         candidates.sort(function(a, b) {
             var tierA = candidateTier(a);
             var tierB = candidateTier(b);
-            if (tierA !== tierB) {
-                return tierA - tierB;
-            }
+            if (tierA !== tierB) { return tierA - tierB; }
             return a.name.localeCompare(b.name);
         });
 
@@ -1131,14 +1070,10 @@
     }
 
     function getRankingModalViewModel(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return null;
-        }
+        if (!isNonEmptyString(teamId)) { return null; }
 
         var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
+        if (!team) { return null; }
 
         var summary = TeamQueries.getRankingSummary(team);
 
@@ -1171,144 +1106,188 @@
     }
 
     // ============================================================
-    // UNASSIGNED VIEW MODEL
+    // PROFESSIONAL POOL VM
     // ============================================================
     //
-    // See the UNASSIGNED VIEW SEMANTICS note in the file header.
+    // Consumes TeamQueries.getProfessionalPersonnelAtPeriod. Only
+    // records with phaseEligible === true are included; retired
+    // records are excluded. The query already excludes deceased
+    // and eliminated characters.
+    //
+    // Rows are split by assignment.status:
+    //   available -> pool.available
+    //   future    -> pool.future
+    //
+    // The `active` assignment status (character currently on a
+    // professional team) is not represented in the pool; those
+    // characters are already assigned.
 
-    function getUnassignedViewModel() {
-        var currentYear = null;
-        if (window.data &&
-            typeof window.data.currentYear === 'number' &&
-            isFinite(window.data.currentYear) &&
-            window.data.currentYear > 0) {
-            currentYear = Math.floor(window.data.currentYear);
-        }
+    function getProfessionalPoolViewModel(options) {
+        options = options || {};
+        var periodNum = TeamConstants.parsePeriod(options.period);
 
-        if (currentYear === null) {
-            return {
-                year: null,
-                rows: [],
-                total: 0,
-                staffRows: [],
-                staffTotal: 0
-            };
-        }
-
-        var roster = [];
-        try {
-            roster = TeamQueries.getProfessionalTeamEligibleRoster(
-                currentYear
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[TeamAggregator] getProfessionalTeamEligibleRoster ' +
-                'failed:', e
+        if (periodNum === null) {
+            throw new Error(
+                '[TeamAggregator] getProfessionalPoolViewModel ' +
+                'requires a valid period.'
             );
-            roster = [];
         }
 
-        var rows = [];
-        var staffRows = [];
+        var records = TeamQueries.getProfessionalPersonnelAtPeriod(
+            periodNum
+        );
 
-        for (var i = 0; i < roster.length; i++) {
-            var r = roster[i];
-            if (!r) { continue; }
+        var available = [];
+        var future = [];
 
-            if (r.classification === 'active') { continue; }
+        for (var i = 0; i < records.length; i++) {
+            var r = records[i];
 
-            var juniorDisplay = r.juniorYear !== null &&
-                                r.juniorYear !== undefined
-                ? String(r.juniorYear)
-                : '\u2014';
+            if (!r.phaseEligible) { continue; }
+            if (r.retired) { continue; }
 
-            var seniorDisplay = r.seniorYear !== null &&
-                                r.seniorYear !== undefined
-                ? String(r.seniorYear)
-                : '\u2014';
+            var row = buildPoolRow(r, periodNum);
 
-            var futureDisplay = '';
-            if (r.futureTeamName && r.futureJoinYear !== null &&
-                r.futureJoinYear !== undefined) {
-                futureDisplay = r.futureTeamName +
-                    ' from ' + String(r.futureJoinYear);
+            if (r.assignment.status === 'available') {
+                available.push(row);
+            } else if (r.assignment.status === 'future') {
+                future.push(row);
             }
-
-            rows.push({
-                characterId: r.characterId,
-                displayName: r.name || 'Unknown',
-                status: r.status || '',
-                ageDisplay: r.ageDisplay || '\u2014',
-                juniorDisplay: juniorDisplay,
-                seniorDisplay: seniorDisplay,
-                classification: r.classification,
-                futureDisplay: futureDisplay,
-                futureTeamName: r.futureTeamName || null,
-                futureJoinYear: r.futureJoinYear !== null &&
-                                r.futureJoinYear !== undefined
-                    ? r.futureJoinYear
-                    : null,
-                supportClass: r.supportClass || 'none'
-            });
-
-            if (r.staffRole) {
-                staffRows.push({
-                    characterId: r.characterId,
-                    displayName: r.name || 'Unknown',
-                    status: r.status || '',
-                    ageDisplay: r.ageDisplay || '\u2014',
-                    staffRole: r.staffRole,
-                    staffSince: r.staffSince !== null &&
-                                r.staffSince !== undefined
-                        ? r.staffSince
-                        : null,
-                    staffSinceDisplay: r.staffSince !== null &&
-                                        r.staffSince !== undefined
-                        ? String(r.staffSince)
-                        : '\u2014',
-                    supportClass: r.supportClass || 'none',
-                    classification: r.classification,
-                    teamName: r.formerTeamName ||
-                              r.activeTeamName ||
-                              null
-                });
-            }
+            // 'active' assignment is not shown in the pool.
         }
+
+        available.sort(comparePoolRows);
+        future.sort(comparePoolRows);
 
         return {
-            year: currentYear,
-            rows: rows,
-            total: rows.length,
-            staffRows: staffRows,
-            staffTotal: staffRows.length
+            period: periodNum,
+            summary: {
+                available: available.length,
+                future: future.length
+            },
+            available: available,
+            future: future
         };
     }
 
+    function buildPoolRow(record, periodNum) {
+        var assignmentDisplay = 'Unassigned';
+        if (record.assignment.status === 'future' &&
+            isNonEmptyString(record.assignment.nextTeamName) &&
+            record.assignment.nextJoinYear !== null) {
+            assignmentDisplay =
+                record.assignment.nextTeamName +
+                ' from ' + record.assignment.nextJoinYear;
+        }
+
+        return {
+            characterId: record.characterId,
+            displayName: record.name,
+            age: record.age,
+            ageDisplay: (record.age === null ||
+                         record.age === undefined)
+                ? ''
+                : String(record.age),
+
+            statusAtPeriod: record.statusAtPeriod,
+
+            availability: {
+                from: record.availability
+                    ? record.availability.from
+                    : null,
+                to: record.availability
+                    ? record.availability.to
+                    : null,
+                display: formatAvailability(record.availability)
+            },
+
+            assignment: {
+                status: record.assignment.status,
+                currentTeamId: record.assignment.currentTeamId,
+                currentTeamName: record.assignment.currentTeamName,
+                nextTeamId: record.assignment.nextTeamId,
+                nextTeamName: record.assignment.nextTeamName,
+                nextJoinYear: record.assignment.nextJoinYear,
+                display: assignmentDisplay
+            },
+
+            career: {
+                juniorYear: record.career.juniorYear,
+                seniorYear: record.career.seniorYear
+            },
+
+            history: {
+                hasProfessionalHistory:
+                    record.history.hasProfessionalHistory,
+                formerTeamCount: record.history.formerTeamCount
+            }
+        };
+    }
+
+    function formatAvailability(availability) {
+        if (!availability) { return '\u2014'; }
+
+        var from = availability.from;
+        var to = availability.to;
+
+        if (from === null && to === null) {
+            return 'any';
+        }
+        if (from === null) {
+            return '\u2013' + to;
+        }
+        if (to === null) {
+            return from + '\u2013';
+        }
+        return from + '\u2013' + to;
+    }
+
+    function comparePoolRows(a, b) {
+        var aFrom = a.availability.from;
+        var bFrom = b.availability.from;
+
+        if (aFrom === null && bFrom === null) {
+            return a.displayName.localeCompare(b.displayName);
+        }
+        if (aFrom === null) { return -1; }
+        if (bFrom === null) { return 1; }
+        if (aFrom !== bFrom) { return aFrom - bFrom; }
+        return a.displayName.localeCompare(b.displayName);
+    }
+
     // ============================================================
-    // TIMELINE VIEW MODEL
+    // TIMELINE VM (routing)
     // ============================================================
-    //
-    // Thin routing. The projection lives in TimelineQueries.
 
     function getTimelineViewModel(options) {
         var TQ = getTimelineQueries();
         if (!TQ || typeof TQ.buildTimelineViewModel !== 'function') {
-            return {
-                range: { start: null, end: null },
-                years: [],
-                totalEvents: 0
-            };
+            throw new Error(
+                '[TeamAggregator] TimelineQueries is not available.'
+            );
         }
         return TQ.buildTimelineViewModel(options || {});
     }
 
     // ============================================================
-    // MATCHMAKING VIEW MODEL
+    // MATCHMAKING VM
     // ============================================================
+    //
+    // Consumes the same canonical personnel records as the pool VM.
+    // Candidates come from pool.available and pool.future — both
+    // are eligible; a future assignment does not disqualify a
+    // character from being placed now, provided the new stint ends
+    // before the future one begins.
+    //
+    // Targets come from professional teams whose window contains the
+    // query period and whose active member count is below the
+    // requested target size.
 
-    function getTeamMatchmakingViewModel(year, targetSize) {
-        var yearNum = TeamConstants.parsePeriod(year);
-        var targetSizeNum = TeamConstants.parsePeriod(targetSize);
+    function getTeamMatchmakingViewModel(options) {
+        options = options || {};
+
+        var yearNum = TeamConstants.parsePeriod(options.period);
+        var targetSizeNum = parsePositiveInteger(options.targetSize);
 
         if (yearNum === null || targetSizeNum === null) {
             return {
@@ -1319,291 +1298,72 @@
             };
         }
 
-        var canCheckEligibility =
-            typeof CharacterQueries
-                .isProfessionallyEligiblePhaseAtYear === 'function';
+        var pool = getProfessionalPoolViewModel({
+            period: yearNum
+        });
 
-        var canCheckJuniorOrSenior =
-            typeof CharacterQueries.isJuniorOrSeniorByYear ===
-                'function';
-
-        if (!canCheckEligibility && !canCheckJuniorOrSenior) {
-            console.warn(
-                '[TeamAggregator] getTeamMatchmakingViewModel: ' +
-                'CharacterQueries has neither ' +
-                'isProfessionallyEligiblePhaseAtYear nor ' +
-                'isJuniorOrSeniorByYear. Matchmaking will include ' +
-                'everyone who is not deceased or eliminated.'
-            );
+        var candidates = [];
+        for (var a = 0; a < pool.available.length; a++) {
+            candidates.push(buildMatchmakingCandidate(
+                pool.available[a]
+            ));
+        }
+        for (var f = 0; f < pool.future.length; f++) {
+            candidates.push(buildMatchmakingCandidate(
+                pool.future[f]
+            ));
         }
 
-        var canGetJuniorYear =
-            typeof CharacterQueries.getJuniorYear === 'function';
-        var canGetSeniorYear =
-            typeof CharacterQueries.getSeniorYear === 'function';
-        var canGetSupportYear =
-            typeof CharacterQueries.getSupportYear === 'function';
-        var canGetInstructorYear =
-            typeof CharacterQueries.getInstructorYear === 'function';
+        candidates.sort(function(x, y) {
+            var xFrom = x.availability.from;
+            var yFrom = y.availability.from;
 
-        var EQ = getEliminationQueries();
-        var canCheckElimination = EQ &&
-            typeof EQ.getEliminationWeek === 'function';
+            if (xFrom === null && yFrom === null) {
+                return x.name.localeCompare(y.name);
+            }
+            if (xFrom === null) { return -1; }
+            if (yFrom === null) { return 1; }
+            if (xFrom !== yFrom) { return xFrom - yFrom; }
+            return x.name.localeCompare(y.name);
+        });
 
         var allProfessionalTeams = TeamQueries.getTeams(
-            'professional',
-            null,
-            false
+            'professional', null, false
         );
 
-        var activeCountByTeam = Object.create(null);
+        var targets = [];
 
         for (var t = 0; t < allProfessionalTeams.length; t++) {
             var team = allProfessionalTeams[t];
             if (!team || !team.id) { continue; }
 
-            activeCountByTeam[String(team.id)] =
-                TeamQueries.getActiveTeamMembers(
-                    team, yearNum
-                ).length;
-        }
-
-        var historyByChar = Object.create(null);
-        var activeAtYearByChar = Object.create(null);
-
-        for (var ht = 0; ht < allProfessionalTeams.length; ht++) {
-            var hteam = allProfessionalTeams[ht];
-            if (!hteam || !hteam.id) { continue; }
-
-            var teamId = String(hteam.id);
-            var members = TeamQueries.getAllTeamMemberRecords(hteam);
-
-            for (var hm = 0; hm < members.length; hm++) {
-                var member = members[hm];
-                if (!member || !member.characterId) { continue; }
-
-                var charId = String(member.characterId);
-                var intervals = Array.isArray(member.intervals)
-                    ? member.intervals
-                    : [];
-
-                for (var iv = 0; iv < intervals.length; iv++) {
-                    var interval = intervals[iv];
-                    if (!interval) { continue; }
-
-                    var joinNum = TeamConstants.parsePeriod(
-                        interval.joinPeriod
-                    );
-                    var leaveNum = TeamConstants.parsePeriod(
-                        interval.leavePeriod
-                    );
-
-                    var lo = (joinNum !== null) ? joinNum : 1;
-                    var hi = (leaveNum !== null)
-                        ? leaveNum
-                        : yearNum;
-
-                    if (lo > yearNum) { continue; }
-                    var hiClamped = Math.min(hi, yearNum);
-                    if (hiClamped < lo) { continue; }
-
-                    if (!historyByChar[charId]) {
-                        historyByChar[charId] = Object.create(null);
-                    }
-                    for (var y = lo; y <= hiClamped; y++) {
-                        historyByChar[charId][y] = true;
-                    }
-
-                    if (lo <= yearNum && hiClamped >= yearNum) {
-                        activeAtYearByChar[charId] = true;
-                    }
-                }
-            }
-        }
-
-        var allChars = CharacterQueries.getCharacters() || [];
-        var candidates = [];
-
-        for (var c = 0; c < allChars.length; c++) {
-            var char = allChars[c];
-            if (!char || !char.id) { continue; }
-
-            var cid = String(char.id);
-
-            var deceased = false;
-            try {
-                deceased =
-                    CharacterQueries.isDeceased(char, yearNum)
-                    === true;
-            } catch (e) {
-                deceased = char.deceased === true;
-            }
-            if (deceased) { continue; }
-
-            if (canCheckEligibility) {
-                var eligible = false;
-                try {
-                    eligible = CharacterQueries
-                        .isProfessionallyEligiblePhaseAtYear(
-                            char, yearNum
-                        ) === true;
-                } catch (e) {
-                    eligible = false;
-                }
-                if (!eligible) { continue; }
-            } else if (canCheckJuniorOrSenior) {
-                var isEligibleStatus = false;
-                try {
-                    isEligibleStatus =
-                        CharacterQueries.isJuniorOrSeniorByYear(
-                            char, yearNum
-                        ) === true;
-                } catch (e) {
-                    isEligibleStatus = false;
-                }
-                if (!isEligibleStatus) { continue; }
-            }
-
-            if (canCheckElimination) {
-                var earliest = null;
-                try {
-                    earliest = EQ.getEliminationWeek(cid);
-                } catch (e) {
-                    earliest = null;
-                }
-                if (earliest !== null && earliest !== undefined) {
-                    continue;
-                }
-            }
-
-            if (activeAtYearByChar[cid] === true) { continue; }
-
-            var juniorYear = null;
-            if (canGetJuniorYear) {
-                try { juniorYear = CharacterQueries.getJuniorYear(char); }
-                catch (e) { juniorYear = null; }
-            }
-
-            var seniorYear = null;
-            if (canGetSeniorYear) {
-                try { seniorYear = CharacterQueries.getSeniorYear(char); }
-                catch (e) { seniorYear = null; }
-            }
-
-            var supportYear = null;
-            if (canGetSupportYear) {
-                try { supportYear = CharacterQueries.getSupportYear(char); }
-                catch (e) { supportYear = null; }
-            }
-
-            var instructorYear = null;
-            if (canGetInstructorYear) {
-                try {
-                    instructorYear =
-                        CharacterQueries.getInstructorYear(char);
-                } catch (e) {
-                    instructorYear = null;
-                }
-            }
-
-            var milestoneYear = null;
-            var milestoneLabel = '';
-
-            if (juniorYear !== null) {
-                milestoneYear = juniorYear;
-                milestoneLabel = 'Junior ' + juniorYear;
-            }
-            if (seniorYear !== null &&
-                (milestoneYear === null ||
-                 seniorYear < milestoneYear)) {
-                milestoneYear = seniorYear;
-                milestoneLabel = 'Senior ' + seniorYear;
-            }
-            if (supportYear !== null &&
-                (milestoneYear === null ||
-                 supportYear < milestoneYear)) {
-                milestoneYear = supportYear;
-                milestoneLabel = 'Support ' + supportYear;
-            }
-            if (instructorYear !== null &&
-                (milestoneYear === null ||
-                 instructorYear < milestoneYear)) {
-                milestoneYear = instructorYear;
-                milestoneLabel = 'Instructor ' + instructorYear;
-            }
-
-            var historyYears = [];
-            if (historyByChar[cid]) {
-                var yearKeys = Object.keys(historyByChar[cid]);
-                for (var hk = 0; hk < yearKeys.length; hk++) {
-                    historyYears.push(yearKeys[hk]);
-                }
-                historyYears.sort(function(a, b) {
-                    return parseInt(a, 10) - parseInt(b, 10);
-                });
-            }
-
-            candidates.push({
-                id: cid,
-                name: CharacterQueries.getDisplayName(char),
-                status: CharacterQueries.getStatusAtYear
-                    ? CharacterQueries.getStatusAtYear(char, yearNum)
-                    : CharacterQueries.getCurrentStatus(char),
-                deceased: false,
-                history: historyYears,
-
-                juniorYear: juniorYear,
-                seniorYear: seniorYear,
-                supportYear: supportYear,
-                instructorYear: instructorYear,
-
-                milestoneYear: milestoneYear,
-                milestoneLabel: milestoneLabel
-            });
-        }
-
-        candidates.sort(function(a, b) {
-            var aYear = a.milestoneYear;
-            var bYear = b.milestoneYear;
-
-            if (aYear !== null && bYear !== null) {
-                if (aYear !== bYear) { return aYear - bYear; }
-                return a.name.localeCompare(b.name);
-            }
-            if (aYear !== null) { return -1; }
-            if (bYear !== null) { return 1; }
-            return a.name.localeCompare(b.name);
-        });
-
-        var targets = [];
-        for (var tt = 0; tt < allProfessionalTeams.length; tt++) {
-            var tTeam = allProfessionalTeams[tt];
-            if (!tTeam || !tTeam.id) { continue; }
-
-            if (!TeamQueries.teamWindowContains(tTeam, yearNum)) {
+            if (!TeamQueries.teamWindowContains(team, yearNum)) {
                 continue;
             }
 
-            var count = activeCountByTeam[String(tTeam.id)];
-            if (typeof count !== 'number') { count = 0; }
+            var activeMembers =
+                TeamQueries.getActiveTeamMembers(team, yearNum);
+            var count = activeMembers.length;
+
             if (count >= targetSizeNum) { continue; }
 
             targets.push({
-                teamId: String(tTeam.id),
-                teamName: tTeam.name || 'Unnamed Team',
+                teamId: String(team.id),
+                teamName: team.name || 'Unnamed Team',
                 currentMemberCount: count,
-                classDisplay: tTeam.classId
-                    ? getClassDisplayName(tTeam.classId)
+                remainingCapacity: targetSizeNum - count,
+                classDisplay: team.classId
+                    ? getClassDisplayName(team.classId)
                     : '',
-                periodDisplay: getTeamPeriodDisplay(tTeam)
+                periodDisplay: getTeamPeriodDisplay(team)
             });
         }
 
-        targets.sort(function(a, b) {
-            if (a.currentMemberCount !== b.currentMemberCount) {
-                return a.currentMemberCount - b.currentMemberCount;
+        targets.sort(function(x, y) {
+            if (x.currentMemberCount !== y.currentMemberCount) {
+                return x.currentMemberCount - y.currentMemberCount;
             }
-            return a.teamName.localeCompare(b.teamName);
+            return x.teamName.localeCompare(y.teamName);
         });
 
         return {
@@ -1611,6 +1371,27 @@
             targetSize: targetSizeNum,
             candidates: candidates,
             targets: targets
+        };
+    }
+
+    function buildMatchmakingCandidate(poolRow) {
+        return {
+            id: poolRow.characterId,
+            name: poolRow.displayName,
+            status: poolRow.statusAtPeriod,
+            ageDisplay: poolRow.ageDisplay,
+
+            availability: {
+                from: poolRow.availability.from,
+                to: poolRow.availability.to,
+                display: poolRow.availability.display
+            },
+
+            assignment: {
+                status: poolRow.assignment.status,
+                nextTeamName: poolRow.assignment.nextTeamName,
+                nextJoinYear: poolRow.assignment.nextJoinYear
+            }
         };
     }
 
@@ -1629,9 +1410,8 @@
         getRankingModalViewModel: getRankingModalViewModel,
         getFilterBarViewModel: getFilterBarViewModel,
 
-        getUnassignedViewModel: getUnassignedViewModel,
+        getProfessionalPoolViewModel: getProfessionalPoolViewModel,
         getTimelineViewModel: getTimelineViewModel,
-
         getTeamMatchmakingViewModel: getTeamMatchmakingViewModel,
 
         getTeamPeriodDisplay: getTeamPeriodDisplay,
