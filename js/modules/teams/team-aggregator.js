@@ -18,6 +18,15 @@
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it; this module projects the resulting records.
  *
+ * MEMBER ORDERING:
+ *   getTeamMembersViewModel sorts members within their
+ *   active/former partition by:
+ *     1. latest join period, ascending (oldest first)
+ *     2. latest leave period, ascending (open stints last)
+ *   Active/former partitioning is done by the adapter using
+ *   TeamQueries.isMemberActive / isMemberFormer; this module
+ *   does not decide the partition, only the order within it.
+ *
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
  *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
@@ -59,12 +68,6 @@
  *   projects the query and the team index. Every semantic
  *   decision is either in TeamQueries (who is eligible) or in
  *   TeamCore (what the mutation accepts).
- *
- * TEMPORARY MISSION DISPLAY:
- *   Team detail VMs surface `temporaryMission` and
- *   `temporaryMissionName`. The mission name is resolved via
- *   MissionQueries when available; when it is not, the raw ID is
- *   shown.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -344,6 +347,78 @@
         }
 
         return result;
+    }
+
+    // ============================================================
+    // MEMBER ORDERING
+    // ============================================================
+    //
+    // Sort key for a member VM:
+    //   primary   latest join period (ascending; oldest first)
+    //   secondary latest leave period (ascending; open stints
+    //             last, since a blank leave is treated as
+    //             Infinity)
+    //   tertiary  displayName (alphabetical, for exact ties)
+    //
+    // "Latest" means: walk every interval, take the greatest
+    // parseable value. A malformed or blank join falls back to
+    // -Infinity so the row sorts before everything with a real
+    // join. A blank leave is Infinity.
+
+    function getLatestJoin(member) {
+        var latest = -Infinity;
+        if (!member || !Array.isArray(member.intervals)) {
+            return latest;
+        }
+        for (var i = 0; i < member.intervals.length; i++) {
+            var iv = member.intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+            var n = parsePeriod(iv.joinPeriod);
+            if (n === null) { continue; }
+            if (n > latest) { latest = n; }
+        }
+        return latest;
+    }
+
+    function getLatestLeave(member) {
+        var latest = -Infinity;
+        var hasOpen = false;
+
+        if (!member || !Array.isArray(member.intervals)) {
+            return Infinity;
+        }
+        for (var i = 0; i < member.intervals.length; i++) {
+            var iv = member.intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+
+            var raw = iv.leavePeriod;
+            if (raw === undefined ||
+                raw === null ||
+                String(raw).trim() === '') {
+                hasOpen = true;
+                continue;
+            }
+            var n = parsePeriod(raw);
+            if (n === null) { continue; }
+            if (n > latest) { latest = n; }
+        }
+
+        if (hasOpen) { return Infinity; }
+        if (latest === -Infinity) { return Infinity; }
+        return latest;
+    }
+
+    function compareMembersByStint(a, b) {
+        var aJoin = getLatestJoin(a);
+        var bJoin = getLatestJoin(b);
+        if (aJoin !== bJoin) { return aJoin - bJoin; }
+
+        var aLeave = getLatestLeave(a);
+        var bLeave = getLatestLeave(b);
+        if (aLeave !== bLeave) { return aLeave - bLeave; }
+
+        return String(a.displayName || '')
+            .localeCompare(String(b.displayName || ''));
     }
 
     // ============================================================
@@ -688,6 +763,12 @@
     // ============================================================
     // TEAM MEMBERS VM
     // ============================================================
+    //
+    // The adapter partitions into active and former using
+    // TeamQueries.isMemberActive / isMemberFormer. Within each
+    // partition, this VM is sorted by latest join then latest
+    // leave. The adapter re-sorts by this comparator when it
+    // builds its two lists.
 
     function getTeamMembersViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) { return null; }
@@ -723,12 +804,7 @@
             memberViewModels.push(vm);
         }
 
-        memberViewModels.sort(function(a, b) {
-            if (a.activeAtPeriod !== b.activeAtPeriod) {
-                return a.activeAtPeriod ? -1 : 1;
-            }
-            return a.displayName.localeCompare(b.displayName);
-        });
+        memberViewModels.sort(compareMembersByStint);
 
         return {
             teamId: team.id,
@@ -1118,26 +1194,6 @@
     // ============================================================
     // PROFESSIONAL POOL VM
     // ============================================================
-    //
-    // Consumes TeamQueries.getProfessionalPersonnelAtPeriod.
-    //
-    // The query already applies every exclusion: deceased,
-    // eliminated, retired, no student phase, and stint overlapping
-    // the student window. What remains is the pool.
-    //
-    // The pool is INDEPENDENT of the query period. A character
-    // whose student window was 1895-1897 and who was never on a
-    // professional team during those years is in the pool whether
-    // you query 1896 or 1920.
-    //
-    // The aggregator's only job is to partition that set by where
-    // the query period sits relative to each character's window:
-    //
-    //   available    query period is inside [from, to]
-    //   historical   query period is outside [from, to]
-    //
-    // Both buckets carry the same row shape. Neither bucket drops
-    // a character.
 
     function getProfessionalPoolViewModel(options) {
         options = options || {};
@@ -1167,8 +1223,6 @@
                 ? r.availability.to
                 : null;
 
-            // A record with no window start is not partitionable.
-            // The query should never emit one, but be explicit.
             if (from === null) { continue; }
 
             var isAvailableNow =
@@ -1303,10 +1357,10 @@
     //                 every eligible character is visible, and
     //                 the user picks years explicitly.
     //
-    // The VM does not associate candidates with teams. It does
-    // not compute years. It does not validate. It projects the
-    // query and the team index; TeamEvents owns the association
-    // state and TeamCore owns the transaction.
+    // The planner does NOT associate candidates with teams. It
+    // does not compute years. It does not validate. It projects
+    // the query and the team index; TeamEvents owns the
+    // association state and TeamCore owns the transaction.
 
     function getMatchmakingPlannerViewModel(options) {
         options = options || {};
@@ -1404,8 +1458,6 @@
             var vm = buildMemberVM(member, null);
             if (!vm) { continue; }
 
-            // Collapse intervals into a single display line:
-            // "1900–1904" or "1902–" or "—".
             var joinDisplay = '';
             var leaveDisplay = '';
 
