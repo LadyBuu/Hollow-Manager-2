@@ -29,6 +29,13 @@
  *   destroyed on close. Reuses the .csw-* CSS classes from the
  *   CareerStatusWizard. No persistent shell.
  *
+ *   The modal is split into a STATIC FORM REGION (header, status
+ *   radios, year input) and a PREVIEW REGION (the "N stints will
+ *   be ended" box). Only the preview region is re-rendered when
+ *   the year or status changes. The year input element is never
+ *   replaced while the modal is open, so focus and caret position
+ *   survive keystrokes on both desktop and mobile.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterAggregator
  *   - window.CharacterQueries
@@ -592,7 +599,16 @@
         return result;
     }
 
-    function buildCareerTransitionHTML(charName) {
+    // ------------------------------------------------------------
+    // Career-transition modal: static form region
+    // ------------------------------------------------------------
+    //
+    // Built once per open. Contains the header, status radios, the
+    // year input, and an empty #ct-preview-region placeholder.
+    // Never replaced while the modal is open, so the year input
+    // keeps focus and caret position across keystrokes.
+
+    function buildCareerTransitionFormHTML(charName) {
         var html = '';
 
         html += '<div class="modal-header">';
@@ -642,9 +658,36 @@
                     '">';
         html += '</div>';
 
+        html += '<div id="ct-preview-region"></div>';
+
+        html += '</div>';
+
+        html += '<div class="modal-footer csw-footer">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-ct-action="close">Cancel</button>';
+        html += '<span class="csw-footer-spacer"></span>';
+        html += '<button type="button" class="primary" ' +
+                    'data-ct-action="apply">' +
+                    'Apply' +
+                '</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    // ------------------------------------------------------------
+    // Career-transition modal: preview region
+    // ------------------------------------------------------------
+    //
+    // Replaced on every status or year change. Contains only the
+    // "N stints will be ended" box. Does not touch the year input.
+
+    function buildCareerTransitionPreviewHTML() {
         var counts = countOpenProfessionalStints(
             _ctCharId, _ctState.year
         );
+
+        var html = '';
         html += '<div class="csw-preview">';
         html += '<div class="csw-preview-header">Preview</div>';
 
@@ -671,22 +714,10 @@
         }
 
         html += '</div>';
-        html += '</div>';
-
-        html += '<div class="modal-footer csw-footer">';
-        html += '<button type="button" class="secondary" ' +
-                    'data-ct-action="close">Cancel</button>';
-        html += '<span class="csw-footer-spacer"></span>';
-        html += '<button type="button" class="primary" ' +
-                    'data-ct-action="apply">' +
-                    'Apply' +
-                '</button>';
-        html += '</div>';
-
         return html;
     }
 
-    function renderCareerTransitionModal() {
+    function renderCareerTransitionForm() {
         if (!_ctContentEl) { return; }
 
         var char = CharacterQueries.getCharacterById(_ctCharId);
@@ -695,7 +726,18 @@
             : 'Unknown';
 
         _ctContentEl.innerHTML =
-            buildCareerTransitionHTML(charName);
+            buildCareerTransitionFormHTML(charName);
+    }
+
+    function renderCareerTransitionPreview() {
+        if (!_ctContentEl) { return; }
+
+        var region = _ctContentEl.querySelector(
+            '#ct-preview-region'
+        );
+        if (!region) { return; }
+
+        region.innerHTML = buildCareerTransitionPreviewHTML();
     }
 
     function openCareerTransitionModal(charId) {
@@ -739,12 +781,20 @@
         contentEl.addEventListener('change', _ctChangeHandler);
         contentEl.addEventListener('input', _ctInputHandler);
 
-        renderCareerTransitionModal();
+        renderCareerTransitionForm();
+        renderCareerTransitionPreview();
 
         Modal.modalSetup(shell, function() {
             closeCareerTransitionModal();
         });
         Modal.showModal(shell);
+
+        setTimeout(function() {
+            var yearInput = contentEl.querySelector('#ct-year');
+            if (yearInput && typeof yearInput.focus === 'function') {
+                try { yearInput.focus(); } catch (e) {}
+            }
+        }, 50);
 
         return shell;
     }
@@ -836,7 +886,7 @@
 
         if (target.name === 'ct-status') {
             _ctState.status = String(target.value || 'retired');
-            renderCareerTransitionModal();
+            renderCareerTransitionPreview();
             return;
         }
     }
@@ -851,7 +901,7 @@
             if (!isNaN(v) && v >= 1) {
                 _ctState.year = v;
             }
-            renderCareerTransitionModal();
+            renderCareerTransitionPreview();
         }
     }
 
@@ -1212,7 +1262,6 @@
         ensureSocialCoreInitialized();
         installCharacterEditListener();
 
-        // Static container elements
         bindToggleList(container);
         bindAddCharacter(container);
         bindFormSubmit(container);
@@ -1223,7 +1272,6 @@
         bindManageFillers(container);
         bindCharacterRosterExport(container);
 
-        // Dynamically rendered elements
         bindTabSwitching();
         bindCancelButton();
         bindDeceasedToggle();
@@ -1240,14 +1288,12 @@
         bindCharacterReportExport();
         bindCareerStatusToggle();
 
-        // Combat tab
         bindCombatRollButtons();
         bindCombatClassOverrides();
         bindCombatLiveUpdates();
         bindWeaponButtons();
         bindSpecialMoveButtons();
 
-        // Social tab
         bindSocialButtons();
 
         _initialized = true;
@@ -3055,8 +3101,6 @@
                             window.setCurrentEditId(savedId);
                         }
 
-                        // Re-render only on create. On edit, the
-                        // form already holds the submitted values.
                         if (!wasEditing) {
                             CharacterForm.render(savedId);
                         }
