@@ -11,7 +11,9 @@
  *   - Request fresh VMs from TeamAggregator; hand them to TeamRender.
  *   - Open and close modals.
  *   - Read form field values.
- *   - Own the matchmaking modal's proposal state.
+ *   - Own the matchmaking planner's checkbox and year-input
+ *     state, and turn selections into a flat assignment list for
+ *     TeamCore.batchAddMembers.
  *   - Own the professional tab's view mode.
  *   - Own the timeline's range and expanded-years state.
  *   - Open the team export picker and the candidate export.
@@ -21,7 +23,29 @@
  *     TeamAggregator owns projections.
  *   - Rendering. TeamRender owns HTML.
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
- *     owns it, consumed via TeamAggregator.getProfessionalPoolViewModel.
+ *     owns it.
+ *   - Planner VM assembly. TeamAggregator owns it.
+ *   - Interval validation. TeamCore owns it.
+ *
+ * MATCHMAKING PLANNER:
+ *   The planner modal opens directly. There is no setup or
+ *   proposal step. The modal shows:
+ *
+ *     left column   professional teams under targetSize, with
+ *                   their existing members and each member's
+ *                   interval
+ *
+ *     right column  the canonical pool candidates, each with a
+ *                   checkbox and per-team year inputs
+ *
+ *   On commit, TeamEvents walks every (candidate, team) pair,
+ *   reads the checkbox and the two year inputs, and emits one
+ *   assignment per ticked pair:
+ *
+ *     { teamId, charId, joinPeriod, leavePeriod, role }
+ *
+ *   TeamCore.batchAddMembers is the sole validator. TeamEvents
+ *   does not compute eligibility, availability, or overlap.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
@@ -33,20 +57,12 @@
  *   Expanded map survives range changes; pruned when years fall out
  *   of range.
  *
- * MISSION ASSOCIATION:
- *   When saving a team, `temporaryMission` is passed through from
- *   the mission select regardless of team type. The domain accepts
- *   a mission on any type; the type only affects which options are
- *   shown by the form. This closes the "assigned mission doesn't
- *   stick" symptom.
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
  *   - window.TeamQueries
  *   - window.TeamAggregator
  *   - window.TeamUI
  *   - window.TeamRender
- *   - window.TeamMatchmaking
  *   - window.TeamMatchmakingView
  *   - window.Modal
  *   - window.MemberManager
@@ -75,7 +91,6 @@
     var TeamAggregator = window.TeamAggregator;
     var TeamUI = window.TeamUI;
     var TeamRender = window.TeamRender;
-    var TeamMatchmaking = window.TeamMatchmaking;
     var TeamMatchmakingView = window.TeamMatchmakingView;
     var Modal = window.Modal;
     var MemberManager = window.MemberManager;
@@ -130,10 +145,10 @@
         _missing.push('TeamAggregator.getFilterBarViewModel');
     }
     if (!TeamAggregator ||
-        typeof TeamAggregator.getTeamMatchmakingViewModel !==
+        typeof TeamAggregator.getMatchmakingPlannerViewModel !==
         'function') {
         _missing.push(
-            'TeamAggregator.getTeamMatchmakingViewModel'
+            'TeamAggregator.getMatchmakingPlannerViewModel'
         );
     }
     if (!TeamAggregator ||
@@ -181,22 +196,9 @@
         _missing.push('TeamRender.renderNameHistoryRow');
     }
 
-    if (!TeamMatchmaking ||
-        typeof TeamMatchmaking.buildProposal !== 'function') {
-        _missing.push('TeamMatchmaking.buildProposal');
-    }
-
     if (!TeamMatchmakingView ||
         typeof TeamMatchmakingView.renderHTML !== 'function') {
         _missing.push('TeamMatchmakingView.renderHTML');
-    }
-    if (!TeamMatchmakingView ||
-        typeof TeamMatchmakingView.collectSetup !== 'function') {
-        _missing.push('TeamMatchmakingView.collectSetup');
-    }
-    if (!TeamMatchmakingView ||
-        typeof TeamMatchmakingView.readAddSelect !== 'function') {
-        _missing.push('TeamMatchmakingView.readAddSelect');
     }
 
     if (!Modal ||
@@ -287,10 +289,8 @@
     var _memberManagerModal = null;
     var _matchmakingModal = null;
 
-    // 'teams' | 'pool' | 'timeline'. Module-level; reset on init.
     var _viewMode = 'teams';
 
-    // Timeline state.
     var _timelineYearStart = null;
     var _timelineYearEnd = null;
     var _timelineExpandedYears = Object.create(null);
@@ -382,7 +382,6 @@
         var period = getCurrentPeriod(currentTab);
         var expandedTeamId = TeamUI.getExpandedTeamId();
 
-        // Non-professional tabs have no mode toggle. Force Teams.
         if (currentTab !== 'professional') {
             _viewMode = 'teams';
         }
@@ -401,7 +400,6 @@
 
         pageVM.viewMode = _viewMode;
 
-        // Pool VM.
         if (currentTab === 'professional' && _viewMode === 'pool') {
             if (period === null) {
                 throw new Error(
@@ -417,7 +415,6 @@
             pageVM.professionalPoolVM = null;
         }
 
-        // Timeline VM.
         if (currentTab === 'professional' &&
             _viewMode === 'timeline') {
             ensureTimelineRange();
@@ -837,9 +834,6 @@
         var type = typeEl ? typeEl.value : 'professional';
         var status = statusEl ? statusEl.value : 'active';
 
-        // `temporaryMission` is passed through regardless of type.
-        // The domain accepts a mission on any team; the type only
-        // controls which options the form offers.
         var temporaryMission = missionEl
             ? (missionEl.value || null)
             : null;
@@ -906,7 +900,7 @@
     }
 
     // ============================================================
-    // MATCHMAKING
+    // MATCHMAKING PLANNER
     // ============================================================
 
     function bindMatchmaking() {
@@ -926,34 +920,34 @@
             _matchmakingModal = null;
         }
 
-        var data = window.data || {};
-        var defaultYear =
-            typeof data.currentYear === 'number' &&
-            isFinite(data.currentYear) &&
-            data.currentYear > 0
-                ? Math.floor(data.currentYear)
-                : null;
+        var period = getCurrentPeriod('professional');
+        if (period === null) {
+            notify(
+                'Cannot determine the current period for the ' +
+                'planner.',
+                'error'
+            );
+            return;
+        }
+
+        var targetSize = 3;
 
         var modal = Modal.createModal('team-matchmaking-modal');
         if (!modal) {
-            notify('Could not open matchmaking.', 'error');
+            notify('Could not open matchmaking planner.', 'error');
             return;
         }
         modal.id = 'team-matchmaking-modal';
 
         var contentEl = document.createElement('div');
-        contentEl.className = 'modal-content wide matchmaking-content';
+        contentEl.className =
+            'modal-content wide planner-content';
         modal.appendChild(contentEl);
 
-        modal.__matchmakingState = {
-            mode: 'setup',
-            setupYear: defaultYear,
-            setupTargetSize: 3,
-            year: null,
-            targetSize: null,
-            candidatesById: Object.create(null),
-            assignments: [],
-            unassigned: []
+        modal.__plannerState = {
+            period: period,
+            targetSize: targetSize,
+            plannerVM: null
         };
 
         _matchmakingModal = modal;
@@ -963,8 +957,8 @@
         });
         Modal.showModal(modal);
 
-        renderMatchmaking(modal, contentEl);
-        bindMatchmakingEvents(modal, contentEl);
+        renderPlanner(modal, contentEl);
+        bindPlannerEvents(modal, contentEl);
     }
 
     function closeMatchmakingModal() {
@@ -982,31 +976,24 @@
         refreshUI();
     }
 
-    function renderMatchmaking(modal, contentEl) {
-        var state = modal.__matchmakingState;
+    function renderPlanner(modal, contentEl) {
+        var state = modal.__plannerState;
         if (!state) { return; }
 
-        if (state.mode === 'setup') {
-            contentEl.innerHTML =
-                TeamMatchmakingView.renderHTML({
-                    mode: 'setup',
-                    defaultYear: state.setupYear,
-                    defaultTargetSize: state.setupTargetSize
-                });
-        } else {
-            contentEl.innerHTML =
-                TeamMatchmakingView.renderHTML({
-                    mode: 'proposal',
-                    year: state.year,
-                    targetSize: state.targetSize,
-                    assignments: state.assignments,
-                    unassigned: state.unassigned,
-                    candidatesById: state.candidatesById
-                });
-        }
+        state.plannerVM =
+            TeamAggregator.getMatchmakingPlannerViewModel({
+                period: state.period,
+                targetSize: state.targetSize
+            });
+
+        var vm = state.plannerVM;
+        vm.mode = 'planner';
+
+        contentEl.innerHTML =
+            TeamMatchmakingView.renderHTML(vm);
     }
 
-    function bindMatchmakingEvents(modal, contentEl) {
+    function bindPlannerEvents(modal, contentEl) {
         contentEl.addEventListener('click', function(e) {
             var actionEl = e.target.closest
                 ? e.target.closest('[data-action]')
@@ -1014,295 +1001,150 @@
             if (!actionEl || !actionEl.dataset) { return; }
 
             var action = actionEl.dataset.action;
-            switch (action) {
-                case 'matchmaking-close':
-                    e.preventDefault();
-                    closeMatchmakingModal();
-                    return;
-                case 'matchmaking-build':
-                    e.preventDefault();
-                    handleMatchmakingBuild(modal, contentEl);
-                    return;
-                case 'matchmaking-back':
-                    e.preventDefault();
-                    handleMatchmakingBack(modal, contentEl);
-                    return;
-                case 'matchmaking-remove-addition':
-                    e.preventDefault();
-                    handleMatchmakingRemoveAddition(
-                        modal, contentEl, actionEl
-                    );
-                    return;
-                case 'matchmaking-add-addition':
-                    e.preventDefault();
-                    handleMatchmakingAddAddition(
-                        modal, contentEl, actionEl
-                    );
-                    return;
-                case 'matchmaking-commit':
-                    e.preventDefault();
-                    handleMatchmakingCommit(modal, contentEl);
-                    return;
-                default:
-                    return;
+            if (action === 'matchmaking-close') {
+                e.preventDefault();
+                closeMatchmakingModal();
+                return;
+            }
+            if (action === 'matchmaking-commit') {
+                e.preventDefault();
+                handlePlannerCommit(modal, contentEl);
+                return;
             }
         });
     }
 
-    function handleMatchmakingBuild(modal, contentEl) {
-        var state = modal.__matchmakingState;
+    /**
+     * Read every (candidate, team) pair the user ticked and turn
+     * them into a flat assignment list. TeamEvents does NOT
+     * validate eligibility, availability, or overlap. It reads
+     * the checkboxes, reads the year inputs, and hands the list
+     * to TeamCore.batchAddMembers, which is the sole authority.
+     */
+    function handlePlannerCommit(modal, contentEl) {
+        var state = modal.__plannerState;
         if (!state) { return; }
 
-        var form = TeamMatchmakingView.collectSetup(contentEl);
-        if (!form) { return; }
+        var checkboxes = contentEl.querySelectorAll(
+            '.planner-assoc-checkbox'
+        );
 
-        var year = parsePositiveInteger(form.year);
-        if (year === null) {
-            notify('Year must be a positive integer.', 'error');
-            return;
+        var assignments = [];
+        var invalidRows = [];
+
+        for (var i = 0; i < checkboxes.length; i++) {
+            var box = checkboxes[i];
+            if (!box.checked) { continue; }
+
+            var teamId = box.dataset.teamId;
+            var charId = box.dataset.characterId;
+
+            if (!teamId || !charId) { continue; }
+
+            var joinEl = contentEl.querySelector(
+                '.planner-assoc-join' +
+                '[data-team-id="' + cssEscape(teamId) + '"]' +
+                '[data-character-id="' +
+                    cssEscape(charId) + '"]'
+            );
+            var leaveEl = contentEl.querySelector(
+                '.planner-assoc-leave' +
+                '[data-team-id="' + cssEscape(teamId) + '"]' +
+                '[data-character-id="' +
+                    cssEscape(charId) + '"]'
+            );
+
+            var joinRaw = joinEl ? joinEl.value.trim() : '';
+            var leaveRaw = leaveEl ? leaveEl.value.trim() : '';
+
+            var joinNum = parsePositiveInteger(joinRaw);
+            if (joinNum === null) {
+                invalidRows.push({
+                    teamId: teamId,
+                    charId: charId,
+                    reason: 'Join year is required.'
+                });
+                continue;
+            }
+
+            var leaveStr = '';
+            if (leaveRaw !== '') {
+                var leaveNum = parsePositiveInteger(leaveRaw);
+                if (leaveNum === null) {
+                    invalidRows.push({
+                        teamId: teamId,
+                        charId: charId,
+                        reason: 'Leave year must be a positive ' +
+                            'integer or blank.'
+                    });
+                    continue;
+                }
+                if (leaveNum < joinNum) {
+                    invalidRows.push({
+                        teamId: teamId,
+                        charId: charId,
+                        reason: 'Leave year cannot be before join ' +
+                            'year.'
+                    });
+                    continue;
+                }
+                leaveStr = String(leaveNum);
+            }
+
+            assignments.push({
+                teamId: teamId,
+                charId: charId,
+                joinPeriod: String(joinNum),
+                leavePeriod: leaveStr,
+                role: 'Member'
+            });
         }
 
-        var targetSize = parsePositiveInteger(form.targetSize);
-        if (targetSize === null) {
+        if (invalidRows.length > 0) {
+            var first = invalidRows[0];
             notify(
-                'Target size must be a positive integer.',
+                'Cannot commit: ' + invalidRows.length +
+                ' assignment' +
+                (invalidRows.length === 1 ? '' : 's') +
+                ' invalid. First: ' + first.reason,
                 'error'
             );
             return;
         }
 
-        state.setupYear = year;
-        state.setupTargetSize = targetSize;
-
-        var vm = TeamAggregator.getTeamMatchmakingViewModel({
-            period: year,
-            targetSize: targetSize
-        });
-
-        if (!vm) {
-            notify('Failed to build matchmaking pool.', 'error');
+        if (assignments.length === 0) {
+            notify('No assignments selected.', 'info');
             return;
         }
 
-        if (vm.candidates.length === 0) {
-            notify(
-                'No eligible candidates for the selected year.',
-                'info'
-            );
-        }
-
-        var candidatesById = Object.create(null);
-        for (var i = 0; i < vm.candidates.length; i++) {
-            var c = vm.candidates[i];
-            candidatesById[c.id] = c;
-        }
-
-        var raw = TeamMatchmaking.buildProposal({
-            year: year,
-            targetSize: targetSize,
-            candidates: vm.candidates,
-            targets: vm.targets
-        });
-
-        var assignments = [];
-        var placedIds = Object.create(null);
-
-        for (var a = 0; a < raw.assignments.length; a++) {
-            var rawAsg = raw.assignments[a];
-            var additions = [];
-            for (var j = 0; j < rawAsg.additions.length; j++) {
-                var addition = rawAsg.additions[j];
-                placedIds[addition.id] = true;
-                additions.push({
-                    id: addition.id,
-                    name: addition.name
-                });
-            }
-            assignments.push({
-                teamId: rawAsg.teamId,
-                teamName: rawAsg.teamName,
-                additions: additions
+        TeamCore.batchAddMembers(assignments)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    notify(
+                        (result && result.message) ||
+                            'Failed to commit assignments.',
+                        'error'
+                    );
+                    return;
+                }
+                notify(
+                    'Added ' + result.data.added +
+                    ' member' +
+                    (result.data.added === 1 ? '' : 's') +
+                    ' across ' + result.data.teamsTouched +
+                    ' team' +
+                    (result.data.teamsTouched === 1 ? '' : 's') +
+                    '.',
+                    'success'
+                );
+                closeMatchmakingModal();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[TeamEvents] batchAddMembers failed:', err
+                );
+                notify('Failed to commit assignments.', 'error');
             });
-        }
-
-        var unassigned = [];
-        for (var u = 0; u < vm.candidates.length; u++) {
-            var cand = vm.candidates[u];
-            if (placedIds[cand.id]) { continue; }
-            unassigned.push(cand);
-        }
-
-        state.mode = 'proposal';
-        state.year = year;
-        state.targetSize = targetSize;
-        state.candidatesById = candidatesById;
-        state.assignments = assignments;
-        state.unassigned = unassigned;
-
-        renderMatchmaking(modal, contentEl);
-    }
-
-    function handleMatchmakingBack(modal, contentEl) {
-        var state = modal.__matchmakingState;
-        if (!state) { return; }
-
-        state.mode = 'setup';
-        state.year = null;
-        state.targetSize = null;
-        state.assignments = [];
-        state.unassigned = [];
-        state.candidatesById = Object.create(null);
-
-        renderMatchmaking(modal, contentEl);
-    }
-
-    function handleMatchmakingRemoveAddition(
-        modal, contentEl, actionEl
-    ) {
-        var state = modal.__matchmakingState;
-        if (!state || state.mode !== 'proposal') { return; }
-
-        var teamId = actionEl.dataset.teamId;
-        var charId = actionEl.dataset.characterId;
-        if (!teamId || !charId) { return; }
-
-        var assignmentIndex = -1;
-        for (var i = 0; i < state.assignments.length; i++) {
-            if (state.assignments[i].teamId === teamId) {
-                assignmentIndex = i;
-                break;
-            }
-        }
-        if (assignmentIndex === -1) { return; }
-
-        var assignment = state.assignments[assignmentIndex];
-        var additionIndex = -1;
-        for (var j = 0; j < assignment.additions.length; j++) {
-            if (assignment.additions[j].id === charId) {
-                additionIndex = j;
-                break;
-            }
-        }
-        if (additionIndex === -1) { return; }
-
-        var removed = assignment.additions.splice(
-            additionIndex, 1
-        )[0];
-
-        var candidate = state.candidatesById[removed.id];
-        if (candidate) {
-            state.unassigned.push(candidate);
-            state.unassigned.sort(function(a, b) {
-                return a.name.localeCompare(b.name);
-            });
-        }
-
-        if (assignment.additions.length === 0) {
-            state.assignments.splice(assignmentIndex, 1);
-        }
-
-        renderMatchmaking(modal, contentEl);
-    }
-
-    function handleMatchmakingAddAddition(
-        modal, contentEl, actionEl
-    ) {
-        var state = modal.__matchmakingState;
-        if (!state || state.mode !== 'proposal') { return; }
-
-        var teamId = actionEl.dataset.teamId;
-        if (!teamId) { return; }
-
-        var select = contentEl.querySelector(
-            '.matchmaking-add-select[data-team-id="' +
-            cssEscape(teamId) + '"]'
-        );
-        if (!select) { return; }
-
-        var charId = TeamMatchmakingView.readAddSelect(select);
-        if (!charId) {
-            notify('Select a character to add.', 'error');
-            return;
-        }
-
-        var candidate = state.candidatesById[charId];
-        if (!candidate) { return; }
-
-        var assignment = null;
-        for (var i = 0; i < state.assignments.length; i++) {
-            if (state.assignments[i].teamId === teamId) {
-                assignment = state.assignments[i];
-                break;
-            }
-        }
-        if (!assignment) {
-            renderMatchmaking(modal, contentEl);
-            return;
-        }
-
-        var unassignedIndex = -1;
-        for (var u = 0; u < state.unassigned.length; u++) {
-            if (state.unassigned[u].id === charId) {
-                unassignedIndex = u;
-                break;
-            }
-        }
-        if (unassignedIndex !== -1) {
-            state.unassigned.splice(unassignedIndex, 1);
-        }
-
-        assignment.additions.push(candidate);
-        assignment.additions.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        renderMatchmaking(modal, contentEl);
-    }
-
-    function handleMatchmakingCommit(modal, contentEl) {
-        var state = modal.__matchmakingState;
-        if (!state || state.mode !== 'proposal') { return; }
-
-        var flat = [];
-        for (var i = 0; i < state.assignments.length; i++) {
-            var assignment = state.assignments[i];
-            for (var j = 0;
-                 j < assignment.additions.length;
-                 j++) {
-                flat.push({
-                    teamId: assignment.teamId,
-                    charId: assignment.additions[j].id,
-                    joinPeriod: String(state.year),
-                    leavePeriod: '',
-                    role: 'Member'
-                });
-            }
-        }
-
-        if (flat.length === 0) {
-            notify('Nothing to commit.', 'info');
-            return;
-        }
-
-        TeamCore.batchAddMembers(flat).then(function(result) {
-            if (!result || !result.success) { return; }
-            notify(
-                'Added ' + result.data.added +
-                ' member' +
-                (result.data.added === 1 ? '' : 's') +
-                ' across ' + result.data.teamsTouched +
-                ' team' +
-                (result.data.teamsTouched === 1 ? '' : 's') +
-                '.',
-                'success'
-            );
-            closeMatchmakingModal();
-        }).catch(function(err) {
-            console.warn(
-                '[TeamEvents] batchAddMembers failed:', err
-            );
-            notify('Failed to commit proposal.', 'error');
-        });
     }
 
     // ============================================================
