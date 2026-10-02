@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="css/teams.css" />
     <link rel="stylesheet" href="css/social.css" />
     <link rel="stylesheet" href="css/missions.css" />
+    <link rel="stylesheet" href="css/departments.css" />
 
     <link rel="stylesheet" href="css/academy.css" />
 
@@ -49,6 +50,7 @@
                 <a href="#dashboard" data-tab="dashboard">Dashboard</a>
                 <a href="#characters" data-tab="characters">Characters</a>
                 <a href="#teams" data-tab="teams">Teams</a>
+                <a href="#departments" data-tab="departments">Departments</a>
                 <a href="#social" data-tab="social">Social</a>
                 <a href="#academy" data-tab="academy">Academy</a>
                 <a href="#missions" data-tab="missions">Missions</a>
@@ -68,6 +70,7 @@
             <div id="tab-dashboard" class="tab-content active"></div>
             <div id="tab-characters" class="tab-content"></div>
             <div id="tab-teams" class="tab-content"></div>
+            <div id="tab-departments" class="tab-content"></div>
             <div id="tab-social" class="tab-content"></div>
             <div id="tab-academy" class="tab-content"></div>
             <div id="tab-missions" class="tab-content"></div>
@@ -315,6 +318,30 @@
 
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
+
+    <!-- ============================================================
+         Departments domain
+         ============================================================
+         Full module stack. Loads after Team domain (DepartmentCore
+         and DepartmentEvents consume TeamQueries for cross-team
+         context) and before the Academy controllers block, which
+         no longer depends on Departments.
+
+         Intra-domain load order:
+           constants  -> schema
+           schema     -> queries, core
+           queries    -> aggregator
+           aggregator -> render, events
+           render + events -> index
+         ============================================================ -->
+    <script src="js/modules/departments/department-constants.js"></script>
+    <script src="js/modules/departments/department-schema.js"></script>
+    <script src="js/modules/departments/department-queries.js"></script>
+    <script src="js/modules/departments/department-core.js"></script>
+    <script src="js/modules/departments/department-aggregator.js"></script>
+    <script src="js/modules/departments/department-render.js"></script>
+    <script src="js/modules/departments/department-events.js"></script>
+    <script src="js/modules/departments/index.js"></script>
 
     <!-- ============================================================
          Academy instructor repair + controllers
