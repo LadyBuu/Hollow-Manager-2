@@ -7,9 +7,9 @@
  * WHAT THIS OWNS:
  *   - Building Team-shaped view models from canonical reads.
  *   - The Professional Pool VM (getProfessionalPoolViewModel).
- *   - The Matchmaking VM (getTeamMatchmakingViewModel).
+ *   - The Matchmaking Planner VM
+ *     (getMatchmakingPlannerViewModel).
  *   - Team list, team detail, member modal, ranking modal VMs.
- *   - Unassigned view removed; replaced by the pool VM.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamQueries owns them.
@@ -37,38 +37,34 @@
  *     available    query period is inside [from, to]
  *     historical   query period is outside [from, to]
  *
- *   Both buckets carry the same row shape. The distinction is
- *   purely informational, so the UI can show "Available" vs
- *   "Previously available" section headers. No character is
- *   dropped by this partition.
+ *   Both buckets carry the same row shape. Neither bucket drops
+ *   a character.
  *
- *   The row's availability.display is the student window. It
- *   does not change with the query period.
+ * MATCHMAKING PLANNER:
+ *   getMatchmakingPlannerViewModel({ period, targetSize })
+ *   returns the two-column planner VM:
  *
- * MATCHMAKING:
- *   getTeamMatchmakingViewModel({ period, targetSize }) consumes
- *   the same canonical personnel records via
- *   getProfessionalPoolViewModel. Candidates come from
- *   pool.available plus pool.historical (both carry eligibility;
- *   "historical" simply means the query year is outside the
- *   candidate's window, which for a matchmaking run at year Y is
- *   the interesting case — you are looking for someone whose
- *   window contains Y).
+ *     teams         professional teams whose active member count
+ *                   is strictly below targetSize, each carrying
+ *                   its existing members with their intervals
+ *                   (join + leave) for display
  *
- *   Targets come from TeamQueries.getTeams('professional')
- *   filtered by team window and capacity.
+ *     candidates    the SAME canonical pool rows as
+ *                   getProfessionalPoolViewModel, flattened from
+ *                   available + historical. Not year-filtered.
+ *                   Every eligible character is visible; the
+ *                   user picks years explicitly.
+ *
+ *   The planner does NOT re-rank, re-filter, or exclude. It
+ *   projects the query and the team index. Every semantic
+ *   decision is either in TeamQueries (who is eligible) or in
+ *   TeamCore (what the mutation accepts).
  *
  * TEMPORARY MISSION DISPLAY:
  *   Team detail VMs surface `temporaryMission` and
- *   `temporaryMissionName` so the associated mission is visible
- *   in the Teams module. The mission name is resolved via
+ *   `temporaryMissionName`. The mission name is resolved via
  *   MissionQueries when available; when it is not, the raw ID is
  *   shown.
- *
- * DEATH / RETIREMENT SEMANTICS:
- *   The pool VM trusts TeamQueries to have applied death,
- *   elimination, retirement, student-phase, and stint-overlap
- *   exclusions. It does not re-check them.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -79,7 +75,7 @@
  * DEPENDENCIES (LAZY, at call time):
  *   - window.MissionQueries     (temporaryMission name resolution)
  *   - window.CharacterConstants (status tier classification)
- *   - window.EliminationQueries (matchmaking eligibility check)
+ *   - window.EliminationQueries (member modal eligibility)
  */
 
 (function() {
@@ -1292,6 +1288,183 @@
     }
 
     // ============================================================
+    // MATCHMAKING PLANNER VM
+    // ============================================================
+    //
+    // The planner is a two-column projection:
+    //
+    //   teams         professional teams under targetSize, each
+    //                 carrying its existing members with their
+    //                 intervals (join + leave) for display
+    //
+    //   candidates    the SAME canonical pool rows as the
+    //                 Professional Pool, flattened from
+    //                 available + historical. Not year-filtered:
+    //                 every eligible character is visible, and
+    //                 the user picks years explicitly.
+    //
+    // The VM does not associate candidates with teams. It does
+    // not compute years. It does not validate. It projects the
+    // query and the team index; TeamEvents owns the association
+    // state and TeamCore owns the transaction.
+
+    function getMatchmakingPlannerViewModel(options) {
+        options = options || {};
+
+        var periodNum = TeamConstants.parsePeriod(options.period);
+        var targetSizeNum = parsePositiveInteger(options.targetSize);
+
+        if (periodNum === null) {
+            throw new Error(
+                '[TeamAggregator] getMatchmakingPlannerViewModel ' +
+                'requires a valid period.'
+            );
+        }
+        if (targetSizeNum === null) {
+            throw new Error(
+                '[TeamAggregator] getMatchmakingPlannerViewModel ' +
+                'requires a valid targetSize.'
+            );
+        }
+
+        // ---- Teams under target size. ----
+        var rawTeams = TeamQueries.getTeams(
+            'professional', null, false
+        );
+
+        var teams = [];
+
+        for (var t = 0; t < rawTeams.length; t++) {
+            var team = rawTeams[t];
+            if (!team || !team.id) { continue; }
+
+            if (!TeamQueries.teamWindowContains(team, periodNum)) {
+                continue;
+            }
+
+            var activeMembers = TeamQueries.getActiveTeamMembers(
+                team, periodNum
+            );
+            var count = activeMembers.length;
+            if (count >= targetSizeNum) { continue; }
+
+            teams.push(buildPlannerTeamRow(
+                team, activeMembers, count, targetSizeNum
+            ));
+        }
+
+        teams.sort(function(a, b) {
+            if (a.memberCount !== b.memberCount) {
+                return a.memberCount - b.memberCount;
+            }
+            return a.teamName.localeCompare(b.teamName);
+        });
+
+        // ---- Candidates: the canonical pool, flattened. ----
+        var records = TeamQueries.getProfessionalPersonnelAtPeriod(
+            periodNum
+        );
+
+        var candidates = [];
+
+        for (var c = 0; c < records.length; c++) {
+            var r = records[c];
+
+            var from = r.availability
+                ? r.availability.from
+                : null;
+            if (from === null) { continue; }
+
+            var row = buildPoolRow(r, periodNum);
+            row.availabilityBucket = classifyAvailabilityBucket(
+                row, periodNum
+            );
+            candidates.push(row);
+        }
+
+        candidates.sort(comparePoolRows);
+
+        return {
+            period: periodNum,
+            targetSize: targetSizeNum,
+            teams: teams,
+            candidates: candidates
+        };
+    }
+
+    function buildPlannerTeamRow(
+        team, activeMembers, memberCount, targetSize
+    ) {
+        var memberRows = [];
+
+        for (var i = 0; i < activeMembers.length; i++) {
+            var member = activeMembers[i];
+            if (!member || !member.characterId) { continue; }
+
+            var vm = buildMemberVM(member, null);
+            if (!vm) { continue; }
+
+            // Collapse intervals into a single display line:
+            // "1900–1904" or "1902–" or "—".
+            var joinDisplay = '';
+            var leaveDisplay = '';
+
+            if (vm.intervals.length > 0) {
+                var first = vm.intervals[0];
+                joinDisplay = first.joinPeriod || '';
+                leaveDisplay = first.leavePeriod || '';
+            }
+
+            memberRows.push({
+                characterId: vm.characterId,
+                memberId: vm.memberId,
+                displayName: vm.displayName,
+                role: vm.role,
+                joinPeriod: joinDisplay,
+                leavePeriod: leaveDisplay,
+                intervalDisplay: formatIntervalDisplay(
+                    joinDisplay, leaveDisplay
+                )
+            });
+        }
+
+        memberRows.sort(function(a, b) {
+            return a.displayName.localeCompare(b.displayName);
+        });
+
+        return {
+            teamId: String(team.id),
+            teamName: team.name || 'Unnamed Team',
+            memberCount: memberCount,
+            targetSize: targetSize,
+            remainingCapacity: targetSize - memberCount,
+            periodDisplay: getTeamPeriodDisplay(team),
+            members: memberRows
+        };
+    }
+
+    function formatIntervalDisplay(join, leave) {
+        if (join && leave) { return join + '\u2013' + leave; }
+        if (join) { return join + '\u2013'; }
+        if (leave) { return '\u2013' + leave; }
+        return '\u2014';
+    }
+
+    function classifyAvailabilityBucket(row, periodNum) {
+        var from = row.availability.from;
+        var to = row.availability.to;
+
+        if (from === null) { return 'unknown'; }
+
+        var insideNow =
+            periodNum >= from &&
+            (to === null || periodNum <= to);
+
+        if (insideNow) { return 'available'; }
+        return 'outside';
+    }
+
+    // ============================================================
     // TIMELINE VM (routing)
     // ============================================================
 
@@ -1303,134 +1476,6 @@
             );
         }
         return TQ.buildTimelineViewModel(options || {});
-    }
-
-    // ============================================================
-    // MATCHMAKING VM
-    // ============================================================
-    //
-    // Consumes the same canonical personnel records as the pool VM.
-    // Candidates come from pool.available and pool.historical —
-    // both are eligible; a "historical" row simply means the query
-    // year is outside the candidate's window, which for a
-    // matchmaking run at year Y means the window is either before
-    // or after Y. The matchmaking algorithm does not re-filter by
-    // window; it places whoever the caller supplies.
-    //
-    // Targets come from professional teams whose window contains
-    // the query period and whose active member count is below the
-    // requested target size.
-
-    function getTeamMatchmakingViewModel(options) {
-        options = options || {};
-
-        var yearNum = TeamConstants.parsePeriod(options.period);
-        var targetSizeNum = parsePositiveInteger(options.targetSize);
-
-        if (yearNum === null || targetSizeNum === null) {
-            return {
-                year: null,
-                targetSize: null,
-                candidates: [],
-                targets: []
-            };
-        }
-
-        var pool = getProfessionalPoolViewModel({
-            period: yearNum
-        });
-
-        var candidates = [];
-        for (var a = 0; a < pool.available.length; a++) {
-            candidates.push(buildMatchmakingCandidate(
-                pool.available[a]
-            ));
-        }
-        for (var h = 0; h < pool.historical.length; h++) {
-            candidates.push(buildMatchmakingCandidate(
-                pool.historical[h]
-            ));
-        }
-
-        candidates.sort(function(x, y) {
-            var xFrom = x.availability.from;
-            var yFrom = y.availability.from;
-
-            if (xFrom === null && yFrom === null) {
-                return x.name.localeCompare(y.name);
-            }
-            if (xFrom === null) { return -1; }
-            if (yFrom === null) { return 1; }
-            if (xFrom !== yFrom) { return xFrom - yFrom; }
-            return x.name.localeCompare(y.name);
-        });
-
-        var allProfessionalTeams = TeamQueries.getTeams(
-            'professional', null, false
-        );
-
-        var targets = [];
-
-        for (var t = 0; t < allProfessionalTeams.length; t++) {
-            var team = allProfessionalTeams[t];
-            if (!team || !team.id) { continue; }
-
-            if (!TeamQueries.teamWindowContains(team, yearNum)) {
-                continue;
-            }
-
-            var activeMembers =
-                TeamQueries.getActiveTeamMembers(team, yearNum);
-            var count = activeMembers.length;
-
-            if (count >= targetSizeNum) { continue; }
-
-            targets.push({
-                teamId: String(team.id),
-                teamName: team.name || 'Unnamed Team',
-                currentMemberCount: count,
-                remainingCapacity: targetSizeNum - count,
-                classDisplay: team.classId
-                    ? getClassDisplayName(team.classId)
-                    : '',
-                periodDisplay: getTeamPeriodDisplay(team)
-            });
-        }
-
-        targets.sort(function(x, y) {
-            if (x.currentMemberCount !== y.currentMemberCount) {
-                return x.currentMemberCount - y.currentMemberCount;
-            }
-            return x.teamName.localeCompare(y.teamName);
-        });
-
-        return {
-            year: yearNum,
-            targetSize: targetSizeNum,
-            candidates: candidates,
-            targets: targets
-        };
-    }
-
-    function buildMatchmakingCandidate(poolRow) {
-        return {
-            id: poolRow.characterId,
-            name: poolRow.displayName,
-            status: poolRow.statusAtPeriod,
-            ageDisplay: poolRow.ageDisplay,
-
-            availability: {
-                from: poolRow.availability.from,
-                to: poolRow.availability.to,
-                display: poolRow.availability.display
-            },
-
-            assignment: {
-                status: poolRow.assignment.status,
-                nextTeamName: poolRow.assignment.nextTeamName,
-                nextJoinYear: poolRow.assignment.nextJoinYear
-            }
-        };
     }
 
     // ============================================================
@@ -1449,8 +1494,9 @@
         getFilterBarViewModel: getFilterBarViewModel,
 
         getProfessionalPoolViewModel: getProfessionalPoolViewModel,
+        getMatchmakingPlannerViewModel:
+            getMatchmakingPlannerViewModel,
         getTimelineViewModel: getTimelineViewModel,
-        getTeamMatchmakingViewModel: getTeamMatchmakingViewModel,
 
         getTeamPeriodDisplay: getTeamPeriodDisplay,
         getRankingHistoryDisplay: getRankingHistoryDisplay
