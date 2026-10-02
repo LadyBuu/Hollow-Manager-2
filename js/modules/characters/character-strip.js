@@ -4,36 +4,31 @@
  *
  * Path: js/modules/characters/character-strip.js
  *
- * WHAT THIS MODULE DOES:
- *   - isFillerCandidate(char): heuristic. True when the character
- *     has no authored content of any kind.
- *   - stripEmptyFields(char): returns a NEW object containing only
- *     the non-empty, non-default keys.
- *   - stripEliminatedForExport(charArray): returns a NEW array in
- *     which every character with an elimination record has been
- *     reduced via stripEmptyFields. Used by the export pipeline.
+ * WHAT THIS OWNS:
+ *   - isFillerCandidate(char)         heuristic; true when the
+ *                                     character has no authored
+ *                                     content of any kind.
+ *   - hasAuthoredContent(char)        the inverse predicate.
+ *   - stripEmptyFields(char)          returns a NEW object containing
+ *                                     only the non-empty, non-default
+ *                                     keys.
+ *   - stripEliminatedForExport(arr)   returns a NEW array in which
+ *                                     every eliminated character has
+ *                                     been reduced via stripEmptyFields.
  *
- * WHAT THIS MODULE DOES NOT DO:
- *   - It does not mutate window.data.
- *   - It does not touch persistence.
- *   - It does not decide WHEN to strip. That is CharacterCRUD's job
+ * WHAT THIS DOES NOT DO:
+ *   - Does not mutate window.data.
+ *   - Does not touch persistence.
+ *   - Does not decide WHEN to strip. That is CharacterCRUD's job
  *     (save path) and ExportEnvelope.create's job (export path).
- *   - It does not check team membership.
+ *   - Does not check team membership.
  *
  * EXPORT PATH:
- *   The export-time strip is triggered by ExportEnvelope.create,
- *   which reads window.CharacterStrip.stripEliminatedForExport
- *   lazily. When the module is absent, the export runs unstripped.
- *
- *   A character is "eliminated" for export purposes when either of
- *   these holds:
- *     char.eliminations.length > 0
- *     char.eliminatedWeeks.length > 0
- *
- *   This is a shape check on the character record itself. It does
- *   not consult EliminationQueries; the export path has no need
- *   for the query, and a record-level check is more robust against
- *   a mid-session query change.
+ *   stripEliminatedForExport is called by ExportEnvelope.create on
+ *   a deep-cloned character array. A character is "eliminated" for
+ *   export purposes when either char.eliminations or
+ *   char.eliminatedWeeks is a non-empty array. That is a shape
+ *   check on the record itself, not a query.
  *
  * DEPENDENCIES:
  *   None.
@@ -176,8 +171,7 @@
         var keys = Object.keys(DEFAULT_DISPLAY_PARTS);
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
-            var expected = DEFAULT_DISPLAY_PARTS[k];
-            if (obj[k] !== expected) { return false; }
+            if (obj[k] !== DEFAULT_DISPLAY_PARTS[k]) { return false; }
         }
         if (Object.keys(obj).length !== keys.length) { return false; }
         return true;
@@ -197,14 +191,8 @@
     }
 
     // ============================================================
-    // FILLER CANDIDATE HEURISTIC
+    // AUTHORED CONTENT
     // ============================================================
-
-    function isFillerCandidate(char) {
-        if (!char || typeof char !== 'object') { return false; }
-        if (hasAuthoredContent(char)) { return false; }
-        return true;
-    }
 
     function hasAuthoredContent(char) {
         if (!char || typeof char !== 'object') { return false; }
@@ -276,6 +264,11 @@
         return false;
     }
 
+    function isFillerCandidate(char) {
+        if (!char || typeof char !== 'object') { return false; }
+        return !hasAuthoredContent(char);
+    }
+
     // ============================================================
     // STRIP
     // ============================================================
@@ -286,8 +279,8 @@
         }
 
         var out = {};
-
         var keys = Object.keys(char);
+
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var value = char[key];
@@ -398,19 +391,6 @@
     // EXPORT-TIME STRIP
     // ============================================================
 
-    /**
-     * Return a NEW array in which every eliminated character has
-     * been reduced via stripEmptyFields.
-     *
-     * Called by ExportEnvelope.create on the deep-cloned character
-     * array. Never touches the source array or the source objects.
-     *
-     * The isFiller flag is set on the returned records so the file
-     * reflects that these are filler records.
-     *
-     * @param {array} charArray
-     * @returns {array}
-     */
     function stripEliminatedForExport(charArray) {
         if (!Array.isArray(charArray)) { return charArray; }
 
