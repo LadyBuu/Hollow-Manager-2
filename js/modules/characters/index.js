@@ -14,9 +14,9 @@
  *     CharacterEvents consume.
  *   - The character list toggle (mobile sidebar).
  *   - The Research button. Opens window.Research (the profile
- *     search modal). The modal itself is owned by the research
- *     module; this module only emits the button and wires the
- *     click.
+ *     search modal).
+ *   - The Bulk Add button. Opens window.CharacterBulkCreate
+ *     (the bulk character creation modal).
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -27,6 +27,7 @@
  *   - Event binding. CharacterEvents owns it.
  *   - The research feature. ResearchQueries / ResearchView /
  *     ResearchEvents own it.
+ *   - The bulk-create feature. CharacterBulkCreate owns it.
  *
  * FILTER BAR:
  *   The filter bar carries:
@@ -40,6 +41,7 @@
  *     #hide-filler
  *     #clear-char-filter
  *     #research-btn           (opens the research modal)
+ *     #bulk-add-btn           (opens the bulk-create modal)
  *
  *   The sort select's persisted value is restored at mount from
  *   CharacterList.getSort(). When the character list is not yet
@@ -57,6 +59,7 @@
  *   - window.DataLoader
  *   - window.CharacterViews
  *   - window.Research
+ *   - window.CharacterBulkCreate
  *   - window.UI_CONSTANTS
  */
 
@@ -156,6 +159,14 @@
             );
         }
 
+        if (!window.CharacterBulkCreate ||
+            typeof window.CharacterBulkCreate.open !== 'function') {
+            console.warn(
+                '[CharactersModule] CharacterBulkCreate module not ' +
+                'loaded — Bulk Add button will be inactive.'
+            );
+        }
+
         if (missing.length > 0) {
             console.warn(
                 '[CharactersModule] Missing dependencies:',
@@ -250,10 +261,11 @@
             }
         }
 
-        // Research button: opens the research modal. The modal
-        // itself is owned by window.Research; this button is just
-        // the entry point.
+        // Research button: opens the research modal.
         bindResearchButton(container);
+
+        // Bulk Add button: opens the bulk-create modal.
+        bindBulkAddButton(container);
 
         // Re-render the form if an edit id is already set.
         var editId = getCurrentEditId();
@@ -295,7 +307,7 @@
     }
 
     // ============================================================
-    // RESEARCH BUTTON
+    // HEADER BUTTON HANDLERS
     // ============================================================
 
     function bindResearchButton(container) {
@@ -322,6 +334,35 @@
             } catch (err) {
                 console.warn(
                     '[CharactersModule] Research.open threw:', err
+                );
+            }
+        });
+    }
+
+    function bindBulkAddButton(container) {
+        if (!container) { return; }
+
+        var btn = container.querySelector('#bulk-add-btn');
+        if (!btn) { return; }
+
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+
+            var Bulk = window.CharacterBulkCreate || null;
+            if (!Bulk || typeof Bulk.open !== 'function') {
+                console.warn(
+                    '[CharactersModule] CharacterBulkCreate module ' +
+                    'is not loaded.'
+                );
+                return;
+            }
+
+            try {
+                Bulk.open();
+            } catch (err) {
+                console.warn(
+                    '[CharactersModule] CharacterBulkCreate.open ' +
+                    'threw:', err
                 );
             }
         });
@@ -404,6 +445,10 @@
                                     class="small secondary"
                                     title="Search character profiles"
                                     aria-label="Search character profiles">Research</button>
+                            <button id="bulk-add-btn"
+                                    class="small secondary"
+                                    title="Bulk create characters"
+                                    aria-label="Bulk create characters">Bulk Add</button>
                             <button id="toggle-char-list"
                                     class="secondary small"
                                     aria-label="Toggle character list">\u2630</button>
