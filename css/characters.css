@@ -28,6 +28,7 @@
  *   - Filler manager modal (.filler-manager-*)
  *   - Career Status Wizard modal (.csw-*)
  *   - Career Transition modal (#career-transition-modal, reuses .csw-*)
+ *   - Bulk Create modal (.bulk-create-*)
  *
  * Load order: shared.css → characters.css
  */
@@ -1633,6 +1634,204 @@
     color: var(--text-dim);
     margin: 0;
     line-height: 1.45;
+}
+
+/* ============================================================
+   BULK CREATE MODAL
+   ============================================================
+   Opened by the Bulk Add button (#bulk-add-btn) in the character
+   page header. A table of rows, one per character to create.
+   Each row is a flat grid: First | Last | Birth Year | Gender |
+   remove.
+
+   Desktop uses a fixed-column layout. Mobile collapses each row
+   to a small card with First/Last on top, Birth Year/Gender
+   below, and the remove button spanning the bottom.
+   ============================================================ */
+
+.bulk-create-content {
+    /* wide modal is 900px */
+    max-width: 760px;
+}
+
+.bulk-create-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 0 0 10px 0;
+    line-height: 1.5;
+}
+
+/* ------------------------------------------------------------
+   Table header
+   ------------------------------------------------------------ */
+
+.bulk-create-table-header {
+    display: grid;
+    grid-template-columns: 1.2fr 1.2fr 0.7fr 0.9fr 32px;
+    gap: 6px;
+    padding: 5px 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------
+   Rows
+   ------------------------------------------------------------ */
+
+.bulk-create-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-height: 55vh;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 0 0 6px 6px;
+    padding: 4px;
+    background: var(--bg);
+}
+
+.bulk-create-row {
+    display: grid;
+    grid-template-columns: 1.2fr 1.2fr 0.7fr 0.9fr 32px;
+    gap: 6px;
+    align-items: stretch;
+    padding: 3px 2px;
+}
+
+.bulk-create-row input {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    min-width: 0;
+}
+
+.bulk-create-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg);
+}
+
+.bulk-create-row input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.bulk-create-birth-year {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.bulk-create-remove {
+    padding: 0;
+    width: 100%;
+    min-width: 32px;
+    font-size: 0.75rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+}
+
+.bulk-create-remove:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------
+   Actions row (Add Row + count)
+   ------------------------------------------------------------ */
+
+.bulk-create-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+    padding: 6px 0;
+}
+
+.bulk-create-actions button {
+    font-size: 0.72rem;
+    padding: 4px 12px;
+}
+
+.bulk-create-row-count {
+    margin-left: auto;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+
+@media (max-width: 640px) {
+    .bulk-create-content {
+        max-width: 100%;
+    }
+
+    .bulk-create-table-header {
+        display: none;
+    }
+
+    .bulk-create-rows {
+        max-height: none;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
+    }
+
+    .bulk-create-row {
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas:
+            "first  last"
+            "year   gender"
+            "remove remove";
+        gap: 6px;
+        padding: 8px;
+        margin-bottom: 8px;
+        background: var(--panel-alt);
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+    }
+
+    .bulk-create-first      { grid-area: first; }
+    .bulk-create-last       { grid-area: last; }
+    .bulk-create-birth-year { grid-area: year; }
+    .bulk-create-gender     { grid-area: gender; }
+    .bulk-create-remove {
+        grid-area: remove;
+        width: 100%;
+        min-height: 30px;
+    }
+
+    .bulk-create-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .bulk-create-actions button {
+        width: 100%;
+    }
+
+    .bulk-create-row-count {
+        margin-left: 0;
+        text-align: right;
+    }
 }
 
 /* ============================================================
