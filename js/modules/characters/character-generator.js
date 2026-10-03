@@ -29,81 +29,39 @@
  *     - a weight-to-height ratio range (BMI-shaped internally)
  *     - a list of build words that fit this profile
  *
- *   Generation order is:
- *
- *     profile → height → weight → build
- *
- *   Height picks first, then the profile's ratio range converts to
- *   a concrete weight range for that specific height, then weight
- *   picks from that range, then build picks from the profile's
- *   build list.
- *
- *   This eliminates combinations like 190cm + 55kg + Rugged
- *   because 190cm lands in a profile whose weight range starts at
- *   ~78kg and whose build list does not contain Willowy.
- *
+ *   Generation order is: profile -> height -> weight -> build.
  *   BMI is not exposed to the character. It is the internal
  *   mechanism, not a stored field.
  *
  * PER-FIELD REROLL:
  *   generatePhysicalField(field, current) rerolls ONE field while
- *   respecting the current body:
- *
- *     - Reroll height: keeps current weight and build, picks a new
- *       height from the profile range that can accommodate them.
- *     - Reroll weight: keeps current height and build, picks a new
- *       weight from the range that fits that height + build.
- *     - Reroll build: keeps current height and weight, picks a new
- *       build from the ones compatible with both.
- *
- *   Each reroll reads the current body state from the character
- *   form before generating. The form-side wiring is in
- *   character-events.js.
+ *   respecting the current body.
  *
  * PERSONALITY MODEL:
- *   Fourteen fields, generated from independent weighted pools:
+ *   Fourteen fields, generated from independent pools. No
+ *   archetype system. No hidden dimensions.
  *
- *     traits        (weighted: 70% core, 30% behavioural)
- *     ideals
- *     bonds
- *     flaws
- *     alignment
- *     likes
- *     dislikes
- *     habits
- *     fears
- *     goals
- *     authority       (new)
- *     conflictStyle   (new)
- *     socialStyle     (new)
- *     quirks          (new)
+ *   Trait pools carry 2-3 short adjectives each. They read as a
+ *   comma list and stay fast to scan.
  *
- *   No archetype system yet. No hidden dimensions. The new fields
- *   are picked independently, exactly like the existing ones. The
- *   point of this release is to see whether more varied vocabulary
- *   produces more distinctive characters before adding structural
- *   machinery on top.
+ *   Trait rows describe a mix of qualities — not a single quality
+ *   re-shuffled. Every row in the pool should be reorderable
+ *   against every OTHER row without producing the same character.
+ *   "Brave, Bold, Reckless" and "Bold, Daring, Reckless" are the
+ *   same person; only one of them belongs here.
+ *
+ *   Every OTHER pool carries a single tag or short phrase. The
+ *   field label already says what the value is (Bonds, Fears,
+ *   Goals). The value itself does not need to repeat that.
+ *
+ *   Trait picks are weighted 70/30 core-to-behavioural.
  *
  * COMPLEXION MODEL:
- *   Unchanged from the previous release. Skin tone, hair colour,
- *   and eye colour are correlated through COMPLEXION_TIERS. Each
- *   tier's pools are weighted by repetition, so a rare combination
- *   is possible but not uniform.
+ *   Skin tone, hair colour, and eye colour are correlated through
+ *   COMPLEXION_TIERS. Weights are expressed by repetition.
  *
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *
- * USAGE:
- *   var generator = window.CharacterGenerator;
- *   var physical = generator.generatePhysical();
- *   var personality = generator.generatePersonality();
- *   var character = generator.generateCharacter({ currentYear: 1927 });
- *
- *   // Reroll one physical field, respecting the current body:
- *   var newHeight = generator.generatePhysicalField('height', {
- *       height: '175cm', weight: '72kg', build: 'Athletic',
- *       skin: 'Olive', hair: 'Brown', eyes: 'Brown', gender: 'Male'
- *   });
  */
 
 (function() {
@@ -159,19 +117,6 @@
     // ============================================================
     // BODY PROFILES
     // ============================================================
-    //
-    // Each profile declares a height range, a weight-to-height
-    // ratio range (the internal mechanic; BMI-shaped, but not
-    // exposed as a domain concept), and a list of build words that
-    // fit this profile.
-    //
-    // The `weight` field on each profile is the relative pick
-    // frequency. Average is the most common. Extreme profiles are
-    // rarer but not absent.
-    //
-    // Ratio ranges are inclusive at both ends. They are expressed
-    // as [min, max] and used to derive a concrete weight range
-    // once a height has been picked.
 
     var BODY_PROFILES = {
         petite: {
@@ -220,11 +165,6 @@
     // ============================================================
     // COMPLEXION TIERS
     // ============================================================
-    //
-    // Unchanged from the previous release. Skin tone, hair colour,
-    // and eye colour are correlated through three tiers. Values
-    // can appear in more than one tier where plausible; repetition
-    // within a pool weights a value up.
 
     var COMPLEXION_TIERS = {
         fair: {
@@ -325,67 +265,241 @@
     // TRAIT POOLS
     // ============================================================
     //
-    // Two pools, weighted. The core pool is the existing vocabulary
-    // (virtues and mannerisms that read as "ordinary person"). The
-    // behavioural pool is new material that implies how the person
-    // actually behaves, not just what they are like.
+    // Two pools, weighted 70/30 core-to-behavioural.
     //
-    // A single trait pick is:
-    //   - 70% chance: pick 3 items from the core pool
-    //   - 30% chance: pick 3 items from the behavioural pool
+    // Trait entries are 2-3 short adjectives — this pool is the
+    // exception to the "one tag per value" rule. A trait row
+    // reads as a comma list and its brevity is the point.
     //
-    // The weights are tunable. If generated characters feel too
-    // bland, raise the behavioural weight. If they feel too
-    // intense, lower it.
+    // Every row here must be reorderable against every OTHER row
+    // without producing the same character. "Brave, Bold,
+    // Reckless" and "Bold, Daring, Reckless" are the same person;
+    // only one of them belongs.
 
     var TRAIT_CORE_WEIGHT = 70;
     var TRAIT_BEHAVIOURAL_WEIGHT = 30;
 
     var TRAIT_POOL_CORE = [
+        // --- Steadfast ---
         'Brave, Honest, Loyal',
         'Reliable, Patient, Grounded',
         'Calm, Collected, Strategic',
         'Stoic, Disciplined, Focused',
         'Dependable, Steady, Kind',
+        'Wise, Patient, Kind',
+        'Gentle, Thoughtful, Steady',
+        'Affectionate, Protective, Warm',
+        'Compassionate, Honest, Generous',
+        'Humble, Quiet, Modest',
+        'Earnest, Simple, True',
+        'Faithful, Devout, Steadfast',
+        'Cordial, Warm, Open',
+        'Patient, Enduring, Kind',
+        'Practical, Resourceful, Steady',
+        'Direct, Honest, Dependable',
+        'Steadfast, Unshakeable, True',
+        'Firm, Steady, Just',
+        'Just, Fair, Honest',
+        'Fair, Balanced, Reasoned',
+
+        // --- Fierce ---
         'Fierce, Proud, Determined',
         'Bold, Reckless, Passionate',
         'Driven, Ambitious, Intense',
         'Passionate, Loyal, Bold',
         'Ferocious, Protective, Devoted',
-        'Wise, Patient, Kind',
+        'Warm, Empathetic, Nurturing',
+        'Righteous, Stern, Unyielding',
+        'Dutiful, Formal, Loyal',
+        'Honorable, Stubborn, Just',
+        'Fierce, Loyal, Protective',
+        'Fiercely, Loyal, Protective',
+        'Devoted, Protective, Fierce',
+        'Devoted, Loyal, Steadfast',
+        'Loyal, Protective, Devoted',
+        'Confident, Blunt, Sociable',
+        'Brash, Loyal, Protective',
+        'Fierce, Loyal, Impulsive',
+        'Competitive, Bold, Determined',
+        'Bold, Daring, Reckless',
+        'Daring, Bold, Gallant',
+        'Gallant, Chivalrous, Bold',
+        'Noble, Honorable, Just',
+        'Honorable, True, Brave',
+        'True, Loyal, Brave',
+        'Brave, True, Steadfast',
+        'Outspoken, Bold, Brave',
+        'Relentless, Tireless, Fierce',
+        'Tireless, Devoted, Patient',
+        'Devoted, Single-minded, Fierce',
+        'Ambitious, Driven, Focused',
+        'Focused, Determined, Unstoppable',
+        'Self-reliant, Capable, Steady',
+        'Capable, Reliable, Steady',
+        'Independent, Self-reliant, Bold',
+
+        // --- Edged ---
+        'Cunning, Ambitious, Charming',
+        'Sly, Charming, Deceptive',
+        'Smooth, Silver-tongued, Watchful',
+        'Manipulative, Clever, Cold',
+        'Brooding, Intense, Mysterious',
+        'Cynical, Wary, Sharp',
+        'Acerbic, Brilliant, Guarded',
+        'Melancholic, Deep, Introspective',
+        'Sardonic, Clever, Bitter',
+        'Bitter, Sharp, Haunted',
+        'Sombre, Thoughtful, Deep',
+        'Wounded, Guarded, Fierce',
+        'Haunted, Determined, Protective',
+        'Sombre, Quiet, Steadfast',
+        'Cynical, Dry, Amused',
+        'Wry, Sardonic, Observant',
+        'Sarcastic, Sharp, Loyal',
+        'Irreverent, Bold, Sharp-tongued',
+        'Charming, Manipulative, Watchful',
+        'Elegant, Calculating, Diplomatic',
+        'Proud, Unyielding, Honorable',
+        'Stern, Dutiful, Unyielding',
+        'Stubborn, Willful, Bold',
+        'Willful, Independent, Bold',
+        'Single-minded, Stubborn, Bold',
+
+        // --- Quiet ---
         'Quiet, Observant, Clever',
         'Sharp, Witty, Sarcastic',
         'Calculating, Elegant, Diplomatic',
         'Cerebral, Curious, Precise',
+        'Brooding, Silent, Deep',
+        'Silent, Observant, Perceptive',
+        'Perceptive, Unnerving, Still',
+        'Still, Quiet, Deep',
+        'Quiet, Watchful, Patient',
+        'Sharp, Watchful, Quiet',
+        'Clever, Observant, Unassuming',
+        'Quiet, Dependable, Kind',
+        'Stoic, Silent, Reliable',
+        'Silent, Steady, Unmoving',
+        'Still, Watchful, Unblinking',
+        'Impassive, Cold, Composed',
+        'Composed, Still, Controlled',
+        'Reserved, Careful, Measured',
+        'Measured, Deliberate, Careful',
+        'Controlled, Deliberate, Precise',
+
+        // --- Minds ---
         'Wild, Free-spirited, Intuitive',
         'Playful, Curious, Optimistic',
         'Cheerful, Bubbly, Energetic',
         'Impish, Mischievous, Bold',
         'Adventurous, Restless, Bright',
-        'Warm, Empathetic, Nurturing',
-        'Gentle, Thoughtful, Steady',
-        'Affectionate, Protective, Warm',
-        'Compassionate, Honest, Generous',
-        'Brooding, Intense, Mysterious',
-        'Cynical, Wary, Sharp',
-        'Acerbic, Brilliant, Guarded',
-        'Melancholic, Deep, Introspective',
-        'Cunning, Ambitious, Charming',
-        'Sly, Charmingly, Deceptive',
-        'Smooth, Silver-tongued, Watchful',
-        'Manipulative, Clever, Cold',
-        'Honorable, Stubborn, Just',
-        'Righteous, Stern, Unyielding',
-        'Dutiful, Formal, Loyal',
-        'Principled, Reserved, Steadfast'
+        'Inquisitive, Enthusiastic, Brilliant',
+        'Brilliant, Curious, Scattered',
+        'Genius, Oblivious, Warm',
+        'Inventive, Creative, Bright',
+        'Artistic, Creative, Sensitive',
+        'Creative, Imaginative, Bright',
+        'Imaginative, Dreamy, Distant',
+        'Dreamy, Distant, Gentle',
+        'Otherworldly, Strange, Quiet',
+        'Odd, Quiet, Kind',
+        'Eccentric, Bright, Scattered',
+        'Visionary, Restless, Brilliant',
+        'Eager, Earnest, Bright',
+        'Bright, Eager, Optimistic',
+
+        // --- Open ---
+        'Sunny, Optimistic, Warm',
+        'Cheerful, Bubbly, Warm',
+        'Playful, Mischievous, Bright',
+        'Impish, Playful, Bold',
+        'Warm, Empathetic, Open',
+        'Open-hearted, Generous, Kind',
+        'Compassionate, Warm, Selfless',
+        'Generous, Giving, Warm',
+        'Selfless, Devoted, Patient',
+        'Patient, Understanding, Wise',
+        'Wise, Knowing, Calm',
+        'Knowing, Quiet, Kind',
+        'Insightful, Perceptive, Deep',
+        'Thoughtful, Quiet, Gentle',
+        'Gentle, Soft, Kind',
+        'Soft-spoken, Gentle, Wise',
+        'Mild, Quiet, Unassuming',
+        'Unassuming, Humble, Kind',
+        'Retiring, Shy, Thoughtful',
+        'Shy, Quiet, Kind',
+        'Bookish, Quiet, Earnest',
+        'Studious, Quiet, Patient',
+        'Academic, Precise, Curious',
+        'Analytical, Precise, Methodical',
+        'Logical, Precise, Calm',
+
+        // --- Deliberate ---
+        'Sensible, Practical, Dry',
+        'Pragmatic, Steady, Unflappable',
+        'Grounded, Sensible, Reliable',
+        'Unflappable, Calm, Steady',
+        'Calm, Unshakeable, Patient',
+        'Steady, Grounded, Warm',
+        'Gentle, Generous, Loyal',
+        'Warm, Nurturing, Fierce',
+        'Blunt, Practical, Loyal',
+        'Dry, Amused, Sharp',
+        'Amused, Wry, Observant',
+        'Observant, Curious, Clever',
+        'Curious, Inquisitive, Bright',
+        'Bright, Quick, Clever',
+        'Quick, Sharp, Bold',
+        'Sharp, Cutting, Frank',
+        'Frank, Direct, Blunt',
+        'Blunt, Honest, Forthright',
+        'Forthright, Bold, Frank',
+        'Brave, Bold, Reckless',
+        'Reckless, Daring, Foolhardy',
+        'Careful, Cautious, Wary',
+        'Cautious, Watchful, Quiet',
+        'Wary, Suspicious, Careful',
+        'Vigilant, Watchful, Silent',
+        'Vigilant, Protective, Alert',
+        'Alert, Aware, Attentive',
+        'Attentive, Patient, Kind',
+
+        // --- Mixed (soft + hard in one person) ---
+        'Blunt, Tender, Awkward',
+        'Warm, Stubborn, Soft',
+        'Guarded, Gentle, Exact',
+        'Bright, Bruised, Brave',
+        'Measured, Warm, Distant',
+        'Tangled, Honest, Deep',
+        'Simple, Stubborn, Good',
+        'Wry, Kind, Closed',
+        'Weary, Steady, Kind',
+        'Intense, Soft-spoken, Firm',
+        'Cynical, Loyal, Quiet',
+        'Hopeful, Hard, Practical',
+        'Shy, Stubborn, Bright',
+        'Feral, Focused, True',
+        'Mild, Iron, Patient',
+        'Devoted, Difficult, Soft',
+        'Clear, Cold, Just',
+        'Quiet, Fierce, Loyal',
+        'Proud, Careful, Kind',
+        'Restless, Honest, Hungry',
+        'Cold, Principled, Still',
+        'Playful, Private, Sharp',
+        'Calm, Cutting, Fair',
+        'Earnest, Awkward, True',
+        'Stoic, Dry, Reliable'
     ];
 
     var TRAIT_POOL_BEHAVIOURAL = [
-        'Confrontational, Protective, Intensely Private',
+        // --- Pressure responses ---
+        'Confrontational, Protective, Private',
         'Perceptive, Suspicious, Patient',
-        'Competitive, Easily Provoked, Relentless',
+        'Competitive, Provoked, Relentless',
         'Generous, Frugal, Status-Conscious',
-        'Charming, Socially Awkward, Observant',
+        'Charming, Awkward, Observant',
         'Brilliant, Pedantic, Irritable',
         'Compassionate, Controlling, Anxious',
         'Independent, Defiant, Resourceful',
@@ -395,7 +509,7 @@
         'Diplomatic, Avoidant, Kind',
         'Vain, Perceptive, Generous',
         'Nosy, Warm, Tactless',
-        'Fatalistic, Practical, Dry-humoured',
+        'Fatalistic, Practical, Dry',
         'Idealistic, Stubborn, Earnest',
         'Possessive, Devoted, Watchful',
         'Irreverent, Loyal, Sharp-tongued',
@@ -403,121 +517,193 @@
         'Self-deprecating, Ambitious, Tireless',
         'Patient, Territorial, Forgiving',
         'Vindictive, Charming, Patient',
-        'Awkward, Generous, Secretly Proud',
-        'Dramatic, Loyal, Easily Distracted',
+        'Awkward, Generous, Proud',
+        'Dramatic, Loyal, Distracted',
         'Pragmatic, Sentimental, Guarded',
-        'Cautious, Warm, Territorial'
+        'Cautious, Warm, Territorial',
+
+        // --- Contradictions ---
+        'Loyal, Withholding, Testing',
+        'Devoted, Demanding, Watchful',
+        'Protective, Possessive, Quiet',
+        'Fierce, Gentle, Private',
+        'Warm, Withdrawn, Waiting',
+        'Cold, Considered, Cutting',
+        'Sharp, Sly, Smiling',
+        'Quiet, Quick, Unnerving',
+        'Silent, Perceptive, Unsettling',
+        'Loud, Loose, Irreverent',
+        'Bright, Brash, Bruising',
+        'Blunt, Blithe, Careless',
+        'Careless, Warm, Forgetful',
+        'Forgetful, Warm, Apologetic',
+        'Apologetic, Anxious, Kind',
+        'Anxious, Watchful, Careful',
+        'Nervous, Quiet, Observant',
+        'Timid, Careful, Hesitant',
+        'Hesitant, Quiet, Wary',
+        'Wary, Wounded, Guarded',
+        'Guarded, Cold, Composed',
+        'Composed, Distant, Watchful',
+        'Distant, Kind, Unreachable',
+        'Kind, Cutting, Inconsistent',
+        'Inconsistent, Warm, Frustrating',
+        'Frustrating, Brilliant, Oblivious',
+        'Oblivious, Warm, Enthusiastic',
+        'Enthusiastic, Scattered, Bright',
+        'Scattered, Brilliant, Careless',
+        'Pedantic, Precise, Annoying',
+
+        // --- Competence ---
+        'Precise, Controlled, Cold',
+        'Controlled, Deliberate, Cutting',
+        'Deliberate, Slow, Steady',
+        'Slow, Patient, Unshakeable',
+        'Territorial, Fierce, Protective',
+        'Fierce, Competitive, Bold',
+        'Competitive, Relentless, Focused',
+        'Focused, Intense, Demanding',
+        'Intense, Brooding, Watchful',
+        'Silent, Haunted, Still',
+        'Haunted, Driven, Desperate',
+        'Driven, Reckless, Brilliant',
+        'Bold, Loud, Unstoppable',
+        'Unstoppable, Tireless, Fierce',
+        'Tireless, Relentless, Devoted',
+        'Devoted, Selfless, Martyr',
+        'Selfless, Generous, Guilt-ridden',
+        'Guilt-ridden, Kind, Wounded',
+        'Wounded, Warm, Withholding',
+        'Warm, Present, Patient',
+        'Present, Quiet, Kind',
+        'Quiet, Still, Knowing',
+        'Knowing, Amused, Quiet',
+        'Amused, Wry, Patient',
+        'Wry, Sharp, Observant',
+        'Sharp, Silly, Sudden',
+        'Silly, Warm, Bright',
+        'Bright, Brief, Blazing',
+        'Blazing, Fierce, Brief',
+        'Fierce, Sudden, Devastating',
+        'Sudden, Quiet, Deadly',
+        'Deadly, Patient, Precise',
+        'Precise, Cold, Efficient',
+        'Efficient, Ruthless, Calm',
+        'Ruthless, Efficient, Just',
+        'Just, Stern, Unyielding',
+        'Stern, Disciplined, Cold',
+        'Disciplined, Focused, Silent',
+        'Unmoving, Patient, Stone',
+        'Stone, Still, Enduring',
+        'Enduring, Patient, Quiet',
+        'Quiet, Deep, Rooted',
+        'Rooted, Reaching, Restless',
+        'Restless, Reaching, Wistful',
+        'Wistful, Dreamy, Distant',
+        'Distant, Cold, Kind',
+        'Kind, Hesitant, Wounded',
+        'Hesitant, Tender, Testing',
+        'Testing, Careful, Kept',
+        'Kept, Guarded, Holding',
+        'Holding, Waiting, Patient',
+        'Waiting, Watchful, Wary',
+        'Wary, Warm, Wondering',
+        'Wondering, Curious, Careful',
+        'Careful, Cat-like, Quiet',
+        'Cat-like, Quick, Silent',
+        'Silent, Quick, Deadly',
+        'Deadly, Kind, Contradictory',
+        'Contradictory, Warm, Cold'
     ];
 
     // ============================================================
     // PERSONALITY POOLS
     // ============================================================
     //
-    // Ten existing pools (unchanged) plus four new ones. The four
-    // new pools are picked independently, same as the existing
-    // ten. No archetype system, no hidden dimensions.
+    // Every pool below carries single tags or two-word phrases.
+    // The field label (Ideals, Bonds, Flaws, Fears, Goals, Likes,
+    // Dislikes, Habits, Authority, Conflict, Social, Quirks)
+    // already says what the value is. The value does not repeat
+    // the label.
 
     var PERSONALITY_POOLS = {
         ideals: [
-            'Honor and Duty',
-            'Justice and Fairness',
-            'Courage and Sacrifice',
-            'Wisdom and Understanding',
-            'Compassion and Mercy',
-            'Freedom and Choice',
-            'Individuality and Expression',
-            'Change and Progress',
-            'Self-determination and Autonomy',
-            'Tradition and Order',
-            'Structure and Hierarchy',
-            'Law and Stability',
-            'Knowledge and Truth',
-            'Discovery and Inquiry',
-            'Learning and Mastery',
-            'Power and Ambition',
-            'Greatness and Legacy',
-            'Excellence and Renown',
-            'Loyalty and Family',
-            'Community and Belonging',
-            'Friendship and Trust',
-            'Peace and Harmony',
-            'Balance and Moderation',
-            'Coexistence and Tolerance',
-            'Craftsmanship and Art',
-            'Beauty and Expression',
-            'Precision and Excellence',
-            'Faith and Devotion',
-            'Tradition and Ritual',
-            'Connection to the Divine',
-            'Survival and Endurance',
-            'Strength and Resilience'
+            'Honor', 'Duty', 'Justice', 'Fairness',
+            'Courage', 'Sacrifice', 'Wisdom', 'Understanding',
+            'Compassion', 'Mercy', 'Freedom', 'Choice',
+            'Individuality', 'Expression', 'Progress', 'Change',
+            'Autonomy', 'Tradition', 'Order', 'Structure',
+            'Hierarchy', 'Law', 'Stability', 'Knowledge',
+            'Truth', 'Discovery', 'Inquiry', 'Learning',
+            'Mastery', 'Power', 'Ambition', 'Greatness',
+            'Legacy', 'Renown', 'Excellence', 'Loyalty',
+            'Family', 'Community', 'Belonging', 'Friendship',
+            'Trust', 'Peace', 'Harmony', 'Balance',
+            'Moderation', 'Coexistence', 'Tolerance', 'Craft',
+            'Art', 'Beauty', 'Precision', 'Faith',
+            'Devotion', 'Ritual', 'Divinity', 'Survival',
+            'Endurance', 'Strength', 'Resilience', 'Atonement',
+            'Redemption', 'Vengeance', 'The past', 'The future',
+            'The present', 'The old ways', 'The new ways',
+            'The middle path', 'Suffering', 'Joy',
+            'Service', 'Dominion', 'Rebellion', 'Silence',
+            'Speech', 'Stillness', 'Motion', 'The written word',
+            'The spoken word', 'The unsaid', 'The unknown',
+            'The known', 'The self', 'The world'
         ],
 
         bonds: [
-            'Protecting their family',
-            'A parent they lost',
-            'A sibling they protect',
-            'A child they left behind',
-            'A family name to restore',
-            'A childhood friend',
-            'Their closest ally',
-            'A friendship they broke',
-            'A companion through dark times',
-            'A lost love',
-            'A promise to a partner',
-            'A beloved they cannot return to',
-            'A mentor who saved them',
-            'A student they failed',
-            'A teacher\'s legacy to honor',
-            'A sacred oath',
-            'Their honor',
-            'A promise made',
-            'A duty to their homeland',
-            'Their homeland',
-            'Their community',
-            'A village they abandoned',
-            'A place they can never return to',
-            'A treasured artifact',
-            'A keepsake from a loved one',
-            'A weapon with a story',
-            'A journal they carry',
-            'A secret they must protect',
-            'A truth they cannot speak',
-            'A rival they respect',
-            'A rival they must surpass'
+            'Family', 'Lost parent', 'Sibling', 'Child left behind',
+            'Family name', 'Childhood friend', 'Closest ally',
+            'Broken friendship', 'Companion', 'Lost love',
+            'Promised partner', 'Unreachable beloved', 'Mentor',
+            'Failed student', 'Teacher\'s legacy', 'Sacred oath',
+            'Honor', 'Promise made', 'Homeland', 'Home village',
+            'Community', 'Abandoned village', 'Unreachable place',
+            'Treasured artifact', 'Keepsake', 'Storied weapon',
+            'Carried journal', 'Kept secret', 'Unspoken truth',
+            'Respected rival', 'Unbeaten rival', 'Unpaid debt',
+            'Refused debt', 'Owed favor', 'Refused favor',
+            'Held grudge', 'Unhealed wound', 'Visited grave',
+            'Remembered song', 'Left house', 'Unentered room',
+            'Unsent letter', 'Unanswered question', 'Unspoken name',
+            'Unforgotten face', 'Remembered voice', 'Returning smell',
+            'Missed season', 'Once-home', 'Lost pet',
+            'Old crew', 'Old unit', 'Left guild', 'Cast-out clan',
+            'Old school', 'Old trade', 'Old craft', 'Tended garden',
+            'Old ship', 'Old library', 'Unfinished map',
+            'Unfinished translation', 'Unfinished book',
+            'Unfinished painting', 'Unfinished tale', 'Chosen life',
+            'Unchosen life', 'Absent friend', 'Distant relative',
+            'Kept promise', 'Broken promise', 'Borrowed thing',
+            'Lent thing', 'Family trade', 'Family grave'
         ],
 
         flaws: [
-            'Too trusting',
-            'Distrustful of others',
-            'Too proud to ask for help',
-            'Quick to anger',
-            'Vengeful',
-            'Holds grudges',
-            'Afraid of failure',
-            'Self-doubting',
-            'Fearful of being forgotten',
-            'Reckless in pursuit of goals',
-            'Impulsive',
-            'Overconfident',
-            'Overly cautious',
-            'Indecisive',
-            'Slow to act',
-            'Stubborn',
-            'Perfectionist',
-            'Cannot admit fault',
-            'Secretive',
-            'Cannot ask for help',
-            'Hides their true self',
-            'Haunted by a past mistake',
-            'Carries guilt from a failure',
-            'Cannot forgive themselves',
-            'Obsessive',
-            'Unhealthily devoted',
-            'All-consuming focus',
-            'Cold',
-            'Emotionally distant',
-            'Struggles to connect'
+            'Trusting', 'Distrustful', 'Proud', 'Cannot ask',
+            'Quick-tempered', 'Vengeful', 'Grudge-keeping',
+            'Failure-fearing', 'Self-doubting', 'Forgotten-fearing',
+            'Reckless', 'Impulsive', 'Overconfident', 'Overcautious',
+            'Indecisive', 'Slow', 'Stubborn', 'Perfectionist',
+            'Cannot admit fault', 'Secretive', 'Hides self',
+            'Haunted', 'Guilt-ridden', 'Cannot forgive self',
+            'Obsessive', 'Over-devoted', 'Consumed', 'Cold',
+            'Distant', 'Cannot connect', 'Vain', 'Jealous',
+            'Envious', 'Resentful', 'Bitter', 'Suspicious',
+            'Paranoid', 'Naive', 'Gullible', 'Idealist',
+            'Cynic', 'Fatalist', 'Defeatist', 'Cowardly',
+            'Rigid', 'Controlling', 'Smothering', 'Absent',
+            'Neglectful', 'Cruel', 'Callous', 'Manipulative',
+            'Deceitful', 'Treacherous', 'Disloyal', 'Fickle',
+            'Wavering', 'Unreliable', 'Lazy', 'Aimless',
+            'Without drive', 'Without purpose', 'Drifting',
+            'Coward', 'Bully', 'Sycophant', 'Proud to a fault',
+            'Honest to a fault', 'Loyal to a fault',
+            'Generous to a fault', 'Stoic to a fault',
+            'Selfless to a fault', 'Drunkard', 'Addict',
+            'Glutton', 'Miser', 'Spendthrift', 'Gossip',
+            'Busybody', 'Meddler', 'Schemer', 'Brooder',
+            'Worrier', 'Hypochondriac', 'Fatalistic'
         ],
 
         alignments: [
@@ -527,212 +713,268 @@
         ],
 
         likes: [
-            'Music', 'Art', 'Poetry', 'Dance', 'Theatre', 'Sculpture',
-            'Stories', 'Nature', 'Animals', 'Flowers', 'Stargazing',
-            'The Sea', 'Forests', 'Mountains', 'Books', 'History',
-            'Science', 'Languages', 'Riddles', 'Debate', 'Philosophy',
-            'Good Food', 'Cooking', 'Gardening', 'Crafting', 'Baking',
-            'Tea', 'Wine', 'Training', 'Running', 'Swimming',
-            'Climbing', 'Sparring', 'Games', 'Gossip', 'Feasts',
-            'Travel', 'Festivals', 'Company', 'Meditation', 'Solitude',
-            'Journaling', 'Long walks', 'Rainy days'
+            'Music', 'Art', 'Poetry', 'Dance', 'Theatre',
+            'Sculpture', 'Stories', 'Nature', 'Animals',
+            'Flowers', 'Stargazing', 'The sea', 'Forests',
+            'Mountains', 'Rivers', 'Rain', 'Snow', 'Sunrise',
+            'Sunset', 'Clouds', 'Thunder', 'Books',
+            'History', 'Science', 'Languages', 'Riddles',
+            'Debate', 'Philosophy', 'Good food', 'Cooking',
+            'Baking', 'Gardening', 'Crafting', 'Sewing',
+            'Woodwork', 'Smithing', 'Tea', 'Coffee', 'Wine',
+            'Ale', 'Whiskey', 'Training', 'Running',
+            'Swimming', 'Climbing', 'Riding', 'Sparring',
+            'Wrestling', 'Archery', 'Games', 'Gossip',
+            'Feasts', 'Travel', 'Festivals', 'Company',
+            'Solitude', 'Meditation', 'Journaling',
+            'Long walks', 'Rainy days', 'Cold mornings',
+            'Warm nights', 'Fires', 'Old maps', 'Old books',
+            'Fresh bread', 'Wild honey', 'Sharp knives',
+            'Good boots', 'Soft blankets', 'Small rooms',
+            'Tall windows', 'Deep chairs', 'Quiet rooms',
+            'Lively halls', 'Libraries', 'Forge-heat',
+            'Sea air', 'Pine', 'Lavender', 'Sage',
+            'Cardamom', 'Cinnamon', 'Smoke', 'Old wood',
+            'Wet stone', 'Fresh ink', 'Leather', 'Wool',
+            'Silk', 'Bright colors', 'Muted tones',
+            'Contrast', 'Symmetry', 'Asymmetry',
+            'Broken things', 'Whole things', 'Fixed things',
+            'Unfinished things', 'Riddles', 'Questions',
+            'Answers', 'Silence', 'Song', 'Laughter',
+            'Weeping', 'Sleeping late', 'Rising early'
         ],
 
         dislikes: [
-            'Lies', 'Cruelty', 'Injustice', 'Betrayal', 'Greed',
-            'Dishonesty', 'Hypocrisy', 'Bullying', 'Arrogance',
-            'Crowds', 'Small talk', 'Fawning', 'Rudeness',
-            'Pretension', 'Loud Noises', 'Strong smells',
-            'Bright lights', 'Bad Weather', 'Cold', 'Heat', 'Damp',
+            'Lies', 'Cruelty', 'Injustice', 'Betrayal',
+            'Greed', 'Dishonesty', 'Hypocrisy', 'Bullying',
+            'Arrogance', 'Crowds', 'Small talk', 'Fawning',
+            'Rudeness', 'Pretension', 'Loud noises',
+            'Strong smells', 'Bright lights', 'Bad weather',
+            'Cold', 'Heat', 'Damp', 'Mud', 'Dust',
             'Ignorance', 'Stupidity', 'Wasted potential',
             'Rigid thinking', 'Boredom', 'Haste', 'Chaos',
-            'Complacency', 'Indecision', 'Idleness', 'Weakness',
-            'Slovenliness'
+            'Complacency', 'Indecision', 'Idleness',
+            'Weakness', 'Slovenliness', 'Filth', 'Gossip',
+            'Meddling', 'Nosiness', 'Sermons', 'Lectures',
+            'Pity', 'Condescension', 'Sycophancy',
+            'Flattery', 'Boasting', 'Posturing', 'Posing',
+            'Ceremony', 'Ritual', 'Tradition', 'Novelty',
+            'Fashion', 'Frivolity', 'Waste', 'Luxury',
+            'Poverty', 'Wealth', 'Titles', 'Rank',
+            'Authority', 'Obedience', 'Rebellion',
+            'Fighting', 'Silence', 'Noise', 'Waiting',
+            'Rushing', 'Interruption', 'Delay', 'Bad wine',
+            'Weak tea', 'Burned food', 'Sour milk',
+            'Raw meat', 'Overcooked meat', 'Sweet things',
+            'Bitter things', 'Bland food', 'Spice',
+            'Strangers', 'Familiarity', 'Questions',
+            'Answers', 'Promises', 'Debts', 'Favors'
         ],
 
         habits: [
-            'Hums while working',
-            'Talks to themselves',
-            'Whistles tunelessly',
-            'Repeats words back',
-            'Mutters when reading',
-            'Taps fingers when thinking',
-            'Fidgets with a lucky charm',
-            'Cracks knuckles',
-            'Twirls hair',
-            'Adjusts glasses',
-            'Chews lip',
-            'Drumming fingers',
-            'Paces while thinking',
-            'Rubs their chin',
-            'Taps foot when impatient',
-            'Collects small trinkets',
-            'Keeps every receipt',
-            'Picks up smooth stones',
-            'Pockets interesting leaves',
-            'Touches a talisman before danger',
-            'Counts steps on stairs',
-            'Checks locks twice',
-            'Sleeps with a weapon nearby',
-            'Wakes before dawn',
-            'Laughs at their own jokes',
-            'Apologizes unnecessarily',
-            'Says goodbye three times',
-            'Remembers small favors',
-            'Speaks to animals',
-            'Names their weapons',
-            'Writes in the margins',
-            'Keeps a dream journal'
+            'Hums', 'Whistles', 'Mutters', 'Talks to self',
+            'Repeats words', 'Finishes sentences', 'Taps fingers',
+            'Fidgets', 'Paces', 'Cracks knuckles', 'Twirls hair',
+            'Adjusts glasses', 'Chews lip', 'Rubs chin',
+            'Taps foot', 'Counts steps', 'Checks locks',
+            'Checks doors', 'Checks windows', 'Pats pockets',
+            'Touches talisman', 'Touches weapon', 'Names weapons',
+            'Rises early', 'Sleeps late', 'Sleeps badly',
+            'Sleeps with weapon', 'Walks daily', 'Trains daily',
+            'Reads nightly', 'Writes nightly', 'Keeps a journal',
+            'Keeps a dream journal', 'Collects trinkets',
+            'Collects stones', 'Collects leaves', 'Collects books',
+            'Collects receipts', 'Keeps letters', 'Keeps lists',
+            'Keeps time', 'Keeps silence', 'Fills silence',
+            'Laughs at own jokes', 'Apologizes unnecessarily',
+            'Says goodbye thrice', 'Remembers favors',
+            'Remembers slights', 'Speaks to animals',
+            'Speaks to plants', 'Names animals', 'Names places',
+            'Names things', 'Corrects grammar', 'Corrects facts',
+            'Corrects names', 'Tells long stories',
+            'Starts stories', 'Ends stories', 'Repeats stories',
+            'Sings old songs', 'Quotes old texts',
+            'Quotes old friends', 'Recites lists', 'Recites poems',
+            'Recites prayers', 'Counts coins', 'Counts days',
+            'Marks calendars', 'Maps routes', 'Draws in margins',
+            'Writes in margins', 'Underlines books',
+            'Dog-ears pages', 'Straightens things',
+            'Aligns things', 'Sorts things', 'Orders things',
+            'Moves things', 'Hides things', 'Finds things',
+            'Loses things', 'Saves things', 'Hoards things',
+            'Gives things away', 'Cleans when nervous',
+            'Eats when nervous', 'Drinks when nervous'
         ],
 
         fears: [
-            'Heights', 'Spiders', 'Claustrophobia', 'Drowning',
-            'Fire', 'Darkness', 'Deep water', 'Enclosed spaces',
-            'Open spaces', 'Being forgotten', 'Failure',
+            'Heights', 'Spiders', 'Snakes', 'Rats', 'Birds',
+            'Claustrophobia', 'Drowning', 'Fire', 'Darkness',
+            'Deep water', 'Enclosed spaces', 'Open spaces',
+            'Crowds', 'Solitude', 'Being forgotten', 'Failure',
             'Loss of control', 'The unknown', 'Madness',
-            'Meaninglessness', 'Outliving their purpose',
-            'Rejection', 'Betrayal', 'Losing loved ones',
-            'Disappointing their family', 'Being a burden',
-            'Being alone', 'Becoming a monster',
-            'Losing themselves', 'Losing their memories',
-            'Being seen as they truly are',
-            'Committing an unforgivable act',
-            'Becoming the villain',
-            'Hurting those they love',
-            'Poverty', 'Poverty in old age',
-            'Failing their dependents',
-            'The dead', 'Magic itself',
-            'Becoming a vessel', 'Prophetic dreams'
+            'Meaninglessness', 'Outliving purpose', 'Rejection',
+            'Betrayal', 'Losing loved ones', 'Disappointing family',
+            'Being a burden', 'Being alone', 'Becoming a monster',
+            'Losing self', 'Losing memories',
+            'Being seen truly', 'Unforgivable acts',
+            'Becoming the villain', 'Hurting loved ones',
+            'Poverty', 'Poverty in age', 'Failing dependents',
+            'The dead', 'Magic', 'Becoming a vessel',
+            'Prophetic dreams', 'Silence', 'Noise',
+            'Stillness', 'Motion', 'Change', 'Stagnation',
+            'The past', 'The future', 'The present',
+            'Old age', 'Youth', 'Sickness', 'Weakness',
+            'Blindness', 'Deafness', 'Forgetting',
+            'Being forgotten', 'Being remembered wrong',
+            'Speaking falsely', 'Speaking truly', 'Silence after',
+            'The wrong word', 'The wrong tone', 'The wrong face',
+            'Anger', 'Coldness', 'Grief', 'Joy',
+            'Happiness', 'Contentment', 'Peace', 'War',
+            'Battles', 'Blood', 'Wounds', 'Scars',
+            'Pain', 'Numbness', 'Sleep', 'Waking',
+            'Dreams', 'Nightmares', 'Waking nightmares',
+            'Loss', 'Return', 'Being found', 'Being sought',
+            'Being wanted', 'Being unwanted', 'Being loved',
+            'Being unloved', 'Being needed', 'Being unneeded'
         ],
 
         goals: [
-            'To protect the innocent',
-            'To achieve greatness',
-            'To find purpose',
-            'To restore honor',
-            'To discover truth',
-            'To build something lasting',
-            'To master a craft',
-            'To find redemption',
-            'To explore the unknown',
-            'To create a better world',
-            'To prove themselves worthy',
-            'To become a legend',
-            'To surpass their mentor',
-            'To lead their people',
-            'To found a school',
-            'To write the definitive account',
-            'To reconcile with their family',
-            'To find a lost sibling',
-            'To avenge a wrong',
-            'To repay a debt',
-            'To keep a promise',
-            'To master forbidden knowledge',
-            'To catalogue every species',
-            'To translate an ancient text',
-            'To find a lost city',
-            'To undo an old mistake',
-            'To heal a wound they caused',
-            'To rebuild what was destroyed',
-            'To live quietly',
-            'To raise a family',
-            'To die well',
-            'To see one more sunrise'
+            'Protect the innocent', 'Achieve greatness',
+            'Find purpose', 'Restore honor', 'Discover truth',
+            'Build something lasting', 'Master a craft',
+            'Find redemption', 'Explore the unknown',
+            'Create a better world', 'Prove worthy', 'Become legend',
+            'Surpass mentor', 'Lead people', 'Found a school',
+            'Write the account', 'Reconcile family',
+            'Find lost sibling', 'Avenge a wrong', 'Repay a debt',
+            'Keep a promise', 'Master forbidden lore',
+            'Catalogue species', 'Translate ancient text',
+            'Find lost city', 'Undo old mistake', 'Heal a wound',
+            'Rebuild what was destroyed', 'Live quietly',
+            'Raise a family', 'Die well', 'See one more sunrise',
+            'Retire in peace', 'Die in glory', 'Die in battle',
+            'Die at home', 'Kill the enemy', 'Spare the enemy',
+            'Save the enemy', 'Betray the cause', 'Serve the cause',
+            'Lead the cause', 'Burn it down', 'Build it up',
+            'Leave no trace', 'Leave a mark', 'Sink into obscurity',
+            'Rise into legend', 'Escape the past',
+            'Return to the past', 'Write the future',
+            'Read every book', 'Learn every language',
+            'Master every weapon', 'Master one weapon',
+            'Master no weapon', 'Win the argument',
+            'End the argument', 'Start the argument',
+            'Keep the peace', 'Shatter the peace',
+            'Find the answer', 'Ask the question',
+            'Silence the question', 'Speak the truth',
+            'Bury the truth', 'Find what was lost',
+            'Lose what was found', 'See the world',
+            'Never leave home', 'Return home', 'Build a home',
+            'Burn the home down', 'Plant a tree', 'Cut the tree',
+            'Build the bridge', 'Burn the bridge',
+            'Cross the bridge', 'Meet the maker', 'Become the maker',
+            'Kill the maker', 'Forgive the maker'
         ],
-
-        // ---- New: relationship to authority ----
 
         authority: [
-            'Respectful of authority',
-            'Suspicious of authority',
-            'Obedient when supervised',
-            'Cooperative but independent',
-            'Defiant toward authority',
-            'Enjoys having authority',
-            'Distrusts institutions but respects individuals',
-            'Follows rules they consider legitimate',
-            'Tests boundaries constantly',
-            'Sees hierarchy as necessary',
-            'Sees hierarchy as a game',
-            'Ignores authority until forced to acknowledge it',
-            'Prefers to lead rather than be led',
-            'Loyal to people, not positions',
-            'Polite to superiors, dismissive of peers'
+            'Respectful', 'Suspicious', 'Obedient',
+            'Cooperative', 'Defiant', 'Enjoys authority',
+            'Distrusts institutions', 'Follows rules', 'Tests rules',
+            'Sees hierarchy', 'Sees through hierarchy',
+            'Ignores until forced', 'Prefers to lead',
+            'Loyal to people', 'Loyal to positions',
+            'Polite to superiors', 'Dismissive of peers',
+            'Kind to subordinates', 'Harsh to subordinates',
+            'Formal with strangers', 'Casual with friends',
+            'Stiff with strangers', 'Warm with friends',
+            'Playing a role', 'Being themselves',
+            'Watching always', 'Speaking plainly',
+            'Speaking carefully', 'Saying nothing',
+            'Saying everything', 'Holding ground', 'Giving ground',
+            'Stepping forward', 'Stepping back', 'Stepping aside',
+            'Going around', 'Going through', 'Going over',
+            'Going under', 'Going quiet', 'Going loud',
+            'Going cold', 'Going warm', 'Going still',
+            'Going fast', 'Going slow', 'Going in circles',
+            'Going straight', 'Going home', 'Going away'
         ],
-
-        // ---- New: how they handle conflict ----
 
         conflictStyle: [
-            'Confronts problems immediately',
-            'Avoids conflict until forced to act',
-            'Negotiates first',
-            'Uses humour to defuse tension',
-            'Becomes colder under pressure',
-            'Escalates when challenged',
-            'Looks for a third option',
-            'Lets resentment build quietly',
-            'Withdraws and returns later',
-            'Fights fair even when losing',
-            'Fights dirty and wins',
-            'Never raises their voice',
-            'Never raises their hand first',
-            'Treats arguments as puzzles',
-            'Treats arguments as battles'
+            'Confronts', 'Avoids', 'Negotiates', 'Humours',
+            'Grows cold', 'Escalates', 'Withdraws', 'Falls silent',
+            'Fights fair', 'Fights dirty', 'Fights harder',
+            'Fights softer', 'Never raises voice',
+            'Never raises hand', 'Raises both', 'Walks away',
+            'Stays rooted', 'Steps forward', 'Steps back',
+            'Looks for third option', 'Looks for weakness',
+            'Looks for exit', 'Looks for ally',
+            'Looks for cause', 'Blames self', 'Blames other',
+            'Blames circumstance', 'Forgives quickly',
+            'Forgives slowly', 'Never forgives',
+            'Keeps score', 'Forgets score', 'Holds the line',
+            'Moves the line', 'Erases the line',
+            'Draws a new line', 'Wins at cost', 'Wins cheaply',
+            'Wins honestly', 'Loses gracefully', 'Loses badly',
+            'Refuses to lose', 'Refuses to win', 'Refuses to play',
+            'Waits out', 'Talks out', 'Walks out',
+            'Fights out', 'Burns out', 'Cools down',
+            'Warms up', 'Draws close', 'Pushes away',
+            'Bridges the gap', 'Widens the gap'
         ],
-
-        // ---- New: how they relate socially ----
 
         socialStyle: [
-            'Warm with strangers',
-            'Reserved until trust is earned',
-            'Naturally charismatic',
-            'Blunt and unintentionally intimidating',
-            'Friendly but emotionally private',
-            'Suspicious of friendliness',
-            'Flirtatious without meaning to be',
-            'Prefers one-to-one conversation',
-            'Thrives in groups',
-            'Listens more than they speak',
-            'Fills every silence',
-            'Reads people quickly and correctly',
-            'Reads people slowly but accurately',
-            'Adapts their manner to each person',
-            'Is exactly the same with everyone'
+            'Warm', 'Reserved', 'Charismatic', 'Blunt',
+            'Private', 'Suspicious', 'Flirtatious',
+            'One-to-one', 'Group-loving', 'Listens more',
+            'Fills silences', 'Reads fast', 'Reads slow',
+            'Adapts', 'Same with everyone',
+            'Open book', 'Closed book', 'Half-open book',
+            'Slow to warm', 'Fast to warm', 'Warm then cold',
+            'Cold then warm', 'Always the same',
+            'A different person', 'A careful person',
+            'A careless person', 'A curious person',
+            'An indifferent person', 'A hungry person',
+            'A sated person', 'A wondering person',
+            'A knowing person', 'A doubting person',
+            'A certain person', 'A haunted person',
+            'A hopeful person', 'A hopeless person',
+            'A practical person', 'A dreamy person',
+            'A sharp person', 'A soft person',
+            'A hard person', 'A yielding person',
+            'A stubborn person', 'A flexible person',
+            'A loud person', 'A quiet person',
+            'A bright person', 'A dim person'
         ],
 
-        // ---- New: behavioural oddities ----
-        //
-        // Distinct from habits. Habits describe physical mannerisms
-        // (taps fingers). Quirks describe character-level
-        // behaviours (cannot resist correcting pronunciation).
-        // Both are worth having; they are not the same thing.
-
         quirks: [
-            'Cannot resist correcting pronunciation',
-            'Makes jokes at inappropriate moments',
-            'Remembers birthdays, forgets appointments',
-            'Refuses to sit with their back to a door',
-            'Talks more when nervous',
-            'Goes unnaturally quiet when angry',
-            'Pretends not to care about things they care about',
-            'Becomes competitive over trivial things',
-            'Always has a story that starts with "This reminds me..."',
-            'Cannot throw away anything that might be useful',
-            'Treats strangers more politely than friends',
-            'Becomes suspicious when someone is too nice',
-            'Hates owing anyone a favour',
-            'Collects information they have no use for',
-            'Never uses the last of anything',
-            'Has an irrational hatred of being interrupted',
-            'Will help someone while insisting they are not helping',
-            'Gets attached to places rather than people',
-            'Has difficulty recognising flirting',
-            'Remembers insults for years, compliments for minutes',
-            'Lies badly but believes they are convincing',
-            'Becomes more polite when furious',
-            'Cannot resist a mystery',
-            'Always negotiates, even when there is nothing to negotiate',
-            'Treats rules as suggestions unless personally agreed with'
+            'Corrects pronunciation', 'Hates being interrupted',
+            'Remembers birthdays', 'Forgets appointments',
+            'Avoids back-to-door seats', 'Talks when nervous',
+            'Goes quiet when angry', 'Pretends not to care',
+            'Competitive over trivia', 'Reminisces constantly',
+            'Keeps everything', 'Strangers over friends',
+            'Suspicious of kindness', 'Hates owing favors',
+            'Collects useless facts', 'Never uses the last of',
+            'Fiercely territorial', 'Helps while denying help',
+            'Attached to places', 'Misses flirting',
+            'Remembers insults', 'Forgets compliments',
+            'Lies badly', 'Believes their lies',
+            'Polite when furious', 'Cannot resist mysteries',
+            'Negotiates everything', 'Rules as suggestions',
+            'Always early', 'Always late', 'Always rushing',
+            'Always waiting', 'Always reading', 'Always moving',
+            'Always still', 'Always asking', 'Never asking',
+            'Always telling', 'Never telling', 'Always laughing',
+            'Never laughing', 'Always crying', 'Never crying',
+            'Always watching', 'Never watching', 'Always listening',
+            'Never listening', 'Speaks only when asked',
+            'Speaks over everyone', 'Waits for silence',
+            'Breaks silence', 'Fills gaps', 'Leaves gaps',
+            'Finishes sentences', 'Starts sentences',
+            'Ends conversations', 'Extends conversations',
+            'Leaves too soon', 'Stays too long', 'Arrives late',
+            'Departs early', 'Brings gifts', 'Refuses gifts',
+            'Gives gifts', 'Forgets names', 'Remembers faces',
+            'Remembers names', 'Forgets faces'
         ]
     };
 
@@ -772,10 +1014,6 @@
         return tiers[keys[keys.length - 1]];
     }
 
-    /**
-     * Pick a single trait phrase. Weights the two pools:
-     * core 70%, behavioural 30%.
-     */
     function pickTraitPhrase() {
         var total = TRAIT_CORE_WEIGHT + TRAIT_BEHAVIOURAL_WEIGHT;
         var roll = Math.random() * total;
@@ -789,9 +1027,6 @@
     // PHYSICAL HELPERS
     // ============================================================
 
-    /**
-     * Parse "175cm" to 175. Returns null on failure.
-     */
     function parseHeightCm(heightStr) {
         if (typeof heightStr !== 'string') { return null; }
         var m = heightStr.match(/^(\d+)\s*cm$/i);
@@ -801,9 +1036,6 @@
         return n;
     }
 
-    /**
-     * Parse "72kg" to 72. Returns null on failure.
-     */
     function parseWeightKg(weightStr) {
         if (typeof weightStr !== 'string') { return null; }
         var m = weightStr.match(/^(\d+)\s*kg$/i);
@@ -813,12 +1045,6 @@
         return n;
     }
 
-    /**
-     * Compute the weight range (in kg) for a given height (in cm)
-     * and profile ratio range. Uses the profile's ratio as the
-     * internal multiplier against height² — this is the same
-     * mechanism as BMI, but it is not exposed as a domain concept.
-     */
     function calculateWeightRange(heightCm, ratioRange) {
         var heightM = heightCm / 100;
         var sq = heightM * heightM;
@@ -828,10 +1054,6 @@
         return [minWeight, maxWeight];
     }
 
-    /**
-     * Which profile best contains this height?
-     * Used by per-field reroll to preserve the current body shape.
-     */
     function findProfilesForHeight(heightCm) {
         var result = [];
         var keys = Object.keys(BODY_PROFILES);
@@ -844,10 +1066,6 @@
         return result;
     }
 
-    /**
-     * Which profiles contain both this height AND a weight range
-     * that includes this weight?
-     */
     function findProfilesForHeightAndWeight(heightCm, weightKg) {
         var result = [];
         var keys = Object.keys(BODY_PROFILES);
@@ -896,11 +1114,6 @@
     // PHYSICAL GENERATION
     // ============================================================
 
-    /**
-     * Generate a full physical profile from scratch:
-     *   profile → height → weight → build
-     * then complexion → skin → hair → eyes
-     */
     function generatePhysical() {
         var profile = pickWeightedTier(BODY_PROFILES);
         var complexion = pickWeightedTier(COMPLEXION_TIERS);
@@ -921,56 +1134,13 @@
         };
     }
 
-    /**
-     * Reroll ONE physical field while keeping the current body
-     * coherent.
-     *
-     * HEIGHT:
-     *   - Read current weight and build.
-     *   - Find profiles whose height range includes a plausible
-     *     window for this weight (via findProfilesForHeightAndWeight,
-     *     which requires the profile to accept the current weight).
-     *   - If no profile fits, fall back to a full generatePhysical().
-     *   - Pick a new height from the intersection of that profile
-     *     and the current weight.
-     *
-     *   Weight and build are NOT changed by a height reroll. The
-     *   user asked for a new height, not a new body.
-     *
-     * WEIGHT:
-     *   - Read current height and build.
-     *   - Find profiles that contain the current height.
-     *   - Pick from the union of those profiles' weight ranges at
-     *     that height, preferring profiles whose build list
-     *     contains the current build.
-     *   - Weight reroll does NOT change height or build.
-     *
-     * BUILD:
-     *   - Read current height and weight.
-     *   - Find profiles whose height range contains the height AND
-     *     whose derived weight range contains the weight.
-     *   - Pick a build from the union of those profiles' build
-     *     lists.
-     *   - Build reroll does NOT change height or weight.
-     *
-     * GENDER, SKIN, HAIR, EYES:
-     *   - Skin and hair and eyes use the existing complexion tier
-     *     logic. Gender is a flat pick.
-     *
-     * @param {string} field - 'height' | 'weight' | 'build' |
-     *                         'skin' | 'hair' | 'eyes' | 'gender'
-     * @param {object} current - The current physical object
-     * @returns {string|null} The new value, or null
-     */
     function generatePhysicalField(field, current) {
         current = current || {};
 
-        // ---- Flat pick ----
         if (field === 'gender') {
             return pickRandom(GENDERS) || 'Other';
         }
 
-        // ---- Height ----
         if (field === 'height') {
             var curWeight = parseWeightKg(current.weight);
             var candidates = [];
@@ -994,12 +1164,10 @@
                 return pickRandom(candidates) + 'cm';
             }
 
-            // Fallback: full re-roll of the body.
             var fresh = generatePhysical();
             return fresh.height;
         }
 
-        // ---- Weight ----
         if (field === 'weight') {
             var curHeight = parseHeightCm(current.height);
             var curBuild = current.build || '';
@@ -1007,7 +1175,6 @@
             if (curHeight !== null) {
                 var profilesForHeight = findProfilesForHeight(curHeight);
                 if (profilesForHeight.length > 0) {
-                    // Prefer profiles that accept the current build.
                     var preferred = [];
                     for (var pi = 0; pi < profilesForHeight.length; pi++) {
                         if (profilesForHeight[pi].builds.indexOf(curBuild) !== -1) {
@@ -1018,7 +1185,6 @@
                         ? preferred
                         : profilesForHeight;
 
-                    // Gather weight values from all profiles in pool.
                     var weights = [];
                     for (var wi = 0; wi < pool.length; wi++) {
                         var wr = calculateWeightRange(curHeight, pool[wi].ratio);
@@ -1032,12 +1198,10 @@
                 }
             }
 
-            // Fallback: full re-roll.
             var freshW = generatePhysical();
             return freshW.weight;
         }
 
-        // ---- Build ----
         if (field === 'build') {
             var curHeightB = parseHeightCm(current.height);
             var curWeightB = parseWeightKg(current.weight);
@@ -1065,12 +1229,10 @@
                 }
             }
 
-            // Fallback: full re-roll.
             var freshB = generatePhysical();
             return freshB.build;
         }
 
-        // ---- Complexion-tier fields ----
         if (field === 'skin' || field === 'hair' || field === 'eyes') {
             var complexion = findComplexionTierForSkin(current.skin);
 
@@ -1092,35 +1254,25 @@
     // PERSONALITY
     // ============================================================
 
-    /**
-     * Generate a full personality record. Fourteen independent
-     * picks. No archetype system, no hidden dimensions.
-     */
     function generatePersonality() {
         return {
             traits: pickTraitPhrase() || 'Brave, Honest, Loyal',
-            ideals: pickRandom(PERSONALITY_POOLS.ideals) || 'Honor and Duty',
-            bonds: pickRandom(PERSONALITY_POOLS.bonds) || 'Protecting their family',
-            flaws: pickRandom(PERSONALITY_POOLS.flaws) || 'Too trusting',
+            ideals: pickRandom(PERSONALITY_POOLS.ideals) || 'Honor',
+            bonds: pickRandom(PERSONALITY_POOLS.bonds) || 'Family',
+            flaws: pickRandom(PERSONALITY_POOLS.flaws) || 'Proud',
             alignment: pickRandom(PERSONALITY_POOLS.alignments) || 'Neutral Good',
             likes: pickRandom(PERSONALITY_POOLS.likes) || 'Music',
             dislikes: pickRandom(PERSONALITY_POOLS.dislikes) || 'Lies',
-            habits: pickRandom(PERSONALITY_POOLS.habits) || 'Hums while working',
+            habits: pickRandom(PERSONALITY_POOLS.habits) || 'Hums',
             fears: pickRandom(PERSONALITY_POOLS.fears) || 'Heights',
-            goals: pickRandom(PERSONALITY_POOLS.goals) || 'To protect the innocent',
-            authority: pickRandom(PERSONALITY_POOLS.authority) || 'Cooperative but independent',
-            conflictStyle: pickRandom(PERSONALITY_POOLS.conflictStyle) || 'Negotiates first',
-            socialStyle: pickRandom(PERSONALITY_POOLS.socialStyle) || 'Warm with strangers',
-            quirks: pickRandom(PERSONALITY_POOLS.quirks) || 'Collects information they have no use for'
+            goals: pickRandom(PERSONALITY_POOLS.goals) || 'Find purpose',
+            authority: pickRandom(PERSONALITY_POOLS.authority) || 'Cooperative',
+            conflictStyle: pickRandom(PERSONALITY_POOLS.conflictStyle) || 'Negotiates',
+            socialStyle: pickRandom(PERSONALITY_POOLS.socialStyle) || 'Warm',
+            quirks: pickRandom(PERSONALITY_POOLS.quirks) || 'Corrects pronunciation'
         };
     }
 
-    /**
-     * Reroll one personality field.
-     *
-     * `traits` uses the weighted core/behavioural pick. Everything
-     * else is a uniform pool pick.
-     */
     function generatePersonalityField(field) {
         if (field === 'traits') {
             return pickTraitPhrase();
