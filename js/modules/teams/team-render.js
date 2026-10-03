@@ -7,7 +7,9 @@
  * WHAT THIS OWNS:
  *   - HTML string construction for the Teams tab.
  *   - Page shell, filter bar, team list, expanded members.
- *   - Professional Pool view (available / historical sections).
+ *   - Professional Pool view: expandable rows with a compact
+ *     stats panel, per-row selection checkboxes, and a
+ *     "Create Team from Selection" action.
  *   - Timeline delegation (via TimelineView).
  *   - Modals: team form, ranking form/list, name history row.
  *
@@ -32,13 +34,33 @@
  *   three for the professional tab; Temporary and Civilian tabs
  *   have no mode toggle.
  *
- * PROFESSIONAL POOL:
- *   Two sections. "Available" for characters whose student window
- *   contains the query period. "Previously Available" for
- *   characters whose window does not contain it, either because
- *   the window is entirely in the past or entirely in the future.
- *   Both sections carry the same row shape; the split is purely
- *   informational.
+ * POOL ROWS:
+ *   Each pool row is a .professional-pool-item. It carries:
+ *     - a checkbox (.pool-select-checkbox) for the create-team
+ *       selection.
+ *     - a click target (the rest of the row) that toggles
+ *       expansion.
+ *     - an expand panel (.pool-expand-panel) rendered only when
+ *       the row is in the expansion set.
+ *
+ *   The row's click target is the row itself; the checkbox stops
+ *   propagation in the events layer so ticking does not also
+ *   toggle expansion.
+ *
+ *   Expansion state is a Set of characterIds held by TeamEvents
+ *   and passed into renderProfessionalPool as `expandedIds`.
+ *
+ *   Selection state is a Set of characterIds held by TeamEvents
+ *   and passed in as `selectedIds`.
+ *
+ * POOL DETAIL BLOCK:
+ *   The detail sub-object is built by TeamAggregator. This
+ *   renderer assumes its shape and renders:
+ *     - physical line: height · weight · build
+ *     - personality: traits, ideals, bonds, flaws, alignment,
+ *       goals, socialStyle, conflictStyle, quirks
+ *     - combat: STR/DEX/CON/INT/WIS/CHA · HP · MP
+ *     - magic: only non-zero entries
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -289,8 +311,18 @@
     // ============================================================
     // PROFESSIONAL POOL
     // ============================================================
+    //
+    // Renders the pool with three interactive affordances:
+    //   - per-row checkbox for the selection set
+    //   - per-row click to toggle expansion
+    //   - a header action row with the selected count and the
+    //     Create Team button (disabled when fewer than two are
+    //     selected)
+    //
+    // expandedIds and selectedIds are Sets (or plain objects with
+    // characterId keys). Both are optional.
 
-    function renderProfessionalPool(vm) {
+    function renderProfessionalPool(vm, expandedIds, selectedIds) {
         if (!vm) {
             return '<p class="empty-state">Pool is not available.</p>';
         }
@@ -302,8 +334,44 @@
             ? vm.historical
             : [];
 
+        expandedIds = expandedIds || Object.create(null);
+        selectedIds = selectedIds || Object.create(null);
+
+        var selectedCount = 0;
+        for (var k in selectedIds) {
+            if (Object.prototype.hasOwnProperty.call(
+                selectedIds, k
+            ) && selectedIds[k] === true) {
+                selectedCount++;
+            }
+        }
+
         var html = '';
 
+        // ---- Header row with selection summary + Create Team ----
+        html += '<div class="pool-selection-bar">';
+        html += '<div class="pool-selection-info">';
+        html += '<strong>' + selectedCount + '</strong> selected';
+        html += '<span class="pool-selection-hint">' +
+                    'Tick two or more candidates to create a team ' +
+                    'from them.' +
+                '</span>';
+        html += '</div>';
+        html += '<div class="pool-selection-actions">';
+        html += '<button type="button" ' +
+                    'class="small secondary" ' +
+                    'id="pool-clear-selection"' +
+                    (selectedCount === 0 ? ' disabled' : '') +
+                    '>Clear</button>';
+        html += '<button type="button" ' +
+                    'class="primary small" ' +
+                    'id="pool-create-team-btn"' +
+                    (selectedCount < 2 ? ' disabled' : '') +
+                    '>Create Team from Selection</button>';
+        html += '</div>';
+        html += '</div>';
+
+        // ---- Summary line ----
         html += '<div class="pool-summary">';
         html += 'Pool as of year <strong>' +
                     escapeHtml(String(vm.period)) +
@@ -324,19 +392,25 @@
         html += renderPoolSection(
             'Available',
             available,
-            'pool-item-available'
+            'pool-item-available',
+            expandedIds,
+            selectedIds
         );
 
         html += renderPoolSection(
             'Previously Available',
             historical,
-            'pool-item-historical'
+            'pool-item-historical',
+            expandedIds,
+            selectedIds
         );
 
         return html;
     }
 
-    function renderPoolSection(heading, rows, variantClass) {
+    function renderPoolSection(
+        heading, rows, variantClass, expandedIds, selectedIds
+    ) {
         if (rows.length === 0) { return ''; }
 
         var html = '';
@@ -348,6 +422,7 @@
                 '</div>';
 
         html += '<div class="list-header pool-header">';
+        html += '<span class="pool-header-check"></span>';
         html += '<span>Character</span>';
         html += '<span>Status</span>';
         html += '<span>Available</span>';
@@ -356,7 +431,12 @@
         html += '</div>';
 
         for (var i = 0; i < rows.length; i++) {
-            html += renderPoolRow(rows[i], variantClass);
+            html += renderPoolRow(
+                rows[i],
+                variantClass,
+                expandedIds,
+                selectedIds
+            );
         }
 
         html += '</div>';
@@ -364,13 +444,37 @@
         return html;
     }
 
-    function renderPoolRow(row, variantClass) {
+    function renderPoolRow(
+        row, variantClass, expandedIds, selectedIds
+    ) {
+        var charId = row.characterId;
+        var idAttr = escapeAttribute(charId);
+
+        var isExpanded = expandedIds[charId] === true;
+        var isSelected = selectedIds[charId] === true;
+
+        var rowClass = 'list-item professional-pool-item ' +
+            variantClass;
+        if (isExpanded) { rowClass += ' pool-item-expanded'; }
+        if (isSelected) { rowClass += ' pool-item-selected'; }
+
         var html = '';
 
-        html += '<div class="list-item professional-pool-item ' +
-                    variantClass + '" ' +
-                    'data-id="' +
-                        escapeAttribute(row.characterId) + '">';
+        // ---- Data row ----
+        html += '<div class="' + rowClass + '" ' +
+                    'data-id="' + idAttr + '" ' +
+                    'data-action="pool-toggle-expand">';
+
+        // Selection checkbox. Stops propagation in the events
+        // layer so ticking does not also toggle expansion.
+        html += '<span class="pool-select-cell">';
+        html += '<input type="checkbox" ' +
+                    'class="pool-select-checkbox" ' +
+                    'data-character-id="' + idAttr + '"' +
+                    (isSelected ? ' checked' : '') +
+                    ' aria-label="Select ' +
+                        escapeAttribute(row.displayName) + '">';
+        html += '</span>';
 
         html += '<span class="pool-character">';
         html += '<strong class="pool-name">' +
@@ -404,6 +508,189 @@
 
         html += '</div>';
 
+        // ---- Expand panel ----
+        if (isExpanded) {
+            html += renderPoolExpandPanel(row);
+        }
+
+        return html;
+    }
+
+    // ============================================================
+    // POOL EXPAND PANEL
+    // ============================================================
+
+    function renderPoolExpandPanel(row) {
+        var detail = row.detail;
+
+        var html = '';
+        html += '<div class="pool-expand-panel" ' +
+                    'data-character-id="' +
+                        escapeAttribute(row.characterId) + '">';
+
+        if (!detail) {
+            html += '<p class="empty-state small">' +
+                        'No profile details available.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += renderPoolPhysicalLine(detail.physical);
+        html += renderPoolPersonalityBlock(detail.personality);
+        html += renderPoolCombatBlock(detail.combat);
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderPoolPhysicalLine(physical) {
+        if (!physical) { return ''; }
+
+        var parts = [];
+        if (isNonEmptyString(physical.height)) {
+            parts.push(escapeHtml(physical.height));
+        }
+        if (isNonEmptyString(physical.weight)) {
+            parts.push(escapeHtml(physical.weight));
+        }
+        if (isNonEmptyString(physical.build)) {
+            parts.push(escapeHtml(physical.build));
+        }
+
+        if (parts.length === 0) { return ''; }
+
+        var html = '';
+        html += '<div class="pool-expand-line pool-expand-physical">';
+        html += '<span class="pool-expand-label">Physical</span>';
+        html += '<span class="pool-expand-value">' +
+                    parts.join(' \u00b7 ') +
+                '</span>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderPoolPersonalityBlock(personality) {
+        if (!personality) { return ''; }
+
+        var fields = [
+            { key: 'traits',        label: 'Traits' },
+            { key: 'ideals',        label: 'Ideals' },
+            { key: 'bonds',         label: 'Bonds' },
+            { key: 'flaws',         label: 'Flaws' },
+            { key: 'alignment',     label: 'Alignment' },
+            { key: 'goals',         label: 'Goals' },
+            { key: 'socialStyle',   label: 'Social' },
+            { key: 'conflictStyle', label: 'Conflict' },
+            { key: 'quirks',        label: 'Quirks' }
+        ];
+
+        var lines = [];
+        for (var i = 0; i < fields.length; i++) {
+            var f = fields[i];
+            var value = personality[f.key];
+            if (!isNonEmptyString(value)) { continue; }
+
+            lines.push(
+                '<div class="pool-expand-line pool-expand-personality">' +
+                    '<span class="pool-expand-label">' +
+                        escapeHtml(f.label) +
+                    '</span>' +
+                    '<span class="pool-expand-value">' +
+                        escapeHtml(value) +
+                    '</span>' +
+                '</div>'
+            );
+        }
+
+        if (lines.length === 0) { return ''; }
+
+        var html = '';
+        html += '<div class="pool-expand-block pool-expand-block-personality">';
+        html += '<div class="pool-expand-block-header">Personality</div>';
+        html += lines.join('');
+        html += '</div>';
+        return html;
+    }
+
+    function renderPoolCombatBlock(combat) {
+        if (!combat) { return ''; }
+
+        var html = '';
+        html += '<div class="pool-expand-block pool-expand-block-combat">';
+        html += '<div class="pool-expand-block-header">Combat</div>';
+
+        // ---- Physical stats ----
+        var order = Array.isArray(combat.statOrder)
+            ? combat.statOrder
+            : Object.keys(combat.stats || {});
+
+        var statParts = [];
+        for (var i = 0; i < order.length; i++) {
+            var key = order[i];
+            var stat = combat.stats ? combat.stats[key] : null;
+            if (!stat) { continue; }
+
+            statParts.push(
+                '<span class="pool-stat">' +
+                    '<span class="pool-stat-label">' +
+                        escapeHtml(stat.label) +
+                    '</span>' +
+                    '<span class="pool-stat-value">' +
+                        escapeHtml(String(stat.value)) +
+                    '</span>' +
+                '</span>'
+            );
+        }
+
+        if (statParts.length > 0) {
+            html += '<div class="pool-expand-line pool-expand-stats">' +
+                        '<span class="pool-expand-label">Stats</span>' +
+                        '<span class="pool-expand-value">' +
+                            statParts.join('') +
+                        '</span>' +
+                    '</div>';
+        }
+
+        // ---- HP / MP ----
+        html += '<div class="pool-expand-line pool-expand-hpmp">' +
+                    '<span class="pool-expand-label">HP / MP</span>' +
+                    '<span class="pool-expand-value">' +
+                        escapeHtml(String(combat.hp)) +
+                        ' / ' +
+                        escapeHtml(String(combat.mp)) +
+                    '</span>' +
+                '</div>';
+
+        // ---- Magic (non-zero only) ----
+        var magic = Array.isArray(combat.magic)
+            ? combat.magic
+            : [];
+
+        if (magic.length > 0) {
+            var magicParts = [];
+            for (var m = 0; m < magic.length; m++) {
+                var entry = magic[m];
+                magicParts.push(
+                    '<span class="pool-magic">' +
+                        '<span class="pool-magic-label">' +
+                            escapeHtml(entry.label) +
+                        '</span>' +
+                        '<span class="pool-magic-value">' +
+                            escapeHtml(String(entry.value)) +
+                        '</span>' +
+                    '</span>'
+                );
+            }
+            html += '<div class="pool-expand-line pool-expand-magic">' +
+                        '<span class="pool-expand-label">Magic</span>' +
+                        '<span class="pool-expand-value">' +
+                            magicParts.join('') +
+                        '</span>' +
+                    '</div>';
+        }
+
+        html += '</div>';
         return html;
     }
 
@@ -707,7 +994,6 @@
                         '">Timeline</button>';
             html += '</div>';
 
-            // Year and status filters apply only to the Teams mode.
             if (viewMode === 'teams') {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
@@ -1104,6 +1390,10 @@
         var expandedTeam = pageVM.expandedTeam || null;
         var period = pageVM.period;
         var poolVM = pageVM.professionalPoolVM || null;
+        var poolExpandedIds = pageVM.poolExpandedIds ||
+            Object.create(null);
+        var poolSelectedIds = pageVM.poolSelectedIds ||
+            Object.create(null);
 
         var isPool = activeTab === 'professional' &&
             viewMode === 'pool';
@@ -1153,7 +1443,11 @@
         if (isTimeline) {
             html += renderTimelineContent(pageVM);
         } else if (isPool) {
-            html += renderProfessionalPool(poolVM);
+            html += renderProfessionalPool(
+                poolVM,
+                poolExpandedIds,
+                poolSelectedIds
+            );
         } else {
             html += renderList(teams, {
                 type: activeTab,
