@@ -252,6 +252,11 @@
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-views.js"></script>
 
+    <!-- Bulk create modal. Reads CharacterCRUD.save, uses Modal,
+         DomUtils, NotificationSystem. Refreshes CharacterList on
+         completion via a lazy lookup. -->
+    <script src="js/modules/characters/character-bulk-create.js"></script>
+
     <!-- Career wizard: absorbs no state of its own beyond the
          modal. Reads CharacterQueries and CharacterCRUD lazily.
          Must load after character-crud.js (for
