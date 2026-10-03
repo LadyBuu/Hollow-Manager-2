@@ -11,12 +11,12 @@
  *   - Request fresh VMs from TeamAggregator; hand them to TeamRender.
  *   - Open and close modals.
  *   - Read form field values.
- *   - Own the matchmaking planner's checkbox and year-input
- *     state, and turn selections into a flat assignment list for
- *     TeamCore.batchAddMembers.
+ *   - Own the matchmaking planner's state (via TeamAggregator).
  *   - Own the professional tab's view mode.
  *   - Own the timeline's range and expanded-years state.
+ *   - Own the professional pool's expansion and selection state.
  *   - Open the team export picker and the candidate export.
+ *   - Open the team verifier modal.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. TeamCore owns mutations; TeamQueries owns reads;
@@ -24,38 +24,35 @@
  *   - Rendering. TeamRender owns HTML.
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it.
- *   - Planner VM assembly. TeamAggregator owns it.
- *   - Interval validation. TeamCore owns it.
- *
- * MATCHMAKING PLANNER:
- *   The planner modal opens directly. There is no setup or
- *   proposal step. The modal shows:
- *
- *     left column   professional teams under targetSize, with
- *                   their existing members and each member's
- *                   interval
- *
- *     right column  the canonical pool candidates, each with a
- *                   checkbox and per-team year inputs
- *
- *   On commit, TeamEvents walks every (candidate, team) pair,
- *   reads the checkbox and the two year inputs, and emits one
- *   assignment per ticked pair:
- *
- *     { teamId, charId, joinPeriod, leavePeriod, role }
- *
- *   TeamCore.batchAddMembers is the sole validator. TeamEvents
- *   does not compute eligibility, availability, or overlap.
+ *   - The verifier's checks. TeamVerifier owns them.
+ *   - The verifier's HTML. TeamVerifierView owns it.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
  *   on non-professional tabs. Reset on init and destroy.
  *
+ * POOL STATE:
+ *   _poolExpandedIds  { [characterId]: true }
+ *   _poolSelectedIds  { [characterId]: true }
+ *
+ *   Both are reset when:
+ *     - the view mode changes away from 'pool'
+ *     - the tab changes away from 'professional'
+ *     - init/destroy
+ *
+ *   Both are passed onto the page VM by refreshUI.
+ *
+ * CREATE TEAM FROM SELECTION:
+ *   Clicking Create Team from Selection opens the standard team
+ *   form. The selected character IDs are stashed in
+ *   _pendingTeamMemberIds. When the form submits successfully and
+ *   the resulting team has a startPeriod, batchAddMembers is
+ *   called with those IDs at that period. If the form is
+ *   cancelled, the pending list is cleared.
+ *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
  *   Defaults are (currentYear - 20, currentYear + 5) on first use.
- *   Expanded map survives range changes; pruned when years fall out
- *   of range.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -72,6 +69,7 @@
  * DEPENDENCIES (LAZY, at click time):
  *   - window.TeamExportPicker
  *   - window.CandidateExport
+ *   - window.TeamVerifierView
  */
 
 (function() {
@@ -278,6 +276,30 @@
         return String(value).replace(/(["\\])/g, '\\$1');
     }
 
+    function objectKeyCount(obj) {
+        if (!obj) { return 0; }
+        var n = 0;
+        for (var k in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, k) &&
+                obj[k] === true) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    function objectKeysWithTrue(obj) {
+        var out = [];
+        if (!obj) { return out; }
+        for (var k in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, k) &&
+                obj[k] === true) {
+                out.push(k);
+            }
+        }
+        return out;
+    }
+
     // ============================================================
     // STATE
     // ============================================================
@@ -291,9 +313,21 @@
 
     var _viewMode = 'teams';
 
+    // Timeline state.
     var _timelineYearStart = null;
     var _timelineYearEnd = null;
     var _timelineExpandedYears = Object.create(null);
+
+    // Pool expansion state: { [characterId]: true }
+    var _poolExpandedIds = Object.create(null);
+
+    // Pool selection state: { [characterId]: true }
+    var _poolSelectedIds = Object.create(null);
+
+    // Pending member assignments for the next createTeam success.
+    // Set by the Create Team from Selection flow; cleared on
+    // close or after the batch add completes.
+    var _pendingTeamMemberIds = null;
 
     // ============================================================
     // LISTENER BOOKKEEPING
@@ -384,6 +418,8 @@
 
         if (currentTab !== 'professional') {
             _viewMode = 'teams';
+            _poolExpandedIds = Object.create(null);
+            _poolSelectedIds = Object.create(null);
         }
 
         var pageVM = TeamAggregator.getTeamPageViewModel({
@@ -411,8 +447,12 @@
                 TeamAggregator.getProfessionalPoolViewModel({
                     period: period
                 });
+            pageVM.poolExpandedIds = _poolExpandedIds;
+            pageVM.poolSelectedIds = _poolSelectedIds;
         } else {
             pageVM.professionalPoolVM = null;
+            pageVM.poolExpandedIds = null;
+            pageVM.poolSelectedIds = null;
         }
 
         if (currentTab === 'professional' &&
@@ -484,16 +524,21 @@
         _timelineYearStart = null;
         _timelineYearEnd = null;
         _timelineExpandedYears = Object.create(null);
+        _poolExpandedIds = Object.create(null);
+        _poolSelectedIds = Object.create(null);
+        _pendingTeamMemberIds = null;
 
         bindTabSwitching();
         bindModeToggle();
         bindAddTeam();
         bindMatchmaking();
+        bindVerify();
         bindTeamExport();
         bindCandidateExport();
         bindTeamActions();
         bindFilters();
         bindTimelineActions();
+        bindPoolActions();
 
         _initialized = true;
     }
@@ -524,6 +569,9 @@
         _timelineYearStart = null;
         _timelineYearEnd = null;
         _timelineExpandedYears = Object.create(null);
+        _poolExpandedIds = Object.create(null);
+        _poolSelectedIds = Object.create(null);
+        _pendingTeamMemberIds = null;
     }
 
     // ============================================================
@@ -537,6 +585,8 @@
 
             if (tab !== 'professional') {
                 _viewMode = 'teams';
+                _poolExpandedIds = Object.create(null);
+                _poolSelectedIds = Object.create(null);
             }
 
             TeamUI.setCurrentTab(tab);
@@ -569,6 +619,10 @@
 
             if (_viewMode !== 'teams') {
                 TeamUI.setExpandedTeamId(null);
+            }
+            if (_viewMode !== 'pool') {
+                _poolExpandedIds = Object.create(null);
+                _poolSelectedIds = Object.create(null);
             }
             if (_viewMode !== 'timeline') {
                 _timelineExpandedYears = Object.create(null);
@@ -706,12 +760,127 @@
     }
 
     // ============================================================
+    // POOL ACTIONS
+    // ============================================================
+    //
+    // Three interactions:
+    //   - Click on the data row (outside the checkbox) toggles
+    //     expansion of that row.
+    //   - Change on the checkbox toggles that character in the
+    //     selection set. The change handler stops propagation so
+    //     a checkbox click does not also reach the row click.
+    //   - Clear button empties the selection set.
+    //   - Create Team from Selection opens the team form with
+    //     _pendingTeamMemberIds stashed.
+
+    function bindPoolActions() {
+        // Row click toggles expansion.
+        delegate(
+            '[data-action="pool-toggle-expand"]',
+            'click',
+            function(e, target) {
+                // Ignore clicks that originated on the checkbox or
+                // its container.
+                var clicked = e.target;
+                if (clicked && clicked.closest) {
+                    if (clicked.closest('.pool-select-cell')) {
+                        return;
+                    }
+                }
+
+                var charId = target.dataset.id;
+                if (!charId) { return; }
+
+                if (_poolExpandedIds[charId] === true) {
+                    delete _poolExpandedIds[charId];
+                } else {
+                    _poolExpandedIds[charId] = true;
+                }
+
+                refreshUI();
+            }
+        );
+
+        // Checkbox toggles selection. Change event (not click)
+        // so keyboard toggling works.
+        delegate(
+            '.pool-select-checkbox',
+            'change',
+            function(e, target) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+
+                var charId = target.dataset.characterId;
+                if (!charId) { return; }
+
+                if (target.checked) {
+                    _poolSelectedIds[charId] = true;
+                } else {
+                    delete _poolSelectedIds[charId];
+                }
+
+                refreshUI();
+            }
+        );
+
+        // Prevent row-click handler from firing when the checkbox
+        // itself is clicked. The change event fires after click.
+        delegate(
+            '.pool-select-cell',
+            'click',
+            function(e) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+            }
+        );
+
+        // Clear selection.
+        delegate(
+            '#pool-clear-selection',
+            'click',
+            function(e) {
+                e.preventDefault();
+                _poolSelectedIds = Object.create(null);
+                refreshUI();
+            }
+        );
+
+        // Create Team from Selection.
+        delegate(
+            '#pool-create-team-btn',
+            'click',
+            function(e) {
+                e.preventDefault();
+                handleCreateTeamFromSelection();
+            }
+        );
+    }
+
+    function handleCreateTeamFromSelection() {
+        var selectedIds = objectKeysWithTrue(_poolSelectedIds);
+        if (selectedIds.length < 2) {
+            notify(
+                'Select at least two candidates to create a team.',
+                'error'
+            );
+            return;
+        }
+
+        _pendingTeamMemberIds = selectedIds;
+
+        showTeamForm(null);
+    }
+
+    // ============================================================
     // ADD TEAM
     // ============================================================
 
     function bindAddTeam() {
         delegate('#add-team-btn', 'click', function(e) {
             e.preventDefault();
+            _pendingTeamMemberIds = null;
             showTeamForm(null);
         });
     }
@@ -735,9 +904,98 @@
         modal.appendChild(contentEl);
         contentEl.innerHTML = TeamRender.renderTeamForm(formVM);
 
+        // If we are creating from a pool selection, append a chip
+        // strip at the top of the form body so the user sees who
+        // is about to be added.
+        if (!editId &&
+            Array.isArray(_pendingTeamMemberIds) &&
+            _pendingTeamMemberIds.length > 0) {
+            prependPendingMembersStrip(
+                contentEl, _pendingTeamMemberIds
+            );
+        }
+
+        Modal.modalSetup(modal, function() {
+            // Modal dismissed without saving. Clear the pending
+            // list so a subsequent Add Team does not accidentally
+            // inherit it.
+            _pendingTeamMemberIds = null;
+        });
+
         Modal.showModal(modal);
 
         bindTeamFormEvents(modal, contentEl);
+    }
+
+    function prependPendingMembersStrip(contentEl, charIds) {
+        var form = contentEl.querySelector('#team-form-inner');
+        if (!form) { return; }
+
+        var names = [];
+        for (var i = 0; i < charIds.length; i++) {
+            var char = null;
+            try {
+                char = window.CharacterQueries &&
+                    typeof window.CharacterQueries.getCharacterById ===
+                    'function'
+                    ? window.CharacterQueries.getCharacterById(
+                        charIds[i]
+                    )
+                    : null;
+            } catch (e) {
+                char = null;
+            }
+
+            var name = char && window.CharacterQueries &&
+                typeof window.CharacterQueries.getDisplayName ===
+                'function'
+                ? window.CharacterQueries.getDisplayName(char)
+                : charIds[i];
+
+            names.push(name);
+        }
+
+        var strip = document.createElement('div');
+        strip.className = 'team-form-pending-members';
+
+        var html = '';
+        html += '<span class="team-form-pending-label">' +
+                    'Adding ' + names.length +
+                    ' member' + (names.length === 1 ? '' : 's') +
+                    ' on save:' +
+                '</span>';
+        for (var n = 0; n < names.length; n++) {
+            html += '<span class="team-form-pending-chip">' +
+                        escapeHtml(names[n]) +
+                    '</span>';
+        }
+        html += '<span class="team-form-pending-hint">' +
+                    'Their join year is the team\'s Start Period.' +
+                '</span>';
+
+        strip.innerHTML = html;
+
+        // Insert before the first form-grid inside the form.
+        var grid = form.querySelector('.form-grid');
+        if (grid && grid.parentNode) {
+            grid.parentNode.insertBefore(strip, grid);
+        } else {
+            form.insertBefore(strip, form.firstChild);
+        }
+    }
+
+    function escapeHtml(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     function bindTeamFormEvents(modal, contentEl) {
@@ -834,6 +1092,8 @@
         var type = typeEl ? typeEl.value : 'professional';
         var status = statusEl ? statusEl.value : 'active';
 
+        var startPeriod = startEl ? startEl.value : '';
+
         var temporaryMission = missionEl
             ? (missionEl.value || null)
             : null;
@@ -841,7 +1101,7 @@
         var teamData = {
             name: name,
             type: type,
-            startPeriod: startEl ? startEl.value : '',
+            startPeriod: startPeriod,
             endPeriod: endEl ? endEl.value : '',
             status: status,
             classId: classEl ? classEl.value : null,
@@ -850,15 +1110,124 @@
             nameHistory: collectNameHistory(form)
         };
 
+        // Capture pending members before the async work begins.
+        // The callback chain uses this local copy.
+        var pendingMembers = editId
+            ? null
+            : (_pendingTeamMemberIds
+                ? _pendingTeamMemberIds.slice()
+                : null);
+
         var promise = editId
             ? TeamCore.updateTeam(editId, teamData)
             : TeamCore.createTeam(teamData);
 
         promise.then(function(result) {
-            if (!result || !result.success) { return; }
-            closeModal(modal);
-            refreshUI();
+            if (!result || !result.success) {
+                return;
+            }
+
+            // For an edit, nothing more to do. Close and refresh.
+            if (editId) {
+                _pendingTeamMemberIds = null;
+                closeModal(modal);
+                refreshUI();
+                return;
+            }
+
+            // For a new team, if there are pending members, add
+            // them at the team's start period.
+            var newTeamId = result.data &&
+                result.data.team &&
+                result.data.team.id
+                ? String(result.data.team.id)
+                : null;
+
+            var newTeamStartPeriod = result.data &&
+                result.data.team &&
+                result.data.team.startPeriod
+                ? String(result.data.team.startPeriod)
+                : '';
+
+            if (!pendingMembers ||
+                pendingMembers.length === 0 ||
+                !newTeamId) {
+                _pendingTeamMemberIds = null;
+                closeModal(modal);
+                refreshUI();
+                return;
+            }
+
+            if (!newTeamStartPeriod) {
+                notify(
+                    'Team created, but Start Period is blank so ' +
+                    'the selected members could not be added. ' +
+                    'Set a Start Period on the team to add them.',
+                    'warning'
+                );
+                _pendingTeamMemberIds = null;
+                closeModal(modal);
+                refreshUI();
+                return;
+            }
+
+            var assignments = [];
+            for (var i = 0; i < pendingMembers.length; i++) {
+                assignments.push({
+                    teamId: newTeamId,
+                    charId: pendingMembers[i],
+                    joinPeriod: newTeamStartPeriod,
+                    leavePeriod: '',
+                    role: 'Member'
+                });
+            }
+
+            return TeamCore.batchAddMembers(assignments)
+                .then(function(addResult) {
+                    _pendingTeamMemberIds = null;
+
+                    if (!addResult || !addResult.success) {
+                        notify(
+                            'Team created, but the selected ' +
+                            'members could not be added: ' +
+                            ((addResult && addResult.message) ||
+                                'unknown error.'),
+                            'warning'
+                        );
+                    } else {
+                        notify(
+                            'Team created with ' +
+                            (addResult.data
+                                ? addResult.data.added
+                                : pendingMembers.length) +
+                            ' member' +
+                            ((addResult.data &&
+                                addResult.data.added === 1)
+                                ? '' : 's') + '.',
+                            'success'
+                        );
+                        // Selection has been consumed.
+                        _poolSelectedIds = Object.create(null);
+                    }
+
+                    closeModal(modal);
+                    refreshUI();
+                })
+                .catch(function(err) {
+                    _pendingTeamMemberIds = null;
+                    console.warn(
+                        '[TeamEvents] batchAddMembers failed:',
+                        err
+                    );
+                    notify(
+                        'Team created, but adding members failed.',
+                        'error'
+                    );
+                    closeModal(modal);
+                    refreshUI();
+                });
         }).catch(function(err) {
+            _pendingTeamMemberIds = null;
             console.warn('[TeamEvents] saveTeam failed:', err);
             notify('Failed to save team.', 'error');
         });
@@ -1014,13 +1383,6 @@
         });
     }
 
-    /**
-     * Read every (candidate, team) pair the user ticked and turn
-     * them into a flat assignment list. TeamEvents does NOT
-     * validate eligibility, availability, or overlap. It reads
-     * the checkboxes, reads the year inputs, and hands the list
-     * to TeamCore.batchAddMembers, which is the sole authority.
-     */
     function handlePlannerCommit(modal, contentEl) {
         var state = modal.__plannerState;
         if (!state) { return; }
@@ -1148,6 +1510,44 @@
     }
 
     // ============================================================
+    // VERIFY
+    // ============================================================
+
+    function bindVerify() {
+        delegate('#team-verify-btn', 'click', function(e) {
+            e.preventDefault();
+            openVerifierModal();
+        });
+    }
+
+    function openVerifierModal() {
+        var VerifierView = window.TeamVerifierView || null;
+        if (!VerifierView ||
+            typeof VerifierView.openModal !== 'function') {
+            console.warn(
+                '[TeamEvents] TeamVerifierView module is not ' +
+                'loaded.'
+            );
+            notify('Team verifier is not available.', 'error');
+            return;
+        }
+
+        try {
+            VerifierView.openModal();
+        } catch (err) {
+            console.warn(
+                '[TeamEvents] TeamVerifierView.openModal threw:',
+                err
+            );
+            notify(
+                'Team verifier failed to open: ' +
+                (err && err.message ? err.message : String(err)),
+                'error'
+            );
+        }
+    }
+
+    // ============================================================
     // EXPORTS
     // ============================================================
 
@@ -1247,7 +1647,10 @@
         delegate('.edit-team', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) { showTeamForm(teamId); }
+            if (teamId) {
+                _pendingTeamMemberIds = null;
+                showTeamForm(teamId);
+            }
         });
 
         delegate('.delete-team', 'click', function(e, target) {
@@ -1657,7 +2060,8 @@
         showTeamForm: showTeamForm,
         showRankingModal: showRankingModal,
         openMemberManager: openMemberManager,
-        openMatchmakingModal: openMatchmakingModal
+        openMatchmakingModal: openMatchmakingModal,
+        openVerifierModal: openVerifierModal
     });
 
 })();
