@@ -30,7 +30,10 @@
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
  *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
- *   display-shaped rows.
+ *   display-shaped rows. Each row carries a `detail` sub-object
+ *   with a compact view of the character's physical, personality,
+ *   and combat stats. That data is used by the pool's expandable
+ *   row UI; nothing else reads it.
  *
  *   The query returns every character who has a junior-or-senior
  *   phase and was never on a professional team during it, minus
@@ -51,23 +54,27 @@
  *
  * MATCHMAKING PLANNER:
  *   getMatchmakingPlannerViewModel({ period, targetSize })
- *   returns the two-column planner VM:
+ *   returns the two-column planner VM. The planner does NOT
+ *   re-rank, re-filter, or exclude. It projects the query and
+ *   the team index. Every semantic decision is either in
+ *   TeamQueries (who is eligible) or in TeamCore (what the
+ *   mutation accepts).
  *
- *     teams         professional teams whose active member count
- *                   is strictly below targetSize, each carrying
- *                   its existing members with their intervals
- *                   (join + leave) for display
+ * POOL DETAIL BLOCK:
+ *   The `detail` sub-object on each pool row carries:
  *
- *     candidates    the SAME canonical pool rows as
- *                   getProfessionalPoolViewModel, flattened from
- *                   available + historical. Not year-filtered.
- *                   Every eligible character is visible; the
- *                   user picks years explicitly.
+ *     physical       { height, weight, build }
+ *     personality    { traits, ideals, bonds, flaws, alignment,
+ *                      goals, socialStyle, conflictStyle, quirks }
+ *     combat         {
+ *                      stats: { str, dex, con, int, wis, cha },
+ *                      hp, mp,
+ *                      magic: [ { key, label, value } ]
+ *                    }
  *
- *   The planner does NOT re-rank, re-filter, or exclude. It
- *   projects the query and the team index. Every semantic
- *   decision is either in TeamQueries (who is eligible) or in
- *   TeamCore (what the mutation accepts).
+ *   The magic array only includes non-zero entries. Stats that
+ *   are missing fall back to CharacterConstants.STAT_DEFAULT.
+ *   Everything is display-ready.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -76,9 +83,10 @@
  *   - window.AcademyClasses
  *
  * DEPENDENCIES (LAZY, at call time):
- *   - window.MissionQueries     (temporaryMission name resolution)
- *   - window.CharacterConstants (status tier classification)
- *   - window.EliminationQueries (member modal eligibility)
+ *   - window.MissionQueries      (temporaryMission name resolution)
+ *   - window.CharacterConstants  (stat keys, defaults)
+ *   - window.MagicConstants      (magic type keys and labels)
+ *   - window.EliminationQueries  (member modal eligibility)
  */
 
 (function() {
@@ -234,6 +242,10 @@
         return window.CharacterConstants || null;
     }
 
+    function getMagicConstants() {
+        return window.MagicConstants || null;
+    }
+
     function getEliminationQueries() {
         return window.EliminationQueries || null;
     }
@@ -352,18 +364,6 @@
     // ============================================================
     // MEMBER ORDERING
     // ============================================================
-    //
-    // Sort key for a member VM:
-    //   primary   latest join period (ascending; oldest first)
-    //   secondary latest leave period (ascending; open stints
-    //             last, since a blank leave is treated as
-    //             Infinity)
-    //   tertiary  displayName (alphabetical, for exact ties)
-    //
-    // "Latest" means: walk every interval, take the greatest
-    // parseable value. A malformed or blank join falls back to
-    // -Infinity so the row sorts before everything with a real
-    // join. A blank leave is Infinity.
 
     function getLatestJoin(member) {
         var latest = -Infinity;
@@ -763,12 +763,6 @@
     // ============================================================
     // TEAM MEMBERS VM
     // ============================================================
-    //
-    // The adapter partitions into active and former using
-    // TeamQueries.isMemberActive / isMemberFormer. Within each
-    // partition, this VM is sorted by latest join then latest
-    // leave. The adapter re-sorts by this comparator when it
-    // builds its two lists.
 
     function getTeamMembersViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) { return null; }
@@ -1192,6 +1186,168 @@
     }
 
     // ============================================================
+    // POOL DETAIL BLOCK
+    // ============================================================
+    //
+    // Compact view of a character's physical, personality, and
+    // combat stats. Display-ready. Used by the pool's expandable
+    // row UI. Never persisted.
+
+    function getCharacterConstantsSafe() {
+        return getCharacterConstants();
+    }
+
+    function getStatKeysSafe() {
+        var CC = getCharacterConstantsSafe();
+        if (CC && Array.isArray(CC.STAT_KEYS)) {
+            return CC.STAT_KEYS;
+        }
+        return ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    }
+
+    function getStatDefaultSafe() {
+        var CC = getCharacterConstantsSafe();
+        if (CC && typeof CC.STAT_DEFAULT === 'number') {
+            return CC.STAT_DEFAULT;
+        }
+        return 10;
+    }
+
+    function getStatDefinition(key) {
+        var CC = getCharacterConstantsSafe();
+        if (!CC || !CC.STAT_DEFINITIONS) {
+            return { label: key.toUpperCase(), abbreviation:
+                key.toUpperCase() };
+        }
+        var def = CC.STAT_DEFINITIONS[key];
+        if (!def) {
+            return { label: key.toUpperCase(), abbreviation:
+                key.toUpperCase() };
+        }
+        return def;
+    }
+
+    function buildPoolDetail(char) {
+        if (!char || typeof char !== 'object') { return null; }
+
+        var detail = {
+            physical: buildPoolPhysical(char),
+            personality: buildPoolPersonality(char),
+            combat: buildPoolCombat(char)
+        };
+
+        return detail;
+    }
+
+    function buildPoolPhysical(char) {
+        return {
+            height: isNonEmptyString(char.height)
+                ? String(char.height) : '',
+            weight: isNonEmptyString(char.weight)
+                ? String(char.weight) : '',
+            build: isNonEmptyString(char.build)
+                ? String(char.build) : ''
+        };
+    }
+
+    function buildPoolPersonality(char) {
+        var p = char && char.personality && typeof char.personality === 'object'
+            ? char.personality
+            : {};
+
+        function pick(key) {
+            return isNonEmptyString(p[key]) ? String(p[key]) : '';
+        }
+
+        return {
+            traits: pick('traits'),
+            ideals: pick('ideals'),
+            bonds: pick('bonds'),
+            flaws: pick('flaws'),
+            alignment: pick('alignment'),
+            goals: pick('goals'),
+            socialStyle: pick('socialStyle'),
+            conflictStyle: pick('conflictStyle'),
+            quirks: pick('quirks')
+        };
+    }
+
+    function buildPoolCombat(char) {
+        var statKeys = getStatKeysSafe();
+        var statDefault = getStatDefaultSafe();
+
+        var stats = {};
+        for (var i = 0; i < statKeys.length; i++) {
+            var key = statKeys[i];
+            var value = char && char.stats &&
+                char.stats[key] !== undefined
+                ? char.stats[key]
+                : statDefault;
+            var num = Number(value);
+            if (isNaN(num)) { num = statDefault; }
+            var def = getStatDefinition(key);
+            stats[key] = {
+                key: key,
+                label: def.abbreviation || key.toUpperCase(),
+                fullLabel: def.label || key.toUpperCase(),
+                value: num
+            };
+        }
+
+        var hp = parseInt(char && char.hp, 10);
+        if (isNaN(hp)) { hp = 0; }
+
+        var mp = parseInt(char && char.mp, 10);
+        if (isNaN(mp)) { mp = 0; }
+
+        return {
+            stats: stats,
+            statOrder: statKeys.slice(),
+            hp: hp,
+            mp: mp,
+            magic: buildPoolMagic(char)
+        };
+    }
+
+    function buildPoolMagic(char) {
+        var MC = getMagicConstants();
+        var raw = (char && char.magic &&
+                   typeof char.magic === 'object')
+            ? char.magic
+            : {};
+
+        // Determine key order and labels. Prefer MagicConstants if
+        // loaded; fall back to the object's own keys.
+        var keys = [];
+        if (MC && typeof MC.getTypeKeys === 'function') {
+            keys = MC.getTypeKeys();
+        } else {
+            keys = Object.keys(raw);
+        }
+
+        var result = [];
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var value = raw[key];
+            var num = Number(value);
+            if (isNaN(num) || num <= 0) { continue; }
+
+            var label = key;
+            if (MC && typeof MC.getTypeLabel === 'function') {
+                label = MC.getTypeLabel(key) || key;
+            }
+
+            result.push({
+                key: key,
+                label: label,
+                value: num
+            });
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // PROFESSIONAL POOL VM
     // ============================================================
 
@@ -1266,6 +1422,13 @@
                 record.assignment.currentTeamName;
         }
 
+        // Load the source character record for the detail block.
+        // The personnel record carries identity and eligibility
+        // but not the full profile.
+        var char = CharacterQueries.getCharacterById(
+            record.characterId
+        );
+
         return {
             characterId: record.characterId,
             displayName: record.name,
@@ -1306,7 +1469,9 @@
                 hasProfessionalHistory:
                     record.history.hasProfessionalHistory,
                 formerTeamCount: record.history.formerTeamCount
-            }
+            },
+
+            detail: char ? buildPoolDetail(char) : null
         };
     }
 
@@ -1344,23 +1509,6 @@
     // ============================================================
     // MATCHMAKING PLANNER VM
     // ============================================================
-    //
-    // The planner is a two-column projection:
-    //
-    //   teams         professional teams under targetSize, each
-    //                 carrying its existing members with their
-    //                 intervals (join + leave) for display
-    //
-    //   candidates    the SAME canonical pool rows as the
-    //                 Professional Pool, flattened from
-    //                 available + historical. Not year-filtered:
-    //                 every eligible character is visible, and
-    //                 the user picks years explicitly.
-    //
-    // The planner does NOT associate candidates with teams. It
-    // does not compute years. It does not validate. It projects
-    // the query and the team index; TeamEvents owns the
-    // association state and TeamCore owns the transaction.
 
     function getMatchmakingPlannerViewModel(options) {
         options = options || {};
@@ -1381,7 +1529,6 @@
             );
         }
 
-        // ---- Teams under target size. ----
         var rawTeams = TeamQueries.getTeams(
             'professional', null, false
         );
@@ -1414,7 +1561,6 @@
             return a.teamName.localeCompare(b.teamName);
         });
 
-        // ---- Candidates: the canonical pool, flattened. ----
         var records = TeamQueries.getProfessionalPersonnelAtPeriod(
             periodNum
         );
