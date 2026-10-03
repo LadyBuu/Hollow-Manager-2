@@ -24,7 +24,6 @@
  *   Last         required, string
  *   Birth Year   optional, positive integer
  *   Gender       optional, string
- *   Nickname     optional, string
  *
  *   Every created record is marked isFiller: true so the default
  *   Hide Filler filter keeps it out of the main character list
@@ -34,21 +33,7 @@
  *   Sequential. One CharacterCRUD.save() per row, awaited in
  *   order. Each save is its own pipeline transaction. A failed
  *   row does NOT abort the batch; it is recorded and the next
- *   row is attempted. At the end, the modal reports:
- *
- *     created:  N
- *     failed:   M
- *     details:  [ { rowIndex, message } ]
- *
- *   This is deliberately not all-or-nothing: bulk entry is high
- *   volume and low stakes, and a single malformed row should not
- *   discard the rest.
- *
- * WHY NOT batchAddCharacters:
- *   CharacterCRUD does not currently expose a batch mutation.
- *   Adding one would duplicate normalisation, validation, and
- *   the filler-strip logic. Looping save() is the correct
- *   composition.
+ *   row is attempted.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterCRUD
@@ -162,7 +147,6 @@
     // ============================================================
 
     function open() {
-        // Already open: refocus and bail.
         if (_modal && _contentEl) {
             var first = _contentEl.querySelector(
                 '.bulk-create-first'
@@ -198,7 +182,6 @@
         contentEl.innerHTML = buildShellHTML();
         _rowsEl = contentEl.querySelector('#bulk-create-rows');
 
-        // Seed the initial rows.
         for (var i = 0; i < INITIAL_ROWS; i++) {
             addRow();
         }
@@ -222,7 +205,6 @@
 
     function close() {
         if (_busy) {
-            // Refuse to close mid-batch.
             return;
         }
 
@@ -277,7 +259,6 @@
         html += '<span>Last</span>';
         html += '<span>Birth Year</span>';
         html += '<span>Gender</span>';
-        html += '<span>Nickname</span>';
         html += '<span></span>';
         html += '</div>';
 
@@ -344,9 +325,6 @@
             ? String(values.birthYear)
             : '';
         var gender = isNonEmptyString(values.gender) ? values.gender : '';
-        var nickname = isNonEmptyString(values.nickname)
-            ? values.nickname
-            : '';
 
         var html = '';
 
@@ -371,11 +349,6 @@
                     'placeholder="Gender" ' +
                     'value="' + escapeAttribute(gender) + '">';
 
-        html += '<input type="text" ' +
-                    'class="bulk-create-nickname" ' +
-                    'placeholder="Nickname" ' +
-                    'value="' + escapeAttribute(nickname) + '">';
-
         html += '<button type="button" ' +
                     'class="small danger bulk-create-remove" ' +
                     'data-bulk-action="remove-row" ' +
@@ -396,7 +369,6 @@
 
         var count = rowsEl.querySelectorAll('.bulk-create-row').length;
         if (count <= 1) {
-            // Keep one empty row rather than emptying the table.
             var inputs = row.querySelectorAll('input');
             for (var i = 0; i < inputs.length; i++) {
                 inputs[i].value = '';
@@ -441,9 +413,6 @@
                 '.bulk-create-birth-year'
             );
             var genderEl = rowEl.querySelector('.bulk-create-gender');
-            var nicknameEl = rowEl.querySelector(
-                '.bulk-create-nickname'
-            );
 
             var first = firstEl ? String(firstEl.value || '').trim() : '';
             var last = lastEl ? String(lastEl.value || '').trim() : '';
@@ -453,16 +422,12 @@
             var gender = genderEl
                 ? String(genderEl.value || '').trim()
                 : '';
-            var nickname = nicknameEl
-                ? String(nicknameEl.value || '').trim()
-                : '';
 
             var isEntirelyBlank =
                 first === '' &&
                 last === '' &&
                 birthYearRaw === '' &&
-                gender === '' &&
-                nickname === '';
+                gender === '';
 
             if (isEntirelyBlank) {
                 blank++;
@@ -474,8 +439,7 @@
                 first: first,
                 last: last,
                 birthYear: birthYearRaw,
-                gender: gender,
-                nickname: nickname
+                gender: gender
             });
         }
 
@@ -500,8 +464,6 @@
             return;
         }
 
-        // Per-row pre-validation of required fields. Rows with
-        // missing first or last are skipped and reported.
         var valid = [];
         var skipped = [];
 
@@ -515,9 +477,6 @@
                 continue;
             }
 
-            // Birth year is optional. When set, it must be a
-            // positive integer. Validate here so we do not need
-            // to interpret a CRUD failure for that specific case.
             if (r.birthYear !== '') {
                 var yr = parseInt(r.birthYear, 10);
                 if (isNaN(yr) || yr < 1) {
@@ -567,7 +526,7 @@
 
     function runBatch(valid, skipped) {
         var created = 0;
-        var failed = skipped.slice(); // pre-validation skips
+        var failed = skipped.slice();
 
         var chain = Promise.resolve();
 
@@ -579,20 +538,14 @@
                     firstName: row.first,
                     lastName: row.last,
                     middleName: '',
-                    nickname: row.nickname || '',
+                    nickname: '',
                     alias: '',
 
                     gender: row.gender || '',
                     birthYear: row.birthYear || '',
 
-                    // Mark as filler so Hide Filler hides it by
-                    // default. CharacterCRUD.save runs this
-                    // through normaliseCharacterData and
-                    // CharacterStrip.stripEmptyFields.
                     isFiller: true,
 
-                    // Everything else left empty; normalisation
-                    // fills defaults for stats, HP, MP, etc.
                     personality: {},
                     stats: undefined,
                     magic: undefined,
@@ -631,15 +584,13 @@
                 total: valid.length + skipped.length
             });
 
-            // Refresh the character list if it exists.
             var List = getCharacterList();
             if (List && typeof List.refresh === 'function') {
                 try { List.refresh(); } catch (e) {}
             }
 
-            // Close the modal after a batch that had any success.
             if (created > 0) {
-                _busy = false;   // allow close
+                _busy = false;
                 close();
             }
         });
@@ -659,8 +610,6 @@
             return;
         }
 
-        // Partial success. Report failures to the console and
-        // summarise in the notification.
         console.warn(
             '[CharacterBulkCreate] ' + failed.length +
             ' row(s) failed:'
