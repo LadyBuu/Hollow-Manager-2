@@ -343,6 +343,21 @@
 
     <script src="js/modules/teams/member-adapter-teams.js"></script>
 
+    <!-- Team verifier. Loads before team-events so its public API
+         is available when the Verify button's click handler
+         resolves it lazily.
+
+         Ordering within this block:
+           1. team-verifier.js        needs TeamQueries,
+                                      TeamConstants,
+                                      CharacterQueries
+           2. team-verifier-view.js   needs TeamVerifier, Modal,
+                                      DomUtils,
+                                      NotificationSystem; reads
+                                      TeamEvents lazily -->
+    <script src="js/modules/teams/team-verifier.js"></script>
+    <script src="js/modules/teams/team-verifier-view.js"></script>
+
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
