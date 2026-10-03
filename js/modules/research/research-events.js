@@ -36,6 +36,19 @@
  *   tolerant of double-clicks and of the character detail modal
  *   stealing focus.
  *
+ * MODAL SETUP CONTRACT:
+ *   Modal.modalSetup(modal, onClose) installs outside-click and
+ *   Escape handlers. When onClose is supplied, Modal does NOT
+ *   close the modal itself — it calls the callback and expects
+ *   the callback to do the full teardown. So the callback here
+ *   invokes close(), which is the module's canonical teardown
+ *   path (Modal.closeModal + state clear).
+ *
+ *   If the callback only cleared module state without calling
+ *   Modal.closeModal, the modal element would remain in the
+ *   DOM and visible, and _modal would be null so close() could
+ *   not be called on it afterwards.
+ *
  * DEBOUNCE:
  *   200ms on input. Fast enough to feel responsive; slow enough
  *   that a long search over a large character store does not fire
@@ -187,18 +200,16 @@
         bindEvents();
 
         Modal.modalSetup(modal, function() {
-            // onClose callback: modal is being torn down by
-            // modal.js (Escape, outside click, or explicit close).
-            // Clear our state so a subsequent open() rebuilds.
-            _modal = null;
-            _contentEl = null;
-            _inputEl = null;
-            _resultsEl = null;
-            _lastQuery = null;
-            if (_debounceTimer) {
-                clearTimeout(_debounceTimer);
-                _debounceTimer = null;
-            }
+            // Modal.modalSetup calls this when the user clicks
+            // outside the modal or presses Escape. Modal does
+            // NOT close the modal itself when onClose is
+            // supplied; the callback is responsible for the
+            // full teardown.
+            //
+            // close() is that teardown: it calls
+            // Modal.closeModal (which hides and removes the
+            // element) and clears module state.
+            close();
         });
 
         Modal.showModal(modal);
