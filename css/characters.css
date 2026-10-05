@@ -3,35 +3,14 @@
  *
  * The Characters tab.
  *
- * Covers:
- *   - Character layout (.characters-layout, sidebar, form container)
- *   - Character list (.char-list-item, filters, #char-list-panel)
- *   - Mobile drawer for the character list
- *   - Character list selection (checkbox column, selection bar)
- *   - Icon-only header buttons
- *   - Character form shell (.form-header, .form-tabs, .form-tab-btn)
- *   - Form panels (name, physical, personality, professional, combat,
- *     social, notes, academic)
- *   - Per-field random buttons (.field-random-btn)
- *   - Class chips (#class-tag-container, .class-tag)
- *   - Career status entries (.career-status-entry)
- *   - Weapons (.weapon-entry)
- *   - Combat stats (.stat-block, .stat-input, .stat-modifier)
- *   - Magic (.magic-type-block, .magic-category, .magic-grid)
- *   - Special moves (.moves-column, .special-move-entry, .moves-list)
- *   - Social tab (.relationship-groups, .relationship-group,
- *     .relationship-row)
- *   - Character detail modal (.detail-tabs, .detail-tab-btn,
- *     .detail-tab-panel)
- *   - Elimination controls (.elimination-controls, standalone list)
- *   - Academic tab (.academic-section, .enrollment-chip)
- *   - Grades tab host
- *   - Schedule tab host
- *   - Filler flag checkbox (.filler-flag-group)
- *   - Filler manager modal (.filler-manager-*)
- *   - Career Status Wizard modal (.csw-*)
- *   - Career Transition modal (#career-transition-modal, reuses .csw-*)
- *   - Bulk Create modal (.bulk-create-*)
+ * LAYOUT:
+ *   Desktop (>=769px): two columns. Sidebar (buttons, filters,
+ *   list) on the left at 300px, always visible. Form container
+ *   fills the right.
+ *
+ *   Mobile (<=768px): one column. Sidebar becomes a fixed overlay
+ *   drawer that slides in from the left when the toggle button is
+ *   tapped. Form container fills the tab.
  *
  * Load order: shared.css → characters.css
  */
@@ -48,13 +27,15 @@
 
 @media (max-width: 768px) {
     .characters-layout {
-        grid-template-columns: 1fr;
-        gap: 12px;
+        display: block;
     }
 }
 
 /* ============================================================
    SIDEBAR
+   ============================================================
+   Desktop: inline column at 300px.
+   Mobile:  fixed overlay drawer, off-screen until `.open`.
    ============================================================ */
 
 .characters-sidebar {
@@ -64,12 +45,56 @@
     padding: 10px;
     max-height: 640px;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 768px) {
     .characters-sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(340px, 88vw);
+        z-index: 150;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        border-radius: 0;
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35);
+        padding: 12px;
         max-height: none;
-        overflow: visible;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+    }
+
+    .characters-sidebar.open {
+        transform: translateX(0);
+    }
+
+    .characters-sidebar::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.22s ease;
+        z-index: -1;
+    }
+
+    .characters-sidebar.open::before {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .characters-sidebar {
+        transition: none;
+    }
+    .characters-sidebar::before {
+        transition: none;
     }
 }
 
@@ -97,10 +122,6 @@
 
 /* ------------------------------------------------------------
    Icon-only header buttons
-   ------------------------------------------------------------
-   Every button in the header carries a title attribute for the
-   tooltip; the visible label is a single glyph. Sizing is uniform
-   so the row reads as a strip of square controls.
    ------------------------------------------------------------ */
 
 .characters-header-actions button {
@@ -116,8 +137,8 @@
     font-weight: 700;
 }
 
-/* The toggle is a special case: it stays the same size but is
-   hidden on desktop, and only shows on mobile. */
+/* The burger toggle is hidden on desktop (sidebar is always
+   visible there) and shown on mobile. */
 #toggle-char-list {
     font-size: 1rem;
 }
@@ -181,69 +202,16 @@
 }
 
 /* ============================================================
-   CHARACTER LIST — MOBILE DRAWER, DESKTOP ALWAYS-OPEN
+   CHARACTER LIST PANEL
    ============================================================
-   Desktop: the panel is a normal block, always visible.
-   Mobile:  the panel is a fixed overlay that slides in from the
-            left. Its backdrop dims the form and closes the drawer
-            on tap. The filters and header buttons stay visible in
-            the sidebar above, independent of the drawer state.
+   Inside the sidebar. On desktop it scrolls with the sidebar.
+   On mobile it inherits the sidebar's fixed positioning — no
+   drawer of its own.
    ============================================================ */
 
 #char-list-panel {
-    position: relative;
     display: block;
-}
-
-@media (max-width: 768px) {
-    #char-list-panel {
-        position: fixed;
-        top: 0;
-        left: 0;
-        bottom: 0;
-        width: min(340px, 88vw);
-        z-index: 150;
-        background: var(--panel);
-        border-right: 1px solid var(--border);
-        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35);
-        padding: 12px;
-        overflow-y: auto;
-        transform: translateX(-100%);
-        transition: transform 0.22s ease;
-        max-height: none;
-        border-radius: 0;
-    }
-
-    #char-list-panel.open {
-        transform: translateX(0);
-    }
-
-    /* Backdrop. Pseudo-element so no extra DOM node is needed.
-       Sits behind the drawer, above the rest of the tab. */
-    #char-list-panel::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.22s ease;
-        z-index: -1;
-    }
-
-    #char-list-panel.open::before {
-        opacity: 1;
-        pointer-events: auto;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    #char-list-panel {
-        transition: none;
-    }
-    #char-list-panel::before {
-        transition: none;
-    }
+    min-height: 0;
 }
 
 #char-list-panel .empty-state {
@@ -260,9 +228,6 @@
 
 /* ============================================================
    SELECTION BAR
-   ============================================================
-   Rendered above the rows when at least one character is
-   ticked. Carries the count and a Clear button.
    ============================================================ */
 
 .char-selection-bar {
@@ -336,8 +301,6 @@
     background: var(--info-soft);
 }
 
-/* ---------- Checkbox cell ---------- */
-
 .char-list-checkbox-cell {
     flex: 0 0 auto;
     display: flex;
@@ -354,8 +317,6 @@
     cursor: pointer;
 }
 
-/* ---------- Content cell ---------- */
-
 .char-list-content {
     flex: 1;
     min-width: 0;
@@ -371,7 +332,6 @@
     gap: 6px;
 }
 
-/* Legacy hooks retained so other modules' selectors still match. */
 .char-list-item .char-list-item-main {
     display: flex;
     justify-content: space-between;
@@ -554,7 +514,7 @@
 }
 
 /* ============================================================
-   FILLER FLAG CHECKBOX (Character Form)
+   FILLER FLAG CHECKBOX
    ============================================================ */
 
 .filler-flag-group {
@@ -631,8 +591,6 @@
     padding: 0 2px;
 }
 
-/* ---------- Academic chip row (character class view) ---------- */
-
 .academic-section {
     margin-bottom: 16px;
 }
@@ -671,7 +629,7 @@
 }
 
 .academic-grades {
-    /* No bottom border — last section */
+    /* last section, no bottom border */
 }
 
 .enrollment-chip {
@@ -796,7 +754,7 @@
 }
 
 /* ============================================================
-   PHYSICAL STATS (Combat tab)
+   PHYSICAL STATS
    ============================================================ */
 
 .stat-input-group {
@@ -826,8 +784,6 @@
     border-radius: 6px;
     font-size: 0.75rem;
 }
-
-/* ---------- Stat-block layout ---------- */
 
 .stat-block {
     display: flex;
@@ -868,8 +824,6 @@
     font-weight: 600;
     color: var(--text-dim);
 }
-
-/* ---------- Stat action rows ---------- */
 
 .stat-actions {
     display: flex;
@@ -1127,7 +1081,7 @@
 }
 
 /* ============================================================
-   SOCIAL TAB (character form)
+   SOCIAL TAB
    ============================================================ */
 
 .relationship-groups {
@@ -1702,10 +1656,6 @@
     font-size: 0.78rem;
     border-radius: 5px;
 }
-
-/* ------------------------------------------------------------
-   Career-transition modal (reuses every .csw-* class above)
-   ------------------------------------------------------------ */
 
 #career-transition-modal .modal-content {
     max-width: 460px;
