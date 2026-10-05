@@ -6,6 +6,9 @@
  * Covers:
  *   - Character layout (.characters-layout, sidebar, form container)
  *   - Character list (.char-list-item, filters, #char-list-panel)
+ *   - Mobile drawer for the character list
+ *   - Character list selection (checkbox column, selection bar)
+ *   - Icon-only header buttons
  *   - Character form shell (.form-header, .form-tabs, .form-tab-btn)
  *   - Form panels (name, physical, personality, professional, combat,
  *     social, notes, academic)
@@ -65,7 +68,8 @@
 
 @media (max-width: 480px) {
     .characters-sidebar {
-        max-height: 300px;
+        max-height: none;
+        overflow: visible;
     }
 }
 
@@ -74,16 +78,54 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 8px;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 .characters-header h2 {
     font-size: 1rem;
     color: var(--accent);
+    margin: 0;
 }
 
 .characters-header-actions {
     display: flex;
     gap: 4px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+/* ------------------------------------------------------------
+   Icon-only header buttons
+   ------------------------------------------------------------
+   Every button in the header carries a title attribute for the
+   tooltip; the visible label is a single glyph. Sizing is uniform
+   so the row reads as a strip of square controls.
+   ------------------------------------------------------------ */
+
+.characters-header-actions button {
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 4px 8px;
+    min-width: 30px;
+    text-align: center;
+    vertical-align: middle;
+}
+
+.characters-header-actions button.primary {
+    font-weight: 700;
+}
+
+/* The toggle is a special case: it stays the same size but is
+   hidden on desktop, and only shows on mobile. */
+#toggle-char-list {
+    font-size: 1rem;
+}
+
+@media (min-width: 769px) {
+    #toggle-char-list {
+        display: none;
+    }
 }
 
 /* ============================================================
@@ -140,16 +182,68 @@
 
 /* ============================================================
    CHARACTER LIST — MOBILE DRAWER, DESKTOP ALWAYS-OPEN
+   ============================================================
+   Desktop: the panel is a normal block, always visible.
+   Mobile:  the panel is a fixed overlay that slides in from the
+            left. Its backdrop dims the form and closes the drawer
+            on tap. The filters and header buttons stay visible in
+            the sidebar above, independent of the drawer state.
    ============================================================ */
 
 #char-list-panel {
-    display: none;
-    max-height: 400px;
-    overflow-y: auto;
+    position: relative;
+    display: block;
 }
 
-#char-list-panel.open {
-    display: block;
+@media (max-width: 768px) {
+    #char-list-panel {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(340px, 88vw);
+        z-index: 150;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35);
+        padding: 12px;
+        overflow-y: auto;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        max-height: none;
+        border-radius: 0;
+    }
+
+    #char-list-panel.open {
+        transform: translateX(0);
+    }
+
+    /* Backdrop. Pseudo-element so no extra DOM node is needed.
+       Sits behind the drawer, above the rest of the tab. */
+    #char-list-panel::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.22s ease;
+        z-index: -1;
+    }
+
+    #char-list-panel.open::before {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #char-list-panel {
+        transition: none;
+    }
+    #char-list-panel::before {
+        transition: none;
+    }
 }
 
 #char-list-panel .empty-state {
@@ -164,20 +258,52 @@
     gap: 2px;
 }
 
-@media (min-width: 769px) {
-    #char-list-panel {
-        display: block;
-    }
+/* ============================================================
+   SELECTION BAR
+   ============================================================
+   Rendered above the rows when at least one character is
+   ticked. Carries the count and a Clear button.
+   ============================================================ */
 
-    #toggle-char-list {
-        display: none;
-    }
+.char-selection-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    font-size: 0.7rem;
 }
+
+.char-selection-count {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-dim);
+}
+
+.char-selection-count strong {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.char-selection-clear {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    padding: 2px 10px;
+}
+
+/* ============================================================
+   CHARACTER LIST ROWS
+   ============================================================ */
 
 .char-list-item {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: flex-start;
+    gap: 6px;
     padding: 6px 8px;
     background: transparent;
     border-radius: 4px;
@@ -206,6 +332,46 @@
     padding-left: 6px;
 }
 
+.char-list-item.char-list-item-ticked {
+    background: var(--info-soft);
+}
+
+/* ---------- Checkbox cell ---------- */
+
+.char-list-checkbox-cell {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-start;
+    padding-top: 2px;
+    padding-right: 2px;
+}
+
+.char-list-checkbox {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ---------- Content cell ---------- */
+
+.char-list-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.char-list-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Legacy hooks retained so other modules' selectors still match. */
 .char-list-item .char-list-item-main {
     display: flex;
     justify-content: space-between;
@@ -389,10 +555,7 @@
 
 /* ============================================================
    FILLER FLAG CHECKBOX (Character Form)
-   ============================================================
-   Sits on the Name tab, under the Character ID field, above the
-   First/Middle name row. See character-form.js's getNameTabHTML.
-   */
+   ============================================================ */
 
 .filler-flag-group {
     margin-bottom: 12px;
@@ -468,7 +631,7 @@
     padding: 0 2px;
 }
 
-/* ---------- New academic chip row (character class view) ---------- */
+/* ---------- Academic chip row (character class view) ---------- */
 
 .academic-section {
     margin-bottom: 16px;
@@ -664,7 +827,7 @@
     font-size: 0.75rem;
 }
 
-/* ---------- New stat-block layout (character-form.js) ---------- */
+/* ---------- Stat-block layout ---------- */
 
 .stat-block {
     display: flex;
@@ -1076,7 +1239,6 @@
     display: block;
 }
 
-/* Detail rows inside the modal */
 #character-detail-modal .detail-section {
     display: flex;
     flex-direction: column;
@@ -1136,7 +1298,6 @@
     border-radius: 4px;
 }
 
-/* Standalone elimination rows (character elimination view) */
 .standalone-elimination-entry {
     display: flex;
     justify-content: space-between;
@@ -1160,16 +1321,12 @@
 }
 
 /* ============================================================
-   GRADES TAB HOST
+   GRADES / SCHEDULE TAB HOSTS
    ============================================================ */
 
 .academy-grades-editor-host {
     display: block;
 }
-
-/* ============================================================
-   SCHEDULE TAB HOST
-   ============================================================ */
 
 .academy-schedule-host {
     display: block;
@@ -1178,10 +1335,6 @@
 
 /* ============================================================
    FILLER MANAGER MODAL
-   ============================================================
-   Opened by the Manage Fillers button (#manage-fillers-btn) in
-   the character page header. Lists every character with a
-   checkbox; the user flags some as filler.
    ============================================================ */
 
 .filler-manager-hint {
@@ -1190,8 +1343,6 @@
     margin: 0 0 10px 0;
     line-height: 1.45;
 }
-
-/* ---------- Toolbar ---------- */
 
 .filler-manager-toolbar {
     display: flex;
@@ -1222,8 +1373,6 @@
     color: var(--text);
     font-weight: 600;
 }
-
-/* ---------- List ---------- */
 
 .filler-manager-list {
     max-height: 420px;
@@ -1256,12 +1405,6 @@
     border-left-color: var(--accent);
 }
 
-.filler-manager-row.is-candidate {
-    /* Base styling matches a plain row; the "Candidate" badge
-       below carries the distinction. Named hook for a future
-       change. */
-}
-
 .filler-manager-row input[type="checkbox"].filler-row-check {
     width: auto;
     margin: 0;
@@ -1280,8 +1423,6 @@
     white-space: nowrap;
 }
 
-/* ---------- Candidate badge ---------- */
-
 .filler-manager-badge {
     font-size: 0.55rem;
     font-weight: 600;
@@ -1298,8 +1439,6 @@
     cursor: help;
 }
 
-/* ---------- Modal footer (reuses .form-actions) ---------- */
-
 .filler-manager-list + .form-actions {
     margin-top: 10px;
     padding-top: 10px;
@@ -1308,20 +1447,7 @@
 
 /* ============================================================
    CAREER STATUS WIZARD
-   ============================================================
-   Styling for the CareerStatusWizard modal, opened from the
-   Professional tab's [⌂ Career Wizard] button.
-
-   Layout intent:
-     Compact radio rows, one line each where possible, so the
-     three route options and two timing options fit without
-     dominating the modal. The preview table and warning strip
-     carry the visual weight; the input controls stay quiet.
    ============================================================ */
-
-/* ------------------------------------------------------------
-   Modal shell
-   ------------------------------------------------------------ */
 
 #career-status-wizard-modal .modal-content {
     max-width: 520px;
@@ -1338,10 +1464,6 @@
     font-weight: 600;
     color: var(--accent);
 }
-
-/* ------------------------------------------------------------
-   Body
-   ------------------------------------------------------------ */
 
 .career-wizard-body {
     display: flex;
@@ -1383,14 +1505,6 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-soft);
 }
-
-/* ------------------------------------------------------------
-   Radio / checkbox rows
-   ------------------------------------------------------------
-   One-line rows. The label to the right of the radio is inline
-   and wraps only if the text really is long. Padding is tight —
-   the row reads as a compact list, not a wall of cards.
-   ------------------------------------------------------------ */
 
 .csw-radio-row,
 .csw-checkbox-row {
@@ -1448,20 +1562,12 @@
     }
 }
 
-/* ------------------------------------------------------------
-   Route B sub-option
-   ------------------------------------------------------------ */
-
 .csw-suboption {
     margin-top: 2px;
     margin-left: 8px;
     padding-left: 10px;
     border-left: 2px solid var(--border-soft);
 }
-
-/* ------------------------------------------------------------
-   Preview
-   ------------------------------------------------------------ */
 
 .csw-preview {
     display: flex;
@@ -1538,10 +1644,6 @@
     margin: 0;
 }
 
-/* ------------------------------------------------------------
-   Note / warning strips
-   ------------------------------------------------------------ */
-
 .csw-note {
     margin: 0;
     padding: 7px 10px;
@@ -1582,10 +1684,6 @@
     border-left-color: var(--accent);
 }
 
-/* ------------------------------------------------------------
-   Footer
-   ------------------------------------------------------------ */
-
 .csw-footer {
     display: flex;
     align-items: center;
@@ -1607,10 +1705,6 @@
 
 /* ------------------------------------------------------------
    Career-transition modal (reuses every .csw-* class above)
-   ------------------------------------------------------------
-   The Career Transition modal has one extra element: a
-   field-hint paragraph at the top of the body. Kept quiet — it
-   is orientation text, not content.
    ------------------------------------------------------------ */
 
 #career-transition-modal .modal-content {
@@ -1638,19 +1732,9 @@
 
 /* ============================================================
    BULK CREATE MODAL
-   ============================================================
-   Opened by the Bulk Add button (#bulk-add-btn) in the character
-   page header. A table of rows, one per character to create.
-   Each row is a flat grid: First | Last | Birth Year | Gender |
-   remove.
-
-   Desktop uses a fixed-column layout. Mobile collapses each row
-   to a small card with First/Last on top, Birth Year/Gender
-   below, and the remove button spanning the bottom.
    ============================================================ */
 
 .bulk-create-content {
-    /* wide modal is 900px */
     max-width: 760px;
 }
 
@@ -1660,10 +1744,6 @@
     margin: 0 0 10px 0;
     line-height: 1.5;
 }
-
-/* ------------------------------------------------------------
-   Table header
-   ------------------------------------------------------------ */
 
 .bulk-create-table-header {
     display: grid;
@@ -1680,10 +1760,6 @@
     letter-spacing: 0.05em;
     color: var(--text-dim);
 }
-
-/* ------------------------------------------------------------
-   Rows
-   ------------------------------------------------------------ */
 
 .bulk-create-rows {
     display: flex;
@@ -1750,10 +1826,6 @@
     cursor: not-allowed;
 }
 
-/* ------------------------------------------------------------
-   Actions row (Add Row + count)
-   ------------------------------------------------------------ */
-
 .bulk-create-actions {
     display: flex;
     align-items: center;
@@ -1773,10 +1845,6 @@
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
 }
-
-/* ------------------------------------------------------------
-   Mobile
-   ------------------------------------------------------------ */
 
 @media (max-width: 640px) {
     .bulk-create-content {
@@ -1847,10 +1915,6 @@
         gap: 8px;
     }
 
-    .characters-sidebar {
-        max-height: 300px;
-    }
-
     .form-tab-btn {
         font-size: 0.55rem;
         padding: 3px 6px;
@@ -1864,8 +1928,6 @@
     .magic-grid {
         grid-template-columns: repeat(3, 1fr);
     }
-
-    /* ---------- Filler manager (mobile) ---------- */
 
     .filler-manager-toolbar {
         flex-direction: column;
@@ -1890,8 +1952,6 @@
         font-size: 0.72rem;
         padding: 6px 8px;
     }
-
-    /* ---------- Career wizard + transition (mobile) ---------- */
 
     #career-status-wizard-modal .modal-content,
     #career-transition-modal .modal-content {
