@@ -32,25 +32,30 @@
  *   The toggle button is only visible on mobile.
  *
  * MOBILE BURGER ESCAPE (this revision):
- *   The toggle button lives inside .characters-sidebar in the
- *   static markup. On mobile that sidebar is `transform:
- *   translateX(-100%)` until `.open` is added, which means the
- *   button that would add `.open` is off-screen with the rest of
- *   the drawer — the classic burger-inside-the-drawer trap.
+ *   #toggle-char-list is a SIBLING of .characters-sidebar in the
+ *   markup, not a child of it.
  *
- *   The tab template emits a small scoped <style> block that pins
- *   #toggle-char-list to `position: fixed` at top-left on mobile.
- *   Fixed positioning removes the element from its parent's
- *   stacking context and escapes the transform clip, so the
- *   button stays clickable while the drawer is closed. The same
- *   <style> block also guarantees the sidebar behaves as a
- *   drawer and the form container fills the tab on mobile. Those
- *   rules mirror the canonical responsive layout defined in
- *   css/characters.css; when the stylesheet loads normally they
- *   are redundant, and when it is absent or overridden they keep
- *   the tab usable.
+ *   WHY IT MUST BE A SIBLING:
+ *     On mobile, .characters-sidebar is translated off-screen via
+ *     `transform: translateX(-100%)` until `.open` is added. A
+ *     fixed-positioned descendant of a transformed ancestor does
+ *     NOT escape that ancestor's clip: the transformed element
+ *     becomes the containing block for its fixed descendants
+ *     (CSS Transforms spec). So a burger rendered *inside* the
+ *     sidebar would be dragged off-screen with it, and no amount
+ *     of `position: fixed` on the burger itself would help.
  *
- *   No CSS file edit is required for the mobile fix.
+ *     The only reliable fix is to place the burger outside the
+ *     transformed subtree. It lives as a direct child of
+ *     .characters-layout, which has no transform, so its
+ *     containing block is the viewport and `position: fixed`
+ *     behaves as expected.
+ *
+ *   The tab template emits a small scoped <style> block that
+ *   hides the burger on desktop and pins it to the top-left on
+ *   mobile. css/characters.css carries the same mobile rule as a
+ *   belt-and-braces fallback. Both are harmless together; either
+ *   alone is sufficient.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -430,42 +435,40 @@
             <style>
                 /* Defensive mobile rules for the Characters tab.
 
-                   The external stylesheet (css/characters.css)
-                   owns the canonical responsive layout. These
-                   rules exist for two reasons:
+                   THE BURGER FIX:
+                   #toggle-char-list is a sibling of
+                   .characters-sidebar, not a child of it. On
+                   mobile the sidebar slides off-screen via
+                   `transform: translateX(-100%)`. A fixed
+                   descendant of a transformed ancestor does
+                   NOT escape the transform's clip — the
+                   transformed element becomes the containing
+                   block for its fixed descendants. Placing
+                   the burger outside the transformed subtree
+                   is the only reliable fix; positioning it
+                   fixed here then works because its
+                   containing block is the viewport.
 
-                   1. THE BURGER TRAP. #toggle-char-list lives
-                      inside .characters-sidebar in the markup.
-                      On mobile the sidebar is transform:
-                      translateX(-100%) until .open is added —
-                      which means the button that adds .open is
-                      off-screen with the rest of the drawer.
-                      Pinning the button to position: fixed
-                      takes it out of the sidebar's stacking
-                      context and out of the transform clip, so
-                      it stays clickable while the drawer is
-                      closed. This is the whole mobile fix.
+                   The rest of the block mirrors what
+                   css/characters.css already does for the
+                   tab layout on mobile. When the stylesheet
+                   loads normally those rules are redundant;
+                   when it is absent or overridden they keep
+                   the tab usable. */
 
-                   2. A fallback shell. The .characters-layout
-                      block and drawer rules below mirror what
-                      css/characters.css already does. When the
-                      stylesheet loads normally they are
-                      redundant; when it is absent or overridden
-                      they keep the tab usable.
-
-                   The matching @media (min-width: 769px) rule
-                   in css/characters.css hides the button on
-                   desktop, so no extra hide rule is needed here. */
+                #toggle-char-list {
+                    display: none;
+                }
 
                 @media (max-width: 768px) {
                     #toggle-char-list {
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
                         position: fixed;
                         top: 8px;
                         left: 8px;
                         z-index: 200;
-                        display: inline-flex;
-                        align-items: center;
-                        justify-content: center;
                         width: 34px;
                         height: 34px;
                         padding: 0;
@@ -505,6 +508,10 @@
                 }
             </style>
             <div class="characters-layout">
+                <button id="toggle-char-list"
+                        class="secondary small"
+                        title="Toggle character list"
+                        aria-label="Toggle character list">\u2630</button>
                 <div class="characters-sidebar">
                     <div class="characters-header">
                         <h2>Characters</h2>
@@ -533,10 +540,6 @@
                                     class="small secondary"
                                     title="Bulk create characters"
                                     aria-label="Bulk create characters">\u2726</button>
-                            <button id="toggle-char-list"
-                                    class="secondary small"
-                                    title="Toggle character list"
-                                    aria-label="Toggle character list">\u2630</button>
                             <button id="add-character-btn"
                                     class="primary small"
                                     title="Add character"
