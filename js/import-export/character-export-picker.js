@@ -1,9 +1,14 @@
 /**
  * js/import-export/character-export-picker.js - Character Export Picker
- * Modal that offers three character export formats:
+ * Modal that offers four character export formats:
  *
  *   Full report       every detail, one file, all selected characters
  *                     concatenated with a bulk banner
+ *   General           a curated subset: identity, physical,
+ *                     personality, combat, all-time class names,
+ *                     professional teams, career status,
+ *                     departments, social. No missions, no notes,
+ *                     no academic history beyond class names.
  *   Simplified        the roster: name, gender, birth year, eliminated
  *   Blank template    a CSV template for authoring new characters
  *
@@ -11,8 +16,8 @@
  *
  * SCOPE:
  *   The picker accepts an optional `characterIds` array. When
- *   supplied, the two report formats (Full and Simplified) export
- *   only those characters. When omitted or empty, both formats
+ *   supplied, the three report formats (Full, General, Simplified)
+ *   export only those characters. When omitted or empty, all three
  *   export every character in the store.
  *
  *   The template format is never scoped. A blank template is a
@@ -21,6 +26,9 @@
  * FORMAT SEMANTICS:
  *   Full report       CharacterExport.exportSelectedText(charIds)
  *                     or CharacterExport.exportCharacterText(id)
+ *                     when a single character is selected.
+ *   General           CharacterExport.exportGeneralSelectedText(charIds)
+ *                     or CharacterExport.exportGeneralText(id)
  *                     when a single character is selected.
  *   Simplified        CharacterRosterExport.exportSelectedText(charIds)
  *                     or CharacterRosterExport.exportText()
@@ -138,9 +146,9 @@
      *
      * @param {object} [options]
      * @param {string} [options.initialFormat] - Preselect a format
-     * @param {string[]} [options.characterIds] - Scope the two
-     *   report formats to these character IDs. When omitted or
-     *   empty, the whole store is in scope.
+     * @param {string[]} [options.characterIds] - Scope the report
+     *   formats (Full, General, Simplified) to these character IDs.
+     *   When omitted or empty, the whole store is in scope.
      * @param {function} [options.onClose]     - Called once on close
      * @returns {object|null} The modal element, or null on failure
      */
@@ -319,6 +327,9 @@
             report: report !== null &&
                 (typeof report.exportSelectedText === 'function' ||
                  typeof report.exportCharacterText === 'function'),
+            general: report !== null &&
+                (typeof report.exportGeneralSelectedText === 'function' ||
+                 typeof report.exportGeneralText === 'function'),
             simplified: roster !== null &&
                 (typeof roster.exportSelectedText === 'function' ||
                  typeof roster.exportText === 'function'),
@@ -361,10 +372,20 @@
         html += buildFormatRow(
             'report',
             'Full report',
-            'Every detail — identity, personality, combat, ' +
-            'teams, relationships, missions, academy history. ' +
-            'One text file.',
+            'Every detail \u2014 identity, personality, combat, ' +
+            'academic history, teams, departments, relationships, ' +
+            'missions, tournaments. One text file.',
             availability.report
+        );
+
+        html += buildFormatRow(
+            'general',
+            'General',
+            'A curated subset \u2014 identity, physical, ' +
+            'personality, combat, class names, professional teams, ' +
+            'career status, departments, relationships. No missions, ' +
+            'no notes, no academic history.',
+            availability.general
         );
 
         html += buildFormatRow(
@@ -499,6 +520,7 @@
 
     function isFormatAvailable(format, availability) {
         if (format === 'report') { return availability.report; }
+        if (format === 'general') { return availability.general; }
         if (format === 'simplified') {
             return availability.simplified;
         }
@@ -552,6 +574,8 @@
         try {
             if (_selectedFormat === 'report') {
                 result = runReportExport();
+            } else if (_selectedFormat === 'general') {
+                result = runGeneralExport();
             } else if (_selectedFormat === 'simplified') {
                 result = runSimplifiedExport();
             } else if (_selectedFormat === 'template') {
@@ -597,6 +621,7 @@
 
     function _formatLabel(format) {
         if (format === 'report') { return 'Full report'; }
+        if (format === 'general') { return 'General report'; }
         if (format === 'simplified') { return 'Simplified'; }
         if (format === 'template') { return 'Template'; }
         return 'Export';
@@ -643,6 +668,54 @@
             };
         }
         return report.exportSelectedText(ids);
+    }
+
+    function runGeneralExport() {
+        var report = window.CharacterExport;
+        if (!report) { return null; }
+
+        // Scoped to a selection.
+        if (_characterIds && _characterIds.length > 0) {
+            if (typeof report.exportGeneralSelectedText !==
+                'function') {
+                return null;
+            }
+            return report.exportGeneralSelectedText(_characterIds);
+        }
+
+        // Whole store. Same shape as runReportExport: build the
+        // full ID list from the store, then defer to the bulk
+        // helper so the file layout matches the selected path.
+        if (!window.CharacterQueries ||
+            typeof window.CharacterQueries.getCharacters !==
+                'function') {
+            return null;
+        }
+        var all = [];
+        try {
+            all = window.CharacterQueries.getCharacters() || [];
+        } catch (e) {
+            return null;
+        }
+        var ids = [];
+        for (var i = 0; i < all.length; i++) {
+            if (all[i] && all[i].id) {
+                ids.push(String(all[i].id));
+            }
+        }
+        if (ids.length === 0) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'No characters to export.'
+            };
+        }
+        if (typeof report.exportGeneralSelectedText !==
+            'function') {
+            return null;
+        }
+        return report.exportGeneralSelectedText(ids);
     }
 
     function runSimplifiedExport() {
