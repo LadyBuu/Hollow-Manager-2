@@ -31,7 +31,7 @@
  *
  *   The toggle button is only visible on mobile.
  *
- * MOBILE BURGER ESCAPE (this revision):
+ * MOBILE BURGER ESCAPE:
  *   #toggle-char-list is a SIBLING of .characters-sidebar in the
  *   markup, not a child of it.
  *
@@ -41,7 +41,7 @@
  *     fixed-positioned descendant of a transformed ancestor does
  *     NOT escape that ancestor's clip: the transformed element
  *     becomes the containing block for its fixed descendants
- *     (CSS Transforms spec). So a burger rendered *inside* the
+ *     (CSS Transforms spec). So a burger rendered inside the
  *     sidebar would be dragged off-screen with it, and no amount
  *     of `position: fixed` on the burger itself would help.
  *
@@ -51,11 +51,17 @@
  *     containing block is the viewport and `position: fixed`
  *     behaves as expected.
  *
- *   The tab template emits a small scoped <style> block that
- *   hides the burger on desktop and pins it to the top-left on
- *   mobile. css/characters.css carries the same mobile rule as a
- *   belt-and-braces fallback. Both are harmless together; either
- *   alone is sufficient.
+ *   Positioning and visibility live entirely in
+ *   css/characters.css:
+ *     - `@media (max-width: 768px)` pins the burger to the
+ *       top-left of the viewport, above the sidebar.
+ *     - `@media (min-width: 769px)` hides it.
+ *
+ *   This template deliberately contains no <style> block and no
+ *   CSS text. Emitting CSS inside the JS template caused a
+ *   parser ambiguity (`transform:` being read as a JS token
+ *   after an early template-literal termination). Keeping the
+ *   shell pure HTML removes that class of bug entirely.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -432,81 +438,6 @@
             careerStatusCollapsed ? '\u25b8' : '\u25be';
 
         return `
-            <style>
-                /* Defensive mobile rules for the Characters tab.
-
-                   THE BURGER FIX:
-                   #toggle-char-list is a sibling of
-                   .characters-sidebar, not a child of it. On
-                   mobile the sidebar slides off-screen via
-                   `transform: translateX(-100%)`. A fixed
-                   descendant of a transformed ancestor does
-                   NOT escape the transform's clip — the
-                   transformed element becomes the containing
-                   block for its fixed descendants. Placing
-                   the burger outside the transformed subtree
-                   is the only reliable fix; positioning it
-                   fixed here then works because its
-                   containing block is the viewport.
-
-                   The rest of the block mirrors what
-                   css/characters.css already does for the
-                   tab layout on mobile. When the stylesheet
-                   loads normally those rules are redundant;
-                   when it is absent or overridden they keep
-                   the tab usable. */
-
-                #toggle-char-list {
-                    display: none;
-                }
-
-                @media (max-width: 768px) {
-                    #toggle-char-list {
-                        display: inline-flex;
-                        align-items: center;
-                        justify-content: center;
-                        position: fixed;
-                        top: 8px;
-                        left: 8px;
-                        z-index: 200;
-                        width: 34px;
-                        height: 34px;
-                        padding: 0;
-                        box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-                    }
-
-                    .characters-layout {
-                        display: block;
-                    }
-
-                    .characters-form-container {
-                        display: block;
-                        width: 100%;
-                        min-width: 0;
-                    }
-
-                    .characters-sidebar {
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        bottom: 0;
-                        width: min(340px, 88vw);
-                        z-index: 150;
-                        transform: translateX(-100%);
-                        transition: transform 0.22s ease;
-                    }
-
-                    .characters-sidebar.open {
-                        transform: translateX(0);
-                    }
-                }
-
-                @media (prefers-reduced-motion: reduce) {
-                    .characters-sidebar {
-                        transition: none;
-                    }
-                }
-            </style>
             <div class="characters-layout">
                 <button id="toggle-char-list"
                         class="secondary small"
