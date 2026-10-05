@@ -15,11 +15,13 @@
  *   - Rendering the character's professional team memberships
  *     (Active / Former split), sourced from
  *     TeamQueries.getTeamsForCharacterAllTime
+ *   - Rendering the character's department memberships as a
+ *     sub-section of the Professional tab
  *
  * IMPORTANT:
  *   - RENDER ONLY - no data mutation
- *   - No direct window.data access - uses SocialQueries and
- *     TeamQueries
+ *   - No direct window.data access - uses SocialQueries,
+ *     TeamQueries, and DepartmentQueries
  *   - Uses SocialConstants for type definitions
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
@@ -48,6 +50,33 @@
  *     renders a single flat list under "Membership", because the
  *     split cannot be resolved without a reference year. It does
  *     NOT invent a year.
+ *
+ * DEPARTMENTS SUB-SECTION (this revision):
+ *   renderProfessionalDepartmentsSection(char) appends a
+ *   "Departments" block below the Professional Teams block on the
+ *   same tab. It lists every department the character is an ACTIVE
+ *   member of at the current application year, with:
+ *     - the department name
+ *     - the year they joined (earliest join period across the
+ *       intervals that are still within range at the current year)
+ *     - "(Head)" when they hold the head role
+ *
+ *   DATA SOURCE:
+ *     DepartmentQueries.getDepartmentsForCharacter(char.id,
+ *     currentYear). This is the year-scoped read: it returns only
+ *     departments where the character is an active member at that
+ *     year. Departments they have left, or that they will join in
+ *     a future year, are not shown. That matches the form's
+ *     convention of rendering the character "as they are now".
+ *
+ *   A department carries no per-member title field. The only
+ *   role-like attribute is headId at the department level, and
+ *   that is what "(Head)" reflects.
+ *
+ *   When DepartmentQueries is unavailable, or the character is in
+ *   no departments, or no current year is resolvable, the section
+ *   is not rendered at all. It never emits an empty-state line;
+ *   absence is the empty state.
  *
  * GRAPH NODE COLORS:
  *   The character network graph renders into an SVG. SVG fill and
@@ -79,6 +108,7 @@
     function getSocialConstants() { return window.SocialConstants || null; }
     function getSocialGraph() { return window.SocialGraph || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
+    function getDepartmentQueries() { return window.DepartmentQueries || null; }
     function getDomUtils() { return window.DomUtils || null; }
 
     // ============================================================
@@ -381,6 +411,13 @@
      *   flat list without a split, because the split cannot be
      *   resolved without a reference year.
      *
+     * DEPARTMENTS SUB-SECTION:
+     *   Below the professional teams block, renderProfessionalDepartmentsSection
+     *   emits a "Departments" list. It renders on every exit path
+     *   (module-missing branch, no-teams branch, normal return) so a
+     *   character with no professional teams but with department
+     *   memberships still sees the departments block.
+     *
      * @param {object|null} char - Character object, or null for the
      *                             empty state
      */
@@ -401,7 +438,8 @@
                 '<p class="empty-state" ' +
                     'style="padding:8px;font-size:0.8rem;">' +
                     'Team module not loaded.' +
-                '</p>';
+                '</p>' +
+                renderProfessionalDepartmentsSection(char);
             return;
         }
 
@@ -432,7 +470,8 @@
                         'color:var(--text-dim);">' +
                         'Not a member of any professional team.' +
                     '</p>' +
-                '</div>';
+                '</div>' +
+                renderProfessionalDepartmentsSection(char);
             return;
         }
 
@@ -535,7 +574,157 @@
         }
 
         html += '</div>';
+
+        // ---- Departments sub-section ----
+        //
+        // Rendered as a sibling of .character-professional-teams.
+        // See renderProfessionalDepartmentsSection for shape and
+        // data source.
+        html += renderProfessionalDepartmentsSection(char);
+
         container.innerHTML = html;
+    }
+
+    // ============================================================
+    // RENDER - Professional tab, departments sub-section
+    // ============================================================
+    //
+    // Lists every department the character is an ACTIVE member of
+    // at the current application year, with:
+    //   - the department name
+    //   - the year they joined (earliest join period across the
+    //     intervals that are still within range at the current year)
+    //   - "(Head)" when they hold the head role
+    //
+    // A department carries no per-member title. The only role-like
+    // attribute is headId on the department itself, and that is
+    // what "(Head)" reflects.
+    //
+    // When the section would be empty for any reason, this returns
+    // an empty string. It never emits an empty-state placeholder;
+    // absence is the empty state.
+
+    function renderProfessionalDepartmentsSection(char) {
+        var DQ = getDepartmentQueries();
+        if (!DQ ||
+            typeof DQ.getDepartmentsForCharacter !== 'function' ||
+            typeof DQ.getMemberEntry !== 'function') {
+            return '';
+        }
+
+        var currentYear = null;
+        if (window.data &&
+            typeof window.data.currentYear === 'number' &&
+            isFinite(window.data.currentYear) &&
+            window.data.currentYear > 0) {
+            currentYear = Math.floor(window.data.currentYear);
+        }
+        if (currentYear === null) { return ''; }
+
+        var departments = [];
+        try {
+            departments = DQ.getDepartmentsForCharacter(
+                char.id, currentYear
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[CharacterViews] getDepartmentsForCharacter ' +
+                'threw:', e
+            );
+            departments = [];
+        }
+
+        if (!Array.isArray(departments) ||
+            departments.length === 0) {
+            return '';
+        }
+
+        var rows = [];
+        for (var i = 0; i < departments.length; i++) {
+            var dept = departments[i];
+            if (!dept || !dept.id) { continue; }
+
+            var entry = null;
+            try {
+                entry = DQ.getMemberEntry(dept, char.id);
+            } catch (e) {
+                entry = null;
+            }
+
+            var joinYear = null;
+            if (entry && Array.isArray(entry.intervals)) {
+                for (var j = 0; j < entry.intervals.length; j++) {
+                    var iv = entry.intervals[j];
+                    if (!iv || typeof iv !== 'object') { continue; }
+                    var y = parseInt(iv.joinPeriod, 10);
+                    if (isNaN(y)) { continue; }
+                    if (joinYear === null || y < joinYear) {
+                        joinYear = y;
+                    }
+                }
+            }
+
+            var isHead = dept.headId &&
+                String(dept.headId) === String(char.id);
+
+            rows.push({
+                name: isNonEmptyString(dept.name)
+                    ? dept.name
+                    : 'Unnamed Department',
+                joinYear: joinYear,
+                isHead: isHead
+            });
+        }
+
+        if (rows.length === 0) { return ''; }
+
+        rows.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        var html = '';
+        html += '<div class="character-professional-departments" ' +
+                    'style="margin-top:12px;">';
+
+        html += '<div class="character-professional-departments-header" ' +
+                    'style="font-size:0.75rem;color:var(--accent);' +
+                    'font-weight:600;margin-bottom:6px;">' +
+                    'Departments' +
+                '</div>';
+
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+
+            html += '<div class="character-professional-department-row" ' +
+                        'style="padding:4px 8px;background:var(--bg);' +
+                        'border-radius:4px;border-left:3px solid ' +
+                        'var(--info);margin-bottom:4px;' +
+                        'font-size:0.72rem;display:flex;' +
+                        'align-items:baseline;gap:6px;flex-wrap:wrap;">';
+
+            html += '<span style="font-weight:600;">' +
+                        escapeHtml(row.name) +
+                    '</span>';
+
+            if (row.isHead) {
+                html += '<span style="color:var(--warning);' +
+                            'font-size:0.65rem;font-style:italic;">' +
+                            '(Head)' +
+                        '</span>';
+            }
+
+            if (row.joinYear !== null) {
+                html += '<span style="color:var(--text-dim);' +
+                            'font-size:0.65rem;">Since ' +
+                            escapeHtml(String(row.joinYear)) +
+                        '</span>';
+            }
+
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
     }
 
     function renderProfessionalSubsection(heading, rows) {
