@@ -19,6 +19,8 @@
  *   - Missions → Classes (graduatingClassId)
  *   - Teams → Characters (members.characterId)
  *   - Teams → Classes (classId for academic teams)
+ *   - Departments → Characters (members.characterId)
+ *   - Departments → Characters (headId)
  *   - Tournaments → Characters/Teams (participants)
  *   - Tournaments → Classes (graduatingClassId)
  *   - Academy → Characters (classStudents)
@@ -32,6 +34,10 @@
  *   - Data format validity (handled by domain schemas)
  *   - Enum value validity (handled by domain schemas)
  *   - Required field presence (handled by domain schemas)
+ *   - The "head must be a member" invariant on departments. That is a
+ *     structural rule owned by DepartmentSchema and enforced on the
+ *     write path. This module only checks that headId and member
+ *     characterIds resolve to characters that exist in the candidate.
  * 
  * DEPENDENCIES:
  *   - window.IdUtils (for ID normalisation) - MANDATORY
@@ -49,6 +55,7 @@
  *   // Validate specific references
  *   var errors = Validator.validateMissionReferences(candidate);
  *   var errors = Validator.validateTeamReferences(candidate);
+ *   var errors = Validator.validateDepartmentReferences(candidate);
  */
 
 (function() {
@@ -294,6 +301,86 @@
                         team.classId,
                         'Academic team references non-existent class: ' + team.classId
                     ));
+                }
+            }
+        }
+
+        return { errors: errors, warnings: warnings };
+    }
+
+    // ============================================================
+    // DEPARTMENT REFERENCE VALIDATION
+    // ============================================================
+
+    /**
+     * Validate department references against candidate state.
+     *
+     * Checks:
+     *   - departments[].headId               → characters
+     *   - departments[].members[].characterId → characters
+     *
+     * The "head must be a member of the department" invariant is a
+     * structural rule. It is enforced on the write path by
+     * DepartmentSchema (validateDepartment, canonicaliseDepartmentShape).
+     * This validator only confirms that the referenced characters
+     * exist in the candidate state; a head that is missing from the
+     * candidate is an error here even if it is present in members.
+     *
+     * @param {object} candidate - Candidate application state
+     * @returns {object} { errors: array, warnings: array }
+     */
+    function validateDepartmentReferences(candidate) {
+        var errors = [];
+        var warnings = [];
+
+        var departments = Array.isArray(candidate.departments)
+            ? candidate.departments
+            : [];
+        var characters = candidate.characters || [];
+
+        var characterIds = getIds(characters);
+
+        for (var i = 0; i < departments.length; i++) {
+            var dept = departments[i];
+            if (!dept || typeof dept !== 'object') { continue; }
+
+            var deptId = dept.id || 'unknown';
+
+            // Check headId
+            if (dept.headId) {
+                var headId = normaliseId(dept.headId);
+                if (headId && !characterIds[headId]) {
+                    errors.push(createError(
+                        'departments',
+                        deptId,
+                        'headId',
+                        dept.headId,
+                        'Department head references non-existent ' +
+                        'character: ' + dept.headId
+                    ));
+                }
+            }
+
+            // Check members
+            if (Array.isArray(dept.members)) {
+                for (var m = 0; m < dept.members.length; m++) {
+                    var member = dept.members[m];
+                    if (!member || typeof member !== 'object') {
+                        continue;
+                    }
+
+                    var charId = normaliseId(member.characterId);
+                    if (charId && !characterIds[charId]) {
+                        errors.push(createError(
+                            'departments',
+                            deptId,
+                            'members.characterId',
+                            member.characterId,
+                            'Department member references ' +
+                            'non-existent character: ' +
+                            member.characterId
+                        ));
+                    }
                 }
             }
         }
@@ -987,6 +1074,7 @@
         var sections = options.sections || [
             'missions',
             'teams',
+            'departments',
             'tournaments',
             'academy',
             'characters',
@@ -1013,6 +1101,14 @@
             allErrors = allErrors.concat(teamResult.errors);
             if (includeWarnings) {
                 allWarnings = allWarnings.concat(teamResult.warnings);
+            }
+        }
+
+        if (hasSection('departments') && candidate.departments) {
+            var departmentResult = validateDepartmentReferences(candidate);
+            allErrors = allErrors.concat(departmentResult.errors);
+            if (includeWarnings) {
+                allWarnings = allWarnings.concat(departmentResult.warnings);
             }
         }
 
@@ -1096,6 +1192,7 @@
         var collections = [
             { name: 'characters', data: candidate.characters },
             { name: 'teams', data: candidate.teams },
+            { name: 'departments', data: candidate.departments },
             { name: 'tournaments', data: candidate.tournaments },
             { name: 'missions', data: candidate.missions },
             { name: 'classes', data: candidate.classes },
@@ -1147,6 +1244,13 @@
      */
     function validateTeams(candidate) {
         return validateTeamReferences(candidate);
+    }
+
+    /**
+     * Validate only department references.
+     */
+    function validateDepartments(candidate) {
+        return validateDepartmentReferences(candidate);
     }
 
     /**
@@ -1203,6 +1307,7 @@
         // ---- Section-specific validation ----
         validateMissions: validateMissions,
         validateTeams: validateTeams,
+        validateDepartments: validateDepartments,
         validateTournaments: validateTournaments,
         validateAcademy: validateAcademy,
         validateCharacters: validateCharacters,
@@ -1213,6 +1318,7 @@
         // ---- Individual reference validators (for composition) ----
         validateMissionReferences: validateMissionReferences,
         validateTeamReferences: validateTeamReferences,
+        validateDepartmentReferences: validateDepartmentReferences,
         validateTournamentReferences: validateTournamentReferences,
         validateAcademyReferences: validateAcademyReferences,
         validateCharacterReferences: validateCharacterReferences,
@@ -1234,6 +1340,7 @@
             'validateUniqueIds',
             'validateMissions',
             'validateTeams',
+            'validateDepartments',
             'validateTournaments',
             'validateAcademy',
             'validateCharacters',
@@ -1242,6 +1349,7 @@
             'validateLocationSchedules',
             'validateMissionReferences',
             'validateTeamReferences',
+            'validateDepartmentReferences',
             'validateTournamentReferences',
             'validateAcademyReferences',
             'validateCharacterReferences',
@@ -1260,7 +1368,7 @@
             console.warn('[CrossDomainValidator] Verification - some exports may be missing:', missing.join(', '));
         } else {
             console.log('[CrossDomainValidator] All exports verified successfully.');
-            console.log('[CrossDomainValidator] Validates: missions, teams, tournaments, academy, characters, curriculum, social, locationSchedules');
+            console.log('[CrossDomainValidator] Validates: missions, teams, departments, tournaments, academy, characters, curriculum, social, locationSchedules');
         }
     })();
 
