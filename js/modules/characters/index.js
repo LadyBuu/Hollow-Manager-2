@@ -13,10 +13,10 @@
  *     and window.setCurrentEditId, which CharacterList and
  *     CharacterEvents consume.
  *   - The character list toggle (mobile sidebar).
- *   - The Research button. Opens window.Research (the profile
- *     search modal).
- *   - The Bulk Add button. Opens window.CharacterBulkCreate
- *     (the bulk character creation modal).
+ *   - The Research button. Opens window.Research.
+ *   - The Bulk Add button. Opens window.CharacterBulkCreate.
+ *   - The Export button. Opens window.CharacterExportPicker,
+ *     passing the current selection set from CharacterList.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -24,10 +24,8 @@
  *     through CharacterCRUD.
  *   - Rendering of the list or the form. CharacterList and
  *     CharacterForm own those.
- *   - Event binding. CharacterEvents owns it.
- *   - The research feature. ResearchQueries / ResearchView /
- *     ResearchEvents own it.
- *   - The bulk-create feature. CharacterBulkCreate owns it.
+ *   - Event binding. CharacterEvents owns it, including the
+ *     Export button click.
  *
  * FILTER BAR:
  *   The filter bar carries:
@@ -40,12 +38,19 @@
  *     #hide-eliminated
  *     #hide-filler
  *     #clear-char-filter
- *     #research-btn           (opens the research modal)
- *     #bulk-add-btn           (opens the bulk-create modal)
  *
- *   The sort select's persisted value is restored at mount from
- *   CharacterList.getSort(). When the character list is not yet
- *   loaded, the select defaults to 'name-asc'.
+ * HEADER BUTTONS:
+ *   Icon-only, with tooltips (title attribute). The list:
+ *     #import-characters-csv-btn   ↓   Import CSV
+ *     #export-characters-btn       ↑   Export selected / all
+ *     #manage-fillers-btn          ⚑   Manage fillers
+ *     #research-btn                ⌕   Search profiles
+ *     #bulk-add-btn                ✦   Bulk create
+ *     #toggle-char-list            ☰   Toggle list (mobile only)
+ *     #add-character-btn           +   New character
+ *
+ *   #export-characters-btn is bound by CharacterEvents, not here.
+ *   See bindListExportButton() in character-events.js.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TabManager
@@ -372,11 +377,6 @@
     // FILTER STATE RESTORE
     // ============================================================
 
-    /**
-     * Restore the two persistence-backed controls from storage
-     * before the first render. Reads through CharacterList so the
-     * storage keys and validation live in one place.
-     */
     function restoreFilterState() {
         if (!CharacterList) { return; }
 
@@ -427,33 +427,36 @@
                         <div class="characters-header-actions">
                             <button id="import-characters-csv-btn"
                                     class="small secondary"
-                                    title="Import Characters from CSV"
-                                    aria-label="Import Characters CSV">Import</button>
+                                    title="Import characters from CSV"
+                                    aria-label="Import characters from CSV">\u2193</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
                                    style="display:none;">
                             <button id="export-characters-btn"
                                     class="small secondary"
-                                    title="Export Characters"
-                                    aria-label="Export Characters">Export</button>
+                                    title="Export characters"
+                                    aria-label="Export characters">\u2191</button>
                             <button id="manage-fillers-btn"
                                     class="small secondary"
-                                    title="Manage Filler Characters"
-                                    aria-label="Manage Filler Characters">Fillers</button>
+                                    title="Manage filler characters"
+                                    aria-label="Manage filler characters">\u2691</button>
                             <button id="research-btn"
                                     class="small secondary"
                                     title="Search character profiles"
-                                    aria-label="Search character profiles">Research</button>
+                                    aria-label="Search character profiles">\u2315</button>
                             <button id="bulk-add-btn"
                                     class="small secondary"
                                     title="Bulk create characters"
-                                    aria-label="Bulk create characters">Bulk Add</button>
+                                    aria-label="Bulk create characters">\u2726</button>
                             <button id="toggle-char-list"
                                     class="secondary small"
+                                    title="Toggle character list"
                                     aria-label="Toggle character list">\u2630</button>
                             <button id="add-character-btn"
-                                    class="primary small">+ Add</button>
+                                    class="primary small"
+                                    title="Add character"
+                                    aria-label="Add character">+</button>
                         </div>
                     </div>
                     <div class="characters-filters">
