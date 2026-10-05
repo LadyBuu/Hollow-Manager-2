@@ -26,6 +26,15 @@
  *   8. Atomic commit via MutationPipeline
  *   9. Activity log
  * 
+ * DEPARTMENTS (this revision):
+ *   Departments joined the top-level store in DATA_VERSION 32 and
+ *   the export envelope in ExportSchema. This module now:
+ *     - repairs missing / duplicate department IDs in ensureUniqueIds
+ *     - rewrites department.headId and members[].characterId in
+ *       updateReferences when a referenced character's ID moved
+ *   Cross-domain validation of those references is delegated to
+ *   CrossDomainValidator (validateDepartmentReferences).
+ * 
  * DEPENDENCIES:
  *   - window.ExportSchema (from export-schema.js) - MANDATORY
  *   - window.ExportEnvelope (from export-envelope.js) - MANDATORY
@@ -316,6 +325,7 @@
         var collections = options.collections || [
             { name: 'characters', idPrefix: 'char' },
             { name: 'teams', idPrefix: 'team' },
+            { name: 'departments', idPrefix: 'dept' },
             { name: 'tournaments', idPrefix: 'tourn' },
             { name: 'missions', idPrefix: 'miss' },
             { name: 'classes', idPrefix: 'class' },
@@ -461,6 +471,40 @@
                         var member = team.members[mem];
                         if (member && member.characterId) {
                             member.characterId = updateRef(member.characterId);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Update departments ----
+        //
+        // Departments live at the top level and carry two kinds of
+        // character references:
+        //   - headId                       scalar, may be null
+        //   - members[].characterId        scalar per member entry
+        //
+        // Both must move with the referenced character when the
+        // character's ID is reassigned. A department with a stale
+        // headId would render a broken header; a department with a
+        // stale member characterId would silently lose that member
+        // from the staff list.
+        if (Array.isArray(result.departments)) {
+            for (var d = 0; d < result.departments.length; d++) {
+                var dept = result.departments[d];
+                if (!dept) continue;
+
+                if (dept.headId) {
+                    dept.headId = updateRef(dept.headId);
+                }
+
+                if (Array.isArray(dept.members)) {
+                    for (var dm = 0; dm < dept.members.length; dm++) {
+                        var deptMember = dept.members[dm];
+                        if (deptMember && deptMember.characterId) {
+                            deptMember.characterId = updateRef(
+                                deptMember.characterId
+                            );
                         }
                     }
                 }
