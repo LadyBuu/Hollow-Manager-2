@@ -31,6 +31,27 @@
  *
  *   The toggle button is only visible on mobile.
  *
+ * MOBILE BURGER ESCAPE (this revision):
+ *   The toggle button lives inside .characters-sidebar in the
+ *   static markup. On mobile that sidebar is `transform:
+ *   translateX(-100%)` until `.open` is added, which means the
+ *   button that would add `.open` is off-screen with the rest of
+ *   the drawer — the classic burger-inside-the-drawer trap.
+ *
+ *   The tab template emits a small scoped <style> block that pins
+ *   #toggle-char-list to `position: fixed` at top-left on mobile.
+ *   Fixed positioning removes the element from its parent's
+ *   stacking context and escapes the transform clip, so the
+ *   button stays clickable while the drawer is closed. The same
+ *   <style> block also guarantees the sidebar behaves as a
+ *   drawer and the form container fills the tab on mobile. Those
+ *   rules mirror the canonical responsive layout defined in
+ *   css/characters.css; when the stylesheet loads normally they
+ *   are redundant, and when it is absent or overridden they keep
+ *   the tab usable.
+ *
+ *   No CSS file edit is required for the mobile fix.
+ *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
  *     CharacterQueries / CharacterAggregator; all writes go
@@ -406,6 +427,83 @@
             careerStatusCollapsed ? '\u25b8' : '\u25be';
 
         return `
+            <style>
+                /* Defensive mobile rules for the Characters tab.
+
+                   The external stylesheet (css/characters.css)
+                   owns the canonical responsive layout. These
+                   rules exist for two reasons:
+
+                   1. THE BURGER TRAP. #toggle-char-list lives
+                      inside .characters-sidebar in the markup.
+                      On mobile the sidebar is transform:
+                      translateX(-100%) until .open is added —
+                      which means the button that adds .open is
+                      off-screen with the rest of the drawer.
+                      Pinning the button to position: fixed
+                      takes it out of the sidebar's stacking
+                      context and out of the transform clip, so
+                      it stays clickable while the drawer is
+                      closed. This is the whole mobile fix.
+
+                   2. A fallback shell. The .characters-layout
+                      block and drawer rules below mirror what
+                      css/characters.css already does. When the
+                      stylesheet loads normally they are
+                      redundant; when it is absent or overridden
+                      they keep the tab usable.
+
+                   The matching @media (min-width: 769px) rule
+                   in css/characters.css hides the button on
+                   desktop, so no extra hide rule is needed here. */
+
+                @media (max-width: 768px) {
+                    #toggle-char-list {
+                        position: fixed;
+                        top: 8px;
+                        left: 8px;
+                        z-index: 200;
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 34px;
+                        height: 34px;
+                        padding: 0;
+                        box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+                    }
+
+                    .characters-layout {
+                        display: block;
+                    }
+
+                    .characters-form-container {
+                        display: block;
+                        width: 100%;
+                        min-width: 0;
+                    }
+
+                    .characters-sidebar {
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        bottom: 0;
+                        width: min(340px, 88vw);
+                        z-index: 150;
+                        transform: translateX(-100%);
+                        transition: transform 0.22s ease;
+                    }
+
+                    .characters-sidebar.open {
+                        transform: translateX(0);
+                    }
+                }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .characters-sidebar {
+                        transition: none;
+                    }
+                }
+            </style>
             <div class="characters-layout">
                 <div class="characters-sidebar">
                     <div class="characters-header">
@@ -414,7 +512,7 @@
                             <button id="import-characters-csv-btn"
                                     class="small secondary"
                                     title="Import characters from CSV"
-                                    aria-label="Import characters from CSV">\u2193</button>
+                                    aria-label="Import characters from CSV">\u2191</button>
                             <input type="file"
                                    id="characters-csv-file-input"
                                    accept=".csv"
@@ -422,7 +520,7 @@
                             <button id="export-characters-btn"
                                     class="small secondary"
                                     title="Export characters"
-                                    aria-label="Export characters">\u2191</button>
+                                    aria-label="Export characters">\u2193</button>
                             <button id="manage-fillers-btn"
                                     class="small secondary"
                                     title="Manage filler characters"
