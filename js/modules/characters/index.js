@@ -7,16 +7,29 @@
  * WHAT THIS OWNS:
  *   - TabManager registration.
  *   - Mount / unmount lifecycle for the characters tab.
- *   - The tab's outer HTML shell: sidebar, filter bar, form
- *     container, and the two modal shells the tab uses.
+ *   - The tab's outer HTML shell: the sidebar (buttons, filters,
+ *     list) and the form container.
  *   - Current-edit-id state. Exposed as window.getCurrentEditId
  *     and window.setCurrentEditId, which CharacterList and
  *     CharacterEvents consume.
- *   - The character list toggle (mobile sidebar).
+ *   - The character list toggle (mobile drawer).
  *   - The Research button. Opens window.Research.
  *   - The Bulk Add button. Opens window.CharacterBulkCreate.
- *   - The Export button. Opens window.CharacterExportPicker,
- *     passing the current selection set from CharacterList.
+ *
+ * LAYOUT:
+ *   Desktop (>=769px):
+ *     Two columns. Sidebar on the left (300px) holding the
+ *     header buttons, the filters, and the character list. The
+ *     form container fills the remaining space. Everything is
+ *     always visible; the toggle button is hidden.
+ *
+ *   Mobile (<=768px):
+ *     The form container fills the tab. The sidebar is hidden and
+ *     appears as an overlay drawer when the toggle button
+ *     (#toggle-char-list) is tapped. Tapping outside the drawer
+ *     or selecting a character closes it.
+ *
+ *   The toggle button is only visible on mobile.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -26,31 +39,6 @@
  *     CharacterForm own those.
  *   - Event binding. CharacterEvents owns it, including the
  *     Export button click.
- *
- * FILTER BAR:
- *   The filter bar carries:
- *     #char-name-filter
- *     #char-class-filter
- *     #char-sort              (options: name-asc, name-desc,
- *                              age-asc, age-desc)
- *     #char-status-filter     (checkbox group, collapsible)
- *     #hide-deceased
- *     #hide-eliminated
- *     #hide-filler
- *     #clear-char-filter
- *
- * HEADER BUTTONS:
- *   Icon-only, with tooltips (title attribute). The list:
- *     #import-characters-csv-btn   ↓   Import CSV
- *     #export-characters-btn       ↑   Export selected / all
- *     #manage-fillers-btn          ⚑   Manage fillers
- *     #research-btn                ⌕   Search profiles
- *     #bulk-add-btn                ✦   Bulk create
- *     #toggle-char-list            ☰   Toggle list (mobile only)
- *     #add-character-btn           +   New character
- *
- *   #export-characters-btn is bound by CharacterEvents, not here.
- *   See bindListExportButton() in character-events.js.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TabManager
@@ -287,11 +275,9 @@
             }
         }
 
-        if (isMobileViewport()) {
-            var listPanel =
-                document.getElementById('char-list-panel');
-            if (listPanel) { listPanel.classList.add('open'); }
-        }
+        // NOTE: the character list drawer is NOT opened at mount.
+        // It opens when the user taps the toggle button, and
+        // closes when they tap outside it or select a character.
 
         _mounted = true;
         _initialized = true;
