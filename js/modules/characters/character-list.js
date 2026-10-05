@@ -9,6 +9,10 @@
  *   - Read filter controls from the DOM.
  *   - Persist the sort and hide-filler toggles in sessionStorage.
  *   - Hand filter values to CharacterAggregator; render the result.
+ *   - Own the selection set (character IDs ticked via the row
+ *     checkbox). Selection is in-memory only; it is not persisted.
+ *   - Render a selection bar above the rows when anything is
+ *     selected.
  *
  * FILTERS:
  *   - Name (substring, case-insensitive)
@@ -23,12 +27,26 @@
  *   - sessionStorage-persisted under characters_sort_v1
  *   - Sort is NOT reset by the Clear filter button
  *
- * CLASS FILTER (__no_class__):
- *   The sentinel value '__no_class__' matches characters with no
- *   class entries, or with classIds that resolve to no live class.
- *   The set of live classes is owned by AcademyClasses. If that
- *   module is unavailable, the aggregator fails the projection
- *   rather than guessing.
+ * SELECTION:
+ *   Each row carries a checkbox at the far left. Clicking the
+ *   checkbox toggles that character's presence in the selection
+ *   set. Clicking the row body (outside the checkbox) selects the
+ *   character for editing, as before.
+ *
+ *   The selection bar renders above the rows when at least one
+ *   character is ticked. It shows "N selected" and a Clear button.
+ *
+ *   The selection is NOT persisted. It is cleared on refresh (a
+ *   fresh render rebuilds the list from the current filter set,
+ *   and the selection set is pruned to keep only IDs that still
+ *   exist in the store).
+ *
+ *   The public API is:
+ *     getSelectedIds()        -> string[]
+ *     setSelectedIds(ids)     -> void
+ *     clearSelection()        -> void
+ *     hasSelection()          -> boolean
+ *     getSelectionCount()     -> number
  *
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterAggregator
@@ -86,11 +104,15 @@
     }
 
     // ============================================================
+    // STATE
+    // ============================================================
+
+    // Selection set: { [characterId]: true }
+    var _selectedIds = Object.create(null);
+
+    // ============================================================
     // STORAGE
     // ============================================================
-    //
-    // Both toggles persist in sessionStorage. Defaults are used when
-    // storage is unavailable or the stored value is invalid.
 
     function readStoredFlag(key, defaultValue) {
         try {
@@ -187,6 +209,111 @@
             .replace(/`/g, '&#x60;');
     }
 
+    function escapeAttribute(value) {
+        var DomUtils = getDomUtils();
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // SELECTION
+    // ============================================================
+
+    function getSelectedIds() {
+        var out = [];
+        for (var k in _selectedIds) {
+            if (Object.prototype.hasOwnProperty.call(
+                _selectedIds, k
+            ) && _selectedIds[k] === true) {
+                out.push(k);
+            }
+        }
+        return out;
+    }
+
+    function setSelectedIds(ids) {
+        _selectedIds = Object.create(null);
+        if (!Array.isArray(ids)) { return; }
+        for (var i = 0; i < ids.length; i++) {
+            if (ids[i] === null || ids[i] === undefined) {
+                continue;
+            }
+            var s = String(ids[i]);
+            if (s === '') { continue; }
+            _selectedIds[s] = true;
+        }
+    }
+
+    function clearSelection() {
+        _selectedIds = Object.create(null);
+    }
+
+    function hasSelection() {
+        for (var k in _selectedIds) {
+            if (Object.prototype.hasOwnProperty.call(
+                _selectedIds, k
+            ) && _selectedIds[k] === true) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function getSelectionCount() {
+        return getSelectedIds().length;
+    }
+
+    function isSelected(id) {
+        if (id === null || id === undefined) { return false; }
+        return _selectedIds[String(id)] === true;
+    }
+
+    function toggleSelected(id) {
+        if (id === null || id === undefined) { return; }
+        var s = String(id);
+        if (s === '') { return; }
+        if (_selectedIds[s]) {
+            delete _selectedIds[s];
+        } else {
+            _selectedIds[s] = true;
+        }
+    }
+
+    /**
+     * Prune the selection set down to IDs that still exist in the
+     * store. Called at the top of every render so a deleted
+     * character does not linger in the selection.
+     */
+    function pruneSelection() {
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacterById !==
+                'function') {
+            return;
+        }
+
+        var keys = getSelectedIds();
+        for (var i = 0; i < keys.length; i++) {
+            var c = null;
+            try {
+                c = CharacterQueries.getCharacterById(keys[i]);
+            } catch (e) {
+                c = null;
+            }
+            if (!c) {
+                delete _selectedIds[keys[i]];
+            }
+        }
+    }
+
     // ============================================================
     // FILTER READS
     // ============================================================
@@ -269,11 +396,6 @@
     // ============================================================
     // CLASS FILTER POPULATION
     // ============================================================
-    //
-    // Delegates to CharacterClassView.populateClassFilter if
-    // available, so the sentinel option and preservation logic live
-    // in one place. Falls back to a local implementation only when
-    // the class view module is not loaded.
 
     function populateClassFilter() {
         var ClassView = window.CharacterClassView;
@@ -307,7 +429,7 @@
             var cls = sorted[i];
             if (!cls || !cls.id) { continue; }
             html += '<option value="' +
-                        escapeHtml(cls.id) + '">' +
+                        escapeAttribute(cls.id) + '">' +
                         escapeHtml(cls.name || 'Unnamed Class') +
                     '</option>';
         }
@@ -339,6 +461,9 @@
                 '</p>';
             return;
         }
+
+        // Drop any selected IDs whose character no longer exists.
+        pruneSelection();
 
         var CharacterAggregator = getCharacterAggregator();
         var filters = getFilterValues();
@@ -378,11 +503,37 @@
         var currentEditId = getCurrentEditId();
         var html = '';
 
+        // Selection bar (only when something is selected).
+        html += renderSelectionBar();
+
+        // Rows.
         for (var i = 0; i < items.length; i++) {
             html += renderRow(items[i], currentEditId);
         }
 
         container.innerHTML = html;
+    }
+
+    // ============================================================
+    // SELECTION BAR
+    // ============================================================
+
+    function renderSelectionBar() {
+        var count = getSelectionCount();
+        if (count === 0) { return ''; }
+
+        var html = '';
+        html += '<div class="char-selection-bar">';
+        html += '<span class="char-selection-count">' +
+                    '<strong>' + count + '</strong> selected' +
+                '</span>';
+        html += '<button type="button" ' +
+                    'class="small secondary char-selection-clear" ' +
+                    'data-action="char-clear-selection">' +
+                    'Clear' +
+                '</button>';
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -393,7 +544,9 @@
         var isSelected = currentEditId !== null &&
             String(item.id) === String(currentEditId);
 
-        var safeId = escapeHtml(item.id);
+        var isTicked = isSelectedForExport(item.id);
+
+        var safeId = escapeAttribute(item.id);
         var safeName = escapeHtml(item.name || 'Unknown');
         var safeStatus = escapeHtml(item.status || '');
 
@@ -410,6 +563,7 @@
         if (isSelected) { rowClass += ' selected'; }
         if (item.deceased) { rowClass += ' deceased'; }
         if (item.eliminated) { rowClass += ' eliminated'; }
+        if (isTicked) { rowClass += ' char-list-item-ticked'; }
 
         var rowStyle = 'padding:4px 6px;' +
             'border-bottom:1px solid var(--border-soft);' +
@@ -427,24 +581,43 @@
                     'data-id="' + safeId + '" ' +
                     'style="' + rowStyle + '">';
 
-        html += '<div style="display:flex;' +
-                    'justify-content:space-between;' +
-                    'align-items:center;">';
+        // ---- Checkbox cell ----
+        html += '<span class="char-list-checkbox-cell">';
+        html += '<input type="checkbox" ' +
+                    'class="char-list-checkbox" ' +
+                    'data-character-id="' + safeId + '"' +
+                    (isTicked ? ' checked' : '') +
+                    ' aria-label="Select ' +
+                        escapeAttribute(item.name || 'character') +
+                    '">';
+        html += '</span>';
+
+        // ---- Content cell ----
+        html += '<span class="char-list-content">';
+
+        html += '<span class="char-list-line">';
         html += '<span style="font-size:0.75rem;">' +
                     nameLine +
                 '</span>';
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">' +
                     safeStatus +
                 '</span>';
-        html += '</div>';
+        html += '</span>';
 
         var badges = renderBadges(item);
         if (badges) {
             html += badges;
         }
 
+        html += '</span>';
+
         html += '</div>';
         return html;
+    }
+
+    function isSelectedForExport(id) {
+        if (id === null || id === undefined) { return false; }
+        return _selectedIds[String(id)] === true;
     }
 
     function renderBadges(item) {
@@ -493,10 +666,10 @@
 
         if (badges.length === 0) { return ''; }
 
-        return '<div style="display:flex;flex-wrap:wrap;gap:4px;' +
+        return '<span style="display:flex;flex-wrap:wrap;gap:4px;' +
                     'margin-top:2px;">' +
                     badges.join(' ') +
-                '</div>';
+                '</span>';
     }
 
     // ============================================================
@@ -548,6 +721,7 @@
         if (container) {
             container.innerHTML = '';
         }
+        _selectedIds = Object.create(null);
     }
 
     // ============================================================
@@ -568,7 +742,16 @@
         getSort: getSort,
         setSort: setSort,
 
-        getCurrentEditId: getCurrentEditId
+        getCurrentEditId: getCurrentEditId,
+
+        // Selection API
+        getSelectedIds: getSelectedIds,
+        setSelectedIds: setSelectedIds,
+        clearSelection: clearSelection,
+        hasSelection: hasSelection,
+        getSelectionCount: getSelectionCount,
+        isSelected: isSelected,
+        toggleSelected: toggleSelected
     };
 
     // ============================================================
@@ -588,7 +771,12 @@
             'getHideFiller',
             'setHideFiller',
             'getSort',
-            'setSort'
+            'setSort',
+            'getSelectedIds',
+            'setSelectedIds',
+            'clearSelection',
+            'hasSelection',
+            'getSelectionCount'
         ];
 
         for (var i = 0; i < required.length; i++) {
