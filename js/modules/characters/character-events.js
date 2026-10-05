@@ -33,6 +33,13 @@
  *   never collide: the checkbox cell is excluded from the row
  *   click handler.
  *
+ * SIDEBAR DRAWER:
+ *   On mobile, the character sidebar (.characters-sidebar) is a
+ *   fixed overlay. The toggle button adds/removes the `open`
+ *   class. Tapping outside the sidebar or selecting a character
+ *   closes it. On desktop the sidebar is always visible and the
+ *   toggle is hidden.
+ *
  * CAREER TRANSITION MODAL:
  *   Element created once per open, appended to document.body,
  *   destroyed on close. Reuses the .csw-* CSS classes from the
@@ -192,6 +199,43 @@
             return false;
         }
         return true;
+    }
+
+    // ============================================================
+    // SIDEBAR DRAWER HELPERS
+    // ============================================================
+    //
+    // On mobile the character sidebar is a fixed overlay. The
+    // `open` class slides it in. On desktop the sidebar is always
+    // visible and neither helper does anything.
+
+    function getSidebar() {
+        var container = document.getElementById('tab-characters');
+        if (!container) { return null; }
+        return container.querySelector('.characters-sidebar');
+    }
+
+    function isMobile() {
+        return window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT;
+    }
+
+    function openSidebar() {
+        if (!isMobile()) { return; }
+        var sidebar = getSidebar();
+        if (sidebar) { sidebar.classList.add('open'); }
+    }
+
+    function closeSidebar() {
+        if (!isMobile()) { return; }
+        var sidebar = getSidebar();
+        if (sidebar) { sidebar.classList.remove('open'); }
+    }
+
+    function toggleSidebar() {
+        if (!isMobile()) { return; }
+        var sidebar = getSidebar();
+        if (!sidebar) { return; }
+        sidebar.classList.toggle('open');
     }
 
     // ============================================================
@@ -1145,9 +1189,6 @@
     // that originated inside .char-list-checkbox-cell.
 
     function bindListSelection() {
-        // Checkbox toggles selection. Change event so keyboard
-        // toggling works (space bar on a focused checkbox fires
-        // change, not click).
         addSafeDelegatedListener(
             '.char-list-checkbox',
             'change',
@@ -1173,10 +1214,6 @@
             }
         );
 
-        // The checkbox cell itself: stop row-click propagation
-        // so clicking the cell's padding does not open the
-        // character. The change handler above catches the actual
-        // toggle.
         addSafeDelegatedListener(
             '.char-list-checkbox-cell',
             'click',
@@ -1187,7 +1224,6 @@
             }
         );
 
-        // Clear selection from the selection bar.
         addSafeDelegatedListener(
             '[data-action="char-clear-selection"]',
             'click',
@@ -1358,10 +1394,7 @@
                 }, 100);
             }
 
-            if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT &&
-                typeof window.toggleCharacterList === 'function') {
-                window.toggleCharacterList(false);
-            }
+            closeSidebar();
         });
     }
 
@@ -1440,6 +1473,7 @@
     function destroy() {
         closeCareerTransitionModal();
         removeAllEventListeners();
+        closeSidebar();
         _initialized = false;
         _socialEditId = null;
         _saveInFlight = false;
@@ -1455,9 +1489,7 @@
         if (toggleBtn) {
             addSafeEventListener(toggleBtn, 'click', function(e) {
                 e.stopPropagation();
-                if (typeof window.toggleCharacterList === 'function') {
-                    window.toggleCharacterList();
-                }
+                toggleSidebar();
             });
         }
     }
@@ -1471,11 +1503,7 @@
                 }
                 CharacterForm.render(null);
                 refreshCharacterReportButton();
-                if (window.innerWidth <
-                        UI_CONSTANTS.MOBILE_BREAKPOINT &&
-                    typeof window.toggleCharacterList === 'function') {
-                    window.toggleCharacterList(false);
-                }
+                closeSidebar();
             });
         }
     }
@@ -1649,8 +1677,6 @@
                     statusBoxes[i].checked = false;
                 }
 
-                // Sort is NOT reset. Clear resets filters, not
-                // ordering.
                 if (window.CharacterList &&
                     typeof window.CharacterList.render ===
                     'function') {
@@ -1662,20 +1688,23 @@
 
     function bindClickOutside(container) {
         addSafeEventListener(document, 'click', function(e) {
-            var panel = document.getElementById('char-list-panel');
-            var toggle = document.getElementById('toggle-char-list');
+            if (!isMobile()) { return; }
 
-            if (panel && panel.classList.contains('open')) {
-                var clickedOutsidePanel = !panel.contains(e.target);
-                var clickedToggle =
-                    toggle && toggle.contains(e.target);
+            var sidebar = getSidebar();
+            if (!sidebar) { return; }
+            if (!sidebar.classList.contains('open')) { return; }
 
-                if (clickedOutsidePanel && !clickedToggle) {
-                    if (typeof window.toggleCharacterList ===
-                        'function') {
-                        window.toggleCharacterList(false);
-                    }
-                }
+            var toggle = document.getElementById(
+                'toggle-char-list'
+            );
+
+            var clickedOutsideSidebar =
+                !sidebar.contains(e.target);
+            var clickedToggle =
+                toggle && toggle.contains(e.target);
+
+            if (clickedOutsideSidebar && !clickedToggle) {
+                sidebar.classList.remove('open');
             }
         });
     }
@@ -1685,10 +1714,6 @@
             '.char-list-item',
             'click',
             function(e, target) {
-                // Ignore clicks that originated inside the
-                // checkbox cell. The cell handler stops
-                // propagation, but this is a belt-and-braces guard
-                // in case the click reaches here for any reason.
                 var t = e.target;
                 if (t && typeof t.closest === 'function' &&
                     t.closest('.char-list-checkbox-cell')) {
@@ -3283,7 +3308,6 @@
         CharacterCRUD.delete(id)
             .then(function(result) {
                 if (result && result.success) {
-                    // Drop them from the selection set if present.
                     var CL = getCharacterList();
                     if (CL &&
                         typeof CL.isSelected === 'function' &&
@@ -3340,10 +3364,7 @@
             }, 100);
         }
 
-        if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT &&
-            typeof window.toggleCharacterList === 'function') {
-            window.toggleCharacterList(false);
-        }
+        closeSidebar();
     }
 
     function handleAddClassById(classId) {
