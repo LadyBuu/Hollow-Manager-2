@@ -37,8 +37,15 @@
  *   On mobile, the character sidebar (.characters-sidebar) is a
  *   fixed overlay. The toggle button adds/removes the `open`
  *   class. Tapping outside the sidebar or selecting a character
- *   closes it. On desktop the sidebar is always visible and the
- *   toggle is hidden.
+ *   closes it. On desktop the sidebar is always visible.
+ *
+ *   The toggle is intentionally ungated by viewport width. On
+ *   desktop the `open` class is a no-op because the sidebar is
+ *   always on-screen; on mobile it slides the drawer in. Gating
+ *   the toggle on isMobile() meant the burger did nothing when
+ *   UI_CONSTANTS was absent, or when a desktop-width viewport was
+ *   rendered against mobile CSS. The CSS media query remains the
+ *   authority on visibility.
  *
  * CAREER TRANSITION MODAL:
  *   Element created once per open, appended to document.body,
@@ -69,7 +76,11 @@
  *   - window.FormUtils
  *   - window.Modal
  *   - window.NotificationSystem
- *   - window.UI_CONSTANTS
+ *
+ * DEPENDENCIES (MANDATORY AT CALL TIME, WARN-ONLY AT BOOT):
+ *   - window.UI_CONSTANTS.MOBILE_BREAKPOINT
+ *     Used by isMobile() to decide when the sidebar behaves as a
+ *     drawer. Falls back to 768 when absent.
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.CharacterList (selection API)
@@ -186,9 +197,17 @@
             }
         });
 
+        // UI_CONSTANTS.MOBILE_BREAKPOINT is used by isMobile() to
+        // decide when the sidebar behaves as a drawer. When it is
+        // absent, isMobile() falls back to 768px. This is a warning,
+        // not a boot-time failure: a missing constants module
+        // should not disable the entire events layer.
         if (!UI_CONSTANTS ||
             typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
-            missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
+            console.warn(
+                '[CharacterEvents] UI_CONSTANTS.MOBILE_BREAKPOINT ' +
+                'is missing; falling back to 768px.'
+            );
         }
 
         if (missing.length > 0) {
@@ -207,7 +226,8 @@
     //
     // On mobile the character sidebar is a fixed overlay. The
     // `open` class slides it in. On desktop the sidebar is always
-    // visible and neither helper does anything.
+    // visible and the `open` class is a no-op. The CSS media query
+    // remains the authority on which of the two layouts applies.
 
     function getSidebar() {
         var container = document.getElementById('tab-characters');
@@ -216,7 +236,11 @@
     }
 
     function isMobile() {
-        return window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT;
+        var bp = (UI_CONSTANTS &&
+                  typeof UI_CONSTANTS.MOBILE_BREAKPOINT === 'number')
+            ? UI_CONSTANTS.MOBILE_BREAKPOINT
+            : 768;
+        return window.innerWidth < bp;
     }
 
     function openSidebar() {
@@ -231,8 +255,12 @@
         if (sidebar) { sidebar.classList.remove('open'); }
     }
 
+    // The toggle is intentionally ungated by viewport width.
+    // On desktop the sidebar is always visible and toggling the
+    // `open` class is harmless. On mobile the class is what
+    // slides the drawer in. Gating here on isMobile() meant the
+    // burger did nothing when UI_CONSTANTS was absent.
     function toggleSidebar() {
-        if (!isMobile()) { return; }
         var sidebar = getSidebar();
         if (!sidebar) { return; }
         sidebar.classList.toggle('open');
