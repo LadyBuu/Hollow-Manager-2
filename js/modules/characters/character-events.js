@@ -10,11 +10,13 @@
  *   - The career-transition inline modal (open, render, apply,
  *     close).
  *   - Save / delete / character-select handlers.
+ *   - Character list selection checkboxes and the selection bar's
+ *     Clear action.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. All mutations route through CharacterCRUD.
  *   - Rendering. All HTML comes from CharacterForm / CharacterViews /
- *     CharacterClassView.
+ *     CharacterClassView / CharacterList.
  *
  * MODAL LIFECYCLE:
  *   Reusable modals (relationship, graph) use Modal.hideModal, not
@@ -23,6 +25,13 @@
  *
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded by _saveInFlight.
+ *
+ * SELECTION:
+ *   The row checkbox toggles a character in and out of the
+ *   CharacterList selection set. The row body click (outside the
+ *   checkbox cell) selects the character for editing. The two
+ *   never collide: the checkbox cell is excluded from the row
+ *   click handler.
  *
  * CAREER TRANSITION MODAL:
  *   Element created once per open, appended to document.body,
@@ -56,6 +65,7 @@
  *   - window.UI_CONSTANTS
  *
  * DEPENDENCIES (OPTIONAL):
+ *   - window.CharacterList (selection API)
  *   - window.SocialConstants / SocialQueries / SocialCore / SocialGraph
  *   - window.CharacterExport
  *   - window.FillerManagerModal
@@ -126,6 +136,7 @@
     function getCharacterRosterExport() { return window.CharacterRosterExport || null; }
     function getCareerStatusWizard() { return window.CareerStatusWizard || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
+    function getCharacterList() { return window.CharacterList || null; }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -602,11 +613,6 @@
     // ------------------------------------------------------------
     // Career-transition modal: static form region
     // ------------------------------------------------------------
-    //
-    // Built once per open. Contains the header, status radios, the
-    // year input, and an empty #ct-preview-region placeholder.
-    // Never replaced while the modal is open, so the year input
-    // keeps focus and caret position across keystrokes.
 
     function buildCareerTransitionFormHTML(charName) {
         var html = '';
@@ -674,13 +680,6 @@
 
         return html;
     }
-
-    // ------------------------------------------------------------
-    // Career-transition modal: preview region
-    // ------------------------------------------------------------
-    //
-    // Replaced on every status or year change. Contains only the
-    // "N stints will be ended" box. Does not touch the year input.
 
     function buildCareerTransitionPreviewHTML() {
         var counts = countOpenProfessionalStints(
@@ -1023,7 +1022,7 @@
     }
 
     // ============================================================
-    // CHARACTER ROSTER EXPORT BUTTON
+    // CHARACTER ROSTER EXPORT BUTTON (legacy — unused)
     // ============================================================
 
     function bindCharacterRosterExport(container) {
@@ -1076,6 +1075,137 @@
                 'error'
             );
         });
+    }
+
+    // ============================================================
+    // LIST-LEVEL EXPORT BUTTON
+    // ============================================================
+    //
+    // Bound to the icon-only Export button in the character page
+    // header. Delegates to CharacterExportPicker, passing the
+    // current selection set from CharacterList when one exists.
+    // The picker decides scope from what it receives.
+
+    function bindListExportButton() {
+        addSafeDelegatedListener(
+            '#export-characters-btn',
+            'click',
+            function(e) {
+                e.preventDefault();
+
+                var Picker = window.CharacterExportPicker || null;
+                if (!Picker ||
+                    typeof Picker.openModal !== 'function') {
+                    notify(
+                        'Character export is not available.',
+                        'error'
+                    );
+                    return;
+                }
+
+                var CL = getCharacterList();
+                var characterIds = null;
+
+                if (CL &&
+                    typeof CL.hasSelection === 'function' &&
+                    CL.hasSelection() &&
+                    typeof CL.getSelectedIds === 'function') {
+                    characterIds = CL.getSelectedIds();
+                }
+
+                try {
+                    Picker.openModal({
+                        characterIds: characterIds
+                    });
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] ' +
+                        'CharacterExportPicker.openModal threw:',
+                        err
+                    );
+                    notify(
+                        'Character export failed: ' + err.message,
+                        'error'
+                    );
+                }
+            }
+        );
+    }
+
+    // ============================================================
+    // SELECTION: CHECKBOX + CLEAR
+    // ============================================================
+    //
+    // The row checkbox toggles a character in/out of the selection
+    // set owned by CharacterList. The row body click (outside the
+    // checkbox cell) selects the character for editing.
+    //
+    // The checkbox change handler must not also trigger the row
+    // click handler. The row click handler guards against clicks
+    // that originated inside .char-list-checkbox-cell.
+
+    function bindListSelection() {
+        // Checkbox toggles selection. Change event so keyboard
+        // toggling works (space bar on a focused checkbox fires
+        // change, not click).
+        addSafeDelegatedListener(
+            '.char-list-checkbox',
+            'change',
+            function(e, target) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+
+                var charId = target.dataset
+                    ? target.dataset.characterId
+                    : null;
+                if (!charId) { return; }
+
+                var CL = getCharacterList();
+                if (!CL ||
+                    typeof CL.toggleSelected !== 'function' ||
+                    typeof CL.render !== 'function') {
+                    return;
+                }
+
+                CL.toggleSelected(charId);
+                CL.render();
+            }
+        );
+
+        // The checkbox cell itself: stop row-click propagation
+        // so clicking the cell's padding does not open the
+        // character. The change handler above catches the actual
+        // toggle.
+        addSafeDelegatedListener(
+            '.char-list-checkbox-cell',
+            'click',
+            function(e) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+            }
+        );
+
+        // Clear selection from the selection bar.
+        addSafeDelegatedListener(
+            '[data-action="char-clear-selection"]',
+            'click',
+            function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                var CL = getCharacterList();
+                if (!CL ||
+                    typeof CL.clearSelection !== 'function' ||
+                    typeof CL.render !== 'function') {
+                    return;
+                }
+
+                CL.clearSelection();
+                CL.render();
+            }
+        );
     }
 
     // ============================================================
@@ -1269,6 +1399,8 @@
         bindFilters(container);
         bindClickOutside(container);
         bindCharacterList(container);
+        bindListSelection();
+        bindListExportButton();
         bindManageFillers(container);
         bindCharacterRosterExport(container);
 
@@ -1553,6 +1685,16 @@
             '.char-list-item',
             'click',
             function(e, target) {
+                // Ignore clicks that originated inside the
+                // checkbox cell. The cell handler stops
+                // propagation, but this is a belt-and-braces guard
+                // in case the click reaches here for any reason.
+                var t = e.target;
+                if (t && typeof t.closest === 'function' &&
+                    t.closest('.char-list-checkbox-cell')) {
+                    return;
+                }
+
                 var id = target.dataset.id;
                 if (id) { handleCharacterSelect(id); }
             }
@@ -3141,6 +3283,15 @@
         CharacterCRUD.delete(id)
             .then(function(result) {
                 if (result && result.success) {
+                    // Drop them from the selection set if present.
+                    var CL = getCharacterList();
+                    if (CL &&
+                        typeof CL.isSelected === 'function' &&
+                        CL.isSelected(id) &&
+                        typeof CL.toggleSelected === 'function') {
+                        CL.toggleSelected(id);
+                    }
+
                     if (typeof window.setCurrentEditId ===
                         'function') {
                         window.setCurrentEditId(null);
