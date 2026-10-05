@@ -31,6 +31,12 @@
  *     metadata: { ... export metadata ... }
  *   }
  * 
+ * DEPARTMENTS (this revision):
+ *   Departments joined the top-level store in DATA_VERSION 32. They
+ *   are now an OPTIONAL export section so pre-v32 files still import
+ *   cleanly. Missing departments on import default to [] via
+ *   getDefaultSection, which matches the store the app expects.
+ * 
  * DEPENDENCIES:
  *   - None (pure constants and validation)
  * 
@@ -81,6 +87,7 @@
     var SECTIONS = {
         CHARACTERS: 'characters',
         TEAMS: 'teams',
+        DEPARTMENTS: 'departments',
         TOURNAMENTS: 'tournaments',
         MISSIONS: 'missions',
         CURRICULUM: 'curriculum',
@@ -131,6 +138,12 @@
     /**
      * Optional sections that may be present.
      * Missing optional sections are fine (they'll be defaulted).
+     *
+     * departments is optional so that:
+     *   - pre-v32 exports (which predate the store) still import
+     *   - a hand-trimmed file can omit the whole section
+     * On import, buildCandidateState fills a missing section with
+     * getDefaultSection('departments') === [].
      */
     var OPTIONAL_SECTIONS = [
         SECTIONS.CURRICULUM,
@@ -139,7 +152,8 @@
         SECTIONS.CLASSES,
         SECTIONS.LOCATIONS,
         SECTIONS.LOCATION_SCHEDULES,
-        SECTIONS.STATS_CONFIG
+        SECTIONS.STATS_CONFIG,
+        SECTIONS.DEPARTMENTS
     ];
 
     /**
@@ -468,7 +482,12 @@
 
     /**
      * Get default data structure for a section.
-     * 
+     *
+     * Object-shaped sections return {}.
+     * Everything else returns [].
+     *
+     * departments is array-shaped; it falls through to [].
+     *
      * @param {string} section - Section name
      * @returns {*} Default value (empty array or empty object)
      */
@@ -587,6 +606,7 @@
     var EXPORT_SECTIONS = Object.freeze({
         CHARACTERS: SECTIONS.CHARACTERS,
         TEAMS: SECTIONS.TEAMS,
+        DEPARTMENTS: SECTIONS.DEPARTMENTS,
         TOURNAMENTS: SECTIONS.TOURNAMENTS,
         MISSIONS: SECTIONS.MISSIONS,
         CURRICULUM: SECTIONS.CURRICULUM,
@@ -671,6 +691,9 @@
         }
         if (exports.FORMAT_NAME === undefined) {
             missing.push('FORMAT_NAME');
+        }
+        if (exports.SECTIONS && exports.SECTIONS.DEPARTMENTS === undefined) {
+            missing.push('SECTIONS.DEPARTMENTS');
         }
 
         if (missing.length > 0) {
