@@ -16,8 +16,8 @@
  *   - Event binding. DepartmentEvents owns it.
  *
  * VM CONTRACT:
- *   The renderer trusts the VM shape from DepartmentAggregator.
- *   It does not default missing required fields, and it does not
+ *   The renderer trusts the VM shape from DepartmentAggregator. It
+ *   does not default missing required fields, and it does not
  *   silently skip malformed rows.
  *
  * DATA-ACTION CONVENTION:
@@ -33,13 +33,20 @@
  * STAFF FORM OPTIONS:
  *   Each character <option> carries:
  *     value                       characterId
- *     data-status-tier            'support' | 'instructor' | 'other'
+ *     data-status-tier            'support' | 'instructor' | 'civilian' | 'other'
  *     data-status-start-year      the startYear of the character's
  *                                 current support/instructor entry,
  *                                 or '' when they have none
  *
+ *   The visible label is the character's display name, followed by
+ *   " — <DeptA>, <DeptB>" when the candidate is already a member
+ *   of one or more departments. A character may belong to several;
+ *   all names are listed, sorted by the VM (DepartmentEvents'
+ *   buildStaffFormVM) before they reach this renderer.
+ *
  *   DepartmentEvents reads data-status-start-year on change to
- *   pre-fill the join-year input.
+ *   pre-fill the join-year input. It does not read the label; the
+ *   departments suffix is display-only.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -636,6 +643,11 @@
      * tier began. DepartmentEvents reads those on change to
      * pre-fill the join-year input.
      *
+     * The visible label is the character's display name followed
+     * by " — <DeptA>, <DeptB>" when the candidate is already a
+     * member of one or more departments. DepartmentEvents'
+     * buildStaffFormVM supplies the departmentNames array, sorted.
+     *
      * @param {object} formVM - { departmentId, departmentName,
      *   characterOptions, defaultJoinYear }
      * @returns {string} HTML
@@ -666,13 +678,23 @@
                 ? String(opt.statusStartYear)
                 : '';
 
+            var label = isNonEmptyString(opt.name)
+                ? opt.name
+                : 'Unknown';
+
+            if (Array.isArray(opt.departmentNames) &&
+                opt.departmentNames.length > 0) {
+                label += ' \u2014 ' +
+                    opt.departmentNames.join(', ');
+            }
+
             characterOptions += '<option value="' +
                                     escapeAttribute(opt.id) + '" ' +
                                     'data-status-tier="' +
                                         escapeAttribute(tier) + '" ' +
                                     'data-status-start-year="' +
                                         escapeAttribute(startYear) + '">' +
-                                    escapeHtml(opt.name) +
+                                    escapeHtml(label) +
                                 '</option>';
         }
 
