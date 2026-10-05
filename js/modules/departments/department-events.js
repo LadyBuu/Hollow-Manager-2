@@ -21,13 +21,22 @@
  *   The modal shells are rendered ONCE per mount into a stable
  *   host (#department-modals-host) appended to document.body.
  *
- * STAFF PICKER:
+ * STAFF PICKER (this revision):
  *   Candidates are characters who are not already members of the
  *   department, not eliminated, and not deceased at the current
- *   application year. They are sorted:
- *     1. support tier first
- *     2. instructor tier second
- *     3. everyone else, alphabetical within each group
+ *   application year.
+ *
+ *   ORDERING (three groups, alphabetical within each tier):
+ *     Group 0  support or instructor, NOT a member of any
+ *              department yet.
+ *     Group 1  support or instructor, member of at least one
+ *              department. The department names are attached to
+ *              the option so the form can render them.
+ *     Group 2  everyone else, excluding civilians who have a
+ *              tournament elimination on record.
+ *
+ *   Within groups 0 and 1, support sorts before instructor. Then
+ *   alphabetical within each tier.
  *
  *   When a candidate is selected, the join-year input is
  *   pre-filled with the year their current support/instructor
@@ -221,7 +230,20 @@
         return s;
     }
 
-    function getStatusTierAt(char, year) {
+    /**
+     * Classify a character's status at the given year.
+     *
+     * Returns one of: 'support', 'instructor', 'civilian', 'other'.
+     *
+     * Delegates to CharacterConstants.classifyStatus so the
+     * vocabulary stays in one place. Tiers the constants module
+     * does not recognise report as 'other'.
+     *
+     * @param {object} char
+     * @param {number} year
+     * @returns {string}
+     */
+    function getStatusClassification(char, year) {
         var CC = getCharacterConstants();
         if (!CC || typeof CC.classifyStatus !== 'function') {
             return 'other';
@@ -244,7 +266,10 @@
         } catch (e) {
             return 'other';
         }
-        if (tier === 'support' || tier === 'instructor') {
+
+        if (tier === 'support' ||
+            tier === 'instructor' ||
+            tier === 'civilian') {
             return tier;
         }
         return 'other';
@@ -281,6 +306,55 @@
         }
 
         return latestStart;
+    }
+
+    /**
+     * Does the character have any tournament (non-standalone)
+     * elimination on record?
+     *
+     * Prefers EliminationQueries.getEliminationWeek when available:
+     * it returns null when there is no elimination, an integer week
+     * when there is one. Both standalone and tournament
+     * eliminations are stored in char.eliminations, so the query's
+     * answer covers both. We then confirm the record is
+     * tournament-sourced by inspecting the eliminations array.
+     *
+     * Falls back to an inline walk when the query module is absent.
+     */
+    function hasTournamentElimination(char) {
+        if (!char || typeof char !== 'object') { return false; }
+
+        var EQ = getEliminationQueries();
+        var charId = char.id ? String(char.id) : null;
+
+        // Fast path: ask the canonical query whether ANY
+        // elimination exists. A null answer means no eliminations
+        // at all, which means no tournament elimination either.
+        if (EQ &&
+            typeof EQ.getEliminationWeek === 'function' &&
+            charId) {
+            var anyWeek = null;
+            try {
+                anyWeek = EQ.getEliminationWeek(charId);
+            } catch (e) {
+                anyWeek = null;
+            }
+            if (anyWeek === null || anyWeek === undefined) {
+                return false;
+            }
+        }
+
+        if (!Array.isArray(char.eliminations)) {
+            return false;
+        }
+
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var e = char.eliminations[i];
+            if (e && e.standalone !== true) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function getEliminationYear() {
@@ -966,25 +1040,26 @@
     /**
      * Build the add-staff form view model.
      *
-     * Excludes:
-     *   - characters already members of the department
-     *   - characters eliminated at the current application year
-     *   - deceased characters
+     * EXCLUSIONS (apply to every candidate):
+     *   - already a member of the department being edited
+     *   - deceased
+     *   - eliminated at the current application year
+     *   - civilian WITH a tournament elimination on record
      *
-     * Sorts:
-     *   1. support tier first
-     *   2. instructor tier second
-     *   3. everyone else
-     *   alphabetical within each tier
+     * ORDERING (three groups, alphabetical within each tier):
+     *   Group 0  support or instructor, not a member of any
+     *            department yet. Support before instructor.
+     *   Group 1  support or instructor, member of at least one
+     *            department. Support before instructor.
+     *   Group 2  everyone else, alphabetical.
      *
-     * Attaches to each option:
-     *   statusTier         'support' | 'instructor' | 'other'
-     *   statusStartYear    startYear of their current support or
-     *                      instructor entry, or null
-     *
-     * The default join year is the start year of the first
-     * candidate's current support/instructor status, or the
-     * current application year when that candidate has neither.
+     * Each option carries:
+     *   statusTier         'support' | 'instructor' | 'civilian' | 'other'
+     *   statusStartYear    start year of the character's current
+     *                      support or instructor entry, or null
+     *   departmentNames    array of department names (may be empty;
+     *                      a character may belong to several)
+     *   sortGroup          0 | 1 | 2, as above
      */
     function buildStaffFormVM(dept) {
         var existingIds = Object.create(null);
@@ -1004,6 +1079,10 @@
             typeof EQ.isCharacterEliminatedByYear === 'function' &&
             eliminationYear !== null;
 
+        var DQ = window.DepartmentQueries || null;
+        var canListDepartments = DQ &&
+            typeof DQ.getDepartmentsForCharacter === 'function';
+
         var allChars = CharacterQueries.getCharacters() || [];
         var options = [];
 
@@ -1013,16 +1092,18 @@
 
             var charId = String(char.id);
 
+            // Already a member of THIS department.
             if (existingIds[charId]) { continue; }
 
+            // Deceased.
             if (char.deceased === true) { continue; }
 
+            // Eliminated at the current application year.
             if (canCheckElimination) {
                 var eliminated = false;
                 try {
                     eliminated = EQ.isCharacterEliminatedByYear(
-                        charId,
-                        eliminationYear
+                        charId, eliminationYear
                     ) === true;
                 } catch (e) {
                     eliminated = false;
@@ -1030,9 +1111,57 @@
                 if (eliminated) { continue; }
             }
 
-            var tier = getStatusTierAt(char, currentYear);
+            // ---- Tier classification ----
+            var tier = getStatusClassification(char, currentYear);
+            var isSupportOrInstructor =
+                (tier === 'support' || tier === 'instructor');
+            var isCivilian = (tier === 'civilian');
+
+            // ---- Civilian with tournament elimination: excluded ----
+            if (isCivilian && hasTournamentElimination(char)) {
+                continue;
+            }
+
+            // ---- All-time department memberships ----
+            //
+            // getDepartmentsForCharacter with no year argument
+            // returns every department where the character has a
+            // member entry on any interval (active or former).
+            // That is what the picker's "already in a department"
+            // grouping needs.
+            var departmentNames = [];
+            if (canListDepartments) {
+                var depts = [];
+                try {
+                    depts = DQ.getDepartmentsForCharacter(
+                        charId
+                    ) || [];
+                } catch (e) {
+                    depts = [];
+                }
+                for (var d = 0; d < depts.length; d++) {
+                    if (depts[d] &&
+                        isNonEmptyString(depts[d].name)) {
+                        departmentNames.push(
+                            String(depts[d].name)
+                        );
+                    }
+                }
+                departmentNames.sort();
+            }
+
+            var hasDepartment = departmentNames.length > 0;
+
+            // ---- Group assignment ----
+            var sortGroup;
+            if (isSupportOrInstructor) {
+                sortGroup = hasDepartment ? 1 : 0;
+            } else {
+                sortGroup = 2;
+            }
+
             var startYear = null;
-            if (tier === 'support' || tier === 'instructor') {
+            if (isSupportOrInstructor) {
                 startYear = getStatusStartYear(char, tier);
             }
 
@@ -1040,20 +1169,26 @@
                 id: charId,
                 name: CharacterQueries.getDisplayName(char),
                 statusTier: tier,
-                statusStartYear: startYear
+                statusStartYear: startYear,
+                departmentNames: departmentNames,
+                sortGroup: sortGroup
             });
         }
 
         options.sort(function(a, b) {
-            var tierRank = tierSortRank(a.statusTier) -
-                tierSortRank(b.statusTier);
-            if (tierRank !== 0) { return tierRank; }
+            if (a.sortGroup !== b.sortGroup) {
+                return a.sortGroup - b.sortGroup;
+            }
+            // Within the two support/instructor groups, sort by
+            // tier: support before instructor, then name.
+            if (a.sortGroup !== 2 &&
+                a.statusTier !== b.statusTier) {
+                return tierSortRank(a.statusTier) -
+                    tierSortRank(b.statusTier);
+            }
             return a.name.localeCompare(b.name);
         });
 
-        // Default join year: the first candidate's status start
-        // year when they are support or instructor, otherwise the
-        // current application year.
         var defaultJoinYear = currentYear;
         if (options.length > 0) {
             var first = options[0];
