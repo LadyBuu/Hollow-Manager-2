@@ -14,59 +14,25 @@
  *   window.CharacterRosterExport  tab-separated roster text
  *                                   - buildText()
  *                                   - exportText()
+ *                                   - buildSelectedText()
+ *                                   - exportSelectedText()
  *
- *   window.CharacterExport        single-character plain-text report
+ *   window.CharacterExport        character report text
  *                                   - getCharacterReportText(charId)
  *                                   - exportCharacterText(charId)
+ *                                   - exportSelectedText(charIds)
  *
  * WHY THREE NAMESPACES IN ONE FILE:
  *   They share the CharacterQueries, ExportUtils, and CSV
  *   dependencies, they share the same "character in, file out"
  *   concern, and they share a template/column vocabulary that would
- *   fragment if split across files. The CSV schema in particular
- *   is used by both the CSV export and the CSV import and the
- *   template generator — splitting them across files means
- *   duplicating or cross-importing the schema.
- *
- *   The three namespaces are kept because callers already reach for
- *   them by name:
- *
- *     ui.js / character-events.js / character-export-picker.js
- *     all reference window.CharacterCSV, window.CharacterRosterExport,
- *     and window.CharacterExport by their existing names.
- *
- *   Consolidating the files does NOT change the public API.
- *
- * CONSOLIDATION HISTORY:
- *   This file previously existed as three separate modules:
- *     character-csv.js             (CSV schema, export, import, template)
- *     character-roster-export.js   (roster text export)
- *     character-export.js          (single-character report)
- *
- *   They were merged because every consumer that needed one needed
- *   at least one of the others, and every consumer paid the load-
- *   order cost of three script tags that depended on the same
- *   foundation.
+ *   fragment if split across files.
  *
  * SECTIONS IN THIS FILE, IN ORDER:
  *   1. Shared dependencies and helpers
- *   2. CharacterCSV       — schema, export, import, template
- *   3. CharacterRosterExport — tab-separated roster text
- *   4. CharacterExport    — single-character full-detail report
- *
- * ============================================================
- * SECTION 1: SHARED DEPENDENCIES AND HELPERS
- * ============================================================
- *
- * MANDATORY:
- *   window.CSV           (from csv-parser.js)
- *   window.ImportResult  (from import-result.js)
- *   window.ExportUtils   (from export-utils.js)
- *   window.IdUtils       (from id-utils.js)
- *   window.CharacterQueries  (from character-queries.js)
- *
- * CharacterQueries is required by the report exporter and the
- * roster exporter. It is checked here once, in the shared preamble.
+ *   2. CharacterCSV           — schema, export, import, template
+ *   3. CharacterRosterExport  — tab-separated roster text
+ *   4. CharacterExport        — full-detail character report
  */
 
 (function() {
@@ -110,10 +76,6 @@
     var ExportUtils = window.ExportUtils;
     var IdUtils = window.IdUtils;
 
-    // CharacterQueries is resolved lazily. The CSV namespace does not
-    // need it; the roster and report namespaces do. Resolving it
-    // here would create a load-order requirement for CSV callers who
-    // do not want one.
     function getCharacterQueries() {
         return window.CharacterQueries || null;
     }
@@ -141,36 +103,12 @@
     // ============================================================
     // SECTION 2: CharacterCSV
     // ============================================================
-    //
-    // Full character CSV: schema, export, import, template.
-    //
-    // SECTIONS FROM THE ORIGINAL character-csv.js, PRESERVED IN
-    // ORDER WITHIN THIS BLOCK:
-    //   - constants and column definitions
-    //   - section marker normalisation
-    //   - schema helpers
-    //   - parsing helpers
-    //   - row parsing / serialisation
-    //   - export
-    //   - import
-    //   - template
-    //   - validation helpers
-    //   - legacy template aliases
-    //
-    // The block is self-contained. It reads only CSV, ImportResult,
-    // ExportUtils, IdUtils, and window.CharacterQueries (lazily, for
-    // exportFromData only).
 
     (function() {
 
         var SECTION = '# CHARACTERS';
         var MAX_ROWS = 10000;
         var ID_PREFIX = 'char';
-
-        // ---- Column definitions ----
-        //
-        // Twenty-six columns. The first twenty-two are the original
-        // set. Columns 22-25 are the four newer personality fields.
 
         var COLUMNS = [
             'CharacterId',
@@ -230,8 +168,6 @@
             25: 'quirks'
         };
 
-        // ---- Section marker normalisation ----
-
         function normalizeSectionMarker(value) {
             var str = String(value == null ? '' : value);
 
@@ -258,8 +194,6 @@
         var TARGET_SECTION_MARKER = normalizeSectionMarker(SECTION);
         var HEADER_MARKER_FIRST_COLUMN = 'CHARACTERID';
 
-        // ---- Schema helpers ----
-
         function getColumns() {
             return COLUMNS.slice();
         }
@@ -285,8 +219,6 @@
         function getSection() {
             return SECTION;
         }
-
-        // ---- Parsing helpers ----
 
         function parseJSONField(value, fallback, warnFn, fieldName) {
             var str = String(value == null ? '' : value).trim();
@@ -337,8 +269,6 @@
             }
             return true;
         }
-
-        // ---- Row parsing ----
 
         function parseRow(row, warnFn) {
             var errors = [];
@@ -407,8 +337,6 @@
                 warnings: warnings
             };
         }
-
-        // ---- Row serialisation ----
 
         function toRow(character) {
             if (!character || typeof character !== 'object') {
@@ -486,8 +414,6 @@
             return rows;
         }
 
-        // ---- Export ----
-
         function exportCharacters(characters, options) {
             options = options || {};
 
@@ -553,8 +479,6 @@
             var rows = toRows(characters);
             return CSV.arrayToCSV(rows);
         }
-
-        // ---- Import ----
 
         function extractRows(records) {
             var rows = [];
@@ -740,8 +664,6 @@
             });
         }
 
-        // ---- Template ----
-
         function getTemplateCharacters(options) {
             options = options || {};
             var count = options.count || 2;
@@ -883,8 +805,6 @@
             };
         }
 
-        // ---- Validation helpers ----
-
         function validateCandidates(candidates) {
             if (!Array.isArray(candidates)) {
                 throw new TypeError(
@@ -973,55 +893,43 @@
             };
         }
 
-        // ---- Expose CharacterCSV ----
-
         window.CharacterCSV = {
-            // Constants
             SECTION: SECTION,
             COLUMNS: COLUMNS,
             ID_PREFIX: ID_PREFIX,
 
-            // Schema helpers
             getColumns: getColumns,
             getHeader: getHeader,
             getColumnIndex: getColumnIndex,
             getFieldName: getFieldName,
             getSection: getSection,
 
-            // Parsing
             parseRow: parseRow,
             parseJSONField: parseJSONField,
             parseBooleanField: parseBooleanField,
             isValidCandidate: isValidCandidate,
             extractRows: extractRows,
 
-            // Serialization
             toRow: toRow,
             toRows: toRows,
 
-            // Export
             export: exportCharacters,
             exportFromData: exportFromData,
             getCSVContent: getCSVContent,
 
-            // Import
             import: importCharacters,
             importFromFile: importFromFile,
 
-            // Template
             getTemplateCharacters: getTemplateCharacters,
             getTemplateRows: getTemplateRows,
             getTemplateContent: getTemplateContent,
             exportTemplate: exportTemplate,
             getTemplatePreview: getTemplatePreview,
 
-            // Validation
             validateCandidates: validateCandidates,
             getImportPreview: getImportPreview,
             getImportSummary: getImportSummary
         };
-
-        // ---- Legacy template aliases ----
 
         window.downloadCharacterCSVTemplate = exportTemplate;
         window.downloadCharactersCSVTemplate = exportTemplate;
@@ -1033,16 +941,8 @@
     // ============================================================
     // SECTION 3: CharacterRosterExport
     // ============================================================
-    //
-    // Tab-separated plain-text roster: Name, Gender, Birth Year,
-    // Eliminated.
-    //
-    // The output is NOT filtered. Every character is included,
-    // regardless of deceased, eliminated, or filler status.
 
     (function() {
-
-        // ---- Helpers ----
 
         function hasEliminationRecord(char) {
             if (!char || typeof char !== 'object') {
@@ -1110,8 +1010,6 @@
                 stripTabs(safeString(value))
             );
         }
-
-        // ---- Build ----
 
         function buildText() {
             var CharacterQueries = getCharacterQueries();
@@ -1190,6 +1088,91 @@
             };
         }
 
+        function buildSelectedText(charIds) {
+            if (!Array.isArray(charIds)) {
+                return {
+                    valid: false,
+                    content: '',
+                    count: 0,
+                    error: 'characterIds must be an array.'
+                };
+            }
+
+            var CharacterQueries = getCharacterQueries();
+            if (!CharacterQueries ||
+                typeof CharacterQueries.getCharacterById !==
+                    'function') {
+                return {
+                    valid: false,
+                    content: '',
+                    count: 0,
+                    error: 'CharacterQueries is not available.'
+                };
+            }
+
+            var records = [];
+            var seen = Object.create(null);
+
+            for (var i = 0; i < charIds.length; i++) {
+                if (charIds[i] === null ||
+                    charIds[i] === undefined) {
+                    continue;
+                }
+                var idStr = String(charIds[i]);
+                if (idStr === '' || seen[idStr]) { continue; }
+                seen[idStr] = true;
+
+                var c = null;
+                try {
+                    c = CharacterQueries.getCharacterById(idStr);
+                } catch (e) {
+                    c = null;
+                }
+                if (c) { records.push(c); }
+            }
+
+            records.sort(function(a, b) {
+                var na = '';
+                var nb = '';
+                try {
+                    na = CharacterQueries.getDisplayName(a) || '';
+                } catch (e) { na = ''; }
+                try {
+                    nb = CharacterQueries.getDisplayName(b) || '';
+                } catch (e) { nb = ''; }
+                return na.localeCompare(nb);
+            });
+
+            var lines = [];
+            lines.push(
+                ['Name', 'Gender', 'Birth Year', 'Eliminated']
+                    .join('\t')
+            );
+
+            for (var r = 0; r < records.length; r++) {
+                var char = records[r];
+                var name = '';
+                try {
+                    name = CharacterQueries.getDisplayName(char) ||
+                        '';
+                } catch (e) { name = ''; }
+
+                lines.push([
+                    cleanField(name),
+                    cleanField(char.gender),
+                    cleanField(char.birthYear),
+                    cleanField(resolveEliminationMarker(char))
+                ].join('\t'));
+            }
+
+            return {
+                valid: true,
+                content: lines.join('\n') + '\n',
+                count: records.length,
+                error: null
+            };
+        }
+
         function buildFilename() {
             var now = new Date();
             var y = now.getFullYear();
@@ -1238,9 +1221,59 @@
             };
         }
 
+        function exportSelectedText(charIds, options) {
+            options = options || {};
+
+            var built = buildSelectedText(charIds);
+            if (!built.valid) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: built.error || 'Failed to build roster.'
+                };
+            }
+
+            if (built.count === 0) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'No characters to export.'
+                };
+            }
+
+            var filename = isNonEmptyString(options.filename)
+                ? String(options.filename)
+                : buildFilename();
+
+            try {
+                var blob = new Blob([built.content], {
+                    type: 'text/plain;charset=utf-8'
+                });
+                ExportUtils.downloadBlob(blob, filename);
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: built.count,
+                    error: 'Download failed: ' + e.message
+                };
+            }
+
+            return {
+                exported: true,
+                filename: filename,
+                count: built.count,
+                error: null
+            };
+        }
+
         window.CharacterRosterExport = Object.freeze({
             buildText: buildText,
-            exportText: exportText
+            exportText: exportText,
+            buildSelectedText: buildSelectedText,
+            exportSelectedText: exportSelectedText
         });
 
     })();
@@ -1248,12 +1281,6 @@
     // ============================================================
     // SECTION 4: CharacterExport
     // ============================================================
-    //
-    // Single-character full-report text. Everything the application
-    // knows about one character, across every domain.
-    //
-    // See the previous character-export.js for the full contract;
-    // the code below is unchanged from that file.
 
     (function() {
 
@@ -1267,8 +1294,6 @@
 
         var DEFAULT_STAT_KEYS =
             ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
-        // ---- Small helpers ----
 
         function isFiniteNumber(value) {
             return typeof value === 'number' && isFinite(value);
@@ -1380,8 +1405,6 @@
                 '  ' + underline + '\n';
         }
 
-        // ---- Date / period formatting ----
-
         function formatWeekRange(startWeek, endWeek) {
             var s = (startWeek !== undefined &&
                      startWeek !== null &&
@@ -1429,8 +1452,6 @@
             return TC.normalizeTeamType(teamType) === 'academic';
         }
 
-        // ---- Timeline ----
-
         function makeTimelineEntry(year, week, display) {
             var yearNum = parseInt(year, 10);
             if (isNaN(yearNum) || yearNum < 1) {
@@ -1468,7 +1489,8 @@
 
             if (Array.isArray(char.careerStatus)) {
                 for (var i = 0;
-                     i < char.careerStatus.length; i++) {
+                     i < char.careerStatus.length;
+                     i++) {
                     var status = char.careerStatus[i];
                     if (!isObject(status)) { continue; }
                     var entry = makeTimelineEntry(
@@ -1664,8 +1686,6 @@
             return out;
         }
 
-        // ---- At a glance ----
-
         function buildAtAGlanceSection(char, charId) {
             var CharacterQueries = getCharacterQueries();
             var out = '';
@@ -1748,8 +1768,6 @@
             }
             return out;
         }
-
-        // ---- Identity ----
 
         function buildIdentityPhysicalGroup(char) {
             var out = '';
@@ -2061,8 +2079,6 @@
             return out;
         }
 
-        // ---- Role-aware class enrolment projection ----
-
         function buildRoleSplitEnrolmentMap(char, charId) {
             var result = {
                 student: {},
@@ -2252,8 +2268,6 @@
             return 'Unknown Discipline';
         }
 
-        // ---- Classes studied / disciplines studied ----
-
         function buildClassesStudiedSection(char, charId) {
             var split =
                 buildRoleSplitEnrolmentMap(char, charId);
@@ -2316,8 +2330,6 @@
             return out;
         }
 
-        // ---- Classes taught / disciplines taught ----
-
         function buildClassesTaughtSection(char, charId) {
             var split =
                 buildRoleSplitEnrolmentMap(char, charId);
@@ -2379,8 +2391,6 @@
 
             return out;
         }
-
-        // ---- Commitments ----
 
         function buildCommitmentsSection(char, charId) {
             var Commit = window.AcademyInstructorCommitments;
@@ -2490,8 +2500,6 @@
                 return String(charId);
             }
         }
-
-        // ---- Teams ----
 
         function buildTeamMemberBlock(team, charId) {
             var TeamQueries = window.TeamQueries;
@@ -2771,8 +2779,6 @@
             return out;
         }
 
-        // ---- Social ----
-
         function buildSocialSection(char, charId) {
             var SA = window.SocialAggregator;
             if (!SA ||
@@ -2830,8 +2836,6 @@
 
             return out;
         }
-
-        // ---- Missions ----
 
         function buildMissionsSection(char, charId) {
             var MQ = window.MissionQueries;
@@ -2936,8 +2940,6 @@
 
             return out;
         }
-
-        // ---- Tournaments / exams ----
 
         function buildTournamentsSection(char, charId) {
             var out = '';
@@ -3077,8 +3079,6 @@
             return out;
         }
 
-        // ---- Academy history ----
-
         function buildAcademyHistorySection(char, charId) {
             var Classes = window.AcademyClasses;
             if (!Classes ||
@@ -3140,8 +3140,6 @@
             }
             return out;
         }
-
-        // ---- Report builder ----
 
         function buildCharacterReport(charId) {
             var CharacterQueries = getCharacterQueries();
@@ -3238,8 +3236,6 @@
             };
         }
 
-        // ---- Public API ----
-
         function getCharacterReportText(charId) {
             if (!isNonEmptyString(charId)) { return ''; }
             var built = buildCharacterReport(charId);
@@ -3314,9 +3310,156 @@
             };
         }
 
+        function exportSelectedText(charIds, options) {
+            options = options || {};
+
+            if (!Array.isArray(charIds)) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'characterIds must be an array.'
+                };
+            }
+
+            var CharacterQueries = getCharacterQueries();
+            if (!CharacterQueries ||
+                typeof CharacterQueries.getCharacterById !==
+                    'function') {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'CharacterQueries is not available.'
+                };
+            }
+
+            var resolved = [];
+            var seen = Object.create(null);
+
+            for (var i = 0; i < charIds.length; i++) {
+                if (charIds[i] === null ||
+                    charIds[i] === undefined) {
+                    continue;
+                }
+                var idStr = String(charIds[i]);
+                if (idStr === '' || seen[idStr]) { continue; }
+                seen[idStr] = true;
+
+                var c = null;
+                try {
+                    c = CharacterQueries.getCharacterById(idStr);
+                } catch (e) {
+                    c = null;
+                }
+                if (c) {
+                    var display = idStr;
+                    try {
+                        display = CharacterQueries
+                            .getDisplayName(c) || idStr;
+                    } catch (e) {
+                        display = idStr;
+                    }
+                    resolved.push({
+                        id: idStr,
+                        name: display
+                    });
+                }
+            }
+
+            if (resolved.length === 0) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'No characters to export.'
+                };
+            }
+
+            resolved.sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+
+            var parts = [];
+            var count = 0;
+
+            for (var r = 0; r < resolved.length; r++) {
+                var built = null;
+                try {
+                    built = buildCharacterReport(resolved[r].id);
+                } catch (e) {
+                    built = null;
+                }
+                if (!built) { continue; }
+                parts.push(built.text);
+                count++;
+            }
+
+            if (count === 0) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'No reports could be built.'
+                };
+            }
+
+            var now = new Date();
+            var iso = now.toISOString();
+            var outer = '';
+            outer += BANNER + '\n';
+            outer += 'BULK CHARACTER REPORT \u2014 ' + count +
+                ' character' + (count === 1 ? '' : 's') + '\n';
+            outer += 'Generated: ' + iso + '\n';
+            outer += BANNER + '\n\n';
+
+            var content = outer +
+                parts.join('\n\n');
+
+            var filename = isNonEmptyString(options.filename)
+                ? String(options.filename)
+                : ('characters-report-' +
+                    iso.slice(0, 10) + '-' +
+                    count + '.txt');
+
+            var blob;
+            try {
+                blob = new Blob([content], {
+                    type: 'text/plain;charset=utf-8'
+                });
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: count,
+                    error: 'Failed to build file blob: ' +
+                        e.message
+                };
+            }
+
+            try {
+                ExportUtils.downloadBlob(blob, filename);
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: count,
+                    error: 'Failed to download: ' + e.message
+                };
+            }
+
+            return {
+                exported: true,
+                filename: filename,
+                count: count,
+                error: null
+            };
+        }
+
         window.CharacterExport = Object.freeze({
             getCharacterReportText: getCharacterReportText,
-            exportCharacterText: exportCharacterText
+            exportCharacterText: exportCharacterText,
+            exportSelectedText: exportSelectedText
         });
 
     })();
@@ -3338,10 +3481,20 @@
                 'function') {
             missing.push('CharacterRosterExport.exportText');
         }
+        if (!window.CharacterRosterExport ||
+            typeof window.CharacterRosterExport.exportSelectedText !==
+                'function') {
+            missing.push('CharacterRosterExport.exportSelectedText');
+        }
         if (!window.CharacterExport ||
             typeof window.CharacterExport.exportCharacterText !==
                 'function') {
             missing.push('CharacterExport.exportCharacterText');
+        }
+        if (!window.CharacterExport ||
+            typeof window.CharacterExport.exportSelectedText !==
+                'function') {
+            missing.push('CharacterExport.exportSelectedText');
         }
 
         if (typeof window.downloadCharacterCSVTemplate !==
