@@ -36,19 +36,24 @@
  *   A stage's endYear is always `startYear + duration - 1`,
  *   regardless of convention.
  *
- * ALREADY-SET STAGES:
- *   When a stage the wizard would produce already exists in the
- *   character's careerStatus array, the existing stage is NOT
- *   overwritten. Its startYear becomes the anchor for the next
- *   stage, and the wizard continues from there.
+ * REPLACE SEMANTICS (this revision):
+ *   The wizard REPLACES the character's careerStatus array with
+ *   the array it produces. It does NOT preserve existing stages
+ *   whose status happens to appear in the wizard's plan.
  *
- *   In the preview, skipped stages are greyed out with a
- *   "(kept existing)" annotation.
+ *   Previous behaviour: an existing stage with a matching status
+ *   was kept (its startYear anchored the next stage) and the
+ *   resulting array still contained it. That produced a "Replace
+ *   Career Status" button that did not actually replace anything
+ *   for the stages the user already had. It is gone.
  *
- * REPLACE EVERYTHING:
- *   The wizard produces a NEW array. Every stage NOT in that
- *   array is dropped when the character is saved. The preview
- *   warns about how many existing entries will be removed.
+ *   Now every stage in the plan starts at the cursor, and the
+ *   output array contains only the wizard's stages. The button
+ *   label matches what happens.
+ *
+ *   The preview still warns how many existing entries will be
+ *   dropped, because a wholesale replacement is exactly what the
+ *   user is confirming.
  *
  * DEATH-YEAR CLAMP:
  *   When the character has a parseable deathYear:
@@ -60,10 +65,21 @@
  *   A character with no deathYear (or a malformed one) is not
  *   clamped: ongoing stages stay ongoing.
  *
- * LIVE PREVIEW:
+ * LIVE PREVIEW (input handling):
  *   The preview recomputes on every input change. There is no
  *   "Generate" button; the user sets inputs and sees the result
  *   immediately.
+ *
+ *   On keystrokes in the start-year field, ONLY the preview
+ *   region is re-rendered. The start-year input element is never
+ *   replaced while the modal is open, so focus and caret
+ *   position survive.
+ *
+ *   Radio and checkbox changes do trigger a full modal
+ *   re-render, because they carry side-effects that affect the
+ *   rest of the form (the Route B sub-option visibility). They
+ *   are single clicks, not continuous input, so the focus loss
+ *   is irrelevant.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
@@ -217,19 +233,6 @@
         return char.careerStatus;
     }
 
-    function getExistingStage(charId, status) {
-        var list = getExistingCareerStatus(charId);
-        for (var i = 0; i < list.length; i++) {
-            var entry = list[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-            var s = String(entry.status || '').toLowerCase();
-            if (s === status) {
-                return entry;
-            }
-        }
-        return null;
-    }
-
     function getDeathYear(charId) {
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) { return null; }
@@ -247,15 +250,17 @@
     //     startYear:  integer,
     //     endYear:    integer | '',      (open-ended => '')
     //     title:      '',
-    //     kept:       boolean,           (true if it's an existing
-    //                                     stage the wizard is
-    //                                     NOT overwriting)
     //     dropped:    boolean            (true if the death-year
     //                                     clamp removed it)
+    //     ongoing:    boolean            (true if the stage has no
+    //                                     end and was not dropped)
     //   }
     //
-    // Also produces an `existingCount` and `finalCount` for the
-    // warning block.
+    // The wizard REPLACES the character's careerStatus array with
+    // the stages this function produces. Existing stages are not
+    // preserved; they are overwritten. `existingNotInPlan` reports
+    // how many of the character's current entries will be removed
+    // by the replacement so the preview can warn.
 
     function generateTimeline(charId) {
         var startYear = _state.startYear;
@@ -279,35 +284,12 @@
         var deathYear = getDeathYear(charId);
         var result = [];
         var cursor = startYear;
-        var lastEndedYear = null; // for inclusive/exclusive anchor
         var anyDropped = false;
 
         for (var i = 0; i < plan.length; i++) {
             var status = plan[i];
 
-            // ---- Determine the effective start for this stage. ----
-            //
-            // If the stage already exists, reuse the existing
-            // startYear. Do NOT recompute it from the cursor. The
-            // existing stage is treated as authoritative.
-            //
-            // Otherwise, start at the cursor. Cursor is either the
-            // initial start year (for the first stage) or the
-            // previous stage's end (inclusive) / end + 1
-            // (exclusive).
-
-            var existing = getExistingStage(charId, status);
-
-            var effectiveStart;
-            if (existing &&
-                existing.startYear !== undefined &&
-                existing.startYear !== null &&
-                String(existing.startYear).trim() !== '') {
-                var exStart = parseYearInt(existing.startYear);
-                effectiveStart = exStart !== null ? exStart : cursor;
-            } else {
-                effectiveStart = cursor;
-            }
+            var effectiveStart = cursor;
 
             var duration = DURATIONS[status];
             var endYear = '';
@@ -326,11 +308,6 @@
             //     end it at deathYear.
             //   - If the stage spans deathYear, truncate at
             //     deathYear.
-            //
-            // A stage whose truncated end is before its start is
-            // also dropped. (This can only happen if the stage
-            // starts after deathYear, which the first rule
-            // already catches; kept here as belt-and-braces.)
 
             var dropped = false;
 
@@ -349,7 +326,6 @@
                 startYear: effectiveStart,
                 endYear: endYear,
                 title: '',
-                kept: existing !== null,
                 dropped: dropped,
                 ongoing: ongoing && !dropped && endYear === ''
             });
@@ -375,9 +351,7 @@
                 // (Plan construction never places a stage after
                 // senior or support, but keep the guard for
                 // clarity.)
-                lastEndedYear = null;
             } else {
-                lastEndedYear = endYear;
                 if (convention === 'inclusive') {
                     cursor = endYear;
                 } else {
@@ -386,10 +360,13 @@
             }
         }
 
-        // ---- Count existing stages NOT in the plan. ----
+        // ---- Count existing stages the wizard will remove. ----
         //
-        // Those are the ones that will be removed when the wizard
-        // commits. Report them so the warning is accurate.
+        // Since the wizard replaces the array wholesale, every
+        // existing entry is going to be dropped unless the
+        // wizard happens to produce the same status. We count
+        // every entry the plan does NOT cover so the warning is
+        // accurate: those are the ones that will disappear.
 
         var existingList = getExistingCareerStatus(charId);
         var planSet = Object.create(null);
@@ -410,6 +387,7 @@
         return {
             rows: result,
             existingNotInPlan: existingNotInPlan,
+            existingTotal: existingList.length,
             anyDropped: anyDropped,
             deathYear: deathYear
         };
@@ -457,12 +435,58 @@
     }
 
     // ============================================================
-    // RENDER
+    // RENDER - full modal
     // ============================================================
 
     function renderContent() {
         if (!_contentEl) { return; }
         _contentEl.innerHTML = buildModalHTML();
+    }
+
+    // ============================================================
+    // RENDER - preview region only
+    // ============================================================
+    //
+    // Called on start-year keystrokes. It replaces ONLY the
+    // contents of #csw-preview-region, leaving every other
+    // element in the modal (including the start-year input the
+    // user is typing into) untouched. Focus and caret position
+    // therefore survive keystrokes.
+
+    function renderPreviewRegion() {
+        if (!_contentEl) { return; }
+
+        var region = _contentEl.querySelector(
+            '#csw-preview-region'
+        );
+        if (!region) { return; }
+
+        var generated = generateTimeline(_charId);
+        region.innerHTML = buildPreviewHTML(generated);
+    }
+
+    function buildPreviewHTML(generated) {
+        var rows = generated.rows;
+        var deathYear = generated.deathYear;
+
+        var html = '';
+
+        html += '<div class="csw-preview">';
+        html += '<div class="csw-preview-header">Preview</div>';
+        html += renderPreviewTable(rows);
+
+        if (deathYear !== null) {
+            html += '<p class="csw-note">';
+            html += '\u2139 This character died in ' +
+                escapeHtml(String(deathYear)) +
+                '. Ongoing stages are clamped to that year, and ' +
+                'stages starting after it are omitted.';
+            html += '</p>';
+        }
+
+        html += '</div>';
+
+        return html;
     }
 
     function buildModalHTML() {
@@ -474,8 +498,8 @@
         var generated = generateTimeline(_charId);
         var rows = generated.rows;
         var existingNotInPlan = generated.existingNotInPlan;
+        var existingTotal = generated.existingTotal;
         var anyDropped = generated.anyDropped;
-        var deathYear = generated.deathYear;
 
         var html = '';
 
@@ -562,31 +586,35 @@
 
         html += '</div>';
 
-        // ---- Preview ----
-        html += '<div class="csw-preview">';
-        html += '<div class="csw-preview-header">Preview</div>';
-        html += renderPreviewTable(rows);
+        // ---- Preview region ----
+        //
+        // The preview lives inside its own container so keystrokes
+        // in the start-year input can refresh it without
+        // re-rendering the modal. See renderPreviewRegion().
 
-        if (deathYear !== null) {
-            html += '<p class="csw-note">';
-            html += '\u2139 This character died in ' +
-                escapeHtml(String(deathYear)) +
-                '. Ongoing stages are clamped to that year, and ' +
-                'stages starting after it are omitted.';
-            html += '</p>';
-        }
-
+        html += '<div id="csw-preview-region">';
+        html += buildPreviewHTML(generated);
         html += '</div>';
 
         // ---- Warning ----
         var warningParts = [];
-        if (existingNotInPlan > 0) {
-            warningParts.push(
-                existingNotInPlan +
-                ' existing career status entr' +
-                (existingNotInPlan === 1 ? 'y' : 'ies') +
-                ' not covered by this wizard will be removed'
-            );
+
+        if (existingTotal > 0) {
+            if (existingNotInPlan > 0) {
+                warningParts.push(
+                    'Replacing career status will remove ' +
+                    existingTotal + ' existing ' +
+                    (existingTotal === 1 ? 'entry' : 'entries') +
+                    ' (' + existingNotInPlan +
+                    ' not covered by this wizard)'
+                );
+            } else {
+                warningParts.push(
+                    'Replacing career status will overwrite ' +
+                    existingTotal + ' existing ' +
+                    (existingTotal === 1 ? 'entry' : 'entries')
+                );
+            }
         }
         if (anyDropped) {
             warningParts.push(
@@ -598,15 +626,15 @@
         html += '<div class="csw-warning">';
         if (warningParts.length > 0) {
             html += '<span class="csw-warning-icon">\u26a0</span>';
-            html += '<span>Replacing career status. ' +
+            html += '<span>' +
                 escapeHtml(warningParts.join('. ')) +
                 '.</span>';
         } else {
             html += '<span class="csw-warning-icon csw-warning-ok">' +
                         '\u2713' +
                     '</span>';
-            html += '<span>Replacing career status. No existing ' +
-                        'entries will be lost.</span>';
+            html += '<span>This character has no existing career ' +
+                        'status entries. Nothing will be lost.</span>';
         }
         html += '</div>';
 
@@ -649,7 +677,6 @@
         for (var i = 0; i < rows.length; i++) {
             var r = rows[i];
             var rowClass = 'csw-row';
-            if (r.kept) { rowClass += ' csw-row-kept'; }
             if (r.dropped) { rowClass += ' csw-row-dropped'; }
 
             var endDisplay;
@@ -665,8 +692,6 @@
             var note = '';
             if (r.dropped) {
                 note = 'omitted (died before start)';
-            } else if (r.kept) {
-                note = 'kept existing';
             } else if (r.ongoing) {
                 note = 'ongoing';
             }
@@ -717,7 +742,13 @@
 
         // Route radio toggles the Route B sub-option visibility.
         // The sub-option visibility is a DOM concern handled in
-        // the re-render below; no direct manipulation here.
+        // the re-render below.
+        //
+        // This is a full re-render. Radio and checkbox changes
+        // are single clicks, so losing focus on the other
+        // controls is not a problem. Start-year keystrokes are
+        // handled by handleContentInput, which only refreshes the
+        // preview region and therefore preserves focus.
         readStateFromDOM();
         renderContent();
     }
@@ -726,11 +757,13 @@
         var target = e.target;
         if (!target) { return; }
 
-        // Only re-render on start-year changes; text input fires
-        // an input event on every keystroke.
         if (target.id === 'csw-start-year') {
             readStateFromDOM();
-            renderContent();
+
+            // Refresh the preview only. The start-year input is
+            // never replaced while the modal is open, so focus
+            // and caret position survive keystrokes.
+            renderPreviewRegion();
         }
     }
 
@@ -750,8 +783,8 @@
         }
 
         // Build the final careerStatus array. Drop the wizard-
-        // internal metadata (`kept`, `dropped`, `ongoing`); only
-        // the four canonical fields survive.
+        // internal metadata (`dropped`, `ongoing`); only the four
+        // canonical fields survive.
         var stages = [];
         for (var i = 0; i < rows.length; i++) {
             var r = rows[i];
@@ -821,11 +854,24 @@
         _charId = String(charId);
         _onClose = null;
 
-        // Seed the start year: if the character has a trainee
-        // stage, reuse its startYear so the wizard opens on the
-        // existing timeline. Otherwise default to the character's
-        // birthYear + 16, or 1900.
-        var existingTrainee = getExistingStage(_charId, 'trainee');
+        // Seed the start year:
+        //   1. If the character has a trainee entry, use its
+        //      startYear. This is only a seed for the input;
+        //      the wizard does not reuse existing stages.
+        //   2. Otherwise, use birthYear + 16.
+        //   3. Otherwise, 1900.
+        var existingTrainee = null;
+        var list = getExistingCareerStatus(_charId);
+        for (var i = 0; i < list.length; i++) {
+            var entry = list[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (String(entry.status || '').toLowerCase() ===
+                'trainee') {
+                existingTrainee = entry;
+                break;
+            }
+        }
+
         var seedYear = null;
         if (existingTrainee) {
             seedYear = parseYearInt(existingTrainee.startYear);
