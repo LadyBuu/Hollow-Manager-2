@@ -138,7 +138,11 @@
 }
 
 /* The burger toggle is hidden on desktop (sidebar is always
-   visible there) and shown on mobile. */
+   visible there) and shown on mobile. On mobile the toggle
+   also escapes the sidebar's transform clip: characters/index.js
+   emits a scoped <style> block that pins it to position: fixed
+   at the top-left of the viewport. The rule below owns the
+   desktop side of the hide/show pair. */
 #toggle-char-list {
     font-size: 1rem;
 }
@@ -1849,6 +1853,205 @@
     .bulk-create-row-count {
         margin-left: 0;
         text-align: right;
+    }
+}
+
+/* ============================================================
+   CHARACTER EXPORT PICKER
+   ============================================================
+   The picker modal is emitted by
+   js/import-export/character-export-picker.js. It reuses
+   .modal-content / .modal-body / .modal-footer from shared.css,
+   and adds the classes below:
+
+     .character-export-picker-preview        scope summary block
+     .character-export-picker-counts         wrapper around the count
+     .character-export-picker-count          the count line itself
+     .character-export-picker-formats        the radio group wrapper
+     .character-export-picker-hint           helper text above rows
+     .character-export-picker-format         one radio row
+     .is-selected                            the currently chosen row
+     .is-disabled                            an unavailable format
+     .character-export-picker-format-body    label content wrapper
+     .character-export-picker-format-title   format name
+     .character-export-picker-format-desc    format description
+     .character-export-picker-format-unavailable
+                                             "Not available" badge
+     .character-export-picker-footer         footer flex container
+     .character-export-picker-footer-spacer  right-aligns the button
+
+   The is-selected / is-disabled states mirror the .csw-radio-row
+   pattern used by the career wizard so the two modals read as
+   the same family. */
+
+.character-export-picker-preview {
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    font-size: 0.75rem;
+}
+
+.character-export-picker-preview .empty-state {
+    margin: 0;
+    padding: 4px 0;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.character-export-picker-counts {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.character-export-picker-count {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
+.character-export-picker-count strong {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.character-export-picker-formats {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.character-export-picker-hint {
+    margin: 0 0 6px 0;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.45;
+}
+
+.character-export-picker-format {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 0.12s, border-color 0.12s;
+    user-select: none;
+}
+
+.character-export-picker-format:hover {
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.character-export-picker-format input[type="radio"] {
+    margin: 2px 0 0 0;
+    flex: 0 0 auto;
+    accent-color: var(--accent);
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+}
+
+.character-export-picker-format.is-selected {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.character-export-picker-format.is-disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.character-export-picker-format.is-disabled:hover {
+    background: transparent;
+    border-color: var(--border-soft);
+}
+
+.character-export-picker-format-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.character-export-picker-format-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.25;
+}
+
+.character-export-picker-format.is-selected
+.character-export-picker-format-title {
+    color: var(--accent);
+}
+
+.character-export-picker-format-desc {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.character-export-picker-format-unavailable {
+    align-self: flex-start;
+    margin-top: 2px;
+    font-size: 0.55rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--warning);
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    padding: 1px 6px;
+    line-height: 1.4;
+}
+
+.character-export-picker-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 12px;
+    margin-top: 12px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.character-export-picker-footer-spacer {
+    flex: 1;
+}
+
+@media (max-width: 480px) {
+    .character-export-picker-format {
+        padding: 6px 8px;
+    }
+
+    .character-export-picker-format-title {
+        font-size: 0.72rem;
+    }
+
+    .character-export-picker-format-desc {
+        font-size: 0.63rem;
+    }
+
+    .character-export-picker-footer {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+
+    .character-export-picker-footer-spacer {
+        display: none;
+    }
+
+    .character-export-picker-footer button {
+        width: 100%;
     }
 }
 
