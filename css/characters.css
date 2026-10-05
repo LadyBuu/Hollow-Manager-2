@@ -9,8 +9,8 @@
  *   fills the right.
  *
  *   Mobile (<=768px): one column. Sidebar becomes a fixed overlay
- *   drawer that slides in from the left when the toggle button is
- *   tapped. Form container fills the tab.
+ *   drawer that slides in from the left when the toggle button
+ *   is tapped. Form container fills the tab.
  *
  * Load order: shared.css → characters.css
  */
@@ -137,12 +137,34 @@
     font-weight: 700;
 }
 
-/* The burger toggle is hidden on desktop (sidebar is always
-   visible there) and shown on mobile. On mobile the toggle
-   also escapes the sidebar's transform clip: characters/index.js
-   emits a scoped <style> block that pins it to position: fixed
-   at the top-left of the viewport. The rule below owns the
-   desktop side of the hide/show pair. */
+/* ------------------------------------------------------------
+   Burger toggle (#toggle-char-list)
+   ------------------------------------------------------------
+   The burger is a SIBLING of .characters-sidebar in the markup,
+   not a child of it. This matters on mobile: the sidebar is
+   translated off-screen via `transform: translateX(-100%)` until
+   `.open` is added. A fixed-positioned descendant of a
+   transformed ancestor does NOT escape that ancestor's clip —
+   the transformed element becomes the containing block for its
+   fixed descendants (CSS Transforms spec). So a burger rendered
+   inside the sidebar would be dragged off-screen with it, and
+   no amount of `position: fixed` on the burger itself would
+   help.
+
+   Placing the burger outside the transformed subtree is the only
+   reliable fix. With the burger as a direct child of
+   .characters-layout (which has no transform), its containing
+   block is the viewport and `position: fixed` behaves as
+   expected.
+
+   Desktop: hidden. The sidebar is always visible.
+   Mobile:  pinned to the top-left of the viewport, above the
+            sidebar (z-index 200 vs the sidebar's 150).
+
+   The same mobile rule is also emitted inline by
+   characters/index.js as a defensive copy, so the burger keeps
+   working if this stylesheet fails to load. */
+
 #toggle-char-list {
     font-size: 1rem;
 }
@@ -150,6 +172,22 @@
 @media (min-width: 769px) {
     #toggle-char-list {
         display: none;
+    }
+}
+
+@media (max-width: 768px) {
+    #toggle-char-list {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        z-index: 200;
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
     }
 }
 
