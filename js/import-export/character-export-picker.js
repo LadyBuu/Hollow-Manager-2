@@ -2,25 +2,30 @@
  * js/import-export/character-export-picker.js - Character Export Picker
  * Modal that offers three character export formats:
  *
- *   Full CSV        every field, one row per character, spreadsheet-ready
- *   Roster (text)   name, gender, birth year, eliminated, human-readable
- *   Blank template  the CSV template for authoring new characters
+ *   Full report       every detail, one file, all selected characters
+ *                     concatenated with a bulk banner
+ *   Simplified        the roster: name, gender, birth year, eliminated
+ *   Blank template    a CSV template for authoring new characters
  *
  * Path: js/import-export/character-export-picker.js
  *
- * WHY A PICKER:
- *   Before this module, three separate icon buttons in the character
- *   header each opened a different download. The icons (↓ ▤ ☰) were
- *   not self-describing, the header clipped on narrow viewports, and
- *   users could not tell "export characters" from "export roster."
+ * SCOPE:
+ *   The picker accepts an optional `characterIds` array. When
+ *   supplied, the two report formats (Full and Simplified) export
+ *   only those characters. When omitted or empty, both formats
+ *   export every character in the store.
  *
- *   The picker makes the choice explicit and textual, and collapses
- *   the header down to a single Export button.
+ *   The template format is never scoped. A blank template is a
+ *   blank template regardless of selection.
  *
  * FORMAT SEMANTICS:
- *   Full CSV        CharacterCSV.exportFromData
- *   Roster (text)   CharacterRosterExport.exportText
- *   Blank template  CharacterCSV.exportTemplate
+ *   Full report       CharacterExport.exportSelectedText(charIds)
+ *                     or CharacterExport.exportCharacterText(id)
+ *                     when a single character is selected.
+ *   Simplified        CharacterRosterExport.exportSelectedText(charIds)
+ *                     or CharacterRosterExport.exportText()
+ *                     when the whole store is in scope.
+ *   Blank template    CharacterCSV.exportTemplate()
  *
  *   The picker opens the target module lazily at click time. A
  *   missing module produces a toast, not a boot-time crash.
@@ -29,12 +34,16 @@
  *   - The modal shell
  *   - The format radio group
  *   - The pre-flight count
+ *   - The scope summary line
  *   - The export button and its result reporting
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - The character list            (CharacterQueries)
  *   - The download                  (ExportUtils, via the targets)
  *   - The header button             (characters/index.js)
+ *   - Selection state               (CharacterList owns it; the
+ *                                    caller passes the current
+ *                                    selection in)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -44,6 +53,7 @@
  * DEPENDENCIES (LAZY, resolved at click time):
  *   - window.CharacterCSV
  *   - window.CharacterRosterExport
+ *   - window.CharacterExport
  *   - window.CharacterQueries       (pre-flight count)
  */
 
@@ -92,7 +102,8 @@
 
     var _modal = null;
     var _contentEl = null;
-    var _selectedFormat = 'csv';
+    var _selectedFormat = 'report';
+    var _characterIds = null;
     var _onClose = null;
 
     var _contentChangeHandler = null;
@@ -127,6 +138,9 @@
      *
      * @param {object} [options]
      * @param {string} [options.initialFormat] - Preselect a format
+     * @param {string[]} [options.characterIds] - Scope the two
+     *   report formats to these character IDs. When omitted or
+     *   empty, the whole store is in scope.
      * @param {function} [options.onClose]     - Called once on close
      * @returns {object|null} The modal element, or null on failure
      */
@@ -137,12 +151,33 @@
 
         _selectedFormat = isNonEmptyString(options.initialFormat)
             ? String(options.initialFormat)
-            : 'csv';
+            : 'report';
+
+        _characterIds = null;
+        if (Array.isArray(options.characterIds) &&
+            options.characterIds.length > 0) {
+            var seen = Object.create(null);
+            var cleaned = [];
+            for (var i = 0; i < options.characterIds.length; i++) {
+                var raw = options.characterIds[i];
+                if (raw === null || raw === undefined) { continue; }
+                var s = String(raw);
+                if (s === '' || seen[s]) { continue; }
+                seen[s] = true;
+                cleaned.push(s);
+            }
+            if (cleaned.length > 0) {
+                _characterIds = cleaned;
+            }
+        }
+
         _onClose = typeof options.onClose === 'function'
             ? options.onClose
             : null;
 
-        var shell = Modal.createModal('character-export-picker-modal');
+        var shell = Modal.createModal(
+            'character-export-picker-modal'
+        );
         if (!shell) {
             notify('Failed to create modal.', 'error');
             resetState();
@@ -216,7 +251,8 @@
     function resetState() {
         _modal = null;
         _contentEl = null;
-        _selectedFormat = 'csv';
+        _selectedFormat = 'report';
+        _characterIds = null;
         _onClose = null;
         _contentChangeHandler = null;
         _contentClickHandler = null;
@@ -226,7 +262,7 @@
     // VIEW MODEL
     // ============================================================
 
-    function getCharacterCount() {
+    function getWholeStoreCount() {
         if (!window.CharacterQueries ||
             typeof window.CharacterQueries.getCharacters !==
                 'function') {
@@ -240,17 +276,54 @@
         }
     }
 
+    /**
+     * Returns { scope: 'all' | 'selected', count: number }.
+     *
+     *   scope 'selected' with a live count means characterIds is
+     *   set; the count reflects how many of those IDs resolve to
+     *   actual characters.
+     *
+     *   scope 'all' means the whole store is in scope. count is
+     *   the store size (or null when CharacterQueries is absent).
+     */
+    function getScope() {
+        if (_characterIds && _characterIds.length > 0) {
+            var live = 0;
+            if (window.CharacterQueries &&
+                typeof window.CharacterQueries.getCharacterById ===
+                    'function') {
+                for (var i = 0; i < _characterIds.length; i++) {
+                    try {
+                        if (window.CharacterQueries
+                                .getCharacterById(
+                                    _characterIds[i]
+                                )) {
+                            live++;
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+            } else {
+                live = _characterIds.length;
+            }
+            return { scope: 'selected', count: live };
+        }
+        return { scope: 'all', count: getWholeStoreCount() };
+    }
+
     function getFormatAvailability() {
         var csv = window.CharacterCSV || null;
         var roster = window.CharacterRosterExport || null;
+        var report = window.CharacterExport || null;
 
         return {
-            csv: csv !== null &&
-                 typeof csv.exportFromData === 'function',
-            roster: roster !== null &&
-                    typeof roster.exportText === 'function',
+            report: report !== null &&
+                (typeof report.exportSelectedText === 'function' ||
+                 typeof report.exportCharacterText === 'function'),
+            simplified: roster !== null &&
+                (typeof roster.exportSelectedText === 'function' ||
+                 typeof roster.exportText === 'function'),
             template: csv !== null &&
-                      typeof csv.exportTemplate === 'function'
+                typeof csv.exportTemplate === 'function'
         };
     }
 
@@ -264,7 +337,7 @@
     }
 
     function buildModalHTML() {
-        var count = getCharacterCount();
+        var scope = getScope();
         var availability = getFormatAvailability();
 
         var html = '';
@@ -278,47 +351,28 @@
 
         html += '<div class="modal-body">';
 
-        // ---- Pre-flight count ----
-        html += '<div class="character-export-picker-preview">';
-        if (count === null) {
-            html += '<p class="empty-state">' +
-                        'Character data is not available.' +
-                    '</p>';
-        } else if (count === 0) {
-            html += '<p class="empty-state">' +
-                        'No characters to export.' +
-                    '</p>';
-        } else {
-            html += '<div class="character-export-picker-counts">';
-            html += '<span class="character-export-picker-count">' +
-                        '<strong>' + count + '</strong> ' +
-                        (count === 1 ? 'character' : 'characters') +
-                        ' in the store' +
-                    '</span>';
-            html += '</div>';
-        }
-        html += '</div>';
+        html += buildScopeSummaryHTML(scope);
 
-        // ---- Format radio group ----
         html += '<div class="character-export-picker-formats">';
         html += '<p class="field-hint character-export-picker-hint">' +
                     'Pick a format, then click Export.' +
                 '</p>';
 
         html += buildFormatRow(
-            'csv',
-            'Full CSV',
-            'Every field, one row per character. ' +
-            'Opens in Excel or Google Sheets.',
-            availability.csv
+            'report',
+            'Full report',
+            'Every detail — identity, personality, combat, ' +
+            'teams, relationships, missions, academy history. ' +
+            'One text file.',
+            availability.report
         );
 
         html += buildFormatRow(
-            'roster',
-            'Roster (text)',
+            'simplified',
+            'Simplified',
             'Name, gender, birth year, and elimination year. ' +
-            'A plain-text roster, sorted alphabetically.',
-            availability.roster
+            'A plain-text roster.',
+            availability.simplified
         );
 
         html += buildFormatRow(
@@ -333,14 +387,24 @@
 
         html += '</div>';
 
-        // ---- Footer ----
-        var canExport = isFormatAvailable(_selectedFormat, availability);
-        var hasData = count !== null && count > 0;
+        var canExport = isFormatAvailable(
+            _selectedFormat, availability
+        );
+        var hasData = scope.count === null
+            ? true
+            : scope.count > 0;
         var templateSelected = _selectedFormat === 'template';
 
         var exportDisabled = templateSelected
             ? !canExport
             : (!canExport || !hasData);
+
+        var exportLabel = 'Export';
+        if (!templateSelected && scope.scope === 'selected' &&
+            scope.count !== null && scope.count > 0) {
+            exportLabel = 'Export ' + scope.count +
+                ' character' + (scope.count === 1 ? '' : 's');
+        }
 
         html += '<div class="modal-footer character-export-picker-footer">';
 
@@ -355,11 +419,46 @@
         html += '<button type="button" class="primary" ' +
                     'data-picker-action="export"' +
                     (exportDisabled ? ' disabled' : '') + '>' +
-                    'Export' +
+                    escapeHtml(exportLabel) +
                 '</button>';
 
         html += '</div>';
 
+        return html;
+    }
+
+    function buildScopeSummaryHTML(scope) {
+        var html = '';
+        html += '<div class="character-export-picker-preview">';
+
+        if (scope.scope === 'selected') {
+            html += '<div class="character-export-picker-counts">';
+            html += '<span class="character-export-picker-count">' +
+                        'Exporting <strong>' + scope.count +
+                        '</strong> selected character' +
+                        (scope.count === 1 ? '' : 's') +
+                    '</span>';
+            html += '</div>';
+        } else if (scope.count === null) {
+            html += '<p class="empty-state">' +
+                        'Character data is not available.' +
+                    '</p>';
+        } else if (scope.count === 0) {
+            html += '<p class="empty-state">' +
+                        'No characters to export.' +
+                    '</p>';
+        } else {
+            html += '<div class="character-export-picker-counts">';
+            html += '<span class="character-export-picker-count">' +
+                        'Exporting <strong>' + scope.count +
+                        '</strong> ' +
+                        (scope.count === 1 ? 'character' : 'characters') +
+                        ' in the store' +
+                    '</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
         return html;
     }
 
@@ -399,8 +498,10 @@
     }
 
     function isFormatAvailable(format, availability) {
-        if (format === 'csv') { return availability.csv; }
-        if (format === 'roster') { return availability.roster; }
+        if (format === 'report') { return availability.report; }
+        if (format === 'simplified') {
+            return availability.simplified;
+        }
         if (format === 'template') { return availability.template; }
         return false;
     }
@@ -436,10 +537,8 @@
         if (!target || !target.name) { return; }
         if (target.name !== 'character-export-format') { return; }
 
-        _selectedFormat = target.value || 'csv';
+        _selectedFormat = target.value || 'report';
 
-        // Re-render so the selected row highlights and the export
-        // button's disabled state updates.
         renderContent();
     }
 
@@ -451,10 +550,10 @@
         var result;
 
         try {
-            if (_selectedFormat === 'csv') {
-                result = runCSVExport();
-            } else if (_selectedFormat === 'roster') {
-                result = runRosterExport();
+            if (_selectedFormat === 'report') {
+                result = runReportExport();
+            } else if (_selectedFormat === 'simplified') {
+                result = runSimplifiedExport();
             } else if (_selectedFormat === 'template') {
                 result = runTemplateExport();
             } else {
@@ -497,24 +596,45 @@
     }
 
     function _formatLabel(format) {
-        if (format === 'csv') { return 'CSV'; }
-        if (format === 'roster') { return 'Roster'; }
+        if (format === 'report') { return 'Full report'; }
+        if (format === 'simplified') { return 'Simplified'; }
         if (format === 'template') { return 'Template'; }
         return 'Export';
     }
 
-    function runCSVExport() {
-        var csv = window.CharacterCSV;
-        if (!csv || typeof csv.exportFromData !== 'function') {
-            return null;
+    function runReportExport() {
+        var report = window.CharacterExport;
+        if (!report) { return null; }
+
+        // Scoped to a selection.
+        if (_characterIds && _characterIds.length > 0) {
+            if (typeof report.exportSelectedText !== 'function') {
+                return null;
+            }
+            return report.exportSelectedText(_characterIds);
         }
 
-        var result = csv.exportFromData();
-
-        // CharacterCSV.exportFromData returns { count, filename,
-        // message }. Translate the "no data" path into an exported:
-        // false shape so the caller handles it uniformly.
-        if (result && result.message === 'No characters to export.') {
+        // Whole store. There is no single "export all reports"
+        // helper, so build the selection from every character
+        // currently in the store, then defer to the same code path.
+        if (!window.CharacterQueries ||
+            typeof window.CharacterQueries.getCharacters !==
+                'function') {
+            return null;
+        }
+        var all = [];
+        try {
+            all = window.CharacterQueries.getCharacters() || [];
+        } catch (e) {
+            return null;
+        }
+        var ids = [];
+        for (var i = 0; i < all.length; i++) {
+            if (all[i] && all[i].id) {
+                ids.push(String(all[i].id));
+            }
+        }
+        if (ids.length === 0) {
             return {
                 exported: false,
                 filename: null,
@@ -522,27 +642,21 @@
                 error: 'No characters to export.'
             };
         }
-
-        if (result && typeof result.count === 'number') {
-            return {
-                exported: true,
-                filename: result.filename,
-                count: result.count,
-                error: null
-            };
-        }
-
-        return {
-            exported: false,
-            filename: null,
-            count: 0,
-            error: 'CSV export returned an unexpected shape.'
-        };
+        return report.exportSelectedText(ids);
     }
 
-    function runRosterExport() {
+    function runSimplifiedExport() {
         var roster = window.CharacterRosterExport;
-        if (!roster || typeof roster.exportText !== 'function') {
+        if (!roster) { return null; }
+
+        if (_characterIds && _characterIds.length > 0) {
+            if (typeof roster.exportSelectedText !== 'function') {
+                return null;
+            }
+            return roster.exportSelectedText(_characterIds);
+        }
+
+        if (typeof roster.exportText !== 'function') {
             return null;
         }
         return roster.exportText();
