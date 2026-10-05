@@ -22,6 +22,10 @@
  *                                   - exportCharacterText(charId)
  *                                   - exportSelectedText(charIds)
  *
+ *                                 general report text
+ *                                   - getGeneralReportText(charId)
+ *                                   - exportGeneralText(charId)
+ *
  * WHY THREE NAMESPACES IN ONE FILE:
  *   They share the CharacterQueries, ExportUtils, and CSV
  *   dependencies, they share the same "character in, file out"
@@ -33,6 +37,7 @@
  *   2. CharacterCSV           — schema, export, import, template
  *   3. CharacterRosterExport  — tab-separated roster text
  *   4. CharacterExport        — full-detail character report
+ *                             + general report
  */
 
 (function() {
@@ -1281,6 +1286,23 @@
     // ============================================================
     // SECTION 4: CharacterExport
     // ============================================================
+    //
+    // Two report formats live in this namespace:
+    //
+    //   Full report    every section, the whole character.
+    //                  Academic teams are represented by the
+    //                  CLASSES STUDIED / DISCIPLINES STUDIED /
+    //                  ACADEMIC HISTORY sections. The TEAMS
+    //                  section carries PROFESSIONAL memberships
+    //                  only; temporary and civilian teams are
+    //                  not part of this report.
+    //
+    //   General        a curated subset. Name, physical,
+    //                  personality, combat, all-time class
+    //                  names, professional teams, career status,
+    //                  department memberships, social
+    //                  connections. No missions, no notes, no
+    //                  academic history beyond class names.
 
     (function() {
 
@@ -1502,6 +1524,11 @@
                 }
             }
 
+            // Professional-team joins. Temporary, civilian, and
+            // academic teams do not contribute timeline entries:
+            // academic is redundant with the ACADEMIC HISTORY
+            // section, and temporary / civilian teams are out of
+            // scope for this report.
             var TeamQueries = window.TeamQueries;
             if (TeamQueries &&
                 typeof TeamQueries
@@ -1518,7 +1545,7 @@
                 for (var t = 0; t < teams.length; t++) {
                     var team = teams[t];
                     if (!team) { continue; }
-                    if (isAcademicTeamType(team.type)) {
+                    if (team.type !== 'professional') {
                         continue;
                     }
 
@@ -2693,6 +2720,12 @@
             return out;
         }
 
+        // ---- TEAMS section, professional only ----
+        //
+        // Academic teams are represented by the CLASSES STUDIED and
+        // ACADEMIC HISTORY sections. Temporary and civilian teams
+        // are not part of this report. Only professional memberships
+        // are emitted here.
         function buildTeamsSection(char, charId) {
             var TeamQueries = window.TeamQueries;
             if (!TeamQueries ||
@@ -2710,73 +2743,22 @@
                     ) || [];
             } catch (e) { teams = []; }
 
-            if (teams.length === 0) {
-                return emptySectionBody();
-            }
-
-            var academicTeams = [];
-            var nonAcademicByType = Object.create(null);
-            var nonAcademicOrder = [];
-
+            var professional = [];
             for (var i = 0; i < teams.length; i++) {
                 var team = teams[i];
                 if (!team) { continue; }
-
-                if (isAcademicTeamType(team.type)) {
-                    academicTeams.push(team);
-                    continue;
-                }
-
-                var type = isNonEmptyString(team.type)
-                    ? team.type
-                    : 'other';
-                if (!nonAcademicByType[type]) {
-                    nonAcademicByType[type] = [];
-                    nonAcademicOrder.push(type);
-                }
-                nonAcademicByType[type].push(team);
-            }
-
-            var out = '';
-
-            if (academicTeams.length > 0) {
-                out += 'Academic:\n';
-                out += buildAcademicTeamsGroup(
-                    academicTeams, charId
-                );
-            }
-
-            var typeOrder = [
-                'professional', 'temporary', 'civilian'
-            ];
-            var emittedTypes = Object.create(null);
-
-            for (var to = 0; to < typeOrder.length; to++) {
-                var t = typeOrder[to];
-                if (nonAcademicByType[t]) {
-                    out += buildNonAcademicTeamsGroup(
-                        t, nonAcademicByType[t], charId
-                    );
-                    emittedTypes[t] = true;
+                if (team.type === 'professional') {
+                    professional.push(team);
                 }
             }
 
-            for (var no = 0;
-                 no < nonAcademicOrder.length;
-                 no++) {
-                var otherType = nonAcademicOrder[no];
-                if (emittedTypes[otherType]) { continue; }
-                out += buildNonAcademicTeamsGroup(
-                    otherType,
-                    nonAcademicByType[otherType],
-                    charId
-                );
-            }
-
-            if (out === '') {
+            if (professional.length === 0) {
                 return emptySectionBody();
             }
-            return out;
+
+            return buildNonAcademicTeamsGroup(
+                'professional', professional, charId
+            );
         }
 
         function buildSocialSection(char, charId) {
@@ -3141,6 +3123,126 @@
             return out;
         }
 
+        // ========================================================
+        // DEPARTMENTS SECTION (full report)
+        // ========================================================
+        //
+        // Every department the character is an ACTIVE member of at
+        // the current application year, with the earliest join year
+        // across the intervals that are still within range, and an
+        // indication of whether they hold the head role.
+        //
+        // Departments carry no per-member title. The only role-like
+        // attribute is headId on the department itself; that is what
+        // "(Head)" reflects.
+
+        function buildDepartmentsSection(char, charId) {
+            var DQ = window.DepartmentQueries;
+            if (!DQ ||
+                typeof DQ.getDepartmentsForCharacter !==
+                    'function' ||
+                typeof DQ.getMemberEntry !== 'function') {
+                return emptySectionBody();
+            }
+
+            var currentYear = null;
+            if (window.data &&
+                isFiniteNumber(window.data.currentYear) &&
+                window.data.currentYear > 0) {
+                currentYear = Math.floor(window.data.currentYear);
+            }
+            if (currentYear === null) {
+                return emptySectionBody();
+            }
+
+            var departments = [];
+            try {
+                departments = DQ.getDepartmentsForCharacter(
+                    charId, currentYear
+                ) || [];
+            } catch (e) {
+                console.warn(
+                    '[CharacterExport] ' +
+                    'getDepartmentsForCharacter threw:', e
+                );
+                departments = [];
+            }
+
+            if (!Array.isArray(departments) ||
+                departments.length === 0) {
+                return emptySectionBody();
+            }
+
+            var rows = [];
+            for (var i = 0; i < departments.length; i++) {
+                var dept = departments[i];
+                if (!dept || !dept.id) { continue; }
+
+                var entry = null;
+                try {
+                    entry = DQ.getMemberEntry(dept, charId);
+                } catch (e) {
+                    entry = null;
+                }
+
+                var joinYear = null;
+                if (entry && Array.isArray(entry.intervals)) {
+                    for (var j = 0;
+                         j < entry.intervals.length;
+                         j++) {
+                        var iv = entry.intervals[j];
+                        if (!iv || typeof iv !== 'object') {
+                            continue;
+                        }
+                        var y = parseInt(iv.joinPeriod, 10);
+                        if (isNaN(y)) { continue; }
+                        if (joinYear === null || y < joinYear) {
+                            joinYear = y;
+                        }
+                    }
+                }
+
+                var isHead = dept.headId &&
+                    String(dept.headId) === String(charId);
+
+                rows.push({
+                    name: isNonEmptyString(dept.name)
+                        ? dept.name
+                        : 'Unnamed Department',
+                    joinYear: joinYear,
+                    isHead: isHead
+                });
+            }
+
+            if (rows.length === 0) {
+                return emptySectionBody();
+            }
+
+            rows.sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+
+            var out = '';
+            for (var r = 0; r < rows.length; r++) {
+                var row = rows[r];
+
+                var lineText = '  ' + row.name;
+                if (row.isHead) {
+                    lineText += ' (Head)';
+                }
+                if (row.joinYear !== null) {
+                    lineText += ' \u00b7 Since ' +
+                        String(row.joinYear);
+                }
+                out += lineText + '\n';
+            }
+            return out;
+        }
+
+        // ========================================================
+        // FULL REPORT BUILDER
+        // ========================================================
+
         function buildCharacterReport(charId) {
             var CharacterQueries = getCharacterQueries();
             if (!CharacterQueries) {
@@ -3205,6 +3307,10 @@
 
             out += sectionHeader('TEAMS');
             out += buildTeamsSection(char, charId);
+            out += '\n';
+
+            out += sectionHeader('DEPARTMENTS');
+            out += buildDepartmentsSection(char, charId);
             out += '\n';
 
             out += sectionHeader('SOCIAL');
@@ -3456,10 +3562,565 @@
             };
         }
 
+        // ========================================================
+        // GENERAL REPORT
+        // ========================================================
+        //
+        // A curated subset of the full report:
+        //
+        //   - name, surname, nickname
+        //   - gender
+        //   - year of birth, year of death (when applicable)
+        //   - physical traits
+        //   - personality traits (every field)
+        //   - combat traits (stats, HP/MP, magic, weapons,
+        //     moves, combat notes)
+        //   - academic classes (all-time names only, no
+        //     disciplines, no grades, no history)
+        //   - professional teams
+        //   - career status
+        //   - departments (active at the current year)
+        //   - social connections (full detail)
+        //
+        // Excluded: missions, notes, academic history sections,
+        // disciplines studied/taught, commitments, tournaments,
+        // eliminations, rankings, positions, factions.
+
+        function buildGeneralIdentitySection(char, charId) {
+            var CharacterQueries = getCharacterQueries();
+            var out = '';
+
+            var displayName = '';
+            try {
+                displayName =
+                    CharacterQueries.getDisplayName(char) || '';
+            } catch (e) { displayName = ''; }
+            out += line('Display name', displayName);
+
+            if (isNonEmptyString(char.firstName)) {
+                out += line('First name', char.firstName);
+            }
+            if (isNonEmptyString(char.middleName)) {
+                out += line('Middle name', char.middleName);
+            }
+            if (isNonEmptyString(char.lastName)) {
+                out += line('Last name', char.lastName);
+            }
+            if (isNonEmptyString(char.nickname)) {
+                out += line('Nickname', char.nickname);
+            }
+            if (isNonEmptyString(char.gender)) {
+                out += line('Gender', char.gender);
+            }
+
+            if (isNonEmptyString(char.birthYear)) {
+                out += line('Year of birth', char.birthYear);
+            }
+
+            // Year of death is shown only when applicable.
+            // `deceased` may be true with an empty deathYear; the
+            // `line()` helper skips empties, so the caller only
+            // sees the row when there is a year to show.
+            var deceased = false;
+            try {
+                if (typeof CharacterQueries.isDeceased ===
+                    'function') {
+                    deceased =
+                        CharacterQueries.isDeceased(char) === true;
+                }
+            } catch (e) { deceased = false; }
+
+            if (deceased && isNonEmptyString(char.deathYear)) {
+                out += line('Year of death', char.deathYear);
+            }
+
+            if (out === '') {
+                return emptySectionBody();
+            }
+            return out;
+        }
+
+        function buildGeneralPhysicalGroup(char) {
+            // Reuse the full report's Physical group builder. The
+            // field set is identical and the formatting is what
+            // the user already expects.
+            return buildIdentityPhysicalGroup(char);
+        }
+
+        function buildGeneralPersonalityGroup(char) {
+            // Reuse the full report's Personality group builder.
+            return buildIdentityPersonalityGroup(char);
+        }
+
+        function buildGeneralCombatGroup(char) {
+            // Reuse the full report's Combat group builder.
+            return buildIdentityCombatGroup(char);
+        }
+
+        /**
+         * Academic classes — all-time, names only.
+         *
+         * Every class id in char.classIds that resolves to a live
+         * class, regardless of status (active, graduated,
+         * archived). One line per class, sorted by name.
+         *
+         * No disciplines, no grades, no history. If a class id
+         * does not resolve, it is shown as "Unknown Class [id]"
+         * so the reader can see that something was recorded.
+         */
+        function buildGeneralClassesSection(char) {
+            var Classes = window.AcademyClasses;
+            if (!Classes ||
+                typeof Classes.getDisplayName !== 'function') {
+                return emptySectionBody();
+            }
+
+            var classIds = Array.isArray(char.classIds)
+                ? char.classIds
+                : [];
+
+            if (classIds.length === 0) {
+                return emptySectionBody();
+            }
+
+            var seen = Object.create(null);
+            var names = [];
+
+            for (var i = 0; i < classIds.length; i++) {
+                if (classIds[i] === null ||
+                    classIds[i] === undefined) {
+                    continue;
+                }
+                var idStr = String(classIds[i]);
+                if (idStr === '' || seen[idStr]) { continue; }
+                seen[idStr] = true;
+
+                var className = '';
+                try {
+                    className =
+                        Classes.getDisplayName(idStr) || '';
+                } catch (e) {
+                    className = '';
+                }
+
+                if (!isNonEmptyString(className) ||
+                    className === 'Unknown Class') {
+                    names.push('Unknown Class [' + idStr + ']');
+                } else {
+                    names.push(className);
+                }
+            }
+
+            if (names.length === 0) {
+                return emptySectionBody();
+            }
+
+            names.sort(function(a, b) {
+                return a.localeCompare(b);
+            });
+
+            var out = '';
+            for (var n = 0; n < names.length; n++) {
+                out += '  ' + names[n] + '\n';
+            }
+            return out;
+        }
+
+        /**
+         * Professional teams — same shape as the full report's
+         * TEAMS section, but this function is deliberately scoped
+         * to professional so the caller does not have to know
+         * which teams the full report filters out.
+         */
+        function buildGeneralTeamsSection(char, charId) {
+            return buildTeamsSection(char, charId);
+        }
+
+        /**
+         * Career status — one line per entry, chronological.
+         * Reuses the year-range formatter from the full report.
+         */
+        function buildGeneralCareerSection(char) {
+            var careerStatus = Array.isArray(char.careerStatus)
+                ? char.careerStatus
+                : [];
+
+            if (careerStatus.length === 0) {
+                return emptySectionBody();
+            }
+
+            var rows = [];
+            for (var i = 0; i < careerStatus.length; i++) {
+                var entry = careerStatus[i];
+                if (!entry || typeof entry !== 'object') {
+                    continue;
+                }
+
+                var status = isNonEmptyString(entry.status)
+                    ? entry.status
+                    : 'unknown';
+
+                var period = formatYearRange(
+                    entry.startYear, entry.endYear
+                );
+
+                var title = isNonEmptyString(entry.title)
+                    ? ' [' + entry.title + ']'
+                    : '';
+
+                var lineText = '  ' + status;
+                if (period) {
+                    lineText += ' (' + period + ')';
+                }
+                lineText += title;
+
+                rows.push({
+                    sortYear: parseInt(entry.startYear, 10),
+                    text: lineText
+                });
+            }
+
+            if (rows.length === 0) {
+                return emptySectionBody();
+            }
+
+            rows.sort(function(a, b) {
+                var ay = isNaN(a.sortYear) ? Infinity : a.sortYear;
+                var by = isNaN(b.sortYear) ? Infinity : b.sortYear;
+                if (ay !== by) { return ay - by; }
+                return a.text.localeCompare(b.text);
+            });
+
+            var out = '';
+            for (var r = 0; r < rows.length; r++) {
+                out += rows[r].text + '\n';
+            }
+            return out;
+        }
+
+        function buildGeneralDepartmentsSection(char, charId) {
+            return buildDepartmentsSection(char, charId);
+        }
+
+        function buildGeneralSocialSection(char, charId) {
+            return buildSocialSection(char, charId);
+        }
+
+        function buildGeneralReport(charId) {
+            var CharacterQueries = getCharacterQueries();
+            if (!CharacterQueries) { return null; }
+
+            var char = null;
+            try {
+                char = CharacterQueries.getCharacterById(charId);
+            } catch (e) { char = null; }
+            if (!char) { return null; }
+
+            var displayName = '';
+            try {
+                displayName =
+                    CharacterQueries.getDisplayName(char) || '';
+            } catch (e) { displayName = ''; }
+
+            var out = '';
+
+            out += BANNER + '\n';
+            out += 'GENERAL REPORT \u2014 ' +
+                (displayName || 'Unknown') + '\n';
+            out += 'Generated: ' +
+                new Date().toISOString() + '\n';
+            out += BANNER + '\n\n';
+
+            out += sectionHeader('IDENTITY');
+            out += buildGeneralIdentitySection(char, charId);
+            out += '\n';
+
+            var physical = buildGeneralPhysicalGroup(char);
+            if (physical) {
+                // The group builder emits its own "Physical"
+                // subheader. Wrap it in the section header the
+                // general report uses.
+                out += sectionHeader('PHYSICAL');
+                out += physical;
+                out += '\n';
+            }
+
+            var personality = buildGeneralPersonalityGroup(char);
+            if (personality) {
+                out += sectionHeader('PERSONALITY');
+                out += personality;
+                out += '\n';
+            }
+
+            var combat = buildGeneralCombatGroup(char);
+            if (combat) {
+                out += sectionHeader('COMBAT');
+                out += combat;
+                out += '\n';
+            }
+
+            out += sectionHeader('ACADEMIC CLASSES');
+            out += buildGeneralClassesSection(char);
+            out += '\n';
+
+            out += sectionHeader('PROFESSIONAL TEAMS');
+            out += buildGeneralTeamsSection(char, charId);
+            out += '\n';
+
+            out += sectionHeader('CAREER STATUS');
+            out += buildGeneralCareerSection(char);
+            out += '\n';
+
+            out += sectionHeader('DEPARTMENTS');
+            out += buildGeneralDepartmentsSection(char, charId);
+            out += '\n';
+
+            out += sectionHeader('SOCIAL');
+            out += buildGeneralSocialSection(char, charId);
+            out += '\n';
+
+            out += BANNER + '\n';
+            out += 'END OF REPORT\n';
+            out += 'Character ID: ' + String(charId) + '\n';
+            out += 'File generated by Hollow Manager 2\n';
+            out += BANNER + '\n';
+
+            return {
+                char: char,
+                displayName: displayName,
+                text: out
+            };
+        }
+
+        function getGeneralReportText(charId) {
+            if (!isNonEmptyString(charId)) { return ''; }
+            var built = buildGeneralReport(charId);
+            if (!built) { return ''; }
+            return built.text;
+        }
+
+        function exportGeneralText(charId, options) {
+            options = options || {};
+
+            if (!isNonEmptyString(charId)) {
+                return {
+                    exported: false,
+                    filename: null,
+                    error: 'Character ID is required.'
+                };
+            }
+
+            var built = null;
+            try {
+                built = buildGeneralReport(String(charId));
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    error: 'Failed to build report: ' +
+                        e.message
+                };
+            }
+
+            if (!built) {
+                return {
+                    exported: false,
+                    filename: null,
+                    error: 'Character not found.'
+                };
+            }
+
+            var slug = sanitiseForFilename(built.displayName);
+            var filename = options.filename ||
+                FILENAME_PREFIX + '-general-' + slug +
+                '-' + String(charId) + '.txt';
+
+            var blob;
+            try {
+                blob = new Blob([built.text], {
+                    type: 'text/plain;charset=utf-8'
+                });
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    error: 'Failed to build file blob: ' +
+                        e.message
+                };
+            }
+
+            try {
+                ExportUtils.downloadBlob(blob, filename);
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    error: 'Failed to download: ' + e.message
+                };
+            }
+
+            return {
+                exported: true,
+                filename: filename,
+                error: null
+            };
+        }
+
+        function exportGeneralSelectedText(charIds, options) {
+            options = options || {};
+
+            if (!Array.isArray(charIds)) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'characterIds must be an array.'
+                };
+            }
+
+            var CharacterQueries = getCharacterQueries();
+            if (!CharacterQueries ||
+                typeof CharacterQueries.getCharacterById !==
+                    'function') {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'CharacterQueries is not available.'
+                };
+            }
+
+            var resolved = [];
+            var seen = Object.create(null);
+
+            for (var i = 0; i < charIds.length; i++) {
+                if (charIds[i] === null ||
+                    charIds[i] === undefined) {
+                    continue;
+                }
+                var idStr = String(charIds[i]);
+                if (idStr === '' || seen[idStr]) { continue; }
+                seen[idStr] = true;
+
+                var c = null;
+                try {
+                    c = CharacterQueries.getCharacterById(idStr);
+                } catch (e) {
+                    c = null;
+                }
+                if (c) {
+                    var display = idStr;
+                    try {
+                        display = CharacterQueries
+                            .getDisplayName(c) || idStr;
+                    } catch (e) {
+                        display = idStr;
+                    }
+                    resolved.push({
+                        id: idStr,
+                        name: display
+                    });
+                }
+            }
+
+            if (resolved.length === 0) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'No characters to export.'
+                };
+            }
+
+            resolved.sort(function(a, b) {
+                return a.name.localeCompare(b.name);
+            });
+
+            var parts = [];
+            var count = 0;
+
+            for (var r = 0; r < resolved.length; r++) {
+                var built = null;
+                try {
+                    built = buildGeneralReport(resolved[r].id);
+                } catch (e) {
+                    built = null;
+                }
+                if (!built) { continue; }
+                parts.push(built.text);
+                count++;
+            }
+
+            if (count === 0) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: 0,
+                    error: 'No reports could be built.'
+                };
+            }
+
+            var now = new Date();
+            var iso = now.toISOString();
+            var outer = '';
+            outer += BANNER + '\n';
+            outer += 'BULK GENERAL REPORT \u2014 ' + count +
+                ' character' + (count === 1 ? '' : 's') + '\n';
+            outer += 'Generated: ' + iso + '\n';
+            outer += BANNER + '\n\n';
+
+            var content = outer + parts.join('\n\n');
+
+            var filename = isNonEmptyString(options.filename)
+                ? String(options.filename)
+                : ('characters-general-' +
+                    iso.slice(0, 10) + '-' +
+                    count + '.txt');
+
+            var blob;
+            try {
+                blob = new Blob([content], {
+                    type: 'text/plain;charset=utf-8'
+                });
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: count,
+                    error: 'Failed to build file blob: ' +
+                        e.message
+                };
+            }
+
+            try {
+                ExportUtils.downloadBlob(blob, filename);
+            } catch (e) {
+                return {
+                    exported: false,
+                    filename: null,
+                    count: count,
+                    error: 'Failed to download: ' + e.message
+                };
+            }
+
+            return {
+                exported: true,
+                filename: filename,
+                count: count,
+                error: null
+            };
+        }
+
         window.CharacterExport = Object.freeze({
+            // Full report
             getCharacterReportText: getCharacterReportText,
             exportCharacterText: exportCharacterText,
-            exportSelectedText: exportSelectedText
+            exportSelectedText: exportSelectedText,
+
+            // General report
+            getGeneralReportText: getGeneralReportText,
+            exportGeneralText: exportGeneralText,
+            exportGeneralSelectedText: exportGeneralSelectedText
         });
 
     })();
@@ -3495,6 +4156,18 @@
             typeof window.CharacterExport.exportSelectedText !==
                 'function') {
             missing.push('CharacterExport.exportSelectedText');
+        }
+        if (!window.CharacterExport ||
+            typeof window.CharacterExport.exportGeneralText !==
+                'function') {
+            missing.push('CharacterExport.exportGeneralText');
+        }
+        if (!window.CharacterExport ||
+            typeof window.CharacterExport.exportGeneralSelectedText !==
+                'function') {
+            missing.push(
+                'CharacterExport.exportGeneralSelectedText'
+            );
         }
 
         if (typeof window.downloadCharacterCSVTemplate !==
