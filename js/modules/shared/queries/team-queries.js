@@ -11,6 +11,7 @@
  *   - Character membership reads (all-time, current).
  *   - Ranking queries.
  *   - The professional personnel query: getProfessionalPersonnelAtPeriod.
+ *   - Shortage history: getTeamShortagePeriods.
  *
  * PERIOD PREDICATE OWNERSHIP:
  *   teamWindowContains(team, period)
@@ -20,6 +21,27 @@
  * MEMBER PREDICATE OWNERSHIP:
  *   isMemberActive(member, period)
  *   isMemberFormer(member, period)
+ *
+ * SHORTAGE HISTORY (this revision):
+ *   getTeamShortagePeriods(team, targetSize, toYear) walks every
+ *   interval on every member entry of a team, builds a year-by-year
+ *   population curve, and returns the runs where the active member
+ *   count is strictly below targetSize.
+ *
+ *   The lower bound of the scan is the team's startPeriod when set,
+ *   otherwise the earliest parseable member join period. When
+ *   neither is available, the function returns [] — it does not
+ *   invent a starting point.
+ *
+ *   The upper bound is `toYear`. The returned periods are inclusive
+ *   on both ends. A period that is still short at `toYear` carries
+ *   `to: null`.
+ *
+ *   Returned array shape:
+ *     [ { from: number, to: number | null }, ... ]
+ *
+ *   Both the array and the entries are freshly allocated; the
+ *   caller owns lifetime.
  *
  * PROFESSIONAL PERSONNEL QUERY:
  *   getProfessionalPersonnelAtPeriod(period) returns domain facts
@@ -845,6 +867,167 @@
     }
 
     // ============================================================
+    // SHORTAGE HISTORY
+    // ============================================================
+    //
+    // Reconstructs the year-by-year active member count on a team
+    // and returns the runs where the count is strictly below
+    // targetSize.
+    //
+    // SCAN BOUNDS:
+    //   lower — team.startPeriod if set, otherwise the earliest
+    //           parseable member join period, otherwise the
+    //           function returns [].
+    //   upper — toYear (the query period).
+    //
+    // A returned period is inclusive on both ends. `to: null`
+    // means the shortage is still open at toYear.
+    //
+    // COUNTING RULE:
+    //   For a given year Y, a member is active when at least one
+    //   of their intervals contains Y. This matches
+    //   isMemberActive(member, Y) and does not depend on the
+    //   team's own active window; the caller is expected to have
+    //   filtered the team to those on screen.
+
+    function getTeamShortagePeriods(team, targetSize, toYear) {
+        var periods = [];
+
+        if (!team || typeof team !== 'object') { return periods; }
+
+        var target = parsePeriod(targetSize);
+        if (target === null || target < 1) { return periods; }
+
+        var upper = parsePeriod(toYear);
+        if (upper === null) { return periods; }
+
+        // ---- Determine the lower scan bound. ----
+        var lower = parsePeriod(team.startPeriod);
+
+        if (lower === null) {
+            // Fall back to the earliest parseable member join
+            // period.
+            var earliest = null;
+            if (Array.isArray(team.members)) {
+                for (var m = 0; m < team.members.length; m++) {
+                    var member = team.members[m];
+                    if (!member ||
+                        !Array.isArray(member.intervals)) {
+                        continue;
+                    }
+                    for (var i = 0;
+                         i < member.intervals.length;
+                         i++) {
+                        var iv = member.intervals[i];
+                        if (!iv || typeof iv !== 'object') {
+                            continue;
+                        }
+                        var join = parsePeriod(iv.joinPeriod);
+                        if (join === null) { continue; }
+                        if (earliest === null || join < earliest) {
+                            earliest = join;
+                        }
+                    }
+                }
+            }
+            lower = earliest;
+        }
+
+        if (lower === null) { return periods; }
+
+        if (lower > upper) { return periods; }
+
+        if (!Array.isArray(team.members) || team.members.length === 0) {
+            return periods;
+        }
+
+        // ---- Precompute each member's interval bounds once. ----
+        var memberRanges = [];
+        for (var mr = 0; mr < team.members.length; mr++) {
+            var m = team.members[mr];
+            if (!m || !Array.isArray(m.intervals)) { continue; }
+
+            var ranges = [];
+            for (var ri = 0; ri < m.intervals.length; ri++) {
+                var raw = m.intervals[ri];
+                if (!raw || typeof raw !== 'object') { continue; }
+
+                var joinNum = parsePeriod(raw.joinPeriod);
+                if (joinNum === null) { continue; }
+
+                var leaveNum = parsePeriod(raw.leavePeriod);
+                var endNum = leaveNum === null ? Infinity : leaveNum;
+
+                if (endNum < joinNum) { continue; }
+
+                ranges.push({ start: joinNum, end: endNum });
+            }
+
+            if (ranges.length > 0) {
+                memberRanges.push(ranges);
+            }
+        }
+
+        if (memberRanges.length === 0) { return periods; }
+
+        // ---- Walk year by year and slice out the runs. ----
+        var currentStart = null;
+
+        for (var y = lower; y <= upper; y++) {
+            var count = 0;
+
+            for (var n = 0; n < memberRanges.length; n++) {
+                var intervals = memberRanges[n];
+                var isActiveThisYear = false;
+
+                for (var k = 0; k < intervals.length; k++) {
+                    var r = intervals[k];
+                    if (y >= r.start && y <= r.end) {
+                        isActiveThisYear = true;
+                        break;
+                    }
+                }
+                if (isActiveThisYear) { count++; }
+            }
+
+            var isShort = count < target;
+
+            if (isShort && currentStart === null) {
+                currentStart = y;
+            } else if (!isShort && currentStart !== null) {
+                periods.push({
+                    from: currentStart,
+                    to: y - 1
+                });
+                currentStart = null;
+            }
+        }
+
+        // Close any run still open at upper.
+        if (currentStart !== null) {
+            periods.push({
+                from: currentStart,
+                to: upper < upper ? null : upper
+            });
+            // toYear is the last year we scanned, so an open run
+            // ends at toYear, not null. The caller can decide
+            // whether to render an inclusive end or "present" by
+            // comparing to the planning year.
+        }
+
+        // ---- Mark the last period as open when it reaches
+        //      toYear. ----
+        if (periods.length > 0) {
+            var last = periods[periods.length - 1];
+            if (last.to === upper) {
+                last.to = null;
+            }
+        }
+
+        return periods;
+    }
+
+    // ============================================================
     // PROFESSIONAL PERSONNEL QUERY
     // ============================================================
 
@@ -1270,27 +1453,11 @@
             }
 
             // ---- 4. Student phase must exist. ----
-            //
-            // The student window is computed from careerStatus.
-            // A character with no junior or senior entry at all
-            // is not a professional candidate ever: pure support
-            // staff, pure instructors, pure civilians.
             var studentWindow = computeStudentWindow(char);
             if (!studentWindow.hasPhase) { continue; }
 
             // ---- 5. Student window must not overlap any
             //         professional stint. ----
-            //
-            // A character who was actually on a professional
-            // team during their student years is not "available
-            // for assignment" during those years. They are
-            // excluded entirely.
-            //
-            // A character whose student phase is untouched by
-            // any professional stint is a candidate forever,
-            // not only when the query period falls inside the
-            // window. The window is a fact about the character,
-            // not about the year you are looking at.
             var historyEntry = historyIndex[charId] || null;
             if (stintOverlapsStudentWindow(
                 historyEntry, studentWindow
@@ -1539,6 +1706,8 @@
             hasCharacterBeenOnTeamAllTime,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
+        getTeamShortagePeriods: getTeamShortagePeriods,
+
         getProfessionalPersonnelAtPeriod:
             getProfessionalPersonnelAtPeriod,
 
@@ -1576,6 +1745,7 @@
             'getTeamsForCharacterAllTimeIncludingDeprecated',
             'hasCharacterBeenOnTeamAllTime',
             'getCharacterTeamMembership',
+            'getTeamShortagePeriods',
             'getProfessionalPersonnelAtPeriod',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
             'getSortedRankings', 'getMostRecentRanking',
