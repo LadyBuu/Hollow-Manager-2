@@ -21,6 +21,9 @@
  *   - Domain reads. Every field arrives on the view model.
  *   - Eligibility. TeamQueries owns it.
  *   - Mutations. TeamCore owns it.
+ *   - Shortage history computation. TeamQueries.getTeamShortagePeriods
+ *     owns it; this view only renders the display string that
+ *     TeamAggregator placed on each team row.
  *
  * PLANNER VM SHAPE:
  *   {
@@ -34,7 +37,9 @@
  *         members: [
  *           { characterId, memberId, displayName, role,
  *             joinPeriod, leavePeriod, intervalDisplay }
- *         ]
+ *         ],
+ *         shortagePeriods: [ { from: number, to: number | null } ],
+ *         shortageDisplay: string
  *       }
  *     ],
  *     candidates: [
@@ -48,6 +53,17 @@
  *       }
  *     ]
  *   }
+ *
+ * SHORTAGE LINE:
+ *   Each team card carries an optional "short" line beneath the
+ *   period display. It renders `shortageDisplay` verbatim when the
+ *   string is non-empty:
+ *
+ *     Short 1930–1931, 1935–present
+ *
+ *   An empty `shortageDisplay` means the team has never been short
+ *   between its start period and the planning period, and the line
+ *   is omitted entirely. The row is not rendered with a placeholder.
  *
  * PLANNER DOM CONTRACT:
  *   For each (candidate, team) association the UI renders:
@@ -264,6 +280,19 @@
         html += '<div class="planner-team-meta">' +
                     escapeHtml(team.periodDisplay) +
                 '</div>';
+
+        // ---- Shortage line. ----
+        //
+        // Rendered only when the aggregator placed a non-empty
+        // shortageDisplay on the row. An empty string means the
+        // team has never been short between its start period and
+        // the planning period, and the line is omitted.
+        if (isNonEmptyString(team.shortageDisplay)) {
+            html += '<div class="planner-team-shortage">' +
+                        'Short ' +
+                        escapeHtml(team.shortageDisplay) +
+                    '</div>';
+        }
 
         html += '<div class="planner-team-members">';
 
