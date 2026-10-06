@@ -43,6 +43,25 @@
  *   Both paths converge on applyCareerTransitionCascade. Idempotent
  *   across repeated saves.
  *
+ * CAREER STATUS CLOSING (this revision):
+ *   Career-status entries never carry gaps. When a new entry starts
+ *   at year Y, every other entry that would otherwise be open (or
+ *   that ends before Y) is closed or extended to Y.
+ *
+ *   Two mutation paths, one rule:
+ *     - setCareerTransition(id, status, Y)
+ *         Extends or closes the previously-current entry to Y,
+ *         then appends the new terminal entry at Y.
+ *     - applyCareerStatusTimeline(id, stages)
+ *         After validation, walks the incoming stages in
+ *         chronological order and fills in each stage's endYear
+ *         from the next stage's startYear. The final stage keeps
+ *         whatever endYear the caller supplied (usually blank).
+ *
+ *   The reconciliation is strict-in-order: a stage whose startYear
+ *   is greater than the next stage's startYear is a validation
+ *   error, not a reconciliation opportunity.
+ *
  * DEATH CASCADE:
  *   Fires on every save of a character with a parseable deathYear.
  *   Closes any open professional-team stint at that year. Idempotent.
@@ -309,6 +328,78 @@
     function isCareerTransitionStatus(status) {
         if (!status || typeof status !== 'string') { return false; }
         return CAREER_TRANSITION_STATUSES[status.toLowerCase()] === true;
+    }
+
+    /**
+     * Reconcile a career-status array so no two entries are open and
+     * no gaps exist between consecutive entries.
+     *
+     * RULES:
+     *   - Every entry except the one with the latest startYear gets
+     *     its endYear set to the next entry's startYear, replacing
+     *     any earlier endYear.
+     *   - The latest-start entry is left with whatever endYear it
+     *     already had (usually blank for still-current statuses, or
+     *     set for terminal ones).
+     *   - Malformed entries are left untouched.
+     *   - The array is sorted in place by startYear ascending, ties
+     *     broken by original index (stable).
+     *
+     * MUTATES THE PASSED ARRAY. The caller owns the array.
+     *
+     * @param {Array} entries
+     * @returns {Array} the same array, sorted and reconciled
+     */
+    function closeOpenCareerEntries(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+            return entries;
+        }
+
+        // Attach stable index for tie-breaking.
+        var indexed = [];
+        for (var i = 0; i < entries.length; i++) {
+            indexed.push({ entry: entries[i], idx: i });
+        }
+
+        indexed.sort(function(a, b) {
+            var ay = parseInt(
+                a.entry && a.entry.startYear, 10
+            );
+            var by = parseInt(
+                b.entry && b.entry.startYear, 10
+            );
+            if (isNaN(ay)) { ay = Infinity; }
+            if (isNaN(by)) { by = Infinity; }
+            if (ay !== by) { return ay - by; }
+            return a.idx - b.idx;
+        });
+
+        // Rewrite the array in sorted order.
+        for (var s = 0; s < indexed.length; s++) {
+            entries[s] = indexed[s].entry;
+        }
+
+        // Close everything except the last entry.
+        for (var k = 0; k < entries.length - 1; k++) {
+            var current = entries[k];
+            var next = entries[k + 1];
+
+            if (!current || typeof current !== 'object') { continue; }
+            if (!next || typeof next !== 'object') { continue; }
+
+            var nextStart = parseInt(next.startYear, 10);
+            if (isNaN(nextStart)) { continue; }
+
+            // Extend or set. If the current endYear is later than
+            // nextStart (malformed input), leave it alone rather
+            // than truncating it silently.
+            var currentEnd = parseInt(current.endYear, 10);
+            if (isNaN(currentEnd) || currentEnd < nextStart) {
+                current.endYear = String(nextStart);
+            }
+        }
+
+        return entries;
     }
 
     /**
@@ -1044,6 +1135,18 @@
         }
 
         var merged = Object.assign({}, current, normalised, preserved);
+
+        // ---- Career-status reconciliation. ----
+        //
+        // The form lets the user edit careerStatus rows freely.
+        // Before persisting, close any gaps the user introduced:
+        // each entry's endYear is rewritten to the next entry's
+        // startYear. The latest entry keeps its own endYear.
+        if (Array.isArray(merged.careerStatus)) {
+            merged.careerStatus = merged.careerStatus.slice();
+            closeOpenCareerEntries(merged.careerStatus);
+        }
+
         var finalRecord = applyFillerStripIfSet(merged, isFiller);
 
         var existingKeys = Object.keys(current);
@@ -1091,6 +1194,13 @@
             eliminatedWeeks: [],
             createdAt: new Date().toISOString()
         });
+
+        // Same reconciliation as updateExistingCharacter. On create
+        // the careerStatus array is whatever the form submitted.
+        if (Array.isArray(newChar.careerStatus)) {
+            newChar.careerStatus = newChar.careerStatus.slice();
+            closeOpenCareerEntries(newChar.careerStatus);
+        }
 
         newChar = applyFillerStripIfSet(newChar, isFiller);
 
@@ -1785,6 +1895,12 @@
     // Idempotent: repeated calls with the same (statusKey, year)
     // produce the same array; the cascade finds no open stints on
     // the second call.
+    //
+    // CLOSES THE PREVIOUS STATUS:
+    //   Before appending the new terminal entry, every other entry
+    //   that is still open (blank endYear) or that ends before the
+    //   new entry's year is extended to end at that year. This
+    //   guarantees no gaps and no two simultaneous open entries.
 
     function setCareerTransition(charId, statusKey, year) {
         if (!checkDependencies()) {
@@ -1900,6 +2016,13 @@
                     title: ''
                 });
 
+                // Close every other entry at yearStr. Entries whose
+                // endYear is already earlier are extended; entries
+                // that are still open are closed. The new entry is
+                // the latest-start entry by construction, so it
+                // keeps its blank endYear after reconciliation.
+                closeOpenCareerEntries(kept);
+
                 target.careerStatus = kept;
                 target.updatedAt = new Date().toISOString();
 
@@ -1988,6 +2111,13 @@
     //
     // If the new latest entry is a terminal status, the professional-
     // team cascade runs against the same snapshot.
+    //
+    // CLOSES GAPS:
+    //   Incoming stages are walked in chronological order. Each
+    //   stage's endYear is rewritten to the next stage's startYear.
+    //   The final stage keeps whatever endYear the caller supplied
+    //   (usually blank for an ongoing status). This guarantees no
+    //   gaps and no simultaneous open entries.
 
     function applyCareerStatusTimeline(charId, stages) {
         if (!checkDependencies()) {
@@ -2082,6 +2212,27 @@
             });
         }
 
+        // ---- Reconcile endYear against the next stage's startYear. ----
+        //
+        // The wizard produces stages in chronological order, so this
+        // is a simple forward walk. Each stage's endYear is set to
+        // the next stage's startYear. The last stage keeps its own
+        // endYear (blank means ongoing).
+        //
+        // Any stage whose endYear is explicitly set and later than
+        // the next stage's startYear is left alone; the schema's
+        // validator would reject it and there is no sensible
+        // reconciliation for an internally inconsistent input.
+        for (var s = 0; s < cleanStages.length - 1; s++) {
+            var cur = cleanStages[s];
+            var nxt = cleanStages[s + 1];
+
+            var nextStart = parseInt(nxt.startYear, 10);
+            if (isNaN(nextStart)) { continue; }
+
+            cur.endYear = String(nextStart);
+        }
+
         var char = CharacterQueries.getCharacterById(targetChar);
         if (!char) {
             return Promise.resolve({
@@ -2127,7 +2278,18 @@
                     );
                 }
 
-                target.careerStatus = cleanStages.slice();
+                // Deep-copy the reconciled stages before assignment.
+                var finalStages = [];
+                for (var j = 0; j < cleanStages.length; j++) {
+                    finalStages.push({
+                        status: cleanStages[j].status,
+                        startYear: cleanStages[j].startYear,
+                        endYear: cleanStages[j].endYear,
+                        title: cleanStages[j].title
+                    });
+                }
+
+                target.careerStatus = finalStages;
                 target.updatedAt = new Date().toISOString();
 
                 invalidateCharacterIndex();
@@ -2141,7 +2303,7 @@
 
                 return {
                     characterId: targetChar,
-                    stageCount: cleanStages.length,
+                    stageCount: finalStages.length,
                     careerTransition: cascade
                 };
             },
