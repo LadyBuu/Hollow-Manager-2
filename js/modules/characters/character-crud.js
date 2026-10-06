@@ -43,24 +43,46 @@
  *   Both paths converge on applyCareerTransitionCascade. Idempotent
  *   across repeated saves.
  *
- * CAREER STATUS CLOSING (this revision):
+ * CAREER STATUS CLOSING:
  *   Career-status entries never carry gaps. When a new entry starts
  *   at year Y, every other entry that would otherwise be open (or
  *   that ends before Y) is closed or extended to Y.
  *
- *   Two mutation paths, one rule:
- *     - setCareerTransition(id, status, Y)
- *         Extends or closes the previously-current entry to Y,
- *         then appends the new terminal entry at Y.
+ *   Three mutation paths, one rule (closeOpenCareerEntries):
+ *     - save()                        reconcile the merged
+ *                                     careerStatus array before
+ *                                     persisting.
+ *     - setCareerTransition(id, s, Y) extend or close the
+ *                                     previously-current entry to
+ *                                     Y, then append the new
+ *                                     terminal entry at Y.
  *     - applyCareerStatusTimeline(id, stages)
- *         After validation, walks the incoming stages in
- *         chronological order and fills in each stage's endYear
- *         from the next stage's startYear. The final stage keeps
- *         whatever endYear the caller supplied (usually blank).
+ *                                     forward-walk the incoming
+ *                                     stages and fill each stage's
+ *                                     endYear from the next stage's
+ *                                     startYear.
  *
- *   The reconciliation is strict-in-order: a stage whose startYear
- *   is greater than the next stage's startYear is a validation
- *   error, not a reconciliation opportunity.
+ *   The reconciliation is strict-in-order. A stage whose startYear
+ *   is greater than the next stage's startYear is not a
+ *   reconciliation opportunity; the caller is expected to have
+ *   sorted them.
+ *
+ * FILLER AUTO-UNFLAG:
+ *   When a filler character is saved and the merged record now
+ *   contains authored content — anything CharacterStrip.hasAuthoredContent
+ *   recognises as a real field: bio strings, non-default stats,
+ *   non-zero magic, HP/MP, weapons, special moves, personality
+ *   fields — the filler flag is cleared before the strip runs. The
+ *   strip is skipped for that save; the authored fields are
+ *   persisted.
+ *
+ *   Authoring content is a stronger statement of intent than the
+ *   form's filler checkbox. The checkbox is a bulk-flag leftover or
+ *   an explicit bulk operation; typing a hair colour, or a stat, or
+ *   a personality line, means the user wants the character kept.
+ *
+ *   An explicit isFiller: false from the form still clears the
+ *   flag, independently of the authored-content check.
  *
  * DEATH CASCADE:
  *   Fires on every save of a character with a parseable deathYear.
@@ -78,7 +100,7 @@
  *   - window.AcademyEnrolments (setInstructorForClass)
  *   - window.SocialCore     (createChild)
  *   - window.SocialChildFactory (createChild)
- *   - window.CharacterStrip (filler flag)
+ *   - window.CharacterStrip (filler flag, hasAuthoredContent)
  */
 
 (function() {
@@ -244,6 +266,103 @@
         var stripped = Strip.stripEmptyFields(normalised);
         stripped.isFiller = true;
         return stripped;
+    }
+
+    /**
+     * Does the merged record contain authored content?
+     *
+     * Uses CharacterStrip.hasAuthoredContent when it is loaded.
+     * Falls back to a local check when the module is not present,
+     * so the auto-unflag still works in a degraded environment.
+     *
+     * The fallback is deliberately conservative: it is better to
+     * leave a character flagged as filler than to unflag one on a
+     * false positive.
+     */
+    function recordHasAuthoredContent(record) {
+        if (!record || typeof record !== 'object') { return false; }
+
+        var Strip = getCharacterStrip();
+        if (Strip && typeof Strip.hasAuthoredContent === 'function') {
+            try {
+                return Strip.hasAuthoredContent(record) === true;
+            } catch (e) {
+                console.warn(
+                    '[CharacterCRUD] hasAuthoredContent threw; ' +
+                    'falling back to local check:', e
+                );
+            }
+        }
+
+        // ---- Local fallback ----
+        var bioFields = [
+            'appearanceNotes', 'notes', 'combatNotes', 'specialty',
+            'eyes', 'hair', 'skin', 'height', 'weight', 'build',
+            'attraction', 'sexuality', 'middleName', 'nickname',
+            'alias', 'deathCause'
+        ];
+        for (var b = 0; b < bioFields.length; b++) {
+            var bv = record[bioFields[b]];
+            if (typeof bv === 'string' && bv.trim() !== '') {
+                return true;
+            }
+        }
+
+        if (record.personality &&
+            typeof record.personality === 'object') {
+            var pKeys = Object.keys(record.personality);
+            for (var p = 0; p < pKeys.length; p++) {
+                var pv = record.personality[pKeys[p]];
+                if (typeof pv === 'string' && pv.trim() !== '') {
+                    return true;
+                }
+            }
+        }
+
+        if (record.stats && typeof record.stats === 'object') {
+            var sKeys = Object.keys(record.stats);
+            for (var s = 0; s < sKeys.length; s++) {
+                if (record.stats[sKeys[s]] !== STAT_DEFAULT) {
+                    return true;
+                }
+            }
+        }
+
+        if (record.magic && typeof record.magic === 'object') {
+            var mKeys = Object.keys(record.magic);
+            for (var m = 0; m < mKeys.length; m++) {
+                var mv = record.magic[mKeys[m]];
+                if (typeof mv === 'number' && mv > 0) {
+                    return true;
+                }
+            }
+        }
+
+        if (typeof record.hp === 'number' && record.hp > 0) {
+            return true;
+        }
+        if (typeof record.mp === 'number' && record.mp > 0) {
+            return true;
+        }
+
+        if (Array.isArray(record.weapons) &&
+            record.weapons.length > 0) {
+            return true;
+        }
+
+        if (record.specialMoves &&
+            typeof record.specialMoves === 'object') {
+            var phys = record.specialMoves.physical;
+            var mag = record.specialMoves.magical;
+            if (Array.isArray(phys) && phys.length > 0) {
+                return true;
+            }
+            if (Array.isArray(mag) && mag.length > 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -1147,6 +1266,29 @@
             closeOpenCareerEntries(merged.careerStatus);
         }
 
+        // ---- Auto-unflag filler on authored content. ----
+        //
+        // If the record was previously marked filler and the
+        // merged state now contains authored content, clear the
+        // flag. Authoring content is a stronger statement of
+        // intent than the checkbox: the user typed something real,
+        // so the character is not a filler placeholder any more.
+        //
+        // Explicit isFiller === false from the form already clears
+        // the flag further down (via normalised.isFiller === false
+        // being merged in before this check runs). This branch
+        // handles the case where the checkbox is still ticked (or
+        // the field is absent from the DTO) but the user has
+        // edited a field.
+        //
+        // The check runs on the MERGED record, so it sees both the
+        // stored state and the incoming form data.
+        if (merged.isFiller === true &&
+            recordHasAuthoredContent(merged)) {
+            merged.isFiller = false;
+            isFiller = false;
+        }
+
         var finalRecord = applyFillerStripIfSet(merged, isFiller);
 
         var existingKeys = Object.keys(current);
@@ -1195,11 +1337,22 @@
             createdAt: new Date().toISOString()
         });
 
-        // Same reconciliation as updateExistingCharacter. On create
-        // the careerStatus array is whatever the form submitted.
+        // ---- Career-status reconciliation. ----
         if (Array.isArray(newChar.careerStatus)) {
             newChar.careerStatus = newChar.careerStatus.slice();
             closeOpenCareerEntries(newChar.careerStatus);
+        }
+
+        // ---- Auto-unflag filler on authored content. ----
+        //
+        // Same rule as the update path. On create, a "filler"
+        // record that already carries authored content is a
+        // contradiction; the flag wins only when the record is
+        // otherwise empty.
+        if (newChar.isFiller === true &&
+            recordHasAuthoredContent(newChar)) {
+            newChar.isFiller = false;
+            isFiller = false;
         }
 
         newChar = applyFillerStripIfSet(newChar, isFiller);
