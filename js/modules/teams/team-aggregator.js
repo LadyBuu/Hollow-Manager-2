@@ -27,6 +27,18 @@
  *   TeamQueries.isMemberActive / isMemberFormer; this module
  *   does not decide the partition, only the order within it.
  *
+ * SHORTAGE HISTORY (this revision):
+ *   Each planner team row carries a `shortagePeriods` array and a
+ *   `shortageDisplay` string, both computed from
+ *   TeamQueries.getTeamShortagePeriods. The display string is a
+ *   compact run-length encoding:
+ *
+ *     "1930–1931, 1935–present"
+ *
+ *   A period with `to: null` renders as "present". An empty array
+ *   means the team has never been short between its startPeriod
+ *   and the planning period.
+ *
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
  *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
@@ -148,6 +160,12 @@
         'function') {
         _missing.push(
             'TeamQueries.getProfessionalPersonnelAtPeriod'
+        );
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getTeamShortagePeriods !== 'function') {
+        _missing.push(
+            'TeamQueries.getTeamShortagePeriods'
         );
     }
 
@@ -1550,7 +1568,8 @@
             if (count >= targetSizeNum) { continue; }
 
             teams.push(buildPlannerTeamRow(
-                team, activeMembers, count, targetSizeNum
+                team, activeMembers, count, targetSizeNum,
+                periodNum
             ));
         }
 
@@ -1593,7 +1612,7 @@
     }
 
     function buildPlannerTeamRow(
-        team, activeMembers, memberCount, targetSize
+        team, activeMembers, memberCount, targetSize, periodNum
     ) {
         var memberRows = [];
 
@@ -1630,6 +1649,31 @@
             return a.displayName.localeCompare(b.displayName);
         });
 
+        // ---- Shortage history. ----
+        //
+        // Returns every run of years between the team's start and
+        // the planning period where the active member count was
+        // strictly below targetSize. An empty array means the
+        // team has never been short.
+        //
+        // The display string is a run-length encoding:
+        //   "1930–1931, 1935–present"
+        // A null `to` renders as "present".
+        var shortagePeriods = [];
+        try {
+            shortagePeriods = TeamQueries.getTeamShortagePeriods(
+                team, targetSize, periodNum
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[TeamAggregator] getTeamShortagePeriods threw ' +
+                'for team ' + team.id + ':', e
+            );
+            shortagePeriods = [];
+        }
+
+        var shortageDisplay = formatShortagePeriods(shortagePeriods);
+
         return {
             teamId: String(team.id),
             teamName: team.name || 'Unnamed Team',
@@ -1637,8 +1681,46 @@
             targetSize: targetSize,
             remainingCapacity: targetSize - memberCount,
             periodDisplay: getTeamPeriodDisplay(team),
-            members: memberRows
+            members: memberRows,
+
+            shortagePeriods: shortagePeriods,
+            shortageDisplay: shortageDisplay
         };
+    }
+
+    /**
+     * Render a shortage-periods array as a compact human string.
+     *
+     * Empty array             -> ''
+     * [{ from: 1930, to: 1931 }] -> '1930–1931'
+     * [{ from: 1935, to: null }] -> '1935–present'
+     * Multiple                -> joined with ', '
+     */
+    function formatShortagePeriods(periods) {
+        if (!Array.isArray(periods) || periods.length === 0) {
+            return '';
+        }
+
+        var parts = [];
+        for (var i = 0; i < periods.length; i++) {
+            var p = periods[i];
+            if (!p || typeof p !== 'object') { continue; }
+
+            var from = p.from;
+            var to = p.to;
+
+            if (from === null || from === undefined) { continue; }
+
+            if (to === null || to === undefined) {
+                parts.push(from + '\u2013present');
+            } else if (to === from) {
+                parts.push(String(from));
+            } else {
+                parts.push(from + '\u2013' + to);
+            }
+        }
+
+        return parts.join(', ');
     }
 
     function formatIntervalDisplay(join, leave) {
