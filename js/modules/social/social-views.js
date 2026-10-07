@@ -20,7 +20,7 @@
  *     #rel-clarification-1   character1's role toward character2
  *     #rel-clarification-2   character2's role toward character1
  *
- * DIRECTIONAL ARROW (this revision):
+ * DIRECTIONAL ARROW:
  *   The standalone Social list renders every row in STORED
  *   orientation: character1 on the left, character2 on the right.
  *   The arrow therefore describes the stored direction, not the
@@ -28,16 +28,6 @@
  *
  *     directional  -> ' → '   (character1 → character2)
  *     undirected   -> ' ↔ '
- *
- *   The aggregator still exposes `directionText`, computed from a
- *   context character id, for surfaces that render from one
- *   character's point of view (the character form's Social tab).
- *   The standalone list ignores `directionText` because the row
- *   always shows both endpoints in stored order.
- *
- *   Do NOT reintroduce a context-sensitive arrow here. If a row
- *   renders both endpoints, the arrow must be orientation-stable
- *   or it disagrees with the names it sits between.
  *
  * SWAP BUTTON:
  *   The relationship form carries a swap button (#rel-swap-btn)
@@ -48,18 +38,6 @@
  *     - character 1 and character 2 exchange values
  *     - the two clarifications are NOT touched
  *
- *   Keeping the clarifications in place means "Mentor" now describes
- *   the OTHER character's role toward the first, which is exactly
- *   what "flip the mentor direction" means. The labels above the
- *   fields update automatically, so the user sees the new binding
- *   immediately and can edit either field if the semantics need
- *   adjusting.
- *
- *   Visibility is managed by SocialEvents via updateSwapButtonVisibility,
- *   which reads the current type and asks SocialConstants.isDirectional.
- *   The button starts hidden; the events layer reveals it when the
- *   modal opens with a directional type already selected.
- *
  * ELIMINATED CHARACTERS:
  *   Two modal surfaces hide eliminated characters by default:
  *
@@ -67,26 +45,29 @@
  *     Suggest Pairs      #suggest-pairs-include-eliminated
  *                        (unchecked)
  *
- *   When a checkbox is unchecked, characters with any elimination
- *   on record are excluded from the character selects (relationship
- *   form) or from the pool and seed list (Suggest Pairs).
- *
- *   The relationship form carries a per-side exception: on edit,
- *   the currently-selected value of each side is always offered,
- *   even if that character is eliminated. This lets the user edit
- *   a relationship involving an eliminated character without
- *   losing the value. The exception is per-side, not global.
- *
- *   When a checkbox is checked, the filter is off entirely and
- *   every character is offered.
- *
- *   The elimination read routes through SocialMatcher.hasAnyElimination
- *   when available, and falls back to a direct EliminationQueries
- *   read. Both are presence-based, not year-scoped.
- *
  * CHILD BUTTON:
  *   A clover button appears on every relationship row between two
  *   opposite-sex characters. Clicking it opens the child modal.
+ *
+ * MODAL SHELL OWNERSHIP (this revision):
+ *   getRelationshipModalHTML() is now a top-level export, so the
+ *   modal markup can be lazily installed into document.body by
+ *   SocialEvents when the character-tab Social section needs it.
+ *   The character-tab form that used to duplicate this markup
+ *   (character-views.js buildRelationshipFormHTML) has been
+ *   retired; the character tab now opens the same modal.
+ *
+ *   getSocialHTML() still inlines the modal for the standalone
+ *   tab, so the two entry points share one source of truth.
+ *
+ * AGE PREVIEW (new):
+ *   refreshRelationshipAgePreview() renders the ages of both
+ *   characters at the relationship's start year, end year, and
+ *   the current year. It reads from the form's live DOM and
+ *   recomputes on every change.
+ *
+ *   Callers: SocialEvents binds the handlers; nothing else
+ *   should call this directly.
  *
  * DEPENDENCIES:
  *   - window.SocialQueries
@@ -356,7 +337,28 @@
                 </div>
             </div>
 
-            <!-- Relationship Form Modal -->
+            ${getRelationshipModalHTML()}
+            ${getCharacterDetailModalHTML()}
+            ${getSuggestPairsModalHTML()}
+            ${getChildModalHTML()}
+        `;
+    }
+
+    // ============================================================
+    // RELATIONSHIP MODAL SHELL
+    // ============================================================
+    //
+    // Extracted so SocialEvents can lazily install this modal into
+    // document.body when the character tab needs it and the
+    // standalone tab has never been mounted. Both the standalone
+    // tab and the character-tab Social section open the SAME
+    // modal — one form, one code path, one set of bugs to fix.
+    //
+    // Do not add a second relationship-form builder anywhere.
+    // Do not reintroduce character-views.buildRelationshipFormHTML.
+
+    function getRelationshipModalHTML() {
+        return `
             <div id="relationship-form-modal" class="modal hidden">
                 <div class="modal-content" style="max-width:600px;">
                     <div class="modal-header">
@@ -407,6 +409,13 @@
                                     <input type="number" id="rel-end-year" placeholder="e.g., 1930" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
                                 </div>
                                 <div class="form-group full-width">
+                                    <label style="font-size:0.7rem;color:var(--text-dim);">Ages at these years</label>
+                                    <div id="rel-age-preview"
+                                         style="padding:6px 8px;background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;min-height:44px;">
+                                        <span style="color:var(--text-dim);font-size:0.7rem;">Select both characters to see ages.</span>
+                                    </div>
+                                </div>
+                                <div class="form-group full-width">
                                     <label>Notes</label>
                                     <textarea id="rel-notes" rows="3" placeholder="Additional notes about this relationship..." style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical;"></textarea>
                                 </div>
@@ -428,8 +437,15 @@
                     </div>
                 </div>
             </div>
+        `;
+    }
 
-            <!-- Character Detail Modal -->
+    // ============================================================
+    // CHARACTER DETAIL MODAL SHELL
+    // ============================================================
+
+    function getCharacterDetailModalHTML() {
+        return `
             <div id="character-detail-modal" class="modal hidden">
                 <div class="modal-content" style="max-width:500px;">
                     <div class="modal-header">
@@ -441,12 +457,6 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Suggest Pairs Modal -->
-            ${getSuggestPairsModalHTML()}
-
-            <!-- Create Child Modal -->
-            ${getChildModalHTML()}
         `;
     }
 
@@ -509,14 +519,6 @@
      *                      eliminated. Read from the current select
      *                      value when not supplied.
      *   preserve2          same for side 2.
-     *
-     * On a create flow, the caller passes no options and the current
-     * select values (usually empty) are read off the DOM.
-     *
-     * On an edit flow, the caller passes preserve1 / preserve2 so the
-     * current values on each side survive the filter even when they
-     * are eliminated. This lets the user edit a relationship
-     * involving an eliminated character without losing the value.
      */
     function populateFormSelectors(options) {
         options = options || {};
@@ -616,6 +618,149 @@
 
         label1.textContent = n1 + "'s role toward " + n2;
         label2.textContent = n2 + "'s role toward " + n1;
+    }
+
+    // ============================================================
+    // AGE PREVIEW
+    // ============================================================
+    //
+    // Live translation of the selected years into human ages.
+    //
+    // Renders the ages of both characters at:
+    //   - the relationship's start year
+    //   - the relationship's end year (when set)
+    //   - the current application year
+    //
+    // Death markers are annotated inline: a character who has
+    // already died by the shown year is flagged red; a character
+    // who will die later is flagged with the death year in
+    // warning colour.
+    //
+    // Reads only the form's live DOM. Never mutates. Safe to call
+    // at any time, including before the modal is visible.
+
+    function refreshRelationshipAgePreview() {
+        var preview = document.getElementById('rel-age-preview');
+        if (!preview) { return; }
+
+        var CQ = window.CharacterQueries;
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            preview.innerHTML = '';
+            return;
+        }
+
+        var c1El = document.getElementById('rel-char1');
+        var c2El = document.getElementById('rel-char2');
+        var startEl = document.getElementById('rel-start-year');
+        var endEl = document.getElementById('rel-end-year');
+
+        var c1Id = c1El ? String(c1El.value || '') : '';
+        var c2Id = c2El ? String(c2El.value || '') : '';
+        var startRaw = startEl ? String(startEl.value || '').trim() : '';
+        var endRaw = endEl ? String(endEl.value || '').trim() : '';
+
+        var startYear = parseInt(startRaw, 10);
+        if (isNaN(startYear) || startYear < 1) { startYear = null; }
+
+        var endYear = parseInt(endRaw, 10);
+        if (isNaN(endYear) || endYear < 1) { endYear = null; }
+
+        if (!c1Id || !c2Id) {
+            preview.innerHTML =
+                '<span style="color:var(--text-dim);font-size:0.7rem;">' +
+                'Select both characters to see ages.' +
+                '</span>';
+            return;
+        }
+
+        var c1 = CQ.getCharacterById(c1Id);
+        var c2 = CQ.getCharacterById(c2Id);
+        if (!c1 || !c2) {
+            preview.innerHTML = '';
+            return;
+        }
+
+        function parseBirth(char) {
+            var n = parseInt(char && char.birthYear, 10);
+            return isNaN(n) ? null : n;
+        }
+
+        function parseDeath(char) {
+            var n = parseInt(char && char.deathYear, 10);
+            return isNaN(n) ? null : n;
+        }
+
+        /**
+         * Render one character's age at a given year with a death
+         * annotation. Returns an escaped HTML fragment.
+         */
+        function formatAge(char, name, year) {
+            var b = parseBirth(char);
+            if (b === null) {
+                return escapeHtml(name) +
+                    ' <span style="color:var(--text-dim);">' +
+                    '(no birth year)</span>';
+            }
+
+            var age = year - b;
+            var d = parseDeath(char);
+
+            var flag = '';
+            if (d !== null && d <= year) {
+                flag = ' <span style="color:var(--danger);' +
+                       'font-weight:600;">(deceased ' + d + ')</span>';
+            } else if (d !== null) {
+                flag = ' <span style="color:var(--warning);">' +
+                       '(dies ' + d + ')</span>';
+            }
+
+            return escapeHtml(name) + ' <strong>' + age + '</strong>' + flag;
+        }
+
+        var currentYear = (window.data &&
+                          typeof window.data.currentYear === 'number' &&
+                          isFinite(window.data.currentYear) &&
+                          window.data.currentYear > 0)
+            ? Math.floor(window.data.currentYear)
+            : new Date().getFullYear();
+
+        var n1 = CQ.getDisplayName(c1) || 'Character 1';
+        var n2 = CQ.getDisplayName(c2) || 'Character 2';
+
+        var html = '<div style="font-size:0.72rem;color:var(--text-dim);' +
+                   'line-height:1.55;">';
+
+        if (startYear === null) {
+            html += '<span>Enter a start year to see ages.</span>';
+        } else {
+            html += '<div style="color:var(--text);">' +
+                    '<strong style="color:var(--accent);">' +
+                    'At start (' + startYear + '):</strong><br>' +
+                    '&nbsp;&nbsp;' + formatAge(c1, n1, startYear) + '<br>' +
+                    '&nbsp;&nbsp;' + formatAge(c2, n2, startYear) +
+                    '</div>';
+
+            if (endYear !== null && endYear >= startYear) {
+                html += '<div style="margin-top:4px;color:var(--text);">' +
+                        '<strong style="color:var(--accent);">' +
+                        'At end (' + endYear + '):</strong><br>' +
+                        '&nbsp;&nbsp;' + formatAge(c1, n1, endYear) + '<br>' +
+                        '&nbsp;&nbsp;' + formatAge(c2, n2, endYear) +
+                        '</div>';
+            }
+
+            html += '<div style="margin-top:4px;' +
+                    'border-top:1px solid var(--border-soft);' +
+                    'padding-top:4px;color:var(--text);">' +
+                    '<strong style="color:var(--text-dim);">Today (' +
+                    currentYear + '):</strong><br>' +
+                    '&nbsp;&nbsp;' + formatAge(c1, n1, currentYear) + '<br>' +
+                    '&nbsp;&nbsp;' + formatAge(c2, n2, currentYear) +
+                    '</div>';
+        }
+
+        html += '</div>';
+        preview.innerHTML = html;
     }
 
     // ============================================================
@@ -1209,6 +1354,14 @@
         renderSocialView: renderSocialView,
         getSocialHTML: getSocialHTML,
 
+        // Extracted shells, so SocialEvents can lazily install the
+        // relationship modal into document.body when needed by the
+        // character tab. Do not duplicate these anywhere.
+        getRelationshipModalHTML: getRelationshipModalHTML,
+        getCharacterDetailModalHTML: getCharacterDetailModalHTML,
+        getSuggestPairsModalHTML: getSuggestPairsModalHTML,
+        getChildModalHTML: getChildModalHTML,
+
         populateSocialSelectors: populateSocialSelectors,
         populateCharacterFilter: populateCharacterFilter,
         populateTypeFilter: populateTypeFilter,
@@ -1216,13 +1369,15 @@
         populateTypeSelectors: populateTypeSelectors,
         refreshClarificationLabels: refreshClarificationLabels,
 
+        // Age preview for the relationship form. Reads live form
+        // state and recomputes in place. No state of its own.
+        refreshRelationshipAgePreview: refreshRelationshipAgePreview,
+
         renderRelationships: renderRelationships,
         renderCharacterDetailContent: renderCharacterDetailContent,
 
-        getSuggestPairsModalHTML: getSuggestPairsModalHTML,
         renderSuggestPairsContent: renderSuggestPairsContent,
 
-        getChildModalHTML: getChildModalHTML,
         renderChildModalContent: renderChildModalContent,
         refreshChildPreview: refreshChildPreview,
 
