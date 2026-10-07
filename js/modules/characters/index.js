@@ -52,16 +52,24 @@
  *     behaves as expected.
  *
  *   Positioning and visibility live entirely in
- *   css/characters.css:
- *     - `@media (max-width: 768px)` pins the burger to the
- *       top-left of the viewport, above the sidebar.
- *     - `@media (min-width: 769px)` hides it.
+ *   css/characters.css.
  *
- *   This template deliberately contains no <style> block and no
- *   CSS text. Emitting CSS inside the JS template caused a
- *   parser ambiguity (`transform:` being read as a JS token
- *   after an early template-literal termination). Keeping the
- *   shell pure HTML removes that class of bug entirely.
+ * RELATIONSHIP MODAL SHELL REMOVED (this revision):
+ *   The character tab used to carry its own relationship form
+ *   modal, #character-relationship-modal, with a
+ *   #character-relationship-form-container that CharacterViews
+ *   filled in. Both were retired when the character-tab Social
+ *   section was unified with the standalone Social tab's modal.
+ *
+ *   The single relationship modal now lives in SocialViews and is
+ *   installed into document.body on first use by
+ *   SocialEvents.ensureRelationshipModalShell. Opening the modal
+ *   from the character tab goes through
+ *   CharacterEvents.openRelationshipModal → SocialEvents.handleAddRelationship,
+ *   which handles the shell install.
+ *
+ *   Do NOT reintroduce #character-relationship-modal. The shared
+ *   modal is the only relationship modal in the app.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -429,6 +437,18 @@
     // ============================================================
     // HTML SHELL
     // ============================================================
+    //
+    // The shell contains:
+    //   - the two-column characters layout
+    //   - the mobile burger (a sibling of .characters-sidebar,
+    //     see the MOBILE BURGER ESCAPE note in the file header)
+    //   - the sidebar (header buttons, filters, list)
+    //   - the form container
+    //
+    // The shell does NOT contain a relationship modal. That modal
+    // is installed into document.body by SocialEvents on first use.
+    // See the RELATIONSHIP MODAL SHELL REMOVED note in the file
+    // header.
 
     function getCharactersHTML() {
         var careerStatusCollapsed = isMobileViewport();
@@ -571,19 +591,6 @@
                                 <p class="empty-state">Select a character from the list to view and edit details.</p>
                             </div>
                         </form>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Relationship Modal Shell (used by CharacterViews / CharacterEvents) -->
-            <div id="character-relationship-modal" class="modal hidden" style="display:none;">
-                <div class="modal-content" style="max-width:600px;">
-                    <div class="modal-header">
-                        <h3 id="character-relationship-modal-title">Add Relationship</h3>
-                        <button type="button" id="close-char-relationship-modal" class="close-modal" aria-label="Close">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div id="character-relationship-form-container"></div>
                     </div>
                 </div>
             </div>
