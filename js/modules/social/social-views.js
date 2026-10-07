@@ -24,50 +24,37 @@
  *   The standalone Social list renders every row in STORED
  *   orientation: character1 on the left, character2 on the right.
  *   The arrow therefore describes the stored direction, not the
- *   viewer's perspective:
+ *   viewer's perspective.
  *
- *     directional  -> ' → '   (character1 → character2)
- *     undirected   -> ' ↔ '
+ * ROMANTIC OVERLAP WARNING (this revision):
+ *   The relationship modal carries #rel-overlap-warning, a banner
+ *   between the year inputs and the Notes field. It is populated
+ *   by refreshRomanticOverlapWarning() whenever the pair, type, or
+ *   either year changes.
  *
- * SWAP BUTTON:
- *   The relationship form carries a swap button (#rel-swap-btn)
- *   next to character 2. It is visible ONLY when the selected
- *   type is directional (mentor). Clicking it flips the direction
- *   of the relationship:
+ *   The warning is informational. It does NOT block the save.
+ *   The user is authoring fiction; overlapping relationships can
+ *   be intentional. See social-core.js for the reasoning.
  *
- *     - character 1 and character 2 exchange values
- *     - the two clarifications are NOT touched
+ *   The banner renders:
+ *     - nothing (empty container) when there are no overlaps
+ *     - an amber block listing each overlap with the other
+ *       character's name and the year range
  *
- * ELIMINATED CHARACTERS:
- *   Two modal surfaces hide eliminated characters by default:
+ * MODAL SHELL OWNERSHIP:
+ *   getRelationshipModalHTML() is a top-level export so the modal
+ *   markup can be lazily installed into document.body by
+ *   SocialEvents when the character-tab Social section needs it.
+ *   getSocialHTML() still inlines the modal for the standalone tab.
  *
- *     Relationship form  #rel-include-eliminated (unchecked)
- *     Suggest Pairs      #suggest-pairs-include-eliminated
- *                        (unchecked)
+ * AGE PREVIEW:
+ *   refreshRelationshipAgePreview() renders the ages of both
+ *   characters at the relationship's start year, end year, and
+ *   the current year.
  *
  * CHILD BUTTON:
  *   A clover button appears on every relationship row between two
- *   opposite-sex characters. Clicking it opens the child modal.
- *
- * MODAL SHELL OWNERSHIP (this revision):
- *   getRelationshipModalHTML() is now a top-level export, so the
- *   modal markup can be lazily installed into document.body by
- *   SocialEvents when the character-tab Social section needs it.
- *   The character-tab form that used to duplicate this markup
- *   (character-views.js buildRelationshipFormHTML) has been
- *   retired; the character tab now opens the same modal.
- *
- *   getSocialHTML() still inlines the modal for the standalone
- *   tab, so the two entry points share one source of truth.
- *
- * AGE PREVIEW (new):
- *   refreshRelationshipAgePreview() renders the ages of both
- *   characters at the relationship's start year, end year, and
- *   the current year. It reads from the form's live DOM and
- *   recomputes on every change.
- *
- *   Callers: SocialEvents binds the handlers; nothing else
- *   should call this directly.
+ *   opposite-sex characters.
  *
  * DEPENDENCIES:
  *   - window.SocialQueries
@@ -77,6 +64,7 @@
  *   - window.DomUtils
  *
  * DEPENDENCIES (OPTIONAL):
+ *   - window.SocialCore          (overlap read; skipped if absent)
  *   - window.SocialMatcher       (elimination read)
  *   - window.EliminationQueries  (fallback elimination read)
  */
@@ -199,13 +187,6 @@
         return a !== b;
     }
 
-    /**
-     * Does this character have any elimination on record?
-     *
-     * Delegates to SocialMatcher.hasAnyElimination when available;
-     * falls back to a direct EliminationQueries read. Returns false
-     * when neither is available.
-     */
     function hasAnyElimination(charId) {
         if (!charId) { return false; }
 
@@ -237,19 +218,11 @@
         return false;
     }
 
-    /**
-     * Read the "include eliminated" checkbox in the relationship
-     * modal. Returns false when the checkbox is absent.
-     */
     function isRelIncludeEliminatedChecked() {
         var cb = document.getElementById('rel-include-eliminated');
         return cb ? cb.checked === true : false;
     }
 
-    /**
-     * Read the "include eliminated" checkbox in the Suggest Pairs
-     * modal. Returns false when the checkbox is absent.
-     */
     function isSuggestIncludeEliminatedChecked() {
         var cb = document.getElementById('suggest-pairs-include-eliminated');
         return cb ? cb.checked === true : false;
@@ -350,12 +323,21 @@
     //
     // Extracted so SocialEvents can lazily install this modal into
     // document.body when the character tab needs it and the
-    // standalone tab has never been mounted. Both the standalone
-    // tab and the character-tab Social section open the SAME
-    // modal — one form, one code path, one set of bugs to fix.
+    // standalone tab has never been mounted.
     //
-    // Do not add a second relationship-form builder anywhere.
-    // Do not reintroduce character-views.buildRelationshipFormHTML.
+    // Order of blocks inside the form:
+    //   1. character selects
+    //   2. relationship type
+    //   3. clarifications
+    //   4. years (start, end)
+    //   5. ages preview
+    //   6. overlap warning  <-- new
+    //   7. notes
+    //   8. include-eliminated checkbox
+    //
+    // The overlap warning sits directly below the ages preview so
+    // the user sees "at 12 / 17, and this overlaps with Alice"
+    // together. The two warnings reinforce each other.
 
     function getRelationshipModalHTML() {
         return `
@@ -414,6 +396,9 @@
                                          style="padding:6px 8px;background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;min-height:44px;">
                                         <span style="color:var(--text-dim);font-size:0.7rem;">Select both characters to see ages.</span>
                                     </div>
+                                </div>
+                                <div class="form-group full-width">
+                                    <div id="rel-overlap-warning" style="display:none;"></div>
                                 </div>
                                 <div class="form-group full-width">
                                     <label>Notes</label>
@@ -510,16 +495,6 @@
         if (currentValue) { typeFilter.value = currentValue; }
     }
 
-    /**
-     * Populate the relationship form's two character selects.
-     *
-     * Options:
-     *   includeEliminated  when true, no filter is applied.
-     *   preserve1          character id to keep on side 1 even if
-     *                      eliminated. Read from the current select
-     *                      value when not supplied.
-     *   preserve2          same for side 2.
-     */
     function populateFormSelectors(options) {
         options = options || {};
 
@@ -555,7 +530,6 @@
             var name = CharacterQueries.getDisplayName(c) || 'Unknown';
             var isEliminated = hasAnyElimination(charIdStr);
 
-            // Side 1
             if (includeEliminated || !isEliminated || charIdStr === preserve1) {
                 var opt1 = document.createElement('option');
                 opt1.value = charIdStr;
@@ -564,7 +538,6 @@
                 select1.appendChild(opt1);
             }
 
-            // Side 2
             if (includeEliminated || !isEliminated || charIdStr === preserve2) {
                 var opt2 = document.createElement('option');
                 opt2.value = charIdStr;
@@ -623,21 +596,6 @@
     // ============================================================
     // AGE PREVIEW
     // ============================================================
-    //
-    // Live translation of the selected years into human ages.
-    //
-    // Renders the ages of both characters at:
-    //   - the relationship's start year
-    //   - the relationship's end year (when set)
-    //   - the current application year
-    //
-    // Death markers are annotated inline: a character who has
-    // already died by the shown year is flagged red; a character
-    // who will die later is flagged with the death year in
-    // warning colour.
-    //
-    // Reads only the form's live DOM. Never mutates. Safe to call
-    // at any time, including before the modal is visible.
 
     function refreshRelationshipAgePreview() {
         var preview = document.getElementById('rel-age-preview');
@@ -690,10 +648,6 @@
             return isNaN(n) ? null : n;
         }
 
-        /**
-         * Render one character's age at a given year with a death
-         * annotation. Returns an escaped HTML fragment.
-         */
         function formatAge(char, name, year) {
             var b = parseBirth(char);
             if (b === null) {
@@ -761,6 +715,168 @@
 
         html += '</div>';
         preview.innerHTML = html;
+    }
+
+    // ============================================================
+    // ROMANTIC OVERLAP WARNING
+    // ============================================================
+    //
+    // Reads the live form (pair, type, years), asks SocialCore
+    // for overlaps, and renders an amber banner listing each one.
+    //
+    // The banner is INFORMATIONAL. It does not block the save.
+    // See social-core.js for why.
+    //
+    // The container is always present in the modal (see
+    // getRelationshipModalHTML). When there are no overlaps, the
+    // container is hidden (display:none) and emptied.
+    //
+    // Reads only the form's live DOM. Never mutates. Safe to call
+    // at any time, including before the modal is visible.
+
+    function refreshRomanticOverlapWarning() {
+        var host = document.getElementById('rel-overlap-warning');
+        if (!host) { return; }
+
+        var Core = window.SocialCore;
+        var CQ = window.CharacterQueries;
+
+        if (!Core ||
+            typeof Core.getRomanticOverlaps !== 'function' ||
+            !CQ ||
+            typeof CQ.getCharacterById !== 'function') {
+            host.style.display = 'none';
+            host.innerHTML = '';
+            return;
+        }
+
+        var c1El = document.getElementById('rel-char1');
+        var c2El = document.getElementById('rel-char2');
+        var typeEl = document.getElementById('rel-type');
+        var startEl = document.getElementById('rel-start-year');
+        var endEl = document.getElementById('rel-end-year');
+
+        var c1Id = c1El ? String(c1El.value || '') : '';
+        var c2Id = c2El ? String(c2El.value || '') : '';
+        var typeId = typeEl ? String(typeEl.value || '') : '';
+        var startRaw = startEl ? String(startEl.value || '').trim() : '';
+        var endRaw = endEl ? String(endEl.value || '').trim() : '';
+
+        // Need a complete, non-degenerate form to run the check.
+        // The type must also be an exclusive one; a non-exclusive
+        // type returns an empty overlap list from SocialCore, so
+        // this early-exit is optimisation, not correctness.
+        if (!c1Id || !c2Id || !typeId || c1Id === c2Id) {
+            host.style.display = 'none';
+            host.innerHTML = '';
+            return;
+        }
+
+        var excludeId = null;
+        // When editing, exclude the record being edited. The
+        // caller stores it on the modal as data-edit-id (set by
+        // SocialEvents.handleAddRelationship).
+        var modal = document.getElementById('relationship-form-modal');
+        if (modal && modal.dataset && modal.dataset.editId) {
+            excludeId = modal.dataset.editId;
+        }
+
+        var overlaps;
+        try {
+            overlaps = Core.getRomanticOverlaps(
+                c1Id, c2Id, typeId,
+                startRaw, endRaw,
+                excludeId
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[SocialViews] getRomanticOverlaps threw:', e
+            );
+            overlaps = [];
+        }
+
+        if (overlaps.length === 0) {
+            host.style.display = 'none';
+            host.innerHTML = '';
+            return;
+        }
+
+        // Build the banner.
+        var html = '';
+        html += '<div style="padding:8px 10px;' +
+                'background:var(--warning-soft);' +
+                'border-left:3px solid var(--warning);' +
+                'border-radius:6px;font-size:0.75rem;' +
+                'line-height:1.45;color:var(--text);">';
+
+        html += '<div style="font-weight:600;color:var(--warning);' +
+                'margin-bottom:4px;">\u26a0 Overlapping relationship' +
+                (overlaps.length === 1 ? '' : 's') + '</div>';
+
+        html += '<div style="color:var(--text-dim);font-size:0.7rem;' +
+                'margin-bottom:6px;">' +
+                'This will not block the save, but one or both ' +
+                'characters already ' +
+                (overlaps.length === 1 ? 'has' : 'have') +
+                ' a relationship of this type covering the same period:' +
+                '</div>';
+
+        for (var i = 0; i < overlaps.length; i++) {
+            var o = overlaps[i];
+            var otherId = null;
+
+            if (o.sharesChar1 && String(o.character1) === String(c1Id)) {
+                otherId = o.character2;
+            } else if (o.sharesChar1 && String(o.character2) === String(c1Id)) {
+                otherId = o.character1;
+            } else if (o.sharesChar2 && String(o.character1) === String(c2Id)) {
+                otherId = o.character2;
+            } else if (o.sharesChar2 && String(o.character2) === String(c2Id)) {
+                otherId = o.character1;
+            } else {
+                // Fall back to whichever id is not one of the
+                // candidate pair. Should not happen in practice.
+                otherId = String(o.character1) === String(c1Id) ||
+                          String(o.character1) === String(c2Id)
+                    ? o.character2
+                    : o.character1;
+            }
+
+            var otherName = 'Unknown';
+            if (otherId) {
+                var otherChar = CQ.getCharacterById(otherId);
+                if (otherChar) {
+                    otherName = CQ.getDisplayName(otherChar) || 'Unknown';
+                }
+            }
+
+            var period = formatOverlapPeriod(o.startYear, o.endYear);
+
+            html += '<div style="padding:3px 0 3px 12px;' +
+                    'border-left:2px solid var(--warning);' +
+                    'margin-bottom:3px;">';
+            html += '<strong>' + escapeHtml(otherName) + '</strong>';
+            if (period) {
+                html += ' <span style="color:var(--text-dim);' +
+                        'font-size:0.7rem;">' +
+                        escapeHtml(period) + '</span>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        host.innerHTML = html;
+        host.style.display = 'block';
+    }
+
+    function formatOverlapPeriod(startYear, endYear) {
+        var s = startYear ? String(startYear) : '';
+        var e = endYear ? String(endYear) : '';
+        if (s && e) { return s + '\u2013' + e; }
+        if (s) { return 'from ' + s; }
+        if (e) { return 'until ' + e; }
+        return '';
     }
 
     // ============================================================
@@ -847,22 +963,6 @@
     function renderRelationshipRow(vm, color, contextCharId) {
         if (!vm) { return ''; }
 
-        // ---- Arrow describes STORED orientation ----
-        //
-        // The row always renders character1 on the left and
-        // character2 on the right, in stored order. The arrow must
-        // therefore describe the stored direction, NOT the viewer's
-        // perspective:
-        //
-        //   directional -> ' → '   (character1 → character2)
-        //   undirected  -> ' ↔ '
-        //
-        // We deliberately ignore vm.directionText here. That field
-        // is context-sensitive (computed from a context character
-        // id) and belongs to surfaces that render from one
-        // character's point of view — the character form's Social
-        // tab, for instance. Rendering it here would make the arrow
-        // disagree with the names it sits between.
         var arrow = vm.isDirectional ? '\u2192' : '\u2194';
         var period = vm.period || '';
 
@@ -1354,9 +1454,6 @@
         renderSocialView: renderSocialView,
         getSocialHTML: getSocialHTML,
 
-        // Extracted shells, so SocialEvents can lazily install the
-        // relationship modal into document.body when needed by the
-        // character tab. Do not duplicate these anywhere.
         getRelationshipModalHTML: getRelationshipModalHTML,
         getCharacterDetailModalHTML: getCharacterDetailModalHTML,
         getSuggestPairsModalHTML: getSuggestPairsModalHTML,
@@ -1369,9 +1466,11 @@
         populateTypeSelectors: populateTypeSelectors,
         refreshClarificationLabels: refreshClarificationLabels,
 
-        // Age preview for the relationship form. Reads live form
-        // state and recomputes in place. No state of its own.
+        // Age preview
         refreshRelationshipAgePreview: refreshRelationshipAgePreview,
+
+        // Overlap warning
+        refreshRomanticOverlapWarning: refreshRomanticOverlapWarning,
 
         renderRelationships: renderRelationships,
         renderCharacterDetailContent: renderCharacterDetailContent,
@@ -1383,7 +1482,6 @@
 
         getRelationshipPeriod: getRelationshipPeriod,
 
-        // Exposed for use by SocialEvents
         hasAnyElimination: hasAnyElimination,
         isRelIncludeEliminatedChecked: isRelIncludeEliminatedChecked
     };
