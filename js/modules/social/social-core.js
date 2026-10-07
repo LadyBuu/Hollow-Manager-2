@@ -8,6 +8,7 @@
  *   - deleteRelationship - Delete a relationship
  *   - deleteAllRelationshipsForCharacter - Delete all relationships for a character
  *   - validateRelationshipData - Pure validation function
+ *   - findRomanticOverlaps - Overlap detector for exclusive types
  *   - Cross-domain cascade helpers (stripCharacterRefs, endRelationshipsForCharacter)
  *   - Transaction-local adders for use inside another module's
  *     pipeline mutate callback (addRelationshipInTransaction,
@@ -19,7 +20,7 @@
  *   - Uses SocialQueries for read operations (Social data only)
  *   - Uses injected characterProvider for character existence
  *   - Uses SocialConstants for type definitions
- *   - Returns structured results { success, data?, message?, error? }
+ *   - Returns structured results { success, data?, message?, error?, overlaps? }
  *   - No confirm() dialogs - caller handles UI
  *   - No window.data fallbacks - data structure must exist
  *   - characterProvider is INJECTED via init()
@@ -30,25 +31,11 @@
  *     clarification1   character1's role toward character2
  *     clarification2   character2's role toward character1
  *
- *   Examples:
- *     { character1: 'alice', character2: 'bob',
- *       clarification1: 'Boss', clarification2: 'Employee' }
- *     { character1: 'alice', character2: 'bob',
- *       clarification1: 'Best friend', clarification2: 'Best friend' }
- *     { character1: 'alice', character2: 'bob',
- *       clarification1: 'Mother', clarification2: 'Daughter' }
- *
  *   LEGACY FALLBACK:
  *     Older records carry a single `clarification` field. On read,
  *     the value is treated as clarification1 and clarification2 is
  *     empty. On write, the legacy field is removed and the record
- *     carries clarification1 and clarification2. Migration happens
- *     naturally: the first time a relationship is edited, it is
- *     upgraded to the two-field shape.
- *
- *   Read clarification1 / clarification2 via SocialQueries; do not
- *   read the raw fields directly, because the reader must apply the
- *   legacy fallback.
+ *     carries clarification1 and clarification2.
  *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
@@ -61,36 +48,37 @@
  * DUPLICATE DETECTION:
  *   createRelationship rejects a pair + type that already exists.
  *   updateRelationship rejects a pair + type that already exists
- *   EXCEPT when the match is the record being edited. The
- *   validator takes an `excludeId` option for this purpose; without
- *   it, every edit that keeps the same characters and type would
- *   reject itself.
+ *   EXCEPT when the match is the record being edited.
+ *
+ * ROMANTIC OVERLAP DETECTION (this revision):
+ *   An EXCLUSIVE type (see SocialConstants.isExclusiveType) gets a
+ *   second check: does either character already have a relationship
+ *   of that same type covering an overlapping year range?
+ *
+ *   Overlap is defined by year range, not by pair. Two records with
+ *   the same pair and the same type are caught by the duplicate
+ *   check, not the overlap check. An overlap is a DIFFERENT pair
+ *   that shares one endpoint and covers overlapping years.
+ *
+ *   Year range semantics:
+ *     null start  -> -Infinity ("from the beginning")
+ *     null end    -> +Infinity ("ongoing")
+ *   Two ranges overlap when neither ends strictly before the other
+ *   begins.
+ *
+ *   Overlap detection is NON-BLOCKING. It is surfaced in the
+ *   validation result (validation.overlaps) and threaded through
+ *   the mutation result (result.overlaps), but it does NOT add to
+ *   validation.errors. The form shows a warning banner; the caller
+ *   may choose to warn further or ignore it. The save succeeds.
+ *
+ *   Rationale: the tool is for authoring fiction. Some plots
+ *   involve overlapping relationships. A hard block would fight
+ *   the user's intent. Warnings, not walls.
  *
  * CASCADE SEMANTICS:
- *   Two cascades are exported. They are DIFFERENT operations on
- *   DIFFERENT triggers, and the distinction matters.
- *
- *   stripCharacterRefs(appData, charId):
- *     Called when a character is DELETED. Removes every relationship
- *     involving the character from social.relationships. The
- *     relationship record ceases to exist. This is correct for
- *     deletion: the character is gone, so a record that references
- *     the character by id would be a dangling reference.
- *
- *   endRelationshipsForCharacter(appData, charId, deathYear):
- *     Called when a character DIES. Does NOT remove relationships.
- *     Stamps endYear onto every ONGOING relationship involving the
- *     character, so the record reflects that the relationship
- *     existed and ended at the death year. Relationships that
- *     already carry an endYear are left alone: they ended for their
- *     own reasons (a breakup, a falling-out, a job change) and
- *     death does not overwrite that. This is correct for death: the
- *     relationship was real, and it ended when one party died.
- *
- *   Deletion is a cascade that ERASES. Death is a cascade that
- *   CLOSES. Both are called from inside CharacterCRUD's pipeline
- *   mutate, in the same transaction as the character write, so a
- *   failed save rolls back the cascade too.
+ *   stripCharacterRefs(appData, charId)      -- deletion cascade
+ *   endRelationshipsForCharacter(...)        -- death cascade
  *
  * CHARACTER PROVIDER INTERFACE:
  *   {
@@ -114,7 +102,9 @@
  *       '', '', 'Best friend', 'Best friend', ''
  *   );
  *   if (result.success) {
- *       // relationship created
+ *       if (result.overlaps && result.overlaps.length > 0) {
+ *           // warn the user; the save still succeeded
+ *       }
  *   }
  */
 
@@ -180,6 +170,9 @@
         if (!SocialConstants || typeof SocialConstants.getDefaultTypeId !== 'function') {
             missing.push('SocialConstants.getDefaultTypeId');
         }
+        if (!SocialConstants || typeof SocialConstants.isExclusiveType !== 'function') {
+            missing.push('SocialConstants.isExclusiveType');
+        }
 
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
@@ -204,16 +197,9 @@
     /**
      * Read a relationship's clarification for one side.
      *
-     * side === 1 → clarification1, falling back to the legacy
-     *              `clarification` field.
-     * side === 2 → clarification2 (no legacy fallback: the old
-     *              single-field model could not express a
-     *              side-specific value for character2, so pretending
-     *              it did would be a lie).
-     *
-     * @param {object} rel
-     * @param {number} side - 1 or 2
-     * @returns {string}
+     * side === 1 -> clarification1, falling back to the legacy
+     *               `clarification` field.
+     * side === 2 -> clarification2 (no legacy fallback).
      */
     function readClarification(rel, side) {
         if (!rel || typeof rel !== 'object') { return ''; }
@@ -236,8 +222,7 @@
 
     /**
      * Write both clarification fields onto a relationship record,
-     * and remove the legacy `clarification` field. Called from the
-     * mutate callbacks of create and update.
+     * and remove the legacy `clarification` field.
      */
     function writeClarifications(rel, clarification1, clarification2) {
         if (!rel) { return; }
@@ -246,6 +231,187 @@
         if (Object.prototype.hasOwnProperty.call(rel, 'clarification')) {
             delete rel.clarification;
         }
+    }
+
+    // ============================================================
+    // YEAR HELPERS
+    // ============================================================
+
+    function isValidYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return true;
+        }
+        var num = Number(value);
+        return Number.isInteger(num) && num >= 1;
+    }
+
+    function normaliseYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return '';
+        }
+        var num = Number(value);
+        if (Number.isInteger(num) && num >= 1) {
+            return String(num);
+        }
+        return '';
+    }
+
+    /**
+     * Parse a year value to an integer, or null when unset/malformed.
+     * Used by the overlap detector, which treats null as an open
+     * bound rather than as an error.
+     */
+    function parseYearOrNull(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var n = parseInt(String(value).trim(), 10);
+        if (isNaN(n) || n < 1) { return null; }
+        return n;
+    }
+
+    function normaliseText(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value).trim();
+    }
+
+    function normaliseId(value) {
+        if (value === undefined || value === null) { return ''; }
+        return String(value);
+    }
+
+    // ============================================================
+    // ID ALLOCATION
+    // ============================================================
+
+    function getNextId(data) {
+        if (!data.social) { data.social = {}; }
+        if (!data.social.relationships) { data.social.relationships = []; }
+        if (typeof data.social.nextId !== 'number' || data.social.nextId < 1) {
+            data.social.nextId = 1;
+        }
+
+        var existingIds = Object.create(null);
+        data.social.relationships.forEach(function(rel) {
+            if (rel && rel.id !== undefined && rel.id !== null) {
+                existingIds[String(rel.id)] = true;
+            }
+        });
+
+        var nextId = data.social.nextId;
+        while (existingIds[String(nextId)]) { nextId++; }
+
+        data.social.nextId = nextId + 1;
+        return nextId;
+    }
+
+    // ============================================================
+    // ROMANTIC OVERLAP DETECTION
+    // ============================================================
+    //
+    // An overlap is a DIFFERENT pair, sharing at least one endpoint
+    // with the candidate pair, of the SAME exclusive type, with an
+    // overlapping year range.
+    //
+    // Duplicates (same pair, same type) are caught by the duplicate
+    // check, not here. If a candidate matches an existing record by
+    // pair AND type, it is skipped here so the two checks do not
+    // double-report.
+    //
+    // Overlap semantics:
+    //   null start  -> -Infinity
+    //   null end    -> +Infinity
+    //   Two ranges overlap when aE >= bS AND bE >= aS.
+    //
+    // Non-exclusive types are skipped entirely. A character can be
+    // in many friendships, rivalries, mentors, and alliances at
+    // once; only exclusive types are checked.
+
+    function findRomanticOverlaps(char1, char2, typeId, startYear, endYear,
+                                  excludeId) {
+        var result = { overlaps: [] };
+
+        if (!char1 || !char2 || !typeId) { return result; }
+        if (!SocialConstants.isExclusiveType(typeId)) { return result; }
+
+        var s1 = parseYearOrNull(startYear);
+        var e1 = parseYearOrNull(endYear);
+
+        // Range for the candidate. Null bounds become infinities.
+        var aS = (s1 === null) ? -Infinity : s1;
+        var aE = (e1 === null) ?  Infinity : e1;
+
+        var relationships = SocialQueries.getAllRelationships();
+        var exclude = excludeId ? String(excludeId) : null;
+
+        for (var i = 0; i < relationships.length; i++) {
+            var rel = relationships[i];
+            if (!rel) { continue; }
+
+            // Same type required.
+            if (rel.typeId !== typeId) { continue; }
+
+            // Same exclusive-type requirement is implied by the
+            // type equality above; no second check needed.
+
+            // Skip the record being edited, if any.
+            if (exclude && String(rel.id) === exclude) { continue; }
+
+            // Skip duplicates (same pair, either orientation). The
+            // duplicate check reports these; do not double-report.
+            var samePair =
+                (String(rel.character1) === String(char1) &&
+                 String(rel.character2) === String(char2)) ||
+                (String(rel.character1) === String(char2) &&
+                 String(rel.character2) === String(char1));
+            if (samePair) { continue; }
+
+            // Same endpoint requirement. At least one of the candidate
+            // pair must appear in this record.
+            var sharesC1 = String(rel.character1) === String(char1) ||
+                           String(rel.character2) === String(char1);
+            var sharesC2 = String(rel.character1) === String(char2) ||
+                           String(rel.character2) === String(char2);
+            if (!sharesC1 && !sharesC2) { continue; }
+
+            // Year range overlap.
+            var s2 = parseYearOrNull(rel.startYear);
+            var e2 = parseYearOrNull(rel.endYear);
+            var bS = (s2 === null) ? -Infinity : s2;
+            var bE = (e2 === null) ?  Infinity : e2;
+
+            if (aE < bS || bE < aS) { continue; }
+
+            // Record which side of the candidate pair collides with
+            // this record, so the UI can name the right character.
+            var sideC1 = sharesC1;
+            var sideC2 = sharesC2;
+
+            result.overlaps.push({
+                id: rel.id,
+                character1: rel.character1,
+                character2: rel.character2,
+                typeId: rel.typeId,
+                startYear: rel.startYear || '',
+                endYear: rel.endYear || '',
+                sharesChar1: sideC1,
+                sharesChar2: sideC2
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Public wrapper. Returns just the array (empty when no
+     * overlaps or type is not exclusive).
+     */
+    function getRomanticOverlaps(char1, char2, typeId, startYear, endYear,
+                                 excludeId) {
+        return findRomanticOverlaps(
+            char1, char2, typeId,
+            startYear, endYear, excludeId
+        ).overlaps;
     }
 
     // ============================================================
@@ -260,15 +426,28 @@
      * @param {boolean} [options.checkDuplicates=true]
      * @param {string} [options.excludeId] - When set, the duplicate
      *   check ignores this relationship ID. Used by updateRelationship
-     *   so a record does not match itself.
-     * @returns {object} { valid: boolean, errors: string[] }
+     *   so a record does not match itself. Also passed to the
+     *   overlap detector so the record being edited does not
+     *   collide with itself.
+     * @param {boolean} [options.checkOverlaps=true]
+     *
+     * @returns {object} {
+     *   valid: boolean,
+     *   errors: string[],
+     *   overlaps: object[]   // always present; may be empty
+     * }
+     *
+     * NOTE: overlaps never contribute to errors. They are a
+     * separate channel for the caller's UI to display as warnings.
      */
     function validateRelationshipData(data, options) {
         options = options || {};
         var checkDuplicates = options.checkDuplicates !== false;
+        var checkOverlaps = options.checkOverlaps !== false;
         var excludeId = options.excludeId ? String(options.excludeId) : null;
 
         var errors = [];
+        var overlaps = [];
 
         var char1 = data.character1;
         var char2 = data.character2;
@@ -327,9 +506,26 @@
             }
         }
 
+        // ---- Overlap detection (non-blocking) ----
+        //
+        // Only runs when the data passed the basic structural checks.
+        // A missing type or character makes the overlap detector
+        // meaningless. Do not run it on malformed input.
+        if (checkOverlaps &&
+            char1 && char2 && typeId &&
+            String(char1) !== String(char2) &&
+            SocialConstants.isValidType(typeId)) {
+            overlaps = findRomanticOverlaps(
+                char1, char2, typeId,
+                data.startYear, data.endYear,
+                excludeId
+            ).overlaps;
+        }
+
         return {
             valid: errors.length === 0,
-            errors: errors
+            errors: errors,
+            overlaps: overlaps
         };
     }
 
@@ -366,60 +562,6 @@
         return false;
     }
 
-    function isValidYear(value) {
-        if (value === undefined || value === null || value === '') {
-            return true;
-        }
-        var num = Number(value);
-        return Number.isInteger(num) && num >= 1;
-    }
-
-    function normaliseYear(value) {
-        if (value === undefined || value === null || value === '') {
-            return '';
-        }
-        var num = Number(value);
-        if (Number.isInteger(num) && num >= 1) {
-            return String(num);
-        }
-        return '';
-    }
-
-    function normaliseText(value) {
-        if (value === undefined || value === null) { return ''; }
-        return String(value).trim();
-    }
-
-    function normaliseId(value) {
-        if (value === undefined || value === null) { return ''; }
-        return String(value);
-    }
-
-    // ============================================================
-    // ID ALLOCATION
-    // ============================================================
-
-    function getNextId(data) {
-        if (!data.social) { data.social = {}; }
-        if (!data.social.relationships) { data.social.relationships = []; }
-        if (typeof data.social.nextId !== 'number' || data.social.nextId < 1) {
-            data.social.nextId = 1;
-        }
-
-        var existingIds = Object.create(null);
-        data.social.relationships.forEach(function(rel) {
-            if (rel && rel.id !== undefined && rel.id !== null) {
-                existingIds[String(rel.id)] = true;
-            }
-        });
-
-        var nextId = data.social.nextId;
-        while (existingIds[String(nextId)]) { nextId++; }
-
-        data.social.nextId = nextId + 1;
-        return nextId;
-    }
-
     // ============================================================
     // TRANSACTION-LOCAL ADDERS
     // ============================================================
@@ -431,8 +573,7 @@
     //
     // They never touch window.data. They mutate only the appData
     // argument. They never throw on malformed input; they skip
-    // malformed records and continue, because the caller's job is
-    // already done by the time these run.
+    // malformed records and continue.
 
     function ensureSocialStructure(appData) {
         if (!appData.social || typeof appData.social !== 'object') {
@@ -523,14 +664,9 @@
     /**
      * Create a new relationship.
      *
-     * @param {string} charId1
-     * @param {string} charId2
-     * @param {string} typeId
-     * @param {string|number} startYear
-     * @param {string|number} endYear
-     * @param {string} clarification1 - character1's role toward character2
-     * @param {string} clarification2 - character2's role toward character1
-     * @param {string} notes
+     * On success, the returned result may carry an `overlaps` array
+     * listing exclusive-type overlaps that were detected but did
+     * not block the save. Callers should surface these as warnings.
      */
     function createRelationship(charId1, charId2, typeId, startYear, endYear, clarification1, clarification2, notes) {
         if (!checkDependencies()) {
@@ -568,6 +704,7 @@
             });
         }
 
+        var detectedOverlaps = validation.overlaps || [];
         var label = SocialConstants.getLabel(type);
 
         return MutationPipeline.performMutation({
@@ -589,6 +726,12 @@
                         message: currentValidation.errors.join(' ')
                     };
                 }
+
+                // The overlap set is not blocking, but we take the
+                // CURRENT set (not the pre-flight set) so the result
+                // reflects what was true at the moment of the write.
+                detectedOverlaps = currentValidation.overlaps || [];
+
                 return { valid: true };
             },
 
@@ -615,7 +758,10 @@
 
                 data.social.relationships.push(relationship);
 
-                return { relationship: relationship };
+                return {
+                    relationship: relationship,
+                    overlaps: detectedOverlaps
+                };
             },
 
             logMessage: function() {
@@ -623,6 +769,15 @@
             },
             successMessage: 'Relationship created successfully!',
             failureMessage: 'Failed to create relationship.'
+        }).then(function(result) {
+            // Thread overlaps through the public result so callers
+            // do not have to dig into the pipeline envelope.
+            if (result && result.success && result.data) {
+                result.overlaps = result.data.overlaps || [];
+            } else if (result && result.success) {
+                result.overlaps = detectedOverlaps;
+            }
+            return result;
         });
     }
 
@@ -630,10 +785,12 @@
      * Update an existing relationship.
      *
      * The duplicate check ignores the record being edited, so saving
-     * with the same characters and type succeeds.
+     * with the same characters and type succeeds. The overlap
+     * detector also ignores it, so a record cannot collide with
+     * itself.
      *
-     * @param {string|number} id
-     * @param {object} updates
+     * On success, the returned result may carry an `overlaps` array
+     * just like createRelationship.
      */
     function updateRelationship(id, updates) {
         if (!checkDependencies()) {
@@ -691,6 +848,7 @@
             });
         }
 
+        var detectedOverlaps = validation.overlaps || [];
         var label = SocialConstants.getLabel(type);
 
         return MutationPipeline.performMutation({
@@ -720,6 +878,9 @@
                         message: currentValidation.errors.join(' ')
                     };
                 }
+
+                detectedOverlaps = currentValidation.overlaps || [];
+
                 return { valid: true };
             },
 
@@ -748,7 +909,10 @@
                 writeClarifications(rel, clar1, clar2);
                 rel.notes = noteText;
 
-                return { relationship: rel };
+                return {
+                    relationship: rel,
+                    overlaps: detectedOverlaps
+                };
             },
 
             logMessage: function() {
@@ -756,6 +920,13 @@
             },
             successMessage: 'Relationship updated successfully!',
             failureMessage: 'Failed to update relationship.'
+        }).then(function(result) {
+            if (result && result.success && result.data) {
+                result.overlaps = result.data.overlaps || [];
+            } else if (result && result.success) {
+                result.overlaps = detectedOverlaps;
+            }
+            return result;
         });
     }
 
@@ -903,19 +1074,7 @@
      * Remove every relationship involving a character from appData.
      *
      * DELETION CASCADE. Called by CharacterCRUD.deleteCharacter from
-     * inside its pipeline mutate, so the relationship removal runs in
-     * the same transaction as the character removal.
-     *
-     * Deletion ERASES. The relationship record ceases to exist. A
-     * record that referenced a deleted character by id would be a
-     * dangling reference, which is why this is a filter, not an
-     * endYear stamp.
-     *
-     * For the DEATH cascade, see endRelationshipsForCharacter.
-     *
-     * @param {object} appData
-     * @param {string} charId
-     * @returns {object} { relationshipsRemoved: number }
+     * inside its pipeline mutate.
      */
     function stripCharacterRefs(appData, charId) {
         var result = { relationshipsRemoved: 0 };
@@ -950,32 +1109,7 @@
      * stamping the death year onto endYear.
      *
      * DEATH CASCADE. Called by CharacterCRUD from inside its pipeline
-     * mutate, in the same transaction as the character save.
-     *
-     * Death CLOSES. The relationship existed; it ended when one party
-     * died. The record keeps both ids, keeps its type, keeps its
-     * clarifications, and gains an endYear. Subsequent reads (the
-     * relationship list, the character social tab, the graph) will
-     * show it in the "Ended" group rather than the "Ongoing" group.
-     *
-     * RELATIONSHIPS THAT ALREADY HAVE AN endYear ARE LEFT ALONE.
-     * A relationship that ended for its own reasons (a breakup, a
-     * falling-out, a job change) is not retroactively re-dated to the
-     * character's death. The endYear already on the record is the
-     * truth about when that relationship ended.
-     *
-     * IDEMPOTENT. Re-running on a character whose relationships are
-     * already ended is a no-op: every record already has an endYear,
-     * so none are touched. This matters because the death cascade
-     * runs on EVERY save of a deceased character, not just the
-     * transition into death.
-     *
-     * Does NOT touch window.data. Mutates the appData argument only.
-     *
-     * @param {object} appData
-     * @param {string} charId
-     * @param {number|string} deathYear
-     * @returns {object} { relationshipsEnded: number }
+     * mutate.
      */
     function endRelationshipsForCharacter(appData, charId, deathYear) {
         var result = { relationshipsEnded: 0 };
@@ -1003,8 +1137,6 @@
             var c2 = String(rel.character2);
             if (c1 !== target && c2 !== target) { continue; }
 
-            // Only stamp ongoing relationships. A relationship that
-            // already carries an endYear ended for its own reasons.
             var existingEnd = rel.endYear;
             var isOngoing = existingEnd === undefined ||
                             existingEnd === null ||
@@ -1046,9 +1178,19 @@
         normaliseText: normaliseText,
         normaliseId: normaliseId,
 
-        // Exposed for callers that need to read clarifications with
-        // the legacy fallback applied.
-        readClarification: readClarification
+        // Clarification reads with legacy fallback
+        readClarification: readClarification,
+
+        // Overlap detection
+        //
+        // findRomanticOverlaps returns { overlaps: [...] }.
+        // getRomanticOverlaps returns just the array.
+        //
+        // Both are pure reads against SocialQueries. Neither
+        // mutates. Callers in the UI use getRomanticOverlaps to
+        // render warning banners.
+        findRomanticOverlaps: findRomanticOverlaps,
+        getRomanticOverlaps: getRomanticOverlaps
     };
 
 })();
