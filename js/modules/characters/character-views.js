@@ -10,7 +10,6 @@
  *   - Collapsible group sections (state kept per render session)
  *   - Ongoing / Ended subsections within each type
  *   - Inline directional arrows for directional relationship types
- *   - The "Add / Edit Relationship" modal form
  *   - The character SVG network graph modal
  *   - Rendering the character's professional team memberships
  *     (Active / Former split), sourced from
@@ -25,7 +24,23 @@
  *   - Uses SocialConstants for type definitions
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
- *   - Uses SocialCore only for reading the relationship-by-id (read path)
+ *
+ * RELATIONSHIP FORM OWNERSHIP (this revision):
+ *   The character-tab relationship form has been RETIRED.
+ *   buildRelationshipFormHTML and buildCharacterOptions used to
+ *   live here and duplicated the standalone Social tab's form.
+ *   That duplication was the source of a data-corruption bug:
+ *   the local form called SocialCore.createRelationship with
+ *   seven arguments while the core signature takes eight, so
+ *   the notes text was landing in clarification2.
+ *
+ *   The character-tab Social section now opens the SAME modal the
+ *   standalone tab opens, via SocialEvents.handleAddRelationship.
+ *   See character-events.js openRelationshipModal for the
+ *   delegation.
+ *
+ *   Do NOT reintroduce a relationship-form builder in this file.
+ *   One form, one code path, one set of bugs to fix.
  *
  * PROFESSIONAL TEAMS PANEL:
  *   renderCharacterProfessional(char) renders into
@@ -34,24 +49,16 @@
  *   DATA SOURCE:
  *     TeamQueries.getTeamsForCharacterAllTime(char.id, 'professional')
  *     returns every non-deprecated professional team the character
- *     has any member entry on, current or historical. That is the
- *     all-time read; the period-scoped getTeamsForCharacter is NOT
- *     used here because the form is not week-scoped and a character
- *     who was on a team in 1911 should still see it in 1918.
+ *     has any member entry on, current or historical.
  *
  *   ACTIVE / FORMER SPLIT:
  *     The current display year (window.data.currentYear) is the
  *     reference point. A member entry is active if any of its
  *     intervals contains that year, and former if no interval
  *     contains it and at least one leavePeriod is strictly before
- *     it. Both predicates come from TeamQueries.
+ *     it.
  *
- *     When window.data.currentYear is unavailable, the panel
- *     renders a single flat list under "Membership", because the
- *     split cannot be resolved without a reference year. It does
- *     NOT invent a year.
- *
- * DEPARTMENTS SUB-SECTION (this revision):
+ * DEPARTMENTS SUB-SECTION:
  *   renderProfessionalDepartmentsSection(char) appends a
  *   "Departments" block below the Professional Teams block on the
  *   same tab. It lists every department the character is an ACTIVE
@@ -61,34 +68,11 @@
  *       intervals that are still within range at the current year)
  *     - "(Head)" when they hold the head role
  *
- *   DATA SOURCE:
- *     DepartmentQueries.getDepartmentsForCharacter(char.id,
- *     currentYear). This is the year-scoped read: it returns only
- *     departments where the character is an active member at that
- *     year. Departments they have left, or that they will join in
- *     a future year, are not shown. That matches the form's
- *     convention of rendering the character "as they are now".
- *
- *   A department carries no per-member title field. The only
- *   role-like attribute is headId at the department level, and
- *   that is what "(Head)" reflects.
- *
- *   When DepartmentQueries is unavailable, or the character is in
- *   no departments, or no current year is resolvable, the section
- *   is not rendered at all. It never emits an empty-state line;
- *   absence is the empty state.
- *
  * GRAPH NODE COLORS:
- *   The character network graph renders into an SVG. SVG fill and
- *   stroke are set via presentation attributes, which accept CSS
- *   custom property references in modern browsers. The four node
- *   colors (accent fill/stroke, info fill/stroke) are read from
- *   tokens declared in css/shared.css, so they re-theme with the
- *   rest of the app. See --graph-node-* in shared.css.
- *
- *   Do NOT reintroduce hex literals here. If a new node color is
- *   needed, add a token to shared.css in both :root and
- *   [data-theme="light"] and reference it by name.
+ *   The character network graph renders into an SVG. Node colors
+ *   are read from --graph-node-* tokens declared in
+ *   css/shared.css, so they re-theme with the rest of the app.
+ *   Do NOT reintroduce hex literals here.
  */
 
 (function() {
@@ -338,13 +322,46 @@
 
     /**
      * Render a single relationship row.
+     *
+     * The row shows the OTHER character's name, a direction glyph
+     * relative to the CURRENT character (the viewer), and the
+     * clarification text.
+     *
+     * CLARIFICATION DISPLAY:
+     *   Uses the same two-sided shape as the standalone tab, but
+     *   oriented to this character. When the two clarifications
+     *   differ, the row shows the CURRENT character's role toward
+     *   the other side. That is the value the user cares about
+     *   when viewing from one side.
      */
     function renderRelationshipRow(charId, rel, color) {
         var otherId = getOtherCharacterId(rel, charId);
         var otherName = getCharacterName(otherId);
         var arrow = getDirectionGlyph(rel, charId);
 
-        var title = rel.clarification ? String(rel.clarification) : '';
+        // Pick the clarification text that describes THIS character's
+        // role toward the other side.
+        var clar1 = rel.clarification1 !== undefined && rel.clarification1 !== null
+            ? String(rel.clarification1) : '';
+        var clar2 = rel.clarification2 !== undefined && rel.clarification2 !== null
+            ? String(rel.clarification2) : '';
+        // Legacy fallback for old records that carry only `clarification`.
+        if (!clar1 && !clar2 && rel.clarification) {
+            clar1 = String(rel.clarification);
+        }
+
+        var viewerIsChar1 = String(rel.character1) === String(charId);
+        var viewerClar = viewerIsChar1 ? clar1 : clar2;
+        var otherClar = viewerIsChar1 ? clar2 : clar1;
+
+        var clarDisplay = '';
+        if (viewerClar && otherClar && viewerClar.toLowerCase() !== otherClar.toLowerCase()) {
+            clarDisplay = viewerClar + ' / ' + otherClar;
+        } else if (viewerClar) {
+            clarDisplay = viewerClar;
+        } else if (otherClar) {
+            clarDisplay = otherClar;
+        }
 
         // Period display
         var startYear = rel.startYear ? String(rel.startYear) : '';
@@ -361,12 +378,12 @@
         var html = '';
         html += '<div class="relationship-row" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
 
-        // Other character + arrow + title
+        // Other character + arrow + clarification
         html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
         html += '<span style="font-weight:600;">' + escapeHtml(otherName) + '</span>';
         html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + arrow + '</span>';
-        if (title) {
-            html += '<span style="color:' + escapeAttribute(color) + ';font-size:0.7rem;">' + escapeHtml(title) + '</span>';
+        if (clarDisplay) {
+            html += '<span style="color:' + escapeAttribute(color) + ';font-size:0.7rem;">' + escapeHtml(clarDisplay) + '</span>';
         }
         html += '</span>';
 
@@ -393,33 +410,6 @@
     /**
      * Render the character's professional team memberships into
      * #professional-view.
-     *
-     * Called from CharacterForm.render after the form HTML is
-     * written. The host element is rendered empty by
-     * getProfessionalTabHTML and filled here.
-     *
-     * SOURCE:
-     *   TeamQueries.getTeamsForCharacterAllTime(char.id, 'professional').
-     *   Every non-deprecated professional team the character has any
-     *   member entry on.
-     *
-     * SPLIT:
-     *   Active and Former, keyed off the current display year.
-     *   - Active:  isMemberActive(member, currentYear)
-     *   - Former:  isMemberFormer(member, currentYear)
-     *   When currentYear is unavailable, the panel renders a single
-     *   flat list without a split, because the split cannot be
-     *   resolved without a reference year.
-     *
-     * DEPARTMENTS SUB-SECTION:
-     *   Below the professional teams block, renderProfessionalDepartmentsSection
-     *   emits a "Departments" list. It renders on every exit path
-     *   (module-missing branch, no-teams branch, normal return) so a
-     *   character with no professional teams but with department
-     *   memberships still sees the departments block.
-     *
-     * @param {object|null} char - Character object, or null for the
-     *                             empty state
      */
     function renderCharacterProfessional(char) {
         var container = document.getElementById('professional-view');
@@ -528,9 +518,6 @@
                 } else if (isFormer) {
                     formerRows.push(row);
                 }
-                // Neither: the member entry has only future stints,
-                // or no intervals at all. Excluded from both lists,
-                // matching the "neither active nor former" contract.
             } else {
                 activeRows.push(row);
             }
@@ -576,10 +563,6 @@
         html += '</div>';
 
         // ---- Departments sub-section ----
-        //
-        // Rendered as a sibling of .character-professional-teams.
-        // See renderProfessionalDepartmentsSection for shape and
-        // data source.
         html += renderProfessionalDepartmentsSection(char);
 
         container.innerHTML = html;
@@ -588,21 +571,6 @@
     // ============================================================
     // RENDER - Professional tab, departments sub-section
     // ============================================================
-    //
-    // Lists every department the character is an ACTIVE member of
-    // at the current application year, with:
-    //   - the department name
-    //   - the year they joined (earliest join period across the
-    //     intervals that are still within range at the current year)
-    //   - "(Head)" when they hold the head role
-    //
-    // A department carries no per-member title. The only role-like
-    // attribute is headId on the department itself, and that is
-    // what "(Head)" reflects.
-    //
-    // When the section would be empty for any reason, this returns
-    // an empty string. It never emits an empty-state placeholder;
-    // absence is the empty state.
 
     function renderProfessionalDepartmentsSection(char) {
         var DQ = getDepartmentQueries();
@@ -792,14 +760,6 @@
         return a.sortKey.localeCompare(b.sortKey);
     }
 
-    /**
-     * Build a flat period display for a member entry across all its
-     * intervals.
-     *
-     * Single interval: "1910 – 1915" / "From 1910" / "Until 1915"
-     * Multiple intervals: joined with "; "
-     * No intervals: empty string
-     */
     function buildMemberPeriodDisplay(member) {
         if (!member || !Array.isArray(member.intervals) ||
             member.intervals.length === 0) {
@@ -832,153 +792,6 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
-    }
-
-    // ============================================================
-    // RELATIONSHIP FORM (Modal contents)
-    // ============================================================
-
-    /**
-     * Build the relationship form HTML.
-     *
-     * @param {string} charId - The current character id (locked as one side)
-     * @param {object|null} existingRel - Existing relationship for edit mode
-     * @returns {string} Form HTML
-     */
-    function buildRelationshipFormHTML(charId, existingRel) {
-        var CharacterQueries = getCharacterQueries();
-        var SocialConstants = getSocialConstants();
-
-        if (!CharacterQueries || !SocialConstants) {
-            return '<p class="empty-state">Dependencies not loaded.</p>';
-        }
-
-        var characters = CharacterQueries.getCharacters() || [];
-        var currentChar = CharacterQueries.getCharacterById(charId);
-        var currentCharName = currentChar ? CharacterQueries.getDisplayName(currentChar) : 'Unknown';
-
-        // Sort characters alphabetically
-        var sortedChars = characters.slice().sort(function(a, b) {
-            return CharacterQueries.getDisplayName(a).localeCompare(
-                CharacterQueries.getDisplayName(b)
-            );
-        });
-
-        // Determine current values
-        var char1Value = existingRel ? String(existingRel.character1) : String(charId);
-        var char2Value = existingRel ? String(existingRel.character2) : '';
-        var typeValue = existingRel ? existingRel.typeId : '';
-        var titleValue = existingRel ? (existingRel.clarification || '') : '';
-        var startValue = existingRel ? (existingRel.startYear || '') : '';
-        var endValue = existingRel ? (existingRel.endYear || '') : '';
-        var notesValue = existingRel ? (existingRel.notes || '') : '';
-
-        // Build character option lists
-        var char1Options = buildCharacterOptions(sortedChars, char1Value, currentCharName, false);
-        var char2Options = buildCharacterOptions(sortedChars, char2Value, null, true);
-
-        // Build type options
-        var types = SocialConstants.getRelationshipTypes ? SocialConstants.getRelationshipTypes() : [];
-        var typeOptions = '<option value="">Select type...</option>';
-        types.forEach(function(t) {
-            var sel = t.id === typeValue ? ' selected' : '';
-            var dirIndicator = t.directional ? ' (→)' : '';
-            typeOptions += '<option value="' + escapeAttribute(t.id) + '"' + sel + '>' + escapeHtml(t.label + dirIndicator) + '</option>';
-        });
-
-        // Build the form
-        var html = '';
-        html += '<form id="character-relationship-form">';
-
-        // Character 1 (search + select)
-        html += '<div class="form-group" style="margin-bottom:8px;">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Character 1 *</label>';
-        html += '<input type="text" id="rel-char1-search" placeholder="Type to filter..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;margin-bottom:4px;">';
-        html += '<select id="rel-char1" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += char1Options;
-        html += '</select>';
-        html += '</div>';
-
-        // Character 2 (search + select)
-        html += '<div class="form-group" style="margin-bottom:8px;">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Character 2 *</label>';
-        html += '<input type="text" id="rel-char2-search" placeholder="Type to filter..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;margin-bottom:4px;">';
-        html += '<select id="rel-char2" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += char2Options;
-        html += '</select>';
-        html += '</div>';
-
-        // Type
-        html += '<div class="form-group" style="margin-bottom:8px;">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Relationship Type *</label>';
-        html += '<select id="rel-type" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += typeOptions;
-        html += '</select>';
-        html += '</div>';
-
-        // Title
-        html += '<div class="form-group" style="margin-bottom:8px;">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Title</label>';
-        html += '<input type="text" id="rel-title" placeholder="e.g., mother, best friend, boss" value="' + escapeAttribute(titleValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += '</div>';
-
-        // Years (start / end)
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">';
-        html += '<div class="form-group">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Start Year</label>';
-        html += '<input type="number" id="rel-start-year" placeholder="e.g., 1900" value="' + escapeAttribute(startValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += '</div>';
-        html += '<div class="form-group">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">End Year (optional)</label>';
-        html += '<input type="number" id="rel-end-year" placeholder="Leave empty if ongoing" value="' + escapeAttribute(endValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
-        html += '</div>';
-        html += '</div>';
-
-        // Notes
-        html += '<div class="form-group" style="margin-bottom:12px;">';
-        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Notes</label>';
-        html += '<textarea id="rel-notes" rows="3" placeholder="Additional context..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;resize:vertical;">' + escapeHtml(notesValue) + '</textarea>';
-        html += '</div>';
-
-        // Actions
-        html += '<div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;">';
-        html += '<button type="button" id="cancel-char-relationship-modal" class="secondary" style="font-size:0.7rem;padding:4px 12px;">Cancel</button>';
-        html += '<button type="submit" class="primary" style="font-size:0.7rem;padding:4px 12px;">Save</button>';
-        html += '</div>';
-
-        html += '</form>';
-
-        return html;
-    }
-
-    /**
-     * Build the <option> list for a character select.
-     */
-    function buildCharacterOptions(sortedChars, selectedId, lockedName, includeEmpty) {
-        var html = '';
-        if (includeEmpty) {
-            html += '<option value="">Select character...</option>';
-        }
-
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries) { return html; }
-
-        var foundSelected = false;
-        sortedChars.forEach(function(c) {
-            if (!c || !c.id) { return; }
-            var name = CharacterQueries.getDisplayName(c);
-            var isSelected = String(c.id) === String(selectedId);
-            if (isSelected) { foundSelected = true; }
-            html += '<option value="' + escapeAttribute(c.id) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
-        });
-
-        // If a locked name was requested but no match (e.g. self not in list), add manually
-        if (!foundSelected && selectedId) {
-            var name = lockedName || 'Unknown';
-            html += '<option value="' + escapeAttribute(selectedId) + '" selected>' + escapeHtml(name) + '</option>';
-        }
-
-        return html;
     }
 
     // ============================================================
@@ -1015,14 +828,11 @@
 
     /**
      * Render the character's network graph.
-     * Delegates to SocialGraph if it supports a char-scoped render.
-     * Otherwise renders an inline scoped graph here.
      *
      * NODE COLORS:
      *   Node fill and stroke are read from the --graph-node-* tokens
      *   declared in css/shared.css. Those tokens have dark and light
-     *   variants. Do NOT inline hex literals here; add a token to
-     *   shared.css and reference it.
+     *   variants. Do NOT inline hex literals here.
      */
     function renderCharacterGraph(charId) {
         var svg = document.getElementById('character-graph-svg');
@@ -1070,7 +880,6 @@
         var centerX = width / 2;
         var centerY = height / 2;
 
-        // Context char is at center; other nodes on circle
         var others = nodeIds.filter(function(id) { return id !== String(charId); });
         var radius = Math.min(width, height) * 0.35;
 
@@ -1141,10 +950,7 @@
                 ? Math.max(28, Math.min(40, 28 + connCount * 2))
                 : Math.max(20, Math.min(32, 20 + connCount * 2));
 
-            // Node colors come from theme tokens. Dark and light
-            // variants are declared in css/shared.css under
-            // --graph-node-accent-fill, --graph-node-accent-stroke,
-            // --graph-node-info-fill, --graph-node-info-stroke.
+            // Node colors come from theme tokens.
             var fill = isCenter
                 ? 'var(--graph-node-accent-fill)'
                 : 'var(--graph-node-info-fill)';
@@ -1219,11 +1025,8 @@
         // Professional tab
         renderCharacterProfessional: renderCharacterProfessional,
 
-        // Modal contents
-        buildRelationshipFormHTML: buildRelationshipFormHTML,
+        // Graph modal
         buildGraphModalHTML: buildGraphModalHTML,
-
-        // Graph
         renderCharacterGraph: renderCharacterGraph,
 
         // Utilities (exposed for testing)
@@ -1231,6 +1034,5 @@
             _collapsedGroups = Object.create(null);
         }
     };
-
 
 })();
