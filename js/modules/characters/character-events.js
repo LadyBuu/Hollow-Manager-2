@@ -17,6 +17,30 @@
  *   - Domain logic. All mutations route through CharacterCRUD.
  *   - Rendering. All HTML comes from CharacterForm / CharacterViews /
  *     CharacterClassView / CharacterList.
+ *   - The relationship form. The character-tab Social section now
+ *     opens the SAME modal the standalone Social tab opens, via
+ *     SocialEvents.handleAddRelationship. See the RELATIONSHIP
+ *     MODAL OWNERSHIP note below.
+ *
+ * RELATIONSHIP MODAL OWNERSHIP (this revision):
+ *   The character-tab relationship form used to live here and in
+ *   character-views.buildRelationshipFormHTML. Both have been
+ *   retired. That duplication caused a data-corruption bug: the
+ *   local form called SocialCore.createRelationship with seven
+ *   arguments while the core signature takes eight, so notes were
+ *   landing in clarification2.
+ *
+ *   openRelationshipModal(relId) now delegates to
+ *   SocialEvents.handleAddRelationship(relId). That function
+ *   installs the shared modal shell into document.body on first
+ *   use (via ensureRelationshipModalShell), populates it, and
+ *   shows it.
+ *
+ *   When creating a new relationship FROM THE CHARACTER TAB, the
+ *   current character is pre-selected on side 1 after the modal
+ *   opens. When editing, the modal is populated from the record.
+ *
+ *   Do NOT reintroduce a local relationship form in this file.
  *
  * MODAL LIFECYCLE:
  *   Reusable modals (relationship, graph) use Modal.hideModal, not
@@ -29,35 +53,16 @@
  * SELECTION:
  *   The row checkbox toggles a character in and out of the
  *   CharacterList selection set. The row body click (outside the
- *   checkbox cell) selects the character for editing. The two
- *   never collide: the checkbox cell is excluded from the row
- *   click handler.
+ *   checkbox cell) selects the character for editing.
  *
  * SIDEBAR DRAWER:
  *   On mobile, the character sidebar (.characters-sidebar) is a
  *   fixed overlay. The toggle button adds/removes the `open`
- *   class. Tapping outside the sidebar or selecting a character
- *   closes it. On desktop the sidebar is always visible.
- *
- *   The toggle is intentionally ungated by viewport width. On
- *   desktop the `open` class is a no-op because the sidebar is
- *   always on-screen; on mobile it slides the drawer in. Gating
- *   the toggle on isMobile() meant the burger did nothing when
- *   UI_CONSTANTS was absent, or when a desktop-width viewport was
- *   rendered against mobile CSS. The CSS media query remains the
- *   authority on visibility.
+ *   class.
  *
  * CAREER TRANSITION MODAL:
  *   Element created once per open, appended to document.body,
- *   destroyed on close. Reuses the .csw-* CSS classes from the
- *   CareerStatusWizard. No persistent shell.
- *
- *   The modal is split into a STATIC FORM REGION (header, status
- *   radios, year input) and a PREVIEW REGION (the "N stints will
- *   be ended" box). Only the preview region is re-rendered when
- *   the year or status changes. The year input element is never
- *   replaced while the modal is open, so focus and caret position
- *   survive keystrokes on both desktop and mobile.
+ *   destroyed on close. Reuses the .csw-* CSS classes.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterAggregator
@@ -79,8 +84,7 @@
  *
  * DEPENDENCIES (MANDATORY AT CALL TIME, WARN-ONLY AT BOOT):
  *   - window.UI_CONSTANTS.MOBILE_BREAKPOINT
- *     Used by isMobile() to decide when the sidebar behaves as a
- *     drawer. Falls back to 768 when absent.
+ *   - window.SocialEvents (for relationship modal delegation)
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.CharacterList (selection API)
@@ -130,7 +134,6 @@
     var _initialized = false;
     var _eventListeners = [];
     var _filterDebounceTimer = null;
-    var _socialEditId = null;
     var _socialCoreInitialized = false;
     var _characterEditListenerInstalled = false;
     var _saveInFlight = false;
@@ -155,6 +158,8 @@
     function getCareerStatusWizard() { return window.CareerStatusWizard || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getCharacterList() { return window.CharacterList || null; }
+    function getSocialEvents() { return window.SocialEvents || null; }
+    function getSocialQueries() { return window.SocialQueries || null; }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -198,15 +203,25 @@
         });
 
         // UI_CONSTANTS.MOBILE_BREAKPOINT is used by isMobile() to
-        // decide when the sidebar behaves as a drawer. When it is
-        // absent, isMobile() falls back to 768px. This is a warning,
-        // not a boot-time failure: a missing constants module
-        // should not disable the entire events layer.
+        // decide when the sidebar behaves as a drawer.
         if (!UI_CONSTANTS ||
             typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
             console.warn(
                 '[CharacterEvents] UI_CONSTANTS.MOBILE_BREAKPOINT ' +
                 'is missing; falling back to 768px.'
+            );
+        }
+
+        // SocialEvents is used for the relationship modal. It may
+        // not be loaded yet at boot (script order), so this is a
+        // warn-only check. The delegation site re-checks at click
+        // time.
+        if (!window.SocialEvents ||
+            typeof window.SocialEvents.handleAddRelationship !== 'function') {
+            console.warn(
+                '[CharacterEvents] SocialEvents not loaded — ' +
+                'Add Relationship from the character tab will fail ' +
+                'until the social module is available.'
             );
         }
 
@@ -223,11 +238,6 @@
     // ============================================================
     // SIDEBAR DRAWER HELPERS
     // ============================================================
-    //
-    // On mobile the character sidebar is a fixed overlay. The
-    // `open` class slides it in. On desktop the sidebar is always
-    // visible and the `open` class is a no-op. The CSS media query
-    // remains the authority on which of the two layouts applies.
 
     function getSidebar() {
         var container = document.getElementById('tab-characters');
@@ -258,8 +268,7 @@
     // The toggle is intentionally ungated by viewport width.
     // On desktop the sidebar is always visible and toggling the
     // `open` class is harmless. On mobile the class is what
-    // slides the drawer in. Gating here on isMobile() meant the
-    // burger did nothing when UI_CONSTANTS was absent.
+    // slides the drawer in.
     function toggleSidebar() {
         var sidebar = getSidebar();
         if (!sidebar) { return; }
@@ -1152,11 +1161,6 @@
     // ============================================================
     // LIST-LEVEL EXPORT BUTTON
     // ============================================================
-    //
-    // Bound to the icon-only Export button in the character page
-    // header. Delegates to CharacterExportPicker, passing the
-    // current selection set from CharacterList when one exists.
-    // The picker decides scope from what it receives.
 
     function bindListExportButton() {
         addSafeDelegatedListener(
@@ -1207,14 +1211,6 @@
     // ============================================================
     // SELECTION: CHECKBOX + CLEAR
     // ============================================================
-    //
-    // The row checkbox toggles a character in/out of the selection
-    // set owned by CharacterList. The row body click (outside the
-    // checkbox cell) selects the character for editing.
-    //
-    // The checkbox change handler must not also trigger the row
-    // click handler. The row click handler guards against clicks
-    // that originated inside .char-list-checkbox-cell.
 
     function bindListSelection() {
         addSafeDelegatedListener(
@@ -1503,7 +1499,6 @@
         removeAllEventListeners();
         closeSidebar();
         _initialized = false;
-        _socialEditId = null;
         _saveInFlight = false;
         _careerStatusCollapsed = null;
     }
@@ -2768,6 +2763,19 @@
     // ============================================================
     // SOCIAL TAB
     // ============================================================
+    //
+    // The character tab's Social section is now a thin shell around
+    // the shared relationship modal. All form handling, validation,
+    // and rendering live in the standalone social module. This
+    // section only:
+    //
+    //   - opens the shared modal (openRelationshipModal)
+    //   - pre-selects the current character on side 1 when creating
+    //   - delegates delete to SocialCore
+    //   - re-renders the character's Social section after any change
+    //
+    // It does NOT build a form. It does NOT save a relationship.
+    // See the RELATIONSHIP MODAL OWNERSHIP note in the file header.
 
     function bindSocialButtons() {
         addSafeDelegatedListener(
@@ -2834,59 +2842,6 @@
         );
 
         addSafeDelegatedListener(
-            '#rel-char1-search',
-            'input',
-            function(e, target) {
-                filterCharacterOptions('rel-char1', target.value);
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#rel-char2-search',
-            'input',
-            function(e, target) {
-                filterCharacterOptions('rel-char2', target.value);
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#character-relationship-form',
-            'submit',
-            function(e) {
-                e.preventDefault();
-                handleSaveRelationship();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#close-char-relationship-modal',
-            'click',
-            function(e) {
-                e.preventDefault();
-                closeRelationshipModal();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#cancel-char-relationship-modal',
-            'click',
-            function(e) {
-                e.preventDefault();
-                closeRelationshipModal();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '#character-relationship-modal',
-            'click',
-            function(e, target) {
-                if (e.target === target) {
-                    closeRelationshipModal();
-                }
-            }
-        );
-
-        addSafeDelegatedListener(
             '#close-char-graph-modal',
             'click',
             function(e) {
@@ -2906,6 +2861,26 @@
         );
     }
 
+    /**
+     * Open the shared relationship modal.
+     *
+     * DELEGATION CONTRACT:
+     *   This function does not build a form. It calls
+     *   SocialEvents.handleAddRelationship(relId), which installs
+     *   the shared modal shell into document.body on first use,
+     *   populates it, and shows it.
+     *
+     *   When creating a new relationship from the character tab,
+     *   the current character is pre-selected on side 1 AFTER the
+     *   modal opens. The event handlers that clear clarification
+     *   fields on character change are suppressed during this
+     *   pre-selection via a population-guard mechanism inside
+     *   SocialEvents, so pre-selecting does not wipe anything the
+     *   user typed.
+     *
+     *   When editing, the modal is populated from the record; no
+     *   pre-selection is needed.
+     */
     function openRelationshipModal(relId) {
         var charId = typeof window.getCurrentEditId === 'function'
             ? window.getCurrentEditId() : null;
@@ -2916,218 +2891,61 @@
 
         ensureSocialCoreInitialized();
 
-        var SocialCore = window.SocialCore;
-        var SocialQueries = window.SocialQueries;
-        var SocialConstants = window.SocialConstants;
-
-        if (!SocialCore || !SocialQueries || !SocialConstants) {
+        var SE = getSocialEvents();
+        if (!SE ||
+            typeof SE.handleAddRelationship !== 'function') {
             notify('Social module not available.', 'error');
             return;
         }
 
-        var formContainer = document.getElementById(
-            'character-relationship-form-container'
-        );
-        if (!formContainer) {
-            notify('Relationship form container not found.', 'error');
-            return;
-        }
-
-        var CharacterViews = window.CharacterViews;
-        if (!CharacterViews ||
-            typeof CharacterViews.buildRelationshipFormHTML !==
-            'function') {
-            notify('Character views module not available.', 'error');
-            return;
-        }
-
-        _socialEditId = relId || null;
-
-        var existingRel = null;
-        if (_socialEditId) {
-            existingRel = SocialQueries.getRelationshipById(
-                _socialEditId
+        // Open the shared modal. relId is null for create, an id
+        // for edit. SocialEvents owns the population guard and the
+        // modal lifecycle from here on.
+        try {
+            SE.handleAddRelationship(relId || null);
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] handleAddRelationship threw:', err
             );
-            if (!existingRel) {
-                notify('Relationship not found.', 'error');
-                _socialEditId = null;
-                return;
-            }
-        }
-
-        formContainer.innerHTML =
-            CharacterViews.buildRelationshipFormHTML(
-                charId, existingRel
-            );
-
-        var titleEl = document.getElementById(
-            'character-relationship-modal-title'
-        );
-        if (titleEl) {
-            titleEl.textContent = _socialEditId
-                ? 'Edit Relationship' : 'Add Relationship';
-        }
-
-        var modal = document.getElementById(
-            'character-relationship-modal'
-        );
-        if (modal &&
-            Modal &&
-            typeof Modal.showModal === 'function') {
-            Modal.showModal(modal);
-        } else if (modal) {
-            modal.classList.remove('hidden');
-            modal.style.display = 'flex';
-        }
-    }
-
-    function closeRelationshipModal() {
-        _socialEditId = null;
-        var modal = document.getElementById(
-            'character-relationship-modal'
-        );
-        if (!modal) { return; }
-
-        if (Modal && typeof Modal.hideModal === 'function') {
-            Modal.hideModal(modal);
-        } else {
-            modal.classList.add('hidden');
-            modal.style.display = 'none';
-        }
-    }
-
-    function filterCharacterOptions(selectId, query) {
-        var select = document.getElementById(selectId);
-        if (!select) { return; }
-
-        var term = String(query || '').toLowerCase().trim();
-        var options = select.querySelectorAll('option');
-        var firstVisible = null;
-
-        options.forEach(function(opt) {
-            var matches = !term ||
-                opt.textContent.toLowerCase().indexOf(term) !== -1;
-            opt.style.display = matches ? '' : 'none';
-            opt.hidden = !matches;
-            if (matches && !firstVisible) {
-                firstVisible = opt;
-            }
-        });
-
-        if (select.selectedOptions &&
-            select.selectedOptions.length > 0) {
-            var selected = select.selectedOptions[0];
-            if (selected.style.display === 'none') {
-                if (firstVisible) {
-                    firstVisible.selected = true;
-                } else {
-                    select.value = '';
-                }
-            }
-        }
-    }
-
-    function handleSaveRelationship() {
-        var charId = typeof window.getCurrentEditId === 'function'
-            ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        ensureSocialCoreInitialized();
-
-        var char1El = document.getElementById('rel-char1');
-        var char2El = document.getElementById('rel-char2');
-        var typeEl = document.getElementById('rel-type');
-        var titleEl = document.getElementById('rel-title');
-        var startEl = document.getElementById('rel-start-year');
-        var endEl = document.getElementById('rel-end-year');
-        var notesEl = document.getElementById('rel-notes');
-
-        var char1 = char1El
-            ? String(char1El.value || '').trim() : '';
-        var char2 = char2El
-            ? String(char2El.value || '').trim() : '';
-        var typeId = typeEl
-            ? String(typeEl.value || '').trim() : '';
-        var title = titleEl
-            ? String(titleEl.value || '').trim() : '';
-        var startYear = startEl
-            ? String(startEl.value || '').trim() : '';
-        var endYear = endEl
-            ? String(endEl.value || '').trim() : '';
-        var notes = notesEl
-            ? String(notesEl.value || '').trim() : '';
-
-        if (!char1 || !char2 || !typeId) {
             notify(
-                'Please fill in Character 1, Character 2, and Type.',
+                'Failed to open relationship form: ' + err.message,
                 'error'
             );
             return;
         }
 
-        if (char1 === char2) {
-            notify(
-                'Cannot create a relationship between the same ' +
-                'character.', 'error'
-            );
-            return;
+        // Pre-select the current character on side 1 for CREATE.
+        // On EDIT the modal is already populated from the record.
+        if (!relId) {
+            var c1 = document.getElementById('rel-char1');
+            if (c1) {
+                c1.value = String(charId);
+            }
+            if (window.SocialViews &&
+                typeof window.SocialViews.refreshClarificationLabels ===
+                'function') {
+                window.SocialViews.refreshClarificationLabels();
+            }
+            if (window.SocialViews &&
+                typeof window.SocialViews.refreshRelationshipAgePreview ===
+                'function') {
+                window.SocialViews.refreshRelationshipAgePreview();
+            }
         }
-
-        var SocialCore = window.SocialCore;
-        if (!SocialCore) {
-            notify('Social module not available.', 'error');
-            return;
-        }
-
-        var promise;
-
-        if (_socialEditId) {
-            promise = SocialCore.updateRelationship(_socialEditId, {
-                character1: char1,
-                character2: char2,
-                typeId: typeId,
-                clarification: title,
-                startYear: startYear,
-                endYear: endYear,
-                notes: notes
-            });
-        } else {
-            promise = SocialCore.createRelationship(
-                char1, char2, typeId,
-                startYear, endYear,
-                title, notes
-            );
-        }
-
-        promise
-            .then(function(result) {
-                if (result && result.success) {
-                    closeRelationshipModal();
-                    var char =
-                        CharacterQueries.getCharacterById(charId);
-                    var CharacterViews = window.CharacterViews;
-                    if (char &&
-                        CharacterViews &&
-                        typeof CharacterViews.renderCharacterSocial ===
-                        'function') {
-                        CharacterViews.renderCharacterSocial(char);
-                    }
-                } else if (result && result.message) {
-                    notify(result.message, 'error');
-                }
-            })
-            .catch(function() {
-                notify('Failed to save relationship.', 'error');
-            });
     }
 
+    /**
+     * Delete a relationship from the character-tab Social section.
+     *
+     * Delegates the mutation to SocialCore. Refreshes the character
+     * form's Social section afterward, and notifies the standalone
+     * tab's view layer so its list stays in sync.
+     */
     function handleDeleteRelationship(relId) {
         if (!relId) { return; }
+
         var SocialCore = window.SocialCore;
-        var SocialQueries = window.SocialQueries;
+        var SocialQueries = getSocialQueries();
         if (!SocialCore || !SocialQueries) {
             notify('Social module not available.', 'error');
             return;
@@ -3174,28 +2992,55 @@
         SocialCore.deleteRelationship(relId)
             .then(function(result) {
                 if (result && result.success) {
-                    var charId =
-                        typeof window.getCurrentEditId === 'function'
-                            ? window.getCurrentEditId() : null;
-                    if (charId) {
-                        var char =
-                            CharacterQueries.getCharacterById(charId);
-                        var CharacterViews = window.CharacterViews;
-                        if (char &&
-                            CharacterViews &&
-                            typeof CharacterViews
-                                .renderCharacterSocial ===
-                                'function') {
-                            CharacterViews.renderCharacterSocial(
-                                char
-                            );
-                        }
+                    refreshCharacterSocialSection();
+
+                    // Ask the standalone tab to refresh its own
+                    // list/graph, if it happens to be mounted.
+                    var SE = getSocialEvents();
+                    if (SE && typeof SE.refreshUI === 'function') {
+                        try { SE.refreshUI(); } catch (e) {}
                     }
+                } else {
+                    notify(
+                        (result && result.message) ||
+                        'Failed to delete relationship.',
+                        'error'
+                    );
                 }
             })
-            .catch(function() {
+            .catch(function(err) {
+                console.warn(
+                    '[CharacterEvents] delete relationship threw:', err
+                );
                 notify('Failed to delete relationship.', 'error');
             });
+    }
+
+    /**
+     * Re-render the character form's Social section.
+     *
+     * Called after any relationship add, edit, or delete that
+     * originated in the character tab. The standalone tab, if
+     * mounted, refreshes itself independently.
+     */
+    function refreshCharacterSocialSection() {
+        var charId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId() : null;
+        if (!charId) { return; }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) { return; }
+
+        if (CharacterViews &&
+            typeof CharacterViews.renderCharacterSocial === 'function') {
+            try {
+                CharacterViews.renderCharacterSocial(char);
+            } catch (e) {
+                console.warn(
+                    '[CharacterEvents] renderCharacterSocial failed:', e
+                );
+            }
+        }
     }
 
     function openCharacterGraphModal() {
@@ -3213,7 +3058,6 @@
             return;
         }
 
-        var CharacterViews = window.CharacterViews;
         if (!CharacterViews ||
             typeof CharacterViews.buildGraphModalHTML !==
             'function') {
