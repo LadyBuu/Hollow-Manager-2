@@ -12,8 +12,8 @@
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
  *
- * SHARED RELATIONSHIP MODAL (this revision):
- *   The relationship form is now a single modal, lazily installed
+ * SHARED RELATIONSHIP MODAL:
+ *   The relationship form is a single modal, lazily installed
  *   into document.body by ensureRelationshipModalShell(). Both
  *   entry points use it:
  *
@@ -21,61 +21,52 @@
  *     - The character form Social   (via #add-char-relationship-btn,
  *                                    which delegates here)
  *
- *   The old character-tab form
- *   (character-views.buildRelationshipFormHTML) has been retired.
- *   Do not reintroduce it. One form, one code path, one set of
- *   bugs to fix.
- *
- *   ensureRelationshipModalShell() is idempotent: it returns true
- *   immediately if #relationship-form-modal is already in the
- *   document. It installs the shell, then rebinds the form's own
- *   handlers, so opening the modal from the character tab works
- *   even if the standalone tab was never mounted.
- *
  * MODAL LIFECYCLE:
  *   Every modal in this file uses Modal.hideModal for teardown,
- *   not Modal.closeModal. closeModal DESTROYS the modal element;
- *   the shells are rendered once and are never re-mounted, so a
- *   destroyed shell means the next open fails.
- *
- *   Do not reintroduce Modal.closeModal anywhere in this file.
+ *   not Modal.closeModal.
  *
  * EDIT STATE:
  *   _editId is set only inside handleAddRelationship and cleared
- *   inside handleCloseRelationshipForm. It is cleared FIRST, at the
- *   top of handleAddRelationship, before any early-return path, so
- *   a previous failed edit cannot leak into the next one.
+ *   inside handleCloseRelationshipForm. The modal carries the
+ *   edit id on its dataset.editId attribute so the overlap
+ *   detector can exclude the record being edited.
  *
  * CLARIFICATIONS (two-sided):
  *   The form carries #rel-clarification-1 and
- *   #rel-clarification-2. The labels are refreshed on open and
- *   whenever either character select changes.
- *
- *   When a character select changes, the CORRESPONDING clarification
- *   field is cleared. The field's semantic is "the role of the
- *   character currently selected in slot N".
+ *   #rel-clarification-2. The labels refresh on open and whenever
+ *   either character select changes. When a character select
+ *   changes, the CORRESPONDING clarification field is cleared.
  *
  * SWAP BUTTON:
- *   For directional types (mentor), the relationship form carries a
- *   swap button (#rel-swap-btn) next to character 2.
+ *   For directional types, the form carries #rel-swap-btn.
  *
- * AGE PREVIEW (new):
+ * AGE PREVIEW:
  *   refreshRelationshipAgePreview() is called:
- *     - once on modal open, after the form is populated
+ *     - once on modal open
  *     - on every character-select change
  *     - on every start-year / end-year input
- *   It renders ages at start, end, and today.
+ *     - on swap
+ *
+ * ROMANTIC OVERLAP WARNING (this revision):
+ *   refreshRomanticOverlapWarning() is called on the same
+ *   triggers as the age preview. It reads the live form (pair,
+ *   type, years, edit id) and renders an amber banner in
+ *   #rel-overlap-warning listing any overlapping relationships
+ *   of the same exclusive type.
+ *
+ *   The warning is informational. The save is NOT blocked. On
+ *   successful save, if the mutation result carries an
+ *   `overlaps` array, a follow-up warning notification is shown
+ *   so the user notices even if they did not read the banner.
  *
  * ELIMINATED CHARACTERS:
  *   The relationship modal carries #rel-include-eliminated. When
- *   unchecked (the default), the character selects hide characters
- *   with any elimination on record. On EDIT mode, the current value
- *   on each side is always preserved.
+ *   unchecked (the default), the character selects hide
+ *   characters with any elimination on record. On EDIT mode, the
+ *   current value on each side is always preserved.
  *
  * GRAPH DRILL-DOWN:
- *   The graph is FOCUSED. One character is centered; its direct
- *   connections sit on a ring around it. See the graph module for
- *   the focus API.
+ *   The graph is FOCUSED. See the graph module for the focus API.
  *
  * DEPENDENCIES:
  *   - window.SocialCore
@@ -83,7 +74,7 @@
  *   - window.SocialQueries
  *   - window.SocialAggregator
  *   - window.SocialGraph
- *   - window.CharacterQueries (for breadcrumb name resolution)
+ *   - window.CharacterQueries
  *   - window.Modal
  *   - window.NotificationSystem
  */
@@ -180,13 +171,6 @@
         NotificationSystem.notify(message, type);
     }
 
-    /**
-     * Hide a modal safely.
-     *
-     * Every teardown in this file funnels through here. Uses
-     * hideModal, not closeModal — see the MODAL LIFECYCLE note in
-     * the file header.
-     */
     function hideModal(modal) {
         if (!modal) { return; }
         try {
@@ -204,17 +188,11 @@
     var _eventListeners = [];
     var _editId = null;
 
-    // Populating guard. Set true while populateFormSelectors and the
-    // initial value assignments run, so a future refactor that
-    // triggers a programmatic `change` event cannot be mistaken for
-    // a user edit.
     var _populatingRelationshipForm = false;
 
     // Tracks whether the relationship form's internal handlers
-    // have been bound. The modal can be installed lazily (when the
-    // character tab needs it and the standalone tab was never
-    // mounted), in which case bindRelationshipForm must run once
-    // after install. Subsequent calls are no-ops.
+    // have been bound. The modal can be installed lazily, in which
+    // case bindRelationshipForm must run once after install.
     var _relationshipFormBound = false;
 
     // ============================================================
@@ -263,27 +241,7 @@
     // ============================================================
     // SHARED RELATIONSHIP MODAL SHELL
     // ============================================================
-    //
-    // The relationship modal is a single shell, rendered once, and
-    // shared by the standalone Social tab and the character form's
-    // Social section.
-    //
-    // It lives in whichever container rendered it first:
-    //   - the standalone tab renders it inline via getSocialHTML()
-    //   - this function installs it into document.body if the
-    //     standalone tab has never been mounted
-    //
-    // Either way, #relationship-form-modal exists exactly once.
-    // ensureRelationshipModalShell() is the entry point that
-    // guarantees it.
 
-    /**
-     * Ensure #relationship-form-modal exists in the document.
-     * Returns true when the shell is present (whether it was
-     * already there or was just installed), false on failure.
-     *
-     * Idempotent. Safe to call before every modal open.
-     */
     function ensureRelationshipModalShell() {
         if (document.getElementById('relationship-form-modal')) {
             return true;
@@ -301,11 +259,6 @@
 
         document.body.appendChild(node);
 
-        // The shell was just installed, so its internal handlers
-        // (close, cancel, submit, outside-click, character-change,
-        // type-change, include-eliminated) are not yet bound.
-        // Bind them now. Idempotence is handled inside
-        // bindRelationshipForm via _relationshipFormBound.
         bindRelationshipForm();
 
         return true;
@@ -331,7 +284,6 @@
             return;
         }
 
-        // Wipe state a previous init may have left behind.
         _editId = null;
         _populatingRelationshipForm = false;
         _relationshipFormBound = false;
@@ -352,7 +304,6 @@
         bindSuggestPairs();
         bindCreateChild();
 
-        // Graph drill-down (focus stack, breadcrumb, back button).
         bindGraphDrilldown();
 
         _initialized = true;
@@ -382,31 +333,12 @@
     /**
      * Open the relationship modal.
      *
-     * _editId is cleared first, unconditionally, before any early
-     * return. This prevents a failed previous edit from leaking its
-     * state into a subsequent open.
+     * _editId is cleared first, unconditionally. The modal carries
+     * it on dataset.editId so the overlap detector can exclude
+     * the record being edited.
      *
-     * When editing, the two current character ids are read off the
-     * existing relationship and passed to populateFormSelectors as
-     * preserve1 / preserve2, so a filtered-out (eliminated) value on
-     * either side survives the initial population.
-     *
-     * POPULATION GUARD:
-     *   _populatingRelationshipForm is set true at the top of the
-     *   body and false at the end, around the populate + initial
-     *   value assignments.
-     *
-     * SWAP BUTTON VISIBILITY:
-     *   updateSwapButtonVisibility() is called at the end, after the
-     *   type select has been set.
-     *
-     * AGE PREVIEW:
-     *   refreshRelationshipAgePreview() is called at the end, so the
-     *   preview reflects the freshly-populated form.
-     *
-     * PUBLIC. Can be called from any module that wants to open the
-     * shared relationship modal. The character tab's Social section
-     * uses this entry point directly.
+     * On open, and whenever the pair, type, or either year changes,
+     * the age preview AND the overlap warning are refreshed.
      */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
@@ -427,13 +359,20 @@
             return;
         }
 
-        // Look up the record being edited first, so its current
-        // values are available to the populate call below.
+        // Record the edit id on the modal so the overlap detector
+        // can exclude it.
+        if (_editId) {
+            modal.dataset.editId = _editId;
+        } else {
+            delete modal.dataset.editId;
+        }
+
         var editing = null;
         if (_editId) {
             editing = SocialQueries.getRelationshipById(_editId);
             if (!editing) {
                 _editId = null;
+                delete modal.dataset.editId;
                 notify('Relationship not found.', 'error');
                 return;
             }
@@ -443,14 +382,9 @@
         _populatingRelationshipForm = true;
 
         try {
-            // Reset the checkbox BEFORE populating. Default is
-            // unchecked (hide eliminated characters).
             var includeCb = document.getElementById('rel-include-eliminated');
             if (includeCb) { includeCb.checked = false; }
 
-            // Repopulate the character selects with the filter applied.
-            // The editing values, if any, are preserved even when they
-            // are eliminated, so an edit does not lose a side.
             SocialViews.populateFormSelectors({
                 includeEliminated: false,
                 preserve1: editing ? editing.character1 : null,
@@ -490,28 +424,40 @@
                 title.textContent = 'Add Relationship';
             }
         } finally {
-            // ---- End population guard ----
             _populatingRelationshipForm = false;
         }
 
         updateSwapButtonVisibility();
         SocialViews.refreshClarificationLabels();
         SocialViews.refreshRelationshipAgePreview();
+        refreshOverlapWarningSafe();
         Modal.showModal(modal);
+    }
+
+    /**
+     * Call SocialViews.refreshRomanticOverlapWarning defensively.
+     * The banner is optional; a missing implementation must not
+     * break the modal.
+     */
+    function refreshOverlapWarningSafe() {
+        if (!SocialViews ||
+            typeof SocialViews.refreshRomanticOverlapWarning !== 'function') {
+            return;
+        }
+        try {
+            SocialViews.refreshRomanticOverlapWarning();
+        } catch (e) {
+            console.warn(
+                '[SocialEvents] refreshRomanticOverlapWarning threw:',
+                e
+            );
+        }
     }
 
     // ============================================================
     // RELATIONSHIP FORM
     // ============================================================
 
-    /**
-     * Bind the relationship form's internal handlers.
-     *
-     * Idempotent. The form shell can be installed lazily by
-     * ensureRelationshipModalShell(), which calls this function
-     * once after install. init() also calls this function; the
-     * bound flag prevents double-binding.
-     */
     function bindRelationshipForm() {
         if (_relationshipFormBound) { return; }
 
@@ -527,18 +473,12 @@
         var startEl = document.getElementById('rel-start-year');
         var endEl = document.getElementById('rel-end-year');
 
-        // The shell may not exist yet (init ran before any modal
-        // install, and the standalone tab has not rendered). Leave
-        // _relationshipFormBound false so a later call binds once
-        // the shell is present.
         if (!form) { return; }
 
-        if (form) {
-            addEventListener(form, 'submit', function(e) {
-                e.preventDefault();
-                handleSaveRelationship();
-            });
-        }
+        addEventListener(form, 'submit', function(e) {
+            e.preventDefault();
+            handleSaveRelationship();
+        });
 
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
@@ -560,12 +500,6 @@
             });
         }
 
-        // ---- Swap button ----
-        //
-        // Exchanges character 1 and character 2 and leaves the two
-        // clarification fields where they are. The labels above the
-        // fields refresh, so the user sees the new binding
-        // immediately. The age preview refreshes too.
         if (swapBtn) {
             addEventListener(swapBtn, 'click', function(e) {
                 e.preventDefault();
@@ -573,10 +507,6 @@
             });
         }
 
-        // ---- Character 1 change handler ----
-        //
-        // When the user picks a different character for slot 1,
-        // the clarification field for slot 1 is cleared.
         if (c1) {
             addEventListener(c1, 'change', function() {
                 if (!_populatingRelationshipForm) {
@@ -585,6 +515,7 @@
                 }
                 SocialViews.refreshClarificationLabels();
                 SocialViews.refreshRelationshipAgePreview();
+                refreshOverlapWarningSafe();
             });
         }
 
@@ -596,38 +527,30 @@
                 }
                 SocialViews.refreshClarificationLabels();
                 SocialViews.refreshRelationshipAgePreview();
+                refreshOverlapWarningSafe();
             });
         }
 
-        // ---- Type change handler ----
-        //
-        // The swap button is only meaningful for directional types.
         if (typeEl) {
             addEventListener(typeEl, 'change', function() {
                 updateSwapButtonVisibility();
+                refreshOverlapWarningSafe();
             });
         }
 
-        // ---- Year inputs ----
-        //
-        // Every keystroke refreshes the age preview. The year input
-        // elements are never replaced, so focus and caret position
-        // survive.
         if (startEl) {
             addEventListener(startEl, 'input', function() {
                 SocialViews.refreshRelationshipAgePreview();
+                refreshOverlapWarningSafe();
             });
         }
         if (endEl) {
             addEventListener(endEl, 'input', function() {
                 SocialViews.refreshRelationshipAgePreview();
+                refreshOverlapWarningSafe();
             });
         }
 
-        // ---- "Include eliminated characters" checkbox ----
-        //
-        // When toggled, repopulate the character selects, preserving
-        // whatever is currently selected on each side.
         if (includeCb) {
             addEventListener(includeCb, 'change', function() {
                 var c1El = document.getElementById('rel-char1');
@@ -648,22 +571,13 @@
 
                 SocialViews.refreshClarificationLabels();
                 SocialViews.refreshRelationshipAgePreview();
+                refreshOverlapWarningSafe();
             });
         }
 
         _relationshipFormBound = true;
     }
 
-    /**
-     * Flip the direction of a directional relationship.
-     *
-     * Exchanges character 1 and character 2. Does NOT touch the
-     * clarification fields — see the file header for the reasoning.
-     *
-     * The age preview refreshes because the swap does not change
-     * who is in the pair, only which slot each occupies, and the
-     * preview shows both sides regardless of order.
-     */
     function handleSwapCharacters() {
         var c1 = document.getElementById('rel-char1');
         var c2 = document.getElementById('rel-char2');
@@ -680,11 +594,9 @@
 
         SocialViews.refreshClarificationLabels();
         SocialViews.refreshRelationshipAgePreview();
+        refreshOverlapWarningSafe();
     }
 
-    /**
-     * Show the swap button only when the current type is directional.
-     */
     function updateSwapButtonVisibility() {
         var swapBtn = document.getElementById('rel-swap-btn');
         var typeEl = document.getElementById('rel-type');
@@ -744,6 +656,22 @@
             if (result.success) {
                 handleCloseRelationshipForm();
                 refreshUI();
+
+                // Surface the overlap set after the save. The save
+                // is not blocked; the warning just follows the
+                // success so the user notices even if they missed
+                // the banner.
+                if (Array.isArray(result.overlaps) &&
+                    result.overlaps.length > 0) {
+                    notify(
+                        'Saved, but this overlaps with ' +
+                        result.overlaps.length + ' existing ' +
+                        'relationship' +
+                        (result.overlaps.length === 1 ? '' : 's') +
+                        ' of the same type.',
+                        'warning'
+                    );
+                }
             } else {
                 notify(result.message || 'Failed to save relationship.', 'error');
             }
@@ -756,6 +684,9 @@
     function handleCloseRelationshipForm() {
         var modal = document.getElementById('relationship-form-modal');
         hideModal(modal);
+        if (modal && modal.dataset) {
+            delete modal.dataset.editId;
+        }
         _editId = null;
         _populatingRelationshipForm = false;
     }
@@ -861,9 +792,6 @@
         }
     }
 
-    /**
-     * Switch between list and graph views.
-     */
     function handleViewModeChange(mode) {
         if (mode === 'graph') {
             SocialGraph.setGraphVisible(true);
@@ -984,9 +912,6 @@
         });
     }
 
-    /**
-     * Truncate the graph's focus stack so that charId is the top.
-     */
     function jumpFocusTo(charId) {
         var target = String(charId);
         var path = SocialGraph.getFocusPath();
@@ -1010,9 +935,6 @@
         }
     }
 
-    /**
-     * Render the focus breadcrumb above the graph.
-     */
     function renderGraphBreadcrumb() {
         var container = document.getElementById('social-graph-breadcrumb');
         var backBtn = document.getElementById('graph-back-btn');
@@ -1099,13 +1021,6 @@
         });
     }
 
-    /**
-     * Open the character-detail modal for a specific character.
-     *
-     * Public method. Any caller (a graph double-click, a relationship
-     * row's character name, etc.) can invoke it. The graph module
-     * itself does NOT call it.
-     */
     function handleGraphNodeClick(charId) {
         if (!charId) { return; }
 
@@ -1333,6 +1248,7 @@
 
         SocialViews.refreshClarificationLabels();
         SocialViews.refreshRelationshipAgePreview();
+        refreshOverlapWarningSafe();
     }
 
     // ============================================================
@@ -1493,11 +1409,6 @@
         init: init,
         destroy: destroy,
 
-        // Public: opens the shared relationship modal. The
-        // character tab's Social section calls this directly.
-        // ensureRelationshipModalShell guarantees the shell exists
-        // before opening, so callers do not need to render the
-        // standalone tab first.
         handleAddRelationship: handleAddRelationship,
         handleSaveRelationship: handleSaveRelationship,
         handleDeleteRelationship: handleDeleteRelationship,
@@ -1513,16 +1424,12 @@
 
         refreshUI: refreshUI,
 
-        // Graph drill-down helpers
         renderGraphBreadcrumb: renderGraphBreadcrumb,
         jumpFocusTo: jumpFocusTo,
 
-        // Swap button (exposed for testing)
         handleSwapCharacters: handleSwapCharacters,
         updateSwapButtonVisibility: updateSwapButtonVisibility,
 
-        // Shell installer, exposed so a caller can force-install the
-        // modal without opening it (rare, used by tests)
         ensureRelationshipModalShell: ensureRelationshipModalShell
     };
 
