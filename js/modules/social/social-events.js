@@ -1,6 +1,7 @@
 /**
  * modules/social/social-events.js - Social Events
- * Event orchestration for the standalone Social tab
+ * Event orchestration for the standalone Social tab, and the
+ * single owner of the shared relationship modal.
  *
  * IMPORTANT:
  *   - Orchestrates UI interactions for the STANDALONE Social tab
@@ -11,20 +12,33 @@
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
  *
+ * SHARED RELATIONSHIP MODAL (this revision):
+ *   The relationship form is now a single modal, lazily installed
+ *   into document.body by ensureRelationshipModalShell(). Both
+ *   entry points use it:
+ *
+ *     - The standalone Social tab   (via #add-relationship-btn)
+ *     - The character form Social   (via #add-char-relationship-btn,
+ *                                    which delegates here)
+ *
+ *   The old character-tab form
+ *   (character-views.buildRelationshipFormHTML) has been retired.
+ *   Do not reintroduce it. One form, one code path, one set of
+ *   bugs to fix.
+ *
+ *   ensureRelationshipModalShell() is idempotent: it returns true
+ *   immediately if #relationship-form-modal is already in the
+ *   document. It installs the shell, then rebinds the form's own
+ *   handlers, so opening the modal from the character tab works
+ *   even if the standalone tab was never mounted.
+ *
  * MODAL LIFECYCLE:
  *   Every modal in this file uses Modal.hideModal for teardown,
  *   not Modal.closeModal. closeModal DESTROYS the modal element;
- *   the shells are rendered once by SocialViews.getSocialHTML() and
- *   are never re-mounted, so a destroyed shell means the next open
- *   fails with "Relationship form is not available" (or silently
- *   does nothing for Suggest Pairs).
+ *   the shells are rendered once and are never re-mounted, so a
+ *   destroyed shell means the next open fails.
  *
- *   This matches the pattern used by character-events.js: modals
- *   are hidden so they can be reused.
- *
- *   Do not reintroduce Modal.closeModal anywhere in this file. If
- *   a future modal genuinely needs full teardown, it should be
- *   re-mounted by the caller after closing.
+ *   Do not reintroduce Modal.closeModal anywhere in this file.
  *
  * EDIT STATE:
  *   _editId is set only inside handleAddRelationship and cleared
@@ -33,96 +47,35 @@
  *   a previous failed edit cannot leak into the next one.
  *
  * CLARIFICATIONS (two-sided):
- *   The form carries #rel-clarification-1 (character1's role
- *   toward character2) and #rel-clarification-2 (character2's role
- *   toward character1). The labels are refreshed on open and
+ *   The form carries #rel-clarification-1 and
+ *   #rel-clarification-2. The labels are refreshed on open and
  *   whenever either character select changes.
  *
  *   When a character select changes, the CORRESPONDING clarification
  *   field is cleared. The field's semantic is "the role of the
- *   character currently selected in slot N", so changing the
- *   character invalidates the previously-entered text. Without the
- *   clear, a user who swaps the two characters in the form would
- *   silently save the old clarifications under the new character
- *   order — the exact bug that produced "Mentor" and "Mentee"
- *   showing on the wrong sides after an edit.
- *
- *   The clear is guarded by a "populating" flag: programmatic value
- *   assignment during modal open does not fire `change` events on
- *   select elements, so the flag is defensive rather than load-
- *   bearing. It exists so a future refactor that DOES trigger a
- *   programmatic change does not accidentally wipe the user's
- *   data.
+ *   character currently selected in slot N".
  *
  * SWAP BUTTON:
  *   For directional types (mentor), the relationship form carries a
- *   swap button (#rel-swap-btn) next to character 2. Clicking it:
+ *   swap button (#rel-swap-btn) next to character 2.
  *
- *     - exchanges character 1 and character 2
- *     - does NOT touch the two clarification fields
- *
- *   Why the clarifications are not swapped: the mentor relationship
- *   has a specific meaning — character 1 mentors character 2. The
- *   user clicks swap because they want the OTHER character to be the
- *   mentor. If we swapped the clarifications too, the mentor would
- *   stay the same and only the display order would change, which is
- *   not what the button is for.
- *
- *   Keeping the clarification text in place means "Mentor" now
- *   describes the character currently in slot 1's role toward the
- *   character currently in slot 2. The labels above the fields
- *   update automatically (refreshClarificationLabels), so the user
- *   sees the new binding immediately and can edit either field if
- *   the semantics need adjusting.
- *
- *   The button is visible only when the selected type is
- *   directional. Visibility is managed by updateSwapButtonVisibility,
- *   called on type change and on modal open.
+ * AGE PREVIEW (new):
+ *   refreshRelationshipAgePreview() is called:
+ *     - once on modal open, after the form is populated
+ *     - on every character-select change
+ *     - on every start-year / end-year input
+ *   It renders ages at start, end, and today.
  *
  * ELIMINATED CHARACTERS:
  *   The relationship modal carries #rel-include-eliminated. When
  *   unchecked (the default), the character selects hide characters
- *   with any elimination on record. When the modal is opened in
- *   EDIT mode, the current value on each side is always preserved
- *   even if that character is eliminated, so editing a relationship
- *   involving an eliminated character does not lose the value.
- *
- *   Changing the checkbox repopulates the character selects,
- *   preserving whatever is currently selected on each side.
+ *   with any elimination on record. On EDIT mode, the current value
+ *   on each side is always preserved.
  *
  * GRAPH DRILL-DOWN:
  *   The graph is FOCUSED. One character is centered; its direct
- *   connections sit on a ring around it. The click model is:
- *
- *     Click a RING node   -> push that character onto the focus
- *                            stack; it becomes the new center.
- *     Click the CENTER    -> pop the focus stack; go back one step.
- *     Click the Back btn  -> same as clicking the center.
- *     Click a breadcrumb  -> truncate the focus stack to that depth.
- *
- *   All four of those routes go through SocialGraph's public focus
- *   API (pushFocus / popFocus / getFocusPath / setFocus). This file
- *   does NOT mutate focus state directly; it calls the graph
- *   module's functions and then re-renders the breadcrumb.
- *
- *   The graph SVG nodes carry class="social-graph-node" and
- *   data-node-id / data-is-center. Delegation on that class catches
- *   every click, including on nodes drawn after the listener was
- *   installed (which is every node: the SVG content is replaced on
- *   every render).
- *
- *   renderGraphBreadcrumb() reads SocialGraph.getFocusPath() and
- *   rebuilds the breadcrumb DOM after every focus change. It is
- *   also called from handleViewModeChange('graph') and from
- *   refreshUI() while the graph is visible.
- *
- * CHARACTER DETAIL MODAL:
- *   The character-detail modal is opened by a DELEGATED click on
- *   the "View All Relationships" button rendered inside the modal
- *   itself, and by any future caller that wants it. The graph no
- *   longer opens the detail modal on single-click; single-click
- *   drills in. A future revision can add a double-click gesture to
- *   open the detail modal without disturbing the drill-down.
+ *   connections sit on a ring around it. See the graph module for
+ *   the focus API.
  *
  * DEPENDENCIES:
  *   - window.SocialCore
@@ -175,6 +128,9 @@
         }
         if (!SocialViews || typeof SocialViews.populateFormSelectors !== 'function') {
             missing.push('SocialViews.populateFormSelectors');
+        }
+        if (!SocialViews || typeof SocialViews.getRelationshipModalHTML !== 'function') {
+            missing.push('SocialViews.getRelationshipModalHTML');
         }
 
         if (!SocialQueries || typeof SocialQueries.getRelationshipById !== 'function') {
@@ -251,9 +207,15 @@
     // Populating guard. Set true while populateFormSelectors and the
     // initial value assignments run, so a future refactor that
     // triggers a programmatic `change` event cannot be mistaken for
-    // a user edit. Setting a select's .value programmatically does
-    // not fire `change` in current browsers; the flag is defensive.
+    // a user edit.
     var _populatingRelationshipForm = false;
+
+    // Tracks whether the relationship form's internal handlers
+    // have been bound. The modal can be installed lazily (when the
+    // character tab needs it and the standalone tab was never
+    // mounted), in which case bindRelationshipForm must run once
+    // after install. Subsequent calls are no-ops.
+    var _relationshipFormBound = false;
 
     // ============================================================
     // EVENT BINDING HELPERS
@@ -299,6 +261,57 @@
     }
 
     // ============================================================
+    // SHARED RELATIONSHIP MODAL SHELL
+    // ============================================================
+    //
+    // The relationship modal is a single shell, rendered once, and
+    // shared by the standalone Social tab and the character form's
+    // Social section.
+    //
+    // It lives in whichever container rendered it first:
+    //   - the standalone tab renders it inline via getSocialHTML()
+    //   - this function installs it into document.body if the
+    //     standalone tab has never been mounted
+    //
+    // Either way, #relationship-form-modal exists exactly once.
+    // ensureRelationshipModalShell() is the entry point that
+    // guarantees it.
+
+    /**
+     * Ensure #relationship-form-modal exists in the document.
+     * Returns true when the shell is present (whether it was
+     * already there or was just installed), false on failure.
+     *
+     * Idempotent. Safe to call before every modal open.
+     */
+    function ensureRelationshipModalShell() {
+        if (document.getElementById('relationship-form-modal')) {
+            return true;
+        }
+
+        if (!SocialViews ||
+            typeof SocialViews.getRelationshipModalHTML !== 'function') {
+            return false;
+        }
+
+        var host = document.createElement('div');
+        host.innerHTML = SocialViews.getRelationshipModalHTML();
+        var node = host.firstElementChild;
+        if (!node) { return false; }
+
+        document.body.appendChild(node);
+
+        // The shell was just installed, so its internal handlers
+        // (close, cancel, submit, outside-click, character-change,
+        // type-change, include-eliminated) are not yet bound.
+        // Bind them now. Idempotence is handled inside
+        // bindRelationshipForm via _relationshipFormBound.
+        bindRelationshipForm();
+
+        return true;
+    }
+
+    // ============================================================
     // INIT / DESTROY
     // ============================================================
 
@@ -321,6 +334,7 @@
         // Wipe state a previous init may have left behind.
         _editId = null;
         _populatingRelationshipForm = false;
+        _relationshipFormBound = false;
 
         SocialViews.renderSocialView(container);
 
@@ -349,6 +363,7 @@
         _initialized = false;
         _editId = null;
         _populatingRelationshipForm = false;
+        _relationshipFormBound = false;
     }
 
     // ============================================================
@@ -379,19 +394,28 @@
      * POPULATION GUARD:
      *   _populatingRelationshipForm is set true at the top of the
      *   body and false at the end, around the populate + initial
-     *   value assignments. The two character-change handlers skip
-     *   the clarification-clear when the flag is true, so a future
-     *   refactor that programmatically fires `change` does not wipe
-     *   the freshly-populated clarifications. See the
-     *   CLARIFICATIONS note in the file header.
+     *   value assignments.
      *
      * SWAP BUTTON VISIBILITY:
      *   updateSwapButtonVisibility() is called at the end, after the
-     *   type select has been set. The button appears only when the
-     *   selected type is directional.
+     *   type select has been set.
+     *
+     * AGE PREVIEW:
+     *   refreshRelationshipAgePreview() is called at the end, so the
+     *   preview reflects the freshly-populated form.
+     *
+     * PUBLIC. Can be called from any module that wants to open the
+     * shared relationship modal. The character tab's Social section
+     * uses this entry point directly.
      */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
+
+        if (!ensureRelationshipModalShell()) {
+            _editId = null;
+            notify('Relationship form is not available.', 'error');
+            return;
+        }
 
         var title = document.getElementById('relationship-form-title');
         var form = document.getElementById('relationship-form-inner');
@@ -472,6 +496,7 @@
 
         updateSwapButtonVisibility();
         SocialViews.refreshClarificationLabels();
+        SocialViews.refreshRelationshipAgePreview();
         Modal.showModal(modal);
     }
 
@@ -479,8 +504,35 @@
     // RELATIONSHIP FORM
     // ============================================================
 
+    /**
+     * Bind the relationship form's internal handlers.
+     *
+     * Idempotent. The form shell can be installed lazily by
+     * ensureRelationshipModalShell(), which calls this function
+     * once after install. init() also calls this function; the
+     * bound flag prevents double-binding.
+     */
     function bindRelationshipForm() {
+        if (_relationshipFormBound) { return; }
+
         var form = document.getElementById('relationship-form-inner');
+        var closeBtn = document.getElementById('close-relationship-form');
+        var cancelBtn = document.getElementById('cancel-relationship-form');
+        var swapBtn = document.getElementById('rel-swap-btn');
+        var modal = document.getElementById('relationship-form-modal');
+        var c1 = document.getElementById('rel-char1');
+        var c2 = document.getElementById('rel-char2');
+        var typeEl = document.getElementById('rel-type');
+        var includeCb = document.getElementById('rel-include-eliminated');
+        var startEl = document.getElementById('rel-start-year');
+        var endEl = document.getElementById('rel-end-year');
+
+        // The shell may not exist yet (init ran before any modal
+        // install, and the standalone tab has not rendered). Leave
+        // _relationshipFormBound false so a later call binds once
+        // the shell is present.
+        if (!form) { return; }
+
         if (form) {
             addEventListener(form, 'submit', function(e) {
                 e.preventDefault();
@@ -488,21 +540,18 @@
             });
         }
 
-        var closeBtn = document.getElementById('close-relationship-form');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
                 handleCloseRelationshipForm();
             });
         }
 
-        var cancelBtn = document.getElementById('cancel-relationship-form');
         if (cancelBtn) {
             addEventListener(cancelBtn, 'click', function() {
                 handleCloseRelationshipForm();
             });
         }
 
-        var modal = document.getElementById('relationship-form-modal');
         if (modal) {
             addEventListener(modal, 'click', function(e) {
                 if (e.target === modal) {
@@ -516,8 +565,7 @@
         // Exchanges character 1 and character 2 and leaves the two
         // clarification fields where they are. The labels above the
         // fields refresh, so the user sees the new binding
-        // immediately. See the SWAP BUTTON note in the file header.
-        var swapBtn = document.getElementById('rel-swap-btn');
+        // immediately. The age preview refreshes too.
         if (swapBtn) {
             addEventListener(swapBtn, 'click', function(e) {
                 e.preventDefault();
@@ -528,21 +576,7 @@
         // ---- Character 1 change handler ----
         //
         // When the user picks a different character for slot 1,
-        // the clarification field for slot 1 is cleared. The field
-        // is semantically "the role of the character currently in
-        // slot 1", so a change of character invalidates its text.
-        //
-        // We do NOT clear on the initial populate: the populate
-        // guard suppresses it. Programmatic assignment does not
-        // fire `change` in current browsers; the guard exists so a
-        // future refactor that changes that does not wipe the
-        // user's data.
-        //
-        // After clearing, refreshClarificationLabels() renames both
-        // labels to reflect the new character pair.
-        var c1 = document.getElementById('rel-char1');
-        var c2 = document.getElementById('rel-char2');
-
+        // the clarification field for slot 1 is cleared.
         if (c1) {
             addEventListener(c1, 'change', function() {
                 if (!_populatingRelationshipForm) {
@@ -550,6 +584,7 @@
                     if (clar1El) { clar1El.value = ''; }
                 }
                 SocialViews.refreshClarificationLabels();
+                SocialViews.refreshRelationshipAgePreview();
             });
         }
 
@@ -560,29 +595,39 @@
                     if (clar2El) { clar2El.value = ''; }
                 }
                 SocialViews.refreshClarificationLabels();
+                SocialViews.refreshRelationshipAgePreview();
             });
         }
 
         // ---- Type change handler ----
         //
         // The swap button is only meaningful for directional types.
-        // Show or hide it whenever the type changes.
-        var typeEl = document.getElementById('rel-type');
         if (typeEl) {
             addEventListener(typeEl, 'change', function() {
                 updateSwapButtonVisibility();
             });
         }
 
+        // ---- Year inputs ----
+        //
+        // Every keystroke refreshes the age preview. The year input
+        // elements are never replaced, so focus and caret position
+        // survive.
+        if (startEl) {
+            addEventListener(startEl, 'input', function() {
+                SocialViews.refreshRelationshipAgePreview();
+            });
+        }
+        if (endEl) {
+            addEventListener(endEl, 'input', function() {
+                SocialViews.refreshRelationshipAgePreview();
+            });
+        }
+
         // ---- "Include eliminated characters" checkbox ----
         //
         // When toggled, repopulate the character selects, preserving
-        // whatever is currently selected on each side. The
-        // clarification fields are NOT cleared by this: the checkbox
-        // is a filter change, not a character change. The guard is
-        // set during the repopulate in case a future refactor
-        // causes a change event to fire.
-        var includeCb = document.getElementById('rel-include-eliminated');
+        // whatever is currently selected on each side.
         if (includeCb) {
             addEventListener(includeCb, 'change', function() {
                 var c1El = document.getElementById('rel-char1');
@@ -602,32 +647,22 @@
                 }
 
                 SocialViews.refreshClarificationLabels();
+                SocialViews.refreshRelationshipAgePreview();
             });
         }
+
+        _relationshipFormBound = true;
     }
 
     /**
      * Flip the direction of a directional relationship.
      *
      * Exchanges character 1 and character 2. Does NOT touch the
-     * clarification fields:
+     * clarification fields — see the file header for the reasoning.
      *
-     *   - "Mentor" in slot 1 was "character 1's role toward
-     *     character 2".
-     *   - After the swap, it is "the NEW character 1's role toward
-     *     the NEW character 2".
-     *   - The person described by slot 1 has changed. The value
-     *     therefore describes the other party's role. Which is
-     *     exactly what flipping the mentor direction means: the
-     *     mentee becomes the mentor.
-     *
-     * The user sees the new binding immediately because the labels
-     * refresh. If the clarification text needs a companion edit
-     * (e.g. "mentor" -> "mentee"), the user can type it.
-     *
-     * The population guard is set during the swap so the two
-     * character-change handlers do NOT clear the fields. This is an
-     * intentional swap, not a manual character change.
+     * The age preview refreshes because the swap does not change
+     * who is in the pair, only which slot each occupies, and the
+     * preview shows both sides regardless of order.
      */
     function handleSwapCharacters() {
         var c1 = document.getElementById('rel-char1');
@@ -644,17 +679,11 @@
         }
 
         SocialViews.refreshClarificationLabels();
+        SocialViews.refreshRelationshipAgePreview();
     }
 
     /**
      * Show the swap button only when the current type is directional.
-     *
-     * Reads the current value of #rel-type and asks
-     * SocialConstants.isDirectional. When SocialConstants is not
-     * available, the button is hidden, because we cannot confirm
-     * the type has a direction.
-     *
-     * Idempotent and safe to call at any time.
      */
     function updateSwapButtonVisibility() {
         var swapBtn = document.getElementById('rel-swap-btn');
@@ -834,13 +863,6 @@
 
     /**
      * Switch between list and graph views.
-     *
-     * The graph does NOT get a fresh focus on every show. It keeps
-     * whatever focus the user last had. If the user has never
-     * focused anything, the graph shows the entry prompt.
-     *
-     * When switching TO the graph, the breadcrumb is re-rendered so
-     * it reflects the preserved focus.
      */
     function handleViewModeChange(mode) {
         if (mode === 'graph') {
@@ -921,18 +943,8 @@
     // ============================================================
     // GRAPH DRILL-DOWN
     // ============================================================
-    //
-    // The graph renders SVG nodes into #social-graph-transform on
-    // every render. Because the innerHTML is replaced, direct
-    // listeners on nodes would be lost. All node click handling is
-    // therefore delegated on .social-graph-node.
-    //
-    // The center node pops the stack; a ring node pushes onto it.
-    // Which one is which is decided by data-is-center, which the
-    // graph module writes onto every node circle.
 
     function bindGraphDrilldown() {
-        // ---- Graph node click ----
         delegate('.social-graph-node', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
@@ -951,7 +963,6 @@
             renderGraphBreadcrumb();
         });
 
-        // ---- Back button ----
         var backBtn = document.getElementById('graph-back-btn');
         if (backBtn) {
             addEventListener(backBtn, 'click', function(e) {
@@ -961,15 +972,6 @@
             });
         }
 
-        // ---- Breadcrumb jumps ----
-        //
-        // A breadcrumb entry truncates the stack to that character.
-        // Truncation is implemented as setFocus + successive pushes,
-        // because the graph module only exposes single-step focus
-        // operations. Walking the path bottom-up and pushing each
-        // id in order reproduces the exact path the user took,
-        // because pushFocus is idempotent for an already-top id and
-        // truncates cycles for one already-in-stack.
         delegate('.social-graph-breadcrumb-jump', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
@@ -984,12 +986,6 @@
 
     /**
      * Truncate the graph's focus stack so that charId is the top.
-     *
-     * Implementation: take the current path, find the LAST index
-     * at which charId appears, then rebuild the stack by resetting
-     * and re-pushing every id up to and including that index. This
-     * preserves the exact entry path the user took, which matters
-     * because the breadcrumb is a history, not a set.
      */
     function jumpFocusTo(charId) {
         var target = String(charId);
@@ -1003,12 +999,10 @@
         }
 
         if (lastIndex === -1) {
-            // Not in the current path. Treat as a fresh focus.
             SocialGraph.setFocus(target);
             return;
         }
 
-        // Rebuild the path up to and including lastIndex.
         var truncated = path.slice(0, lastIndex + 1);
         SocialGraph.resetFocus();
         for (var j = 0; j < truncated.length; j++) {
@@ -1018,15 +1012,6 @@
 
     /**
      * Render the focus breadcrumb above the graph.
-     *
-     * Reads SocialGraph.getFocusPath(), resolves each id to a
-     * display name via CharacterQueries, and renders a chain of
-     * clickable entries into #social-graph-breadcrumb. Hides the
-     * back button when the stack has only one entry (there is
-     * nothing to go back to).
-     *
-     * Safe to call at any time, including when the graph is hidden.
-     * Does nothing if the breadcrumb container is absent.
      */
     function renderGraphBreadcrumb() {
         var container = document.getElementById('social-graph-breadcrumb');
@@ -1042,8 +1027,6 @@
         container.textContent = '';
 
         if (path.length === 0) {
-            // Empty path: nothing to show. The entry prompt in the
-            // SVG already explains the state.
             return;
         }
 
@@ -1078,7 +1061,6 @@
                 'cursor:pointer;padding:0;font-size:0.75rem;' +
                 'text-decoration:underline;';
 
-            // The last entry is the current center; disable it.
             if (i === path.length - 1) {
                 btn.disabled = true;
                 btn.style.color = 'var(--text)';
@@ -1093,15 +1075,6 @@
     // ============================================================
     // CHARACTER DETAIL
     // ============================================================
-    //
-    // The character-detail modal is opened by:
-    //   - the "View All Relationships" button inside the modal
-    //     itself (this file's handleViewCharacterRelationships)
-    //   - any future caller that wants it
-    //
-    // It is NOT opened by the graph. Single-click on a graph node
-    // drills in. A double-click gesture to open the detail modal
-    // can be added later if desired.
 
     function bindCharacterDetail() {
         var closeBtn = document.getElementById('close-char-detail');
@@ -1162,7 +1135,6 @@
 
         handleCharacterDetailClose();
 
-        // Switch back to list mode so the filter is usable.
         handleViewModeChange('list');
 
         var filter = document.getElementById('social-character-filter');
@@ -1264,10 +1236,6 @@
         Modal.showModal(modal);
     }
 
-    /**
-     * Populate the Suggest Pairs seed dropdown from the character
-     * store, honouring the "Include eliminated" checkbox.
-     */
     function populateSuggestPairsSeedList() {
         var seedSelect = document.getElementById('suggest-pairs-seed');
         if (!seedSelect) { return; }
@@ -1318,7 +1286,6 @@
             seedSelect.appendChild(opt);
         }
 
-        // Preserve the previously-selected value when possible.
         if (previous) { seedSelect.value = previous; }
     }
 
@@ -1365,6 +1332,7 @@
         if (c2) { c2.value = char2; }
 
         SocialViews.refreshClarificationLabels();
+        SocialViews.refreshRelationshipAgePreview();
     }
 
     // ============================================================
@@ -1525,6 +1493,11 @@
         init: init,
         destroy: destroy,
 
+        // Public: opens the shared relationship modal. The
+        // character tab's Social section calls this directly.
+        // ensureRelationshipModalShell guarantees the shell exists
+        // before opening, so callers do not need to render the
+        // standalone tab first.
         handleAddRelationship: handleAddRelationship,
         handleSaveRelationship: handleSaveRelationship,
         handleDeleteRelationship: handleDeleteRelationship,
@@ -1540,14 +1513,17 @@
 
         refreshUI: refreshUI,
 
-        // Graph drill-down helpers (exposed for testing / external
-        // callers that need to force a breadcrumb rebuild)
+        // Graph drill-down helpers
         renderGraphBreadcrumb: renderGraphBreadcrumb,
         jumpFocusTo: jumpFocusTo,
 
         // Swap button (exposed for testing)
         handleSwapCharacters: handleSwapCharacters,
-        updateSwapButtonVisibility: updateSwapButtonVisibility
+        updateSwapButtonVisibility: updateSwapButtonVisibility,
+
+        // Shell installer, exposed so a caller can force-install the
+        // modal without opening it (rare, used by tests)
+        ensureRelationshipModalShell: ensureRelationshipModalShell
     };
 
     // ============================================================
