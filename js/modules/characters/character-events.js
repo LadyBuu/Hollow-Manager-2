@@ -4,65 +4,44 @@
  *
  * WHAT THIS OWNS:
  *   - Delegated event wiring for the character form, list, and
- *     modals. Everything inside #character-form-content is bound
- *     via delegation, because that container is re-rendered on
- *     every CharacterForm.render() call.
+ *     modals.
  *   - The career-transition inline modal (open, render, apply,
  *     close).
  *   - Save / delete / character-select handlers.
- *   - Character list selection checkboxes and the selection bar's
- *     Clear action.
+ *   - Character list selection checkboxes.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. All mutations route through CharacterCRUD.
- *   - Rendering. All HTML comes from CharacterForm / CharacterViews /
- *     CharacterClassView / CharacterList.
- *   - The relationship form. The character-tab Social section now
- *     opens the SAME modal the standalone Social tab opens, via
- *     SocialEvents.handleAddRelationship. See the RELATIONSHIP
- *     MODAL OWNERSHIP note below.
+ *   - Rendering. All HTML comes from CharacterForm / CharacterViews
+ *     / CharacterClassView / CharacterList.
+ *   - The relationship form. The character-tab Social section
+ *     delegates to SocialEvents.handleAddRelationship. See the
+ *     RELATIONSHIP MODAL OWNERSHIP note below.
  *
- * RELATIONSHIP MODAL OWNERSHIP (this revision):
- *   The character-tab relationship form used to live here and in
- *   character-views.buildRelationshipFormHTML. Both have been
- *   retired. That duplication caused a data-corruption bug: the
- *   local form called SocialCore.createRelationship with seven
- *   arguments while the core signature takes eight, so notes were
- *   landing in clarification2.
- *
- *   openRelationshipModal(relId) now delegates to
- *   SocialEvents.handleAddRelationship(relId). That function
- *   installs the shared modal shell into document.body on first
- *   use (via ensureRelationshipModalShell), populates it, and
- *   shows it.
- *
- *   When creating a new relationship FROM THE CHARACTER TAB, the
- *   current character is pre-selected on side 1 after the modal
- *   opens. When editing, the modal is populated from the record.
- *
- *   Do NOT reintroduce a local relationship form in this file.
+ * RELATIONSHIP MODAL OWNERSHIP:
+ *   The character-tab relationship form was retired. Opening the
+ *   relationship modal from the character tab now delegates to
+ *   SocialEvents.handleAddRelationship, which installs the shared
+ *   modal shell into document.body on first use, populates it,
+ *   and shows it. See openRelationshipModal for the delegation.
  *
  * MODAL LIFECYCLE:
  *   Reusable modals (relationship, graph) use Modal.hideModal, not
- *   Modal.closeModal. closeModal destroys the element; the shells
- *   are rendered once and must survive.
+ *   Modal.closeModal.
  *
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded by _saveInFlight.
  *
  * SELECTION:
  *   The row checkbox toggles a character in and out of the
- *   CharacterList selection set. The row body click (outside the
- *   checkbox cell) selects the character for editing.
+ *   CharacterList selection set.
  *
  * SIDEBAR DRAWER:
- *   On mobile, the character sidebar (.characters-sidebar) is a
- *   fixed overlay. The toggle button adds/removes the `open`
- *   class.
+ *   On mobile, the character sidebar is a fixed overlay.
  *
  * CAREER TRANSITION MODAL:
  *   Element created once per open, appended to document.body,
- *   destroyed on close. Reuses the .csw-* CSS classes.
+ *   destroyed on close.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterAggregator
@@ -87,7 +66,7 @@
  *   - window.SocialEvents (for relationship modal delegation)
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.CharacterList (selection API)
+ *   - window.CharacterList
  *   - window.SocialConstants / SocialQueries / SocialCore / SocialGraph
  *   - window.CharacterExport
  *   - window.FillerManagerModal
@@ -138,7 +117,6 @@
     var _characterEditListenerInstalled = false;
     var _saveInFlight = false;
 
-    // Career transition modal
     var _ctModal = null;
     var _ctContentEl = null;
     var _ctCharId = null;
@@ -202,8 +180,6 @@
             }
         });
 
-        // UI_CONSTANTS.MOBILE_BREAKPOINT is used by isMobile() to
-        // decide when the sidebar behaves as a drawer.
         if (!UI_CONSTANTS ||
             typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
             console.warn(
@@ -212,10 +188,6 @@
             );
         }
 
-        // SocialEvents is used for the relationship modal. It may
-        // not be loaded yet at boot (script order), so this is a
-        // warn-only check. The delegation site re-checks at click
-        // time.
         if (!window.SocialEvents ||
             typeof window.SocialEvents.handleAddRelationship !== 'function') {
             console.warn(
@@ -265,10 +237,6 @@
         if (sidebar) { sidebar.classList.remove('open'); }
     }
 
-    // The toggle is intentionally ungated by viewport width.
-    // On desktop the sidebar is always visible and toggling the
-    // `open` class is harmless. On mobile the class is what
-    // slides the drawer in.
     function toggleSidebar() {
         var sidebar = getSidebar();
         if (!sidebar) { return; }
@@ -690,10 +658,6 @@
         result.teamsTouched = Object.keys(teamsTouched).length;
         return result;
     }
-
-    // ------------------------------------------------------------
-    // Career-transition modal: static form region
-    // ------------------------------------------------------------
 
     function buildCareerTransitionFormHTML(charName) {
         var html = '';
@@ -2764,18 +2728,10 @@
     // SOCIAL TAB
     // ============================================================
     //
-    // The character tab's Social section is now a thin shell around
-    // the shared relationship modal. All form handling, validation,
-    // and rendering live in the standalone social module. This
-    // section only:
-    //
-    //   - opens the shared modal (openRelationshipModal)
-    //   - pre-selects the current character on side 1 when creating
-    //   - delegates delete to SocialCore
-    //   - re-renders the character's Social section after any change
-    //
-    // It does NOT build a form. It does NOT save a relationship.
-    // See the RELATIONSHIP MODAL OWNERSHIP note in the file header.
+    // The character-tab Social section is a thin shell around the
+    // shared relationship modal. All form handling, validation,
+    // rendering, age preview, overlap warning, and child-modal age
+    // info live in the social module.
 
     function bindSocialButtons() {
         addSafeDelegatedListener(
@@ -2861,26 +2817,6 @@
         );
     }
 
-    /**
-     * Open the shared relationship modal.
-     *
-     * DELEGATION CONTRACT:
-     *   This function does not build a form. It calls
-     *   SocialEvents.handleAddRelationship(relId), which installs
-     *   the shared modal shell into document.body on first use,
-     *   populates it, and shows it.
-     *
-     *   When creating a new relationship from the character tab,
-     *   the current character is pre-selected on side 1 AFTER the
-     *   modal opens. The event handlers that clear clarification
-     *   fields on character change are suppressed during this
-     *   pre-selection via a population-guard mechanism inside
-     *   SocialEvents, so pre-selecting does not wipe anything the
-     *   user typed.
-     *
-     *   When editing, the modal is populated from the record; no
-     *   pre-selection is needed.
-     */
     function openRelationshipModal(relId) {
         var charId = typeof window.getCurrentEditId === 'function'
             ? window.getCurrentEditId() : null;
@@ -2898,9 +2834,6 @@
             return;
         }
 
-        // Open the shared modal. relId is null for create, an id
-        // for edit. SocialEvents owns the population guard and the
-        // modal lifecycle from here on.
         try {
             SE.handleAddRelationship(relId || null);
         } catch (err) {
@@ -2914,8 +2847,6 @@
             return;
         }
 
-        // Pre-select the current character on side 1 for CREATE.
-        // On EDIT the modal is already populated from the record.
         if (!relId) {
             var c1 = document.getElementById('rel-char1');
             if (c1) {
@@ -2931,16 +2862,20 @@
                 'function') {
                 window.SocialViews.refreshRelationshipAgePreview();
             }
+            if (window.SocialViews &&
+                typeof window.SocialViews.refreshRomanticOverlapWarning ===
+                'function') {
+                try {
+                    window.SocialViews.refreshRomanticOverlapWarning();
+                } catch (e) {
+                    console.warn(
+                        '[CharacterEvents] overlap warning threw:', e
+                    );
+                }
+            }
         }
     }
 
-    /**
-     * Delete a relationship from the character-tab Social section.
-     *
-     * Delegates the mutation to SocialCore. Refreshes the character
-     * form's Social section afterward, and notifies the standalone
-     * tab's view layer so its list stays in sync.
-     */
     function handleDeleteRelationship(relId) {
         if (!relId) { return; }
 
@@ -2994,8 +2929,6 @@
                 if (result && result.success) {
                     refreshCharacterSocialSection();
 
-                    // Ask the standalone tab to refresh its own
-                    // list/graph, if it happens to be mounted.
                     var SE = getSocialEvents();
                     if (SE && typeof SE.refreshUI === 'function') {
                         try { SE.refreshUI(); } catch (e) {}
@@ -3016,13 +2949,6 @@
             });
     }
 
-    /**
-     * Re-render the character form's Social section.
-     *
-     * Called after any relationship add, edit, or delete that
-     * originated in the character tab. The standalone tab, if
-     * mounted, refreshes itself independently.
-     */
     function refreshCharacterSocialSection() {
         var charId = typeof window.getCurrentEditId === 'function'
             ? window.getCurrentEditId() : null;
