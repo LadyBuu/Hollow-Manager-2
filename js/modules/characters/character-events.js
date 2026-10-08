@@ -9,21 +9,19 @@
  *     close).
  *   - Save / delete / character-select handlers.
  *   - Character list selection checkboxes.
+ *   - JSON import/export buttons (delegates to CharacterJSONIO).
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. All mutations route through CharacterCRUD.
  *   - Rendering. All HTML comes from CharacterForm / CharacterViews
  *     / CharacterClassView / CharacterList.
- *   - The relationship form. The character-tab Social section
- *     delegates to SocialEvents.handleAddRelationship. See the
- *     RELATIONSHIP MODAL OWNERSHIP note below.
+ *   - The relationship form. Delegates to SocialEvents.
+ *   - The JSON import/export mechanics. CharacterJSONIO owns those.
  *
  * RELATIONSHIP MODAL OWNERSHIP:
  *   The character-tab relationship form was retired. Opening the
  *   relationship modal from the character tab now delegates to
- *   SocialEvents.handleAddRelationship, which installs the shared
- *   modal shell into document.body on first use, populates it,
- *   and shows it. See openRelationshipModal for the delegation.
+ *   SocialEvents.handleAddRelationship.
  *
  * MODAL LIFECYCLE:
  *   Reusable modals (relationship, graph) use Modal.hideModal, not
@@ -32,16 +30,22 @@
  * SAVE RE-ENTRANCY:
  *   handleSave() is guarded by _saveInFlight.
  *
- * SELECTION:
- *   The row checkbox toggles a character in and out of the
- *   CharacterList selection set.
+ * JSON IMPORT/EXPORT:
+ *   #export-character-json-btn  exports the current character's
+ *                               full raw record to a JSON file.
+ *   #import-character-json-btn  opens a file picker and fills the
+ *                               form from the selected JSON.
  *
- * SIDEBAR DRAWER:
- *   On mobile, the character sidebar is a fixed overlay.
+ *   The import confirms before overwriting when a character is
+ *   currently selected, because it will replace whatever the user
+ *   has typed into the form. It does NOT save. The user reviews
+ *   and clicks Save.
  *
- * CAREER TRANSITION MODAL:
- *   Element created once per open, appended to document.body,
- *   destroyed on close.
+ *   Both buttons live on the character form's action row (see
+ *   character-form.js getCharacterFormHTML). They are only
+ *   rendered when a character is being edited. The import button
+ *   is also rendered on the "New Character" screen, since
+ *   importing into an empty form is the primary use case.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterAggregator
@@ -64,6 +68,7 @@
  * DEPENDENCIES (MANDATORY AT CALL TIME, WARN-ONLY AT BOOT):
  *   - window.UI_CONSTANTS.MOBILE_BREAKPOINT
  *   - window.SocialEvents (for relationship modal delegation)
+ *   - window.CharacterJSONIO (for JSON import/export buttons)
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.CharacterList
@@ -138,6 +143,7 @@
     function getCharacterList() { return window.CharacterList || null; }
     function getSocialEvents() { return window.SocialEvents || null; }
     function getSocialQueries() { return window.SocialQueries || null; }
+    function getCharacterJSONIO() { return window.CharacterJSONIO || null; }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -194,6 +200,15 @@
                 '[CharacterEvents] SocialEvents not loaded — ' +
                 'Add Relationship from the character tab will fail ' +
                 'until the social module is available.'
+            );
+        }
+
+        if (!window.CharacterJSONIO ||
+            typeof window.CharacterJSONIO.handleExportCurrent !== 'function' ||
+            typeof window.CharacterJSONIO.handleImportIntoForm !== 'function') {
+            console.warn(
+                '[CharacterEvents] CharacterJSONIO not loaded — ' +
+                'JSON import/export buttons will be inactive.'
             );
         }
 
@@ -352,6 +367,93 @@
             .replace(/&/g, '&amp;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // JSON IMPORT / EXPORT
+    // ============================================================
+
+    function bindJsonImportExport() {
+        addSafeDelegatedListener(
+            '#export-character-json-btn',
+            'click',
+            function(e) {
+                e.preventDefault();
+                handleCharacterJsonExport();
+            }
+        );
+
+        addSafeDelegatedListener(
+            '#import-character-json-btn',
+            'click',
+            function(e) {
+                e.preventDefault();
+                handleCharacterJsonImport();
+            }
+        );
+    }
+
+    function handleCharacterJsonExport() {
+        var JsonIo = getCharacterJSONIO();
+        if (!JsonIo ||
+            typeof JsonIo.handleExportCurrent !== 'function') {
+            notify('JSON export is not available.', 'error');
+            return;
+        }
+
+        try {
+            JsonIo.handleExportCurrent();
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] JSON export threw:', err
+            );
+            notify(
+                'JSON export failed: ' + err.message,
+                'error'
+            );
+        }
+    }
+
+    function handleCharacterJsonImport() {
+        var JsonIo = getCharacterJSONIO();
+        if (!JsonIo ||
+            typeof JsonIo.handleImportIntoForm !== 'function') {
+            notify('JSON import is not available.', 'error');
+            return;
+        }
+
+        // Confirm only when we are overwriting a saved character's
+        // form. Importing into the "New Character" screen is the
+        // primary use case and does not need a confirm.
+        var editId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId() : null;
+
+        if (editId) {
+            var char = CharacterQueries.getCharacterById(editId);
+            var name = char
+                ? CharacterQueries.getDisplayName(char)
+                : 'this character';
+
+            if (!confirm(
+                'Importing will replace the form fields for "' +
+                name + '". The stored record will not change until ' +
+                'you click Save. Continue?'
+            )) {
+                return;
+            }
+        }
+
+        try {
+            JsonIo.handleImportIntoForm();
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] JSON import threw:', err
+            );
+            notify(
+                'JSON import failed: ' + err.message,
+                'error'
+            );
+        }
     }
 
     // ============================================================
@@ -1448,6 +1550,10 @@
         bindSpecialMoveButtons();
 
         bindSocialButtons();
+
+        // JSON import / export buttons on the character form
+        // action row.
+        bindJsonImportExport();
 
         _initialized = true;
 
@@ -2727,11 +2833,6 @@
     // ============================================================
     // SOCIAL TAB
     // ============================================================
-    //
-    // The character-tab Social section is a thin shell around the
-    // shared relationship modal. All form handling, validation,
-    // rendering, age preview, overlap warning, and child-modal age
-    // info live in the social module.
 
     function bindSocialButtons() {
         addSafeDelegatedListener(
