@@ -1,6 +1,7 @@
 /**
  * modules/social/social-views.js - Social Views
- * Rendering functions for the standalone Social tab
+ * Rendering functions for the standalone Social tab, plus the
+ * shared relationship modal.
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
@@ -26,35 +27,22 @@
  *   The arrow therefore describes the stored direction, not the
  *   viewer's perspective.
  *
- * ROMANTIC OVERLAP WARNING (this revision):
- *   The relationship modal carries #rel-overlap-warning, a banner
- *   between the year inputs and the Notes field. It is populated
- *   by refreshRomanticOverlapWarning() whenever the pair, type, or
- *   either year changes.
- *
- *   The warning is informational. It does NOT block the save.
- *   The user is authoring fiction; overlapping relationships can
- *   be intentional. See social-core.js for the reasoning.
- *
- *   The banner renders:
- *     - nothing (empty container) when there are no overlaps
- *     - an amber block listing each overlap with the other
- *       character's name and the year range
- *
- * MODAL SHELL OWNERSHIP:
- *   getRelationshipModalHTML() is a top-level export so the modal
- *   markup can be lazily installed into document.body by
- *   SocialEvents when the character-tab Social section needs it.
- *   getSocialHTML() still inlines the modal for the standalone tab.
- *
  * AGE PREVIEW:
  *   refreshRelationshipAgePreview() renders the ages of both
  *   characters at the relationship's start year, end year, and
  *   the current year.
  *
- * CHILD BUTTON:
- *   A clover button appears on every relationship row between two
- *   opposite-sex characters.
+ * ROMANTIC OVERLAP WARNING:
+ *   refreshRomanticOverlapWarning() renders #rel-overlap-warning,
+ *   an amber banner listing any existing exclusive-type
+ *   relationships that cover overlapping years. Information-only;
+ *   it does NOT disable Save.
+ *
+ * CHILD AGE INFO:
+ *   refreshChildAgeInfo() renders #child-age-info, showing both
+ *   parents' ages at the child's birth year and the child's age
+ *   today, with warnings for underage parents or post-death
+ *   births.
  *
  * DEPENDENCIES:
  *   - window.SocialQueries
@@ -64,7 +52,7 @@
  *   - window.DomUtils
  *
  * DEPENDENCIES (OPTIONAL):
- *   - window.SocialCore          (overlap read; skipped if absent)
+ *   - window.SocialCore          (overlap read)
  *   - window.SocialMatcher       (elimination read)
  *   - window.EliminationQueries  (fallback elimination read)
  */
@@ -320,24 +308,6 @@
     // ============================================================
     // RELATIONSHIP MODAL SHELL
     // ============================================================
-    //
-    // Extracted so SocialEvents can lazily install this modal into
-    // document.body when the character tab needs it and the
-    // standalone tab has never been mounted.
-    //
-    // Order of blocks inside the form:
-    //   1. character selects
-    //   2. relationship type
-    //   3. clarifications
-    //   4. years (start, end)
-    //   5. ages preview
-    //   6. overlap warning  <-- new
-    //   7. notes
-    //   8. include-eliminated checkbox
-    //
-    // The overlap warning sits directly below the ages preview so
-    // the user sees "at 12 / 17, and this overlaps with Alice"
-    // together. The two warnings reinforce each other.
 
     function getRelationshipModalHTML() {
         return `
@@ -720,19 +690,6 @@
     // ============================================================
     // ROMANTIC OVERLAP WARNING
     // ============================================================
-    //
-    // Reads the live form (pair, type, years), asks SocialCore
-    // for overlaps, and renders an amber banner listing each one.
-    //
-    // The banner is INFORMATIONAL. It does not block the save.
-    // See social-core.js for why.
-    //
-    // The container is always present in the modal (see
-    // getRelationshipModalHTML). When there are no overlaps, the
-    // container is hidden (display:none) and emptied.
-    //
-    // Reads only the form's live DOM. Never mutates. Safe to call
-    // at any time, including before the modal is visible.
 
     function refreshRomanticOverlapWarning() {
         var host = document.getElementById('rel-overlap-warning');
@@ -762,10 +719,6 @@
         var startRaw = startEl ? String(startEl.value || '').trim() : '';
         var endRaw = endEl ? String(endEl.value || '').trim() : '';
 
-        // Need a complete, non-degenerate form to run the check.
-        // The type must also be an exclusive one; a non-exclusive
-        // type returns an empty overlap list from SocialCore, so
-        // this early-exit is optimisation, not correctness.
         if (!c1Id || !c2Id || !typeId || c1Id === c2Id) {
             host.style.display = 'none';
             host.innerHTML = '';
@@ -773,9 +726,6 @@
         }
 
         var excludeId = null;
-        // When editing, exclude the record being edited. The
-        // caller stores it on the modal as data-edit-id (set by
-        // SocialEvents.handleAddRelationship).
         var modal = document.getElementById('relationship-form-modal');
         if (modal && modal.dataset && modal.dataset.editId) {
             excludeId = modal.dataset.editId;
@@ -801,7 +751,6 @@
             return;
         }
 
-        // Build the banner.
         var html = '';
         html += '<div style="padding:8px 10px;' +
                 'background:var(--warning-soft);' +
@@ -834,8 +783,6 @@
             } else if (o.sharesChar2 && String(o.character2) === String(c2Id)) {
                 otherId = o.character1;
             } else {
-                // Fall back to whichever id is not one of the
-                // candidate pair. Should not happen in practice.
                 otherId = String(o.character1) === String(c1Id) ||
                           String(o.character1) === String(c2Id)
                     ? o.character2
@@ -1330,6 +1277,10 @@
                             </div>
                         </div>
 
+                        <div id="child-age-info"
+                             style="margin-top:12px;padding:10px;background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;">
+                        </div>
+
                         <div id="child-preview" style="margin-top:12px;padding:10px;background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;font-size:0.75rem;"></div>
 
                         <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
@@ -1376,7 +1327,125 @@
         container.dataset.parentAId = String(a.id);
         container.dataset.parentBId = String(b.id);
 
+        refreshChildAgeInfo(container);
         refreshChildPreview(container);
+    }
+
+    /**
+     * Render the parents' ages at the child's birth year and the
+     * child's age today, with warnings for underage parents or
+     * post-death births.
+     *
+     * Reads only the modal's live DOM. Never mutates. Safe to call
+     * at any time, including before the modal is visible.
+     */
+    function refreshChildAgeInfo(container) {
+        if (!container) { return; }
+
+        var infoEl = container.querySelector('#child-age-info');
+        if (!infoEl) { return; }
+
+        var CQ = window.CharacterQueries;
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            infoEl.innerHTML = '';
+            return;
+        }
+
+        var aId = container.dataset.parentAId;
+        var bId = container.dataset.parentBId;
+        if (!aId || !bId) {
+            infoEl.innerHTML = '';
+            return;
+        }
+
+        var a = CQ.getCharacterById(aId);
+        var b = CQ.getCharacterById(bId);
+        if (!a || !b) {
+            infoEl.innerHTML = '';
+            return;
+        }
+
+        var yearInput = container.querySelector('#child-birth-year');
+        var birthYear = yearInput ? parseInt(yearInput.value, 10) : NaN;
+
+        if (isNaN(birthYear) || birthYear < 1) {
+            infoEl.innerHTML =
+                '<span style="color:var(--text-dim);font-size:0.72rem;">' +
+                'Enter a birth year to see ages.' +
+                '</span>';
+            return;
+        }
+
+        function ageAt(char, year) {
+            var by = parseInt(char && char.birthYear, 10);
+            return isNaN(by) ? null : year - by;
+        }
+
+        function diedBefore(char, year) {
+            var dy = parseInt(char && char.deathYear, 10);
+            return !isNaN(dy) && dy < year;
+        }
+
+        var aName = CQ.getDisplayName(a) || 'Parent A';
+        var bName = CQ.getDisplayName(b) || 'Parent B';
+        var aAge = ageAt(a, birthYear);
+        var bAge = ageAt(b, birthYear);
+
+        var currentYear = (window.data &&
+                          typeof window.data.currentYear === 'number' &&
+                          isFinite(window.data.currentYear) &&
+                          window.data.currentYear > 0)
+            ? Math.floor(window.data.currentYear)
+            : new Date().getFullYear();
+
+        var childAgeToday = currentYear - birthYear;
+
+        var warnings = [];
+        if (aAge !== null && aAge < 12) {
+            warnings.push(aName + ' would be ' + aAge + ' at birth.');
+        }
+        if (bAge !== null && bAge < 12) {
+            warnings.push(bName + ' would be ' + bAge + ' at birth.');
+        }
+        if (diedBefore(a, birthYear)) {
+            warnings.push(aName + ' died before this birth year.');
+        }
+        if (diedBefore(b, birthYear)) {
+            warnings.push(bName + ' died before this birth year.');
+        }
+
+        var html = '<div style="font-size:0.75rem;line-height:1.55;' +
+                   'color:var(--text);">';
+        html += '<div><strong style="color:var(--accent);">At birth (' +
+                birthYear + '):</strong></div>';
+        html += '<div>&nbsp;&nbsp;' + escapeHtml(aName) + ': ' +
+                '<strong>' + (aAge === null ? '\u2014' : aAge) + '</strong></div>';
+        html += '<div>&nbsp;&nbsp;' + escapeHtml(bName) + ': ' +
+                '<strong>' + (bAge === null ? '\u2014' : bAge) + '</strong></div>';
+        html += '<div style="margin-top:4px;border-top:1px solid var(--border-soft);' +
+                'padding-top:4px;">';
+        html += '<strong style="color:var(--text-dim);">Today (' +
+                currentYear + '):</strong> child would be <strong>' +
+                childAgeToday + '</strong> year' +
+                (childAgeToday === 1 ? '' : 's') + ' old';
+        if (childAgeToday < 0) {
+            html += ' <span style="color:var(--warning);">(not yet born)</span>';
+        }
+        html += '</div>';
+
+        if (warnings.length > 0) {
+            html += '<div style="margin-top:6px;padding:5px 8px;' +
+                    'background:var(--warning-soft);border-left:3px solid ' +
+                    'var(--warning);border-radius:4px;font-size:0.7rem;">';
+            html += '<strong style="color:var(--warning);">\u26a0 </strong>';
+            html += warnings.map(function(w) {
+                return escapeHtml(w);
+            }).join(' ');
+            html += '</div>';
+        }
+
+        html += '</div>';
+        infoEl.innerHTML = html;
     }
 
     function refreshChildPreview(container) {
@@ -1466,10 +1535,7 @@
         populateTypeSelectors: populateTypeSelectors,
         refreshClarificationLabels: refreshClarificationLabels,
 
-        // Age preview
         refreshRelationshipAgePreview: refreshRelationshipAgePreview,
-
-        // Overlap warning
         refreshRomanticOverlapWarning: refreshRomanticOverlapWarning,
 
         renderRelationships: renderRelationships,
@@ -1479,6 +1545,7 @@
 
         renderChildModalContent: renderChildModalContent,
         refreshChildPreview: refreshChildPreview,
+        refreshChildAgeInfo: refreshChildAgeInfo,
 
         getRelationshipPeriod: getRelationshipPeriod,
 
