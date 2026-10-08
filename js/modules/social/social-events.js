@@ -37,33 +37,25 @@
  *   either character select changes. When a character select
  *   changes, the CORRESPONDING clarification field is cleared.
  *
- * SWAP BUTTON:
- *   For directional types, the form carries #rel-swap-btn.
- *
- * AGE PREVIEW:
- *   refreshRelationshipAgePreview() is called:
+ * AGE PREVIEW + ROMANTIC OVERLAP WARNING:
+ *   Both refresh on the same triggers:
  *     - once on modal open
  *     - on every character-select change
  *     - on every start-year / end-year input
+ *     - on type change
  *     - on swap
+ *     - on include-eliminated toggle
+ *     - after a suggest-pair pick
  *
- * ROMANTIC OVERLAP WARNING (this revision):
- *   refreshRomanticOverlapWarning() is called on the same
- *   triggers as the age preview. It reads the live form (pair,
- *   type, years, edit id) and renders an amber banner in
- *   #rel-overlap-warning listing any overlapping relationships
- *   of the same exclusive type.
- *
- *   The warning is informational. The save is NOT blocked. On
- *   successful save, if the mutation result carries an
- *   `overlaps` array, a follow-up warning notification is shown
- *   so the user notices even if they did not read the banner.
+ * CHILD MODAL AGE INFO + PREVIEW:
+ *   Both refresh on every input/change in the child modal:
+ *     - birth year
+ *     - sex
+ *     - first name
+ *     - last name
  *
  * ELIMINATED CHARACTERS:
- *   The relationship modal carries #rel-include-eliminated. When
- *   unchecked (the default), the character selects hide
- *   characters with any elimination on record. On EDIT mode, the
- *   current value on each side is always preserved.
+ *   The relationship modal carries #rel-include-eliminated.
  *
  * GRAPH DRILL-DOWN:
  *   The graph is FOCUSED. See the graph module for the focus API.
@@ -189,10 +181,6 @@
     var _editId = null;
 
     var _populatingRelationshipForm = false;
-
-    // Tracks whether the relationship form's internal handlers
-    // have been bound. The modal can be installed lazily, in which
-    // case bindRelationshipForm must run once after install.
     var _relationshipFormBound = false;
 
     // ============================================================
@@ -330,16 +318,6 @@
         }
     }
 
-    /**
-     * Open the relationship modal.
-     *
-     * _editId is cleared first, unconditionally. The modal carries
-     * it on dataset.editId so the overlap detector can exclude
-     * the record being edited.
-     *
-     * On open, and whenever the pair, type, or either year changes,
-     * the age preview AND the overlap warning are refreshed.
-     */
     function handleAddRelationship(editId) {
         _editId = editId ? String(editId) : null;
 
@@ -359,8 +337,6 @@
             return;
         }
 
-        // Record the edit id on the modal so the overlap detector
-        // can exclude it.
         if (_editId) {
             modal.dataset.editId = _editId;
         } else {
@@ -378,7 +354,6 @@
             }
         }
 
-        // ---- Begin population guard ----
         _populatingRelationshipForm = true;
 
         try {
@@ -434,11 +409,6 @@
         Modal.showModal(modal);
     }
 
-    /**
-     * Call SocialViews.refreshRomanticOverlapWarning defensively.
-     * The banner is optional; a missing implementation must not
-     * break the modal.
-     */
     function refreshOverlapWarningSafe() {
         if (!SocialViews ||
             typeof SocialViews.refreshRomanticOverlapWarning !== 'function') {
@@ -657,10 +627,6 @@
                 handleCloseRelationshipForm();
                 refreshUI();
 
-                // Surface the overlap set after the save. The save
-                // is not blocked; the warning just follows the
-                // success so the user notices even if they missed
-                // the banner.
                 if (Array.isArray(result.overlaps) &&
                     result.overlaps.length > 0) {
                     notify(
@@ -1281,10 +1247,10 @@
             var el = document.getElementById(id);
             if (el) {
                 addEventListener(el, 'input', function() {
-                    SocialViews.refreshChildPreview(modal);
+                    refreshChildModalSafe(modal);
                 });
                 addEventListener(el, 'change', function() {
-                    SocialViews.refreshChildPreview(modal);
+                    refreshChildModalSafe(modal);
                 });
             }
         });
@@ -1305,6 +1271,33 @@
                 handleOpenCreateChild(aId, bId);
             }
         });
+    }
+
+    /**
+     * Refresh both child-modal surfaces: the age info panel and
+     * the child preview. Both are optional; a missing
+     * implementation must not break the modal.
+     */
+    function refreshChildModalSafe(modal) {
+        if (!SocialViews) { return; }
+        try {
+            if (typeof SocialViews.refreshChildAgeInfo === 'function') {
+                SocialViews.refreshChildAgeInfo(modal);
+            }
+        } catch (e) {
+            console.warn(
+                '[SocialEvents] refreshChildAgeInfo threw:', e
+            );
+        }
+        try {
+            if (typeof SocialViews.refreshChildPreview === 'function') {
+                SocialViews.refreshChildPreview(modal);
+            }
+        } catch (e) {
+            console.warn(
+                '[SocialEvents] refreshChildPreview threw:', e
+            );
+        }
     }
 
     function handleOpenCreateChild(parentAId, parentBId) {
