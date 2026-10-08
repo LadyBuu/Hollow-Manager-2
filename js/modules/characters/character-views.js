@@ -7,32 +7,26 @@
  *
  * This module is responsible for:
  *   - Rendering the character's relationships grouped by type
- *   - Collapsible group sections (state kept per render session)
+ *   - Collapsible group sections
  *   - Ongoing / Ended subsections within each type
  *   - Inline directional arrows for directional relationship types
  *   - The character SVG network graph modal
  *   - Rendering the character's professional team memberships
- *     (Active / Former split), sourced from
- *     TeamQueries.getTeamsForCharacterAllTime
- *   - Rendering the character's department memberships as a
- *     sub-section of the Professional tab
+ *   - Rendering the character's department memberships
  *
  * IMPORTANT:
  *   - RENDER ONLY - no data mutation
- *   - No direct window.data access - uses SocialQueries,
- *     TeamQueries, and DepartmentQueries
+ *   - No direct window.data access
+ *   - Uses SocialQueries, TeamQueries, DepartmentQueries
  *   - Uses SocialConstants for type definitions
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
  *
- * RELATIONSHIP FORM OWNERSHIP (this revision):
+ * RELATIONSHIP FORM OWNERSHIP:
  *   The character-tab relationship form has been RETIRED.
  *   buildRelationshipFormHTML and buildCharacterOptions used to
  *   live here and duplicated the standalone Social tab's form.
- *   That duplication was the source of a data-corruption bug:
- *   the local form called SocialCore.createRelationship with
- *   seven arguments while the core signature takes eight, so
- *   the notes text was landing in clarification2.
+ *   That duplication was the source of a data-corruption bug.
  *
  *   The character-tab Social section now opens the SAME modal the
  *   standalone tab opens, via SocialEvents.handleAddRelationship.
@@ -40,39 +34,16 @@
  *   delegation.
  *
  *   Do NOT reintroduce a relationship-form builder in this file.
- *   One form, one code path, one set of bugs to fix.
  *
- * PROFESSIONAL TEAMS PANEL:
- *   renderCharacterProfessional(char) renders into
- *   #professional-view.
- *
- *   DATA SOURCE:
- *     TeamQueries.getTeamsForCharacterAllTime(char.id, 'professional')
- *     returns every non-deprecated professional team the character
- *     has any member entry on, current or historical.
- *
- *   ACTIVE / FORMER SPLIT:
- *     The current display year (window.data.currentYear) is the
- *     reference point. A member entry is active if any of its
- *     intervals contains that year, and former if no interval
- *     contains it and at least one leavePeriod is strictly before
- *     it.
- *
- * DEPARTMENTS SUB-SECTION:
- *   renderProfessionalDepartmentsSection(char) appends a
- *   "Departments" block below the Professional Teams block on the
- *   same tab. It lists every department the character is an ACTIVE
- *   member of at the current application year, with:
- *     - the department name
- *     - the year they joined (earliest join period across the
- *       intervals that are still within range at the current year)
- *     - "(Head)" when they hold the head role
+ * CLARIFICATION DISPLAY:
+ *   The character-tab row reads the two-sided clarification
+ *   fields (clarification1 / clarification2) and shows THIS
+ *   character's role toward the other side, with a legacy
+ *   fallback for old records that only carry `clarification`.
  *
  * GRAPH NODE COLORS:
- *   The character network graph renders into an SVG. Node colors
- *   are read from --graph-node-* tokens declared in
- *   css/shared.css, so they re-theme with the rest of the app.
- *   Do NOT reintroduce hex literals here.
+ *   Node colors are read from --graph-node-* tokens declared in
+ *   css/shared.css. Do NOT inline hex literals here.
  */
 
 (function() {
@@ -99,7 +70,7 @@
     // STATE - collapse state per (charId, typeId)
     // ============================================================
 
-    var _collapsedGroups = Object.create(null);  // key = charId + '|' + typeId
+    var _collapsedGroups = Object.create(null);
 
     function getGroupKey(charId, typeId) {
         return String(charId) + '|' + String(typeId);
@@ -159,9 +130,6 @@
         return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
     }
 
-    /**
-     * Determine the "other" character in a relationship relative to the context char.
-     */
     function getOtherCharacterId(relationship, charId) {
         if (!relationship || !charId) { return null; }
         var target = String(charId);
@@ -174,35 +142,24 @@
         return null;
     }
 
-    /**
-     * Determine the direction glyph to show next to the other character.
-     * - Undirected: ↔
-     * - Directional: → if the context character is the source
-     *                ← if the context character is the target
-     */
     function getDirectionGlyph(relationship, charId) {
         var SocialConstants = getSocialConstants();
         if (!SocialConstants || typeof SocialConstants.isDirectional !== 'function') {
-            return '↔';
+            return '\u2194';
         }
         if (!SocialConstants.isDirectional(relationship.typeId)) {
-            return '↔';
+            return '\u2194';
         }
         if (String(relationship.character1) === String(charId)) {
-            return '→';
+            return '\u2192';
         }
-        return '←';
+        return '\u2190';
     }
 
     // ============================================================
-    // RENDER - Social tab (main entry point for the Social tab)
+    // RENDER - Social tab
     // ============================================================
 
-    /**
-     * Render the character's social relationships into #character-social-view.
-     *
-     * @param {object|null} char - Character object, or null for empty state
-     */
     function renderCharacterSocial(char) {
         var container = document.getElementById('character-social-view');
         if (!container) { return; }
@@ -229,7 +186,6 @@
             return;
         }
 
-        // ---- Group by type ----
         var byType = Object.create(null);
         relationships.forEach(function(rel) {
             if (!rel || !rel.typeId) { return; }
@@ -239,14 +195,12 @@
             byType[rel.typeId].push(rel);
         });
 
-        // ---- Sort types alphabetically by label ----
         var typeIds = Object.keys(byType).sort(function(a, b) {
             var la = SocialConstants.getLabel(a) || a;
             var lb = SocialConstants.getLabel(b) || b;
             return la.localeCompare(lb);
         });
 
-        // ---- Build HTML ----
         var html = '<div class="relationship-groups" style="display:flex;flex-direction:column;gap:8px;">';
 
         typeIds.forEach(function(typeId) {
@@ -258,9 +212,6 @@
         container.innerHTML = html;
     }
 
-    /**
-     * Render one relationship type group (collapsible).
-     */
     function renderTypeGroup(charId, typeId, relationships) {
         var SocialConstants = getSocialConstants();
         var label = SocialConstants && typeof SocialConstants.getLabel === 'function'
@@ -268,9 +219,8 @@
             : typeId;
         var color = SocialConstants && typeof SocialConstants.getColor === 'function'
             ? SocialConstants.getColor(typeId)
-            : '#7f8c8d';
+            : 'var(--relationship-other)';
 
-        // Split into ongoing and ended
         var ongoing = [];
         var ended = [];
         relationships.forEach(function(rel) {
@@ -282,7 +232,7 @@
         });
 
         var isCollapsed = isGroupCollapsed(charId, typeId);
-        var caret = isCollapsed ? '▸' : '▾';
+        var caret = isCollapsed ? '\u25b8' : '\u25be';
         var bodyDisplay = isCollapsed ? 'none' : 'block';
 
         var count = relationships.length;
@@ -290,14 +240,12 @@
         var html = '';
         html += '<div class="relationship-group" data-type="' + escapeAttribute(typeId) + '" style="background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;overflow:hidden;">';
 
-        // Header
         html += '<div class="relationship-group-header" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border-left:3px solid ' + escapeAttribute(color) + ';">';
         html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
         html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeAttribute(color) + ';">' + escapeHtml(label) + '</span>';
         html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + count + ')</span>';
         html += '</div>';
 
-        // Body
         html += '<div class="relationship-group-body" style="display:' + bodyDisplay + ';padding:6px 10px;">';
 
         if (ongoing.length > 0) {
@@ -314,38 +262,22 @@
             });
         }
 
-        html += '</div>';  // body
-        html += '</div>';  // group
+        html += '</div>';
+        html += '</div>';
 
         return html;
     }
 
-    /**
-     * Render a single relationship row.
-     *
-     * The row shows the OTHER character's name, a direction glyph
-     * relative to the CURRENT character (the viewer), and the
-     * clarification text.
-     *
-     * CLARIFICATION DISPLAY:
-     *   Uses the same two-sided shape as the standalone tab, but
-     *   oriented to this character. When the two clarifications
-     *   differ, the row shows the CURRENT character's role toward
-     *   the other side. That is the value the user cares about
-     *   when viewing from one side.
-     */
     function renderRelationshipRow(charId, rel, color) {
         var otherId = getOtherCharacterId(rel, charId);
         var otherName = getCharacterName(otherId);
         var arrow = getDirectionGlyph(rel, charId);
 
-        // Pick the clarification text that describes THIS character's
-        // role toward the other side.
+        // Read two-sided clarifications with legacy fallback.
         var clar1 = rel.clarification1 !== undefined && rel.clarification1 !== null
             ? String(rel.clarification1) : '';
         var clar2 = rel.clarification2 !== undefined && rel.clarification2 !== null
             ? String(rel.clarification2) : '';
-        // Legacy fallback for old records that carry only `clarification`.
         if (!clar1 && !clar2 && rel.clarification) {
             clar1 = String(rel.clarification);
         }
@@ -363,12 +295,11 @@
             clarDisplay = otherClar;
         }
 
-        // Period display
         var startYear = rel.startYear ? String(rel.startYear) : '';
         var endYear = rel.endYear ? String(rel.endYear) : '';
         var periodDisplay = '';
         if (startYear && endYear) {
-            periodDisplay = startYear + ' – ' + endYear;
+            periodDisplay = startYear + ' \u2013 ' + endYear;
         } else if (startYear) {
             periodDisplay = 'from ' + startYear;
         } else if (endYear) {
@@ -378,7 +309,6 @@
         var html = '';
         html += '<div class="relationship-row" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
 
-        // Other character + arrow + clarification
         html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
         html += '<span style="font-weight:600;">' + escapeHtml(otherName) + '</span>';
         html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + arrow + '</span>';
@@ -387,15 +317,13 @@
         }
         html += '</span>';
 
-        // Period
         if (periodDisplay) {
             html += '<span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(periodDisplay) + '</span>';
         }
 
-        // Actions
         html += '<span style="display:flex;gap:4px;">';
-        html += '<button type="button" class="edit-char-relationship small" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">✎</button>';
-        html += '<button type="button" class="delete-char-relationship small danger" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">✕</button>';
+        html += '<button type="button" class="edit-char-relationship small" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">\u270e</button>';
+        html += '<button type="button" class="delete-char-relationship small danger" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">\u2715</button>';
         html += '</span>';
 
         html += '</div>';
@@ -407,10 +335,6 @@
     // RENDER - Professional tab
     // ============================================================
 
-    /**
-     * Render the character's professional team memberships into
-     * #professional-view.
-     */
     function renderCharacterProfessional(char) {
         var container = document.getElementById('professional-view');
         if (!container) { return; }
@@ -465,7 +389,6 @@
             return;
         }
 
-        // ---- Resolve the reference year for the Active/Former split. ----
         var currentYear = null;
         if (window.data &&
             typeof window.data.currentYear === 'number' &&
@@ -562,14 +485,13 @@
 
         html += '</div>';
 
-        // ---- Departments sub-section ----
         html += renderProfessionalDepartmentsSection(char);
 
         container.innerHTML = html;
     }
 
     // ============================================================
-    // RENDER - Professional tab, departments sub-section
+    // RENDER - Departments sub-section
     // ============================================================
 
     function renderProfessionalDepartmentsSection(char) {
@@ -798,17 +720,13 @@
     // GRAPH MODAL
     // ============================================================
 
-    /**
-     * Build the graph modal shell HTML.
-     * Returned as a single root element string.
-     */
     function buildGraphModalHTML() {
         var html = '';
         html += '<div id="character-graph-modal" class="modal hidden" style="display:none;">';
         html += '<div class="modal-content wide" style="max-width:900px;">';
         html += '<div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
         html += '<h3 style="margin:0;color:var(--accent);font-size:0.95rem;">Character Network</h3>';
-        html += '<button type="button" id="close-char-graph-modal" class="close-modal" style="background:none;border:none;color:var(--text-dim);font-size:1.2rem;cursor:pointer;">×</button>';
+        html += '<button type="button" id="close-char-graph-modal" class="close-modal" style="background:none;border:none;color:var(--text-dim);font-size:1.2rem;cursor:pointer;">\u00d7</button>';
         html += '</div>';
         html += '<div class="modal-body">';
         html += '<div id="character-graph-container" style="width:100%;height:500px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative;">';
@@ -826,14 +744,6 @@
         return html;
     }
 
-    /**
-     * Render the character's network graph.
-     *
-     * NODE COLORS:
-     *   Node fill and stroke are read from the --graph-node-* tokens
-     *   declared in css/shared.css. Those tokens have dark and light
-     *   variants. Do NOT inline hex literals here.
-     */
     function renderCharacterGraph(charId) {
         var svg = document.getElementById('character-graph-svg');
         var transformGroup = document.getElementById('character-graph-transform');
@@ -855,7 +765,6 @@
             return;
         }
 
-        // ---- Build node set (this char + everyone connected to them) ----
         var nodeSet = Object.create(null);
         nodeSet[String(charId)] = true;
         relationships.forEach(function(rel) {
@@ -871,7 +780,6 @@
             return;
         }
 
-        // ---- Compute positions on a circle ----
         var width = container.clientWidth || 800;
         var height = container.clientHeight || 500;
         svg.setAttribute('width', width);
@@ -894,22 +802,19 @@
             };
         });
 
-        // ---- Build SVG content ----
         var html = '';
 
-        // Edges
         relationships.forEach(function(rel) {
             if (!rel) { return; }
             var p1 = positions[String(rel.character1)];
             var p2 = positions[String(rel.character2)];
             if (!p1 || !p2) { return; }
 
-            var color = SocialConstants.getColor(rel.typeId) || '#7f8c8d';
+            var color = SocialConstants.getColor(rel.typeId) || 'var(--relationship-other)';
             var isDir = SocialConstants.isDirectional(rel.typeId);
 
             html += '<line x1="' + p1.x + '" y1="' + p1.y + '" x2="' + p2.x + '" y2="' + p2.y + '" stroke="' + escapeAttribute(color) + '" stroke-width="2" opacity="0.6" />';
 
-            // Directional arrowhead
             if (isDir) {
                 var dx = p2.x - p1.x;
                 var dy = p2.y - p1.y;
@@ -929,7 +834,6 @@
             }
         });
 
-        // Nodes
         nodeIds.forEach(function(id) {
             var pos = positions[id];
             if (!pos) { return; }
@@ -937,7 +841,6 @@
             var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
             var isCenter = String(id) === String(charId);
 
-            // Count connections
             var connCount = 0;
             relationships.forEach(function(rel) {
                 if (!rel) { return; }
@@ -950,7 +853,6 @@
                 ? Math.max(28, Math.min(40, 28 + connCount * 2))
                 : Math.max(20, Math.min(32, 20 + connCount * 2));
 
-            // Node colors come from theme tokens.
             var fill = isCenter
                 ? 'var(--graph-node-accent-fill)'
                 : 'var(--graph-node-info-fill)';
@@ -958,7 +860,6 @@
                 ? 'var(--graph-node-accent-stroke)'
                 : 'var(--graph-node-info-stroke)';
 
-            // Short label
             var label = name;
             if (label.length > 12) {
                 var parts = label.split(' ');
@@ -978,7 +879,6 @@
 
         transformGroup.innerHTML = html;
 
-        // ---- Legend ----
         var usedTypeIds = Object.create(null);
         relationships.forEach(function(rel) {
             if (rel && rel.typeId) { usedTypeIds[rel.typeId] = true; }
@@ -1007,7 +907,7 @@
             span.appendChild(swatch);
 
             var text = document.createElement('span');
-            text.textContent = label + (isDir ? ' →' : '');
+            text.textContent = label + (isDir ? ' \u2192' : '');
             span.appendChild(text);
 
             legendItems.appendChild(span);
@@ -1019,17 +919,12 @@
     // ============================================================
 
     window.CharacterViews = {
-        // Social tab
         renderCharacterSocial: renderCharacterSocial,
-
-        // Professional tab
         renderCharacterProfessional: renderCharacterProfessional,
 
-        // Graph modal
         buildGraphModalHTML: buildGraphModalHTML,
         renderCharacterGraph: renderCharacterGraph,
 
-        // Utilities (exposed for testing)
         clearCollapseState: function() {
             _collapsedGroups = Object.create(null);
         }
