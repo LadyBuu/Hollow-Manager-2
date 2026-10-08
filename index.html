@@ -257,6 +257,12 @@
          completion via a lazy lookup. -->
     <script src="js/modules/characters/character-bulk-create.js"></script>
 
+    <!-- JSON import/export for a single character's full profile.
+         Loads after CharacterCRUD (uses normaliseCharacterData) and
+         before character-events.js (which binds the import/export
+         button click handlers). -->
+    <script src="js/modules/characters/character-json-io.js"></script>
+
     <!-- Career wizard: absorbs no state of its own beyond the
          modal. Reads CharacterQueries and CharacterCRUD lazily.
          Must load after character-crud.js (for
