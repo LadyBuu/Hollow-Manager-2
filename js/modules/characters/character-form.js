@@ -32,6 +32,27 @@
  *     #career-transition-btn. Both are bound by CharacterEvents via
  *     delegation; this file only emits the markup.
  *
+ * ACTION ROW (this revision):
+ *   The form action row (bottom of the form) carries a set of
+ *   left-aligned buttons and a set of right-aligned buttons.
+ *
+ *   LEFT:
+ *     Import JSON     — always present (New + Edit). Fills the form
+ *                       from a JSON file via CharacterJSONIO. The
+ *                       primary use case is importing into a blank
+ *                       form, so the button must be there when
+ *                       editId is null.
+ *     Export JSON     — Edit only. Dumps the saved record to a file.
+ *     Export Report   — Edit only. Human-readable text report.
+ *     Delete          — Edit only.
+ *
+ *   RIGHT:
+ *     Cancel
+ *     Create / Update
+ *
+ *   The buttons are wired by delegation in character-events.js via
+ *   their ids. This file only emits the markup.
+ *
  * DEPENDENCIES (LAZILY LOADED):
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
@@ -711,20 +732,50 @@
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
-        var leftActionsHTML = editId
-            ? (
+        // ---- Left actions: destructive + import/export ----
+        //
+        // Import JSON is available on BOTH the New Character and
+        // Edit Character screens. Importing into a blank form is
+        // the primary use case (fill out a full profile at once
+        // from a JSON file), so the button must be present when
+        // editId is null.
+        //
+        // Export JSON, Export Report, and Delete only make sense
+        // when editing a saved character, because there is no
+        // record to export or delete otherwise.
+        var leftActionsHTML = '';
+
+        leftActionsHTML +=
+            '<button type="button" ' +
+                'id="import-character-json-btn" ' +
+                'class="secondary small" ' +
+                'title="Import a full character profile from a JSON file" ' +
+                'style="font-size:0.75rem;padding:6px 12px;">' +
+                'Import JSON' +
+            '</button>';
+
+        if (editId) {
+            leftActionsHTML +=
                 '<button type="button" ' +
-                    'id="delete-char-btn" ' +
-                    'class="danger small" ' +
+                    'id="export-character-json-btn" ' +
+                    'class="secondary small" ' +
+                    'title="Export this character\'s full profile as JSON" ' +
                     'style="font-size:0.75rem;padding:6px 12px;">' +
-                    'Delete</button>' +
+                    'Export JSON' +
+                '</button>' +
                 '<button type="button" ' +
                     'id="export-character-report-btn" ' +
                     'class="secondary small" ' +
                     'style="font-size:0.75rem;padding:6px 12px;">' +
-                    'Export</button>'
-            )
-            : '';
+                    'Export Report' +
+                '</button>' +
+                '<button type="button" ' +
+                    'id="delete-char-btn" ' +
+                    'class="danger small" ' +
+                    'style="font-size:0.75rem;padding:6px 12px;">' +
+                    'Delete' +
+                '</button>';
+        }
 
         return `
             <div class="character-form-container">
@@ -741,7 +792,7 @@
                     ${getSocialTabHTML(char || {})}
                     ${getNotesTabHTML(char || {})}
                 </div>
-                <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);align-items:center;">
+                <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);align-items:center;flex-wrap:wrap;">
                     ${leftActionsHTML}
                     <div style="flex:1;"></div>
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
