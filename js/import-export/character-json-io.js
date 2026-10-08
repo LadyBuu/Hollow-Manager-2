@@ -7,15 +7,13 @@
  *   - Exporting a single character's FULL raw record to a JSON file.
  *     The export is the record as stored, verbatim — no stripping, no
  *     projection, no migration. Every field the store carries is
- *     included: identity, name parts, physical, personality, stats,
- *     magic, HP/MP, weapons, special moves, careerStatus, classIds,
- *     parentIds, eliminations, everything.
+ *     included.
  *
- *   - Importing a JSON file into the character form. The file is
- *     parsed, normalised through CharacterCRUD.normaliseCharacterData
- *     (so it lands in the same shape the form and the store expect),
- *     and then written into the form fields via CharacterForm. The
- *     user then reviews and clicks Save.
+ *   - Importing a JSON blob into the character form. The blob is
+ *     pasted by the user into a modal textarea, parsed, normalised
+ *     through CharacterCRUD.normaliseCharacterData, and then written
+ *     into the form fields via CharacterForm. The user then reviews
+ *     and clicks Save.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Persistence. Import does NOT write to the store. It fills the
@@ -23,53 +21,53 @@
  *     silently overwrites a store record would be a foot-gun.
  *   - Field enumeration. normaliseCharacterData is the canonical
  *     shape; this module delegates to it.
- *   - The form's field ids. CharacterForm owns those. This module
- *     reads them via a small mapping table so a field rename in the
- *     form is a one-line change here.
+ *   - The form's field ids. CharacterForm owns those.
+ *
+ * IMPORT INPUT (this revision):
+ *   The import path is a MODAL with a textarea, not a file picker.
+ *   The user pastes the JSON text directly, clicks Import, and the
+ *   form fills. This is faster than a file round-trip for the
+ *   primary use case (hand-authoring a character profile in a text
+ *   editor and pasting it in) and works on machines where the user
+ *   has the JSON on the clipboard but not on disk.
+ *
+ *   The modal also carries a small "Load from file" link for users
+ *   who do have a file. That link is a convenience, not the primary
+ *   path — it opens a file picker whose selection is dropped into
+ *   the textarea. The user still clicks Import.
+ *
+ *   The modal is created fresh per open and destroyed on close, so
+ *   no state leaks between invocations.
  *
  * EXPORT SHAPE:
  *   A single JSON object: the full character record. Not wrapped in
  *   an envelope, not arrayed. Filename is derived from the character
- *   name:
- *
- *     character-<first>-<last>.json
- *
- *   with non-alphanumeric characters in the name replaced by hyphens
- *   and lowercased.
+ *   name: character-<first>-<last>.json.
  *
  * IMPORT SHAPE:
- *   The file may contain either:
+ *   The pasted text may contain either:
  *     - a single character object: { firstName, lastName, ... }
  *     - an array of character objects: [ {...}, {...} ] — in which
- *       case only the FIRST entry is imported, because the target is
- *       the character form and the form holds one character.
+ *       case only the FIRST entry is imported, because the target
+ *       is the character form and the form holds one character.
  *
  *   Unknown keys are ignored. Missing keys fall back to defaults via
- *   normaliseCharacterData. Malformed JSON is rejected with a
- *   notification and no form change.
- *
- * WHY NOT REUSE THE EXISTING IMPORT/EXPORT PIPELINE:
- *   js/import-export/* is a full-database pipeline (envelope, format
- *   migration, cross-domain validation, staged import). It is the
- *   right tool for a whole save file. It is the wrong tool for
- *   "fill out THIS ONE character." This module is the narrow,
- *   character-scoped equivalent: read one record, write one record.
+ *   normaliseCharacterData. Malformed JSON is rejected with an
+ *   inline error in the modal; the form is not touched.
  *
  * SECURITY:
- *   The module never executes anything from the JSON. It parses with
- *   JSON.parse, hands the result to normaliseCharacterData, and
- *   writes the result into the DOM via FormUtils. A hostile JSON
- *   can produce bad values in fields, but cannot run code.
+ *   The module never executes anything from the pasted text. It
+ *   parses with JSON.parse, hands the result to
+ *   normaliseCharacterData, and writes the result into the DOM via
+ *   FormUtils.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
  *   - window.CharacterForm
  *   - window.FormUtils
+ *   - window.Modal
  *   - window.NotificationSystem
- *
- * DEPENDENCIES (OPTIONAL):
- *   - window.DomUtils  (used only for one confirm-adjacent message)
  */
 
 (function() {
@@ -87,6 +85,7 @@
     var CharacterCRUD = window.CharacterCRUD;
     var CharacterForm = window.CharacterForm;
     var FormUtils = window.FormUtils;
+    var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
 
     var _missing = [];
@@ -111,6 +110,13 @@
         typeof FormUtils.setField !== 'function') {
         _missing.push('FormUtils.setField');
     }
+    if (!Modal ||
+        typeof Modal.createModal !== 'function' ||
+        typeof Modal.showModal !== 'function' ||
+        typeof Modal.closeModal !== 'function' ||
+        typeof Modal.modalSetup !== 'function') {
+        _missing.push('Modal API');
+    }
     if (!NotificationSystem ||
         typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
@@ -124,6 +130,15 @@
     }
 
     window.__characterJsonIoLoaded = true;
+
+    // ============================================================
+    // MODULE STATE
+    // ============================================================
+
+    var _modal = null;
+    var _contentEl = null;
+    var _clickHandler = null;
+    var _keydownHandler = null;
 
     // ============================================================
     // HELPERS
@@ -171,8 +186,6 @@
         document.body.appendChild(a);
         a.click();
 
-        // Give the browser a beat to start the download before we
-        // revoke the object URL.
         setTimeout(function() {
             try {
                 document.body.removeChild(a);
@@ -181,16 +194,24 @@
         }, 100);
     }
 
+    function escapeHtml(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     // ============================================================
     // EXPORT
     // ============================================================
 
-    /**
-     * Export a single character's full raw record as a JSON file.
-     *
-     * @param {string} charId
-     * @returns {object} { exported: boolean, filename?: string, error?: string }
-     */
     function exportCharacter(charId) {
         if (!charId) {
             return { exported: false, error: 'No character id supplied.' };
@@ -201,9 +222,6 @@
             return { exported: false, error: 'Character not found.' };
         }
 
-        // Deep clone via JSON round-trip so the export is a frozen
-        // snapshot, not a live reference to the store record. Then
-        // write the snapshot.
         var snapshot;
         try {
             snapshot = JSON.parse(JSON.stringify(char));
@@ -229,20 +247,8 @@
     }
 
     // ============================================================
-    // FORM FIELD MAP
+    // FORM FIELD WRITERS
     // ============================================================
-    //
-    // One entry per form field this module writes. The left side is
-    // the path into the normalised character record. The right side
-    // is the form element id, or a writer function.
-    //
-    // Scalars are written with a string id and FormUtils.setField.
-    // Arrays and derived structures are written by a function that
-    // receives the record and returns nothing.
-    //
-    // Adding a new form field: add an entry. Removing one: delete
-    // the entry. This is the ONLY place that needs to know about
-    // both the record shape and the form shape at the same time.
 
     function writeScalarField(id, value) {
         FormUtils.setField(id, value);
@@ -370,19 +376,12 @@
 
     /**
      * Write a normalised character record into the live form.
-     *
-     * Does NOT save. Does NOT touch the store. Only writes DOM fields.
-     *
-     * @param {object} record - A normalised character record (the
-     *   output of CharacterCRUD.normaliseCharacterData, or an
-     *   equivalent shape).
-     * @returns {boolean} true when at least the required identity
-     *   fields were written.
+     * Does NOT save. Does NOT touch the store.
      */
     function writeRecordToForm(record) {
         if (!record || typeof record !== 'object') { return false; }
 
-        // ---- Name block ----
+        // Name block
         writeScalarField('char-firstName',  record.firstName  || '');
         writeScalarField('char-middleName', record.middleName || '');
         writeScalarField('char-lastName',   record.lastName   || '');
@@ -391,18 +390,18 @@
         writePreviousNames(record);
         writeDisplayParts(record);
 
-        // ---- Identity block ----
+        // Identity block
         writeScalarField('char-birthYear',  record.birthYear  || '');
         writeScalarField('char-gender',     record.gender     || '');
         writeScalarField('char-attraction', record.attraction || '');
 
-        // ---- Deceased block ----
+        // Deceased block
         writeScalarField('char-deathYear',  record.deathYear  || '');
         writeScalarField('char-deathAge',   record.deathAge   || '');
         writeScalarField('char-deathCause', record.deathCause || '');
         writeDeceasedState(record);
 
-        // ---- Physical block ----
+        // Physical block
         writeScalarField('char-eyes',            record.eyes            || '');
         writeScalarField('char-hair',            record.hair            || '');
         writeScalarField('char-skin',            record.skin            || '');
@@ -411,14 +410,14 @@
         writeScalarField('char-build',           record.build           || '');
         writeScalarField('char-appearanceNotes', record.appearanceNotes || '');
 
-        // ---- Personality block ----
+        // Personality block
         writePersonality(record);
 
-        // ---- Professional block ----
+        // Professional block
         writeScalarField('char-specialty', record.specialty || '');
         writeCareerStatus(record);
 
-        // ---- Combat block ----
+        // Combat block
         writeStats(record);
         writeScalarField('char-hp', record.hp || 0);
         writeScalarField('char-mp', record.mp || 0);
@@ -426,136 +425,242 @@
         writeWeapons(record);
         writeScalarField('char-combat-notes', record.combatNotes || '');
 
-        // ---- Notes block ----
+        // Notes block
         writeScalarField('char-notes-tab', record.notes || '');
 
-        // ---- Filler flag ----
+        // Filler flag
         writeIsFiller(record);
 
         return true;
     }
 
     // ============================================================
-    // IMPORT
+    // PARSE
     // ============================================================
 
     /**
-     * Parse a JSON file and fill the form. Does NOT save.
+     * Parse a JSON blob and fill the form. Does NOT save.
      *
-     * @param {File} file - A File from an <input type="file">.
-     * @returns {Promise<{ imported: boolean, error?: string }>}
+     * @param {string} text - The raw JSON text.
+     * @returns {object} { imported: boolean, error?: string }
      */
-    function importFile(file) {
-        if (!file) {
-            return Promise.resolve({
-                imported: false,
-                error: 'No file supplied.'
-            });
+    function importText(text) {
+        if (typeof text !== 'string' || text.trim() === '') {
+            return { imported: false, error: 'Paste a JSON object first.' };
         }
 
-        return new Promise(function(resolve) {
-            var reader = new FileReader();
+        var parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (e) {
+            return {
+                imported: false,
+                error: 'Not valid JSON: ' + e.message
+            };
+        }
 
-            reader.onerror = function() {
-                resolve({
+        var record = parsed;
+        if (Array.isArray(parsed)) {
+            if (parsed.length === 0) {
+                return {
                     imported: false,
-                    error: 'Failed to read the file.'
-                });
+                    error: 'The array is empty.'
+                };
+            }
+            record = parsed[0];
+        }
+
+        if (!record || typeof record !== 'object') {
+            return {
+                imported: false,
+                error: 'The text does not contain a character object.'
             };
+        }
 
-            reader.onload = function() {
-                var text = reader.result;
-                var parsed;
-
-                try {
-                    parsed = JSON.parse(String(text));
-                } catch (e) {
-                    resolve({
-                        imported: false,
-                        error: 'Not valid JSON: ' + e.message
-                    });
-                    return;
-                }
-
-                // Accept a single object or an array. If an array,
-                // take the first entry.
-                var record = parsed;
-                if (Array.isArray(parsed)) {
-                    if (parsed.length === 0) {
-                        resolve({
-                            imported: false,
-                            error: 'File contains an empty array.'
-                        });
-                        return;
-                    }
-                    record = parsed[0];
-                }
-
-                if (!record || typeof record !== 'object') {
-                    resolve({
-                        imported: false,
-                        error: 'File does not contain a character object.'
-                    });
-                    return;
-                }
-
-                // Normalise through the CRUD pipeline so the record
-                // lands in the same shape the store expects. This
-                // also fills missing fields with defaults and clamps
-                // out-of-range values.
-                var normalised;
-                try {
-                    normalised = CharacterCRUD.normaliseCharacterData(record);
-                } catch (e) {
-                    resolve({
-                        imported: false,
-                        error: 'Failed to normalise record: ' + e.message
-                    });
-                    return;
-                }
-
-                // Identity check. The normalised record must at
-                // least carry a first and last name, or the form
-                // will not be able to save it later.
-                if (!normalised.firstName || !normalised.lastName) {
-                    resolve({
-                        imported: false,
-                        error: 'Record is missing firstName or lastName.'
-                    });
-                    return;
-                }
-
-                var wrote = writeRecordToForm(normalised);
-                if (!wrote) {
-                    resolve({
-                        imported: false,
-                        error: 'Failed to write record into the form.'
-                    });
-                    return;
-                }
-
-                resolve({ imported: true });
+        var normalised;
+        try {
+            normalised = CharacterCRUD.normaliseCharacterData(record);
+        } catch (e) {
+            return {
+                imported: false,
+                error: 'Failed to normalise record: ' + e.message
             };
+        }
 
-            reader.readAsText(file);
-        });
+        if (!normalised.firstName || !normalised.lastName) {
+            return {
+                imported: false,
+                error: 'Record is missing firstName or lastName.'
+            };
+        }
+
+        var wrote = writeRecordToForm(normalised);
+        if (!wrote) {
+            return {
+                imported: false,
+                error: 'Failed to write record into the form.'
+            };
+        }
+
+        return { imported: true };
     }
 
     // ============================================================
-    // FILE INPUT FACTORY
+    // IMPORT MODAL
     // ============================================================
 
-    /**
-     * Create a hidden file input, wire it, and click it. The input
-     * removes itself from the DOM after the read completes or the
-     * user cancels.
-     *
-     * Using a fresh input per invocation is more robust than reusing
-     * a single one, because a reused input can fire `change` with
-     * the previous file's value when the user picks the same file
-     * twice.
-     */
-    function triggerImportPicker() {
+    function buildModalHTML() {
+        return `
+            <div class="modal-header">
+                <h3>Import Character JSON</h3>
+                <button type="button" class="close-modal" data-json-action="close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="field-hint" style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px 0;line-height:1.45;">
+                    Paste a character object as JSON. The form will fill with
+                    the values, but nothing is saved until you click
+                    <strong>Save</strong> on the character form. A single object
+                    or an array of objects is accepted; an array imports only
+                    the first entry.
+                </p>
+
+                <textarea id="character-json-paste-input"
+                          spellcheck="false"
+                          autocomplete="off"
+                          placeholder='{ "firstName": "Alice", "lastName": "Blackwood", "birthYear": "1900", ... }'
+                          style="width:100%;min-height:260px;padding:8px 10px;
+                                 background:var(--bg);
+                                 border:1px solid var(--border);
+                                 color:var(--text);
+                                 border-radius:6px;
+                                 font-family:monospace;
+                                 font-size:0.72rem;
+                                 line-height:1.5;
+                                 resize:vertical;
+                                 white-space:pre;
+                                 overflow:auto;"></textarea>
+
+                <div id="character-json-error"
+                     style="display:none;margin-top:8px;padding:6px 10px;
+                            background:var(--danger-soft);
+                            border-left:3px solid var(--danger);
+                            border-radius:4px;
+                            font-size:0.72rem;
+                            color:var(--danger);"></div>
+
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;">
+                    <button type="button"
+                            class="secondary small"
+                            data-json-action="file"
+                            style="font-size:0.7rem;padding:4px 10px;">
+                        Load from file...
+                    </button>
+                    <span style="font-size:0.65rem;color:var(--text-dim);">
+                        Or paste directly with Ctrl+V / Cmd+V
+                    </span>
+                </div>
+            </div>
+            <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft);">
+                <button type="button" class="secondary" data-json-action="close">Cancel</button>
+                <button type="button" class="primary" data-json-action="import">Import</button>
+            </div>
+        `;
+    }
+
+    function showError(contentEl, message) {
+        var errorEl = contentEl.querySelector('#character-json-error');
+        if (!errorEl) { return; }
+        if (!message) {
+            errorEl.style.display = 'none';
+            errorEl.textContent = '';
+            return;
+        }
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+    }
+
+    function getPasteEl(contentEl) {
+        return contentEl.querySelector('#character-json-paste-input');
+    }
+
+    function closeImportModal() {
+        var modal = _modal;
+        var contentEl = _contentEl;
+
+        if (contentEl && _clickHandler) {
+            try {
+                contentEl.removeEventListener('click', _clickHandler);
+            } catch (e) {}
+        }
+        if (contentEl && _keydownHandler) {
+            try {
+                contentEl.removeEventListener('keydown', _keydownHandler);
+            } catch (e) {}
+        }
+
+        _modal = null;
+        _contentEl = null;
+        _clickHandler = null;
+        _keydownHandler = null;
+
+        if (modal) {
+            try { Modal.closeModal(modal); } catch (e) {}
+        }
+    }
+
+    function handleClick(e) {
+        var target = e.target;
+        if (!target || typeof target.closest !== 'function') { return; }
+
+        var actionEl = target.closest('[data-json-action]');
+        if (!actionEl || !actionEl.dataset) { return; }
+
+        var action = actionEl.dataset.jsonAction;
+
+        if (action === 'close') {
+            e.preventDefault();
+            closeImportModal();
+            return;
+        }
+
+        if (action === 'import') {
+            e.preventDefault();
+            doImport();
+            return;
+        }
+
+        if (action === 'file') {
+            e.preventDefault();
+            openFilePickerIntoTextarea();
+            return;
+        }
+    }
+
+    function doImport() {
+        var contentEl = _contentEl;
+        if (!contentEl) { return; }
+
+        var pasteEl = getPasteEl(contentEl);
+        if (!pasteEl) { return; }
+
+        var text = String(pasteEl.value || '');
+
+        var result = importText(text);
+
+        if (result.imported) {
+            closeImportModal();
+            notify(
+                'Character profile imported into the form. Review ' +
+                'the fields, then click Save.',
+                'success'
+            );
+            return;
+        }
+
+        showError(contentEl, result.error || 'Import failed.');
+    }
+
+    function openFilePickerIntoTextarea() {
         var input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json,application/json';
@@ -568,21 +673,23 @@
                 return;
             }
 
-            importFile(file).then(function(result) {
-                if (result.imported) {
-                    notify(
-                        'Character profile imported into the form. ' +
-                        'Review the fields, then click Save.',
-                        'success'
-                    );
-                } else {
-                    notify(
-                        'Import failed: ' + (result.error || 'Unknown error'),
-                        'error'
-                    );
+            var reader = new FileReader();
+            reader.onerror = function() {
+                showError(_contentEl, 'Failed to read the file.');
+                cleanup();
+            };
+            reader.onload = function() {
+                var text = String(reader.result || '');
+                var pasteEl = getPasteEl(_contentEl);
+                if (pasteEl) {
+                    pasteEl.value = text;
+                    // Clear any stale error the user is looking at.
+                    showError(_contentEl, '');
+                    pasteEl.focus();
                 }
                 cleanup();
-            });
+            };
+            reader.readAsText(file);
         });
 
         function cleanup() {
@@ -597,18 +704,57 @@
         input.click();
     }
 
+    function openImportModal() {
+        closeImportModal();
+
+        var shell = Modal.createModal('character-json-import-modal');
+        if (!shell) {
+            notify('Could not open import modal.', 'error');
+            return null;
+        }
+        shell.id = 'character-json-import-modal';
+
+        var contentEl = document.createElement('div');
+        contentEl.className = 'modal-content wide';
+        shell.appendChild(contentEl);
+
+        _modal = shell;
+        _contentEl = contentEl;
+
+        contentEl.innerHTML = buildModalHTML();
+
+        _clickHandler = handleClick;
+        _keydownHandler = function(e) {
+            // Ctrl/Cmd + Enter triggers Import from the textarea.
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                doImport();
+            }
+        };
+
+        contentEl.addEventListener('click', _clickHandler);
+        contentEl.addEventListener('keydown', _keydownHandler);
+
+        Modal.modalSetup(shell, function() {
+            closeImportModal();
+        });
+        Modal.showModal(shell);
+
+        // Focus the textarea after the modal has settled.
+        setTimeout(function() {
+            var pasteEl = getPasteEl(contentEl);
+            if (pasteEl && typeof pasteEl.focus === 'function') {
+                try { pasteEl.focus(); } catch (e) {}
+            }
+        }, 50);
+
+        return shell;
+    }
+
     // ============================================================
     // PUBLIC ENTRY POINTS
     // ============================================================
 
-    /**
-     * Export the currently-edited character to a JSON file.
-     *
-     * Caller is expected to have confirmed there IS a current
-     * character. This function does not raise its own confirm.
-     *
-     * @returns {Promise<{ exported: boolean, filename?: string, error?: string }>}
-     */
     function handleExportCurrent() {
         var charId = (typeof window.getCurrentEditId === 'function')
             ? window.getCurrentEditId()
@@ -640,7 +786,7 @@
     }
 
     /**
-     * Open a file picker and import the selected JSON into the form.
+     * Open the import modal.
      *
      * When the form is currently showing a saved character, the
      * caller should have confirmed that the in-form data will be
@@ -648,7 +794,7 @@
      * trusts the caller's context.
      */
     function handleImportIntoForm() {
-        triggerImportPicker();
+        openImportModal();
     }
 
     // ============================================================
@@ -657,7 +803,7 @@
 
     window.CharacterJSONIO = Object.freeze({
         exportCharacter: exportCharacter,
-        importFile: importFile,
+        importText: importText,
 
         handleExportCurrent: handleExportCurrent,
         handleImportIntoForm: handleImportIntoForm,
@@ -677,7 +823,7 @@
 
         var required = [
             'exportCharacter',
-            'importFile',
+            'importText',
             'handleExportCurrent',
             'handleImportIntoForm',
             'writeRecordToForm'
