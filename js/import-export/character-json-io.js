@@ -17,27 +17,39 @@
  *
  * WHAT THIS DOES NOT OWN:
  *   - Persistence. Import does NOT write to the store. It fills the
- *     form. The user saves. This is deliberate: an import that
- *     silently overwrote a store record would be a foot-gun.
+ *     form. The user saves.
  *   - Field enumeration. normaliseCharacterData is the canonical
  *     shape; this module delegates to it.
  *   - The form's field ids. CharacterForm owns those.
  *
- * DOWNLOAD RELIABILITY (this revision):
- *   downloadJson no longer revokes the blob URL. The previous
- *   implementation revoked it 100ms after click, which on Chrome
+ * DOWNLOAD RELIABILITY:
+ *   Every download uses a fresh anchor, a fresh blob URL, and a
+ *   TIMESTAMP-SUFFIXED filename. The timestamp is what makes the
+ *   second download in a session work:
+ *
+ *     Browsers refuse to write a second file with the same name
+ *     in the same session without user confirmation. If the
+ *     confirmation dialog is suppressed (which it is when the tab
+ *     is unfocused or "ask where to save" is off), the download
+ *     is silently dropped and JS has no way to know.
+ *
+ *     A unique filename sidesteps the collision entirely. The
+ *     browser sees a new file and writes it.
+ *
+ *   The blob URL is deliberately NOT revoked. Revoking on a timer
  *   raced the browser's download manager and killed the download
  *   for larger payloads. Modern browsers reclaim blob URLs on
  *   page unload, so leaving them alive costs nothing measurable.
  *
- *   The anchor is also removed synchronously, immediately after
- *   click() returns, and the removal is guarded. A double-click on
- *   Export can no longer throw inside a stale timeout.
+ *   The anchor is removed synchronously, immediately after click
+ *   returns, and the removal is guarded.
  *
- *   The toast reports success only after the click has been
- *   dispatched. Whether the browser actually writes the file is
- *   outside our control; a dispatched download on a modern browser
- *   reliably produces a file.
+ *   The click MUST be dispatched synchronously inside the user
+ *   gesture handler. Any async step in the click path (a
+ *   Promise.then, a setTimeout, an await) causes the browser to
+ *   stop treating the download as user-initiated and apply the
+ *   "one automatic download per gesture" rule. handleExportCurrent
+ *   is synchronous through to a.click() for this reason.
  *
  * IMPORT INPUT:
  *   The import path is a MODAL with a textarea, not a file picker.
@@ -48,8 +60,8 @@
  *
  * EXPORT SHAPE:
  *   A single JSON object: the full character record. Not wrapped in
- *   an envelope, not arrayed. Filename is derived from the character
- *   name: character-<first>-<last>.json.
+ *   an envelope, not arrayed. Filename:
+ *     character-<first>-<last>-<YYYYMMDD-HHMMSS>.json
  *
  * IMPORT SHAPE:
  *   The pasted text may contain either:
@@ -181,18 +193,67 @@
         return 'character-' + stem + '.json';
     }
 
+    function pad2(n) {
+        return n < 10 ? '0' + n : String(n);
+    }
+
+    /**
+     * Insert a local-time timestamp into a filename, immediately
+     * before the extension.
+     *
+     *   "character-alice.json"  ->  "character-alice-20261009-143052.json"
+     *   "character-alice"       ->  "character-alice-20261009-143052"
+     *   ""                      ->  "download-20261009-143052"
+     *
+     * Two-digit fields, no punctuation inside the timestamp itself,
+     * so the result is filesystem-safe on every OS.
+     *
+     * The timestamp is what makes the second download in a session
+     * work: browsers silently drop a download whose target file
+     * already exists, and JS has no way to detect the drop.
+     */
+    function appendTimestampToFilename(filename) {
+        var now = new Date();
+        var stamp =
+            String(now.getFullYear()) +
+            pad2(now.getMonth() + 1) +
+            pad2(now.getDate()) + '-' +
+            pad2(now.getHours()) +
+            pad2(now.getMinutes()) +
+            pad2(now.getSeconds());
+
+        var name = String(filename || '').trim();
+        if (name === '') {
+            return 'download-' + stamp;
+        }
+
+        var dotIndex = name.lastIndexOf('.');
+        if (dotIndex <= 0) {
+            // No extension, or dotfile. Append at the end.
+            return name + '-' + stamp;
+        }
+
+        var stem = name.substring(0, dotIndex);
+        var ext = name.substring(dotIndex);
+
+        return stem + '-' + stamp + ext;
+    }
+
     /**
      * Trigger a browser download of a JSON blob.
      *
-     * The blob URL is deliberately NOT revoked. Revoking on a timer
-     * raced the browser's download manager on Chrome and killed the
+     * Every call uses a fresh anchor, a fresh blob URL, and a
+     * timestamp-suffixed filename. See the file header for the
+     * reasoning behind each.
+     *
+     * The blob URL is deliberately NOT revoked. Revoking on a
+     * timer raced the browser's download manager and killed the
      * download for larger payloads. Modern browsers reclaim blob
-     * URLs on page unload, so leaving them alive costs nothing
-     * measurable.
+     * URLs on page unload.
      *
      * The anchor is removed synchronously, immediately after click
-     * returns. By that point the download has been dispatched to the
-     * browser's download manager and the anchor is no longer needed.
+     * returns. By that point the download has been dispatched to
+     * the browser's download manager and the anchor is finished.
      * The removal is guarded against a missing parent so a stray
      * double-click on Export cannot throw.
      */
@@ -201,9 +262,11 @@
         var blob = new Blob([text], { type: 'application/json' });
         var url = URL.createObjectURL(blob);
 
+        var stampedName = appendTimestampToFilename(filename);
+
         var a = document.createElement('a');
         a.href = url;
-        a.download = filename;
+        a.download = stampedName;
         a.rel = 'noopener';
         a.style.display = 'none';
 
@@ -212,8 +275,6 @@
         try {
             a.click();
         } finally {
-            // Remove synchronously. The click already dispatched the
-            // download; the anchor is finished.
             try {
                 if (a.parentNode) {
                     a.parentNode.removeChild(a);
@@ -828,7 +889,8 @@
 
         // Exposed for tests / advanced callers
         writeRecordToForm: writeRecordToForm,
-        buildFilename: buildFilename
+        buildFilename: buildFilename,
+        appendTimestampToFilename: appendTimestampToFilename
     });
 
     // ============================================================
