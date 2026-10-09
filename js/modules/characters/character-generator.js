@@ -41,20 +41,16 @@
  *   Fourteen fields, generated from independent pools. No
  *   archetype system. No hidden dimensions.
  *
- *   Trait pools carry 2-3 short adjectives each. They read as a
- *   comma list and stay fast to scan.
- *
- *   Trait rows describe a mix of qualities — not a single quality
- *   re-shuffled. Every row in the pool should be reorderable
- *   against every OTHER row without producing the same character.
- *   "Brave, Bold, Reckless" and "Bold, Daring, Reckless" are the
- *   same person; only one of them belongs here.
- *
- *   Every OTHER pool carries a single tag or short phrase. The
- *   field label already says what the value is (Bonds, Fears,
- *   Goals). The value itself does not need to repeat that.
- *
  *   Trait picks are weighted 70/30 core-to-behavioural.
+ *
+ * TRAIT POOLS (this revision):
+ *   The trait pools are expanded with descriptors mined from the
+ *   graduates file. Existing rows are preserved in their original
+ *   order; new rows are appended at the end of each pool under an
+ *   "EXPANSION" banner. Row format is unchanged: three short
+ *   descriptors, comma-joined, forming one coherent character
+ *   sketch. pickTraitPhrase() still picks ONE row, not three
+ *   independent descriptors.
  *
  * COMPLEXION MODEL:
  *   Skin tone, hair colour, and eye colour are correlated through
@@ -267,14 +263,19 @@
     //
     // Two pools, weighted 70/30 core-to-behavioural.
     //
-    // Trait entries are 2-3 short adjectives — this pool is the
+    // Trait entries are 2-3 short adjectives - this pool is the
     // exception to the "one tag per value" rule. A trait row
     // reads as a comma list and its brevity is the point.
     //
-    // Every row here must be reorderable against every OTHER row
-    // without producing the same character. "Brave, Bold,
-    // Reckless" and "Bold, Daring, Reckless" are the same person;
-    // only one of them belongs.
+    // pickTraitPhrase() picks ONE row from the winning pool. It
+    // does not pick three independent descriptors. The row is
+    // authored to describe one coherent person; picking three
+    // adjectives independently would produce noise.
+    //
+    // Rows marked "EXPANSION" were mined from the graduates file's
+    // descriptor vocabulary. Existing rows are preserved in their
+    // original order so habits about which rows come up often are
+    // undisturbed.
 
     var TRAIT_CORE_WEIGHT = 70;
     var TRAIT_BEHAVIOURAL_WEIGHT = 30;
@@ -490,7 +491,126 @@
         'Playful, Private, Sharp',
         'Calm, Cutting, Fair',
         'Earnest, Awkward, True',
-        'Stoic, Dry, Reliable'
+        'Stoic, Dry, Reliable',
+
+        // ================================================
+        // EXPANSION — mined from the graduates file
+        // ================================================
+
+        // --- Analytical minds (Agile, Robert, Caria) ---
+        'Analytical, Composed, Perceptive',
+        'Analytical, Deliberate, Quietly Stubborn',
+        'Strategic, Methodical, Understated',
+        'Deliberate, Measured, Diplomatic',
+        'Quietly Confident, Diplomatic, Private',
+        'Curious, Brilliant, Easily Distracted',
+        'Associative, Eccentric, Warm',
+        'Obsessive, Inquisitive, Scattered',
+        'Researcher-Minded, Eccentric, Open',
+        'Socially Open, Curious, Oblivious',
+        'Intelligent, Distracted, Generous',
+        'Bookish, Brilliant, Absent-Minded',
+        'Studious, Introspective, Clinical',
+        'Sharp, Exact, Medically Minded',
+
+        // --- Stoic labourers (Charlie, Ronan, Axis, Gale) ---
+        'Stoic, Patient, Observant',
+        'Hardworking, Stubborn, Deeply Kind',
+        'Quiet, Practical, Dependable',
+        'Unflappable, Steady, Dry',
+        'Practical, Resilient, Easygoing',
+        'Level-Headed, Patient, Reserved',
+        'Grounded, Self-Sufficient, Gentle',
+        'Stubborn, Blunt, Loyal',
+        'Slow to Anger, Formidable, Kind',
+        'Physically Confident, Relaxed, Dependable',
+        'Dependable, Quiet, Observant',
+        'Introverted, Practical, Dependable',
+        'Rural-Practical, Unhurried, Steady',
+
+        // --- Competitive pressure (Fallow, Danielle, Weiss, Ibex) ---
+        'Relentless, Disciplined, Self-Critical',
+        'Fiercely Loyal, Impulsive, Guarded',
+        'Competitive, Prickly, Proud',
+        'Proud, Disciplined, Defensive',
+        'Self-Controlled, Prickly, Sharp',
+        'Competitive, Cutting, Guarded',
+        'Sharp-Tongued, Competitive, Loyal',
+        'Restless, Proud, Defensive',
+        'Restless, Driven, Independent',
+        'Independently Proud, Cutting, Restless',
+        'Blunt, Abrasive, Generous',
+        'Pragmatic, Blunt, Physically Fearless',
+        'Socially Confident, Pragmatic, Abrasive',
+        'Confident, Restless, Resourceful',
+
+        // --- Quiet observers (Jinx, Axis, Ronan, Wisteria) ---
+        'Quiet, Perceptive, Calm',
+        'Reserved, Watchful, Patient',
+        'Silent, Attentive, Self-Sufficient',
+        'Quiet, Grounded, Unflappable',
+        'Still, Patient, Perceptive',
+        'Calm, Reserved, Practical',
+        'Observant, Wry, Precise',
+        'Watchful, Dry, Self-Contained',
+        'Perceptive, Quiet, Warm-In-Private',
+        'Attentive, Silent, Unassuming',
+
+        // --- Warm social (Basil, Caria, Tatiana, Robert) ---
+        'Curious, Enthusiastic, Fearless',
+        'Friendly, Socially Confident, Sharp',
+        'Warm, Energetic, Blunt',
+        'Empathetic, Socially Confident, Mischievous',
+        'Talkative, Warm, Practical',
+        'Sociable, Resourceful, Abrasive',
+        'Confident, Comfortable, Generous',
+        'Open, Attentive, Perceptive',
+        'Optimistic, Generous, Oblivious',
+        'Cheerful, Direct, Distractible',
+
+        // --- Guarded warmth (Jinx, Charlie, Axis, Ibex) ---
+        'Guarded, Warm-In-Private, Devoted',
+        'Self-Sufficient, Patient, Loyal',
+        'Independent, Unhurried, Difficult to Rattle',
+        'Reserved, Dependable, Quietly Devoted',
+        'Difficult to Rattle, Steady, Private',
+        'Slow to Trust, Warm-Once-Committed, Private',
+        'Reserved, Honest, Warm-Underneath',
+        'Watchful, Loyal, Slow to Warm',
+
+        // --- Friction and edge (Agile/Danielle, Weiss/Robert, Ibex/Danielle) ---
+        'Diplomatic, Guarded, Quietly Stubborn',
+        'Composed, Analytical, Dryly Amused',
+        'Confident, Cutting, Reserved',
+        'Wounded, Proud, Fiercely Loyal',
+        'Prickly, Loyal, Slow to Forgive',
+        'Irritable, Brilliant, Quietly Tender',
+        'Proud, Wounded, Fiercely Protective',
+        'Arrogant, Observant, Deeply Insecure',
+        'Cutting, Self-Controlled, Privately Kind',
+        'Jealous, Loyal, Slow to Trust',
+
+        // --- Physically grounded (Fallow, Gale, Charlie, Tatiana) ---
+        'Physically Confident, Disciplined, Reliable',
+        'Physically Fearless, Pragmatic, Competitive',
+        'Relaxed, Tough, Practical',
+        'Resilient, Casual, Perceptive',
+        'Enduring, Patient, Physically Confident',
+        'Grounded, Hardworking, Self-Effacing',
+        'Abrasive, Practical, Fiercely Loyal',
+
+        // --- Odd / creative (Robert, Basil) ---
+        'Enthusiastic, Oblivious, Warm',
+        'Curious, Distracted, Fearless',
+        'Optimistic, Associative, Scattered',
+        'Inventive, Restless, Easily Amused',
+
+        // --- Eldritch / composed (Weiss, Agile, Wisteria) ---
+        'Composed, Controlled, Aggressive',
+        'Prickly, Proud, Self-Disciplined',
+        'Controlled, Sharp, Slow to Trust',
+        'Compact, Aggressive, Physically Dominant',
+        'Self-Possessed, Cutting, Deeply Guarded'
     ];
 
     var TRAIT_POOL_BEHAVIOURAL = [
@@ -613,18 +733,416 @@
         'Cat-like, Quick, Silent',
         'Silent, Quick, Deadly',
         'Deadly, Kind, Contradictory',
-        'Contradictory, Warm, Cold'
+        'Contradictory, Warm, Cold',
+
+        // ================================================
+        // EXPANSION — mined from the graduates file
+        // ================================================
+
+        // --- Under pressure (Fallow, Ibex, Danielle, Weiss) ---
+        'Escalates When Challenged, Relentless, Self-Critical',
+        'Pushes Past Exhaustion, Disciplined, Self-Doubting',
+        'Interprets Rest as Weakness, Competitive, Driven',
+        'Blunt When Frustrated, Loyal, Self-Critical',
+        'Confrontational, Defensive, Proud',
+        'Takes Criticism Personally, Proud, Sharp',
+        'Competitive When Cornered, Cutting, Restless',
+        'Aggressive When Threatened, Protective, Controlled',
+        'Difficult to Provoke, Deadly, Patient',
+        'Slow to Anger, Formidable, Restrained',
+
+        // --- Guarded under warmth (Jinx, Axis, Ronan) ---
+        'Withdrawn Under Stress, Patient, Quietly Present',
+        'Goes Silent When Frightened, Perceptive, Steady',
+        'Moves Quietly, Watches Closely, Withholds Words',
+        'Keeps Distance, Watches Hands, Waits',
+        'Retreats Into Silence, Practical, Self-Contained',
+        'Overly Cautious, Attentive, Difficult to Reassure',
+        'Avoids Confrontation, Measured, Loyal',
+        'Says Little, Notices Much, Forgives Slowly',
+
+        // --- Oblivious to self (Robert, Basil) ---
+        'Curiosity Overrides Caution, Obsessive, Warm',
+        'Distracted by Questions, Brilliant, Oblivious',
+        'Pushes Past Own Limits, Enthusiastic, Well-Meaning',
+        'Blind to Subtext, Warm, Curious',
+        'Genuinely Kind, Slightly Insensitive, Absent-Minded',
+        'Skips Meals While Researching, Obsessive, Gentle',
+        'Talks Past People, Enthusiastic, Brilliant',
+        'Approaches Danger as Curiosity, Fearless, Oblivious',
+
+        // --- Protective pressure (Charlie, Gale, Tatiana, Fallow) ---
+        'Steps in Front First, Protective, Quiet',
+        'Physically Inserts Self, Loyal, Unhesitating',
+        'Protects Without Comment, Stoic, Fierce-Underneath',
+        'Endures Instead of Asking, Patient, Martyr-Prone',
+        'Takes Responsibility for Others, Loyal, Burdened',
+        'Says Nothing, Does Everything, Quietly Exhausted',
+        'Anchors Others, Steady, Slow to Show Strain',
+        'Protects First, Reflects After, Rarely Regrets',
+
+        // --- Composure under strain (Agile, Ronan, Jinx) ---
+        'Composed Under Pressure, Analytical, Withholding',
+        'Calm in Crisis, Deliberate, Private',
+        'Reads the Room, Says Little, Decides Slowly',
+        'Thinks First, Speaks Second, Rarely Regrets',
+        'Patient With Everyone, Impatient With Self',
+        'Waits for Certainty, Deliberate, Frustrated by Chaos',
+        'Analyses Before Acting, Slow to Panic, Withholding',
+
+        // --- Sharpened edge (Ibex, Weiss, Danielle) ---
+        'Sharp-Tongued When Wounded, Loyal, Slow to Forgive',
+        'Turns Vulnerability Into an Argument, Proud, Wounded',
+        'Jokes When Uncomfortable, Dry, Guarded',
+        'Cutting When Cornered, Brilliant, Ashamed Afterward',
+        'Defensive When Praised, Prickly, Privately Pleased',
+        'Argumentative When Vulnerable, Loyal, Guarded',
+        'Pushes People Away, Resents Being Alone, Loyal',
+        'Provokes When Uncertain, Restless, Seeking Confirmation',
+
+        // --- Warm in private (Charlie, Jinx, Axis, Ronan) ---
+        'Warm When Safe, Guarded Otherwise, Devoted',
+        'Shows Affection Through Action, Quiet, Unhurried',
+        'Present Without Words, Patient, Watching',
+        'Affectionate in Private, Reserved in Public, Loyal',
+        'Cooks for People Instead of Talking, Practical, Kind',
+        'Fixes Things for People Instead of Explaining, Quiet, Attentive',
+        'Notices Small Needs, Acts Without Announcing, Private',
+
+        // --- Tactical under strain (Agile, Jinx, Axis) ---
+        'Controls Variables Before Committing, Analytical, Frustrated by Improvisation',
+        'Prepares for Every Outcome, Methodical, Slow to Adjust',
+        'Forces Movement Through Terrain, Patient, Calculating',
+        'Shapes the Battlefield Before the Fight, Perceptive, Withholding',
+        'Positions Before Acting, Observant, Reserved',
+        'Reads Opponents, Waits for Openings, Precise',
+
+        // --- Passive under love (Charlie, Ronan, Axis) ---
+        'Indispensable to Everyone, Passive in Own Life, Loving',
+        'Confuses Usefulness With Worth, Devoted, Working On It',
+        'Tolerates What Should Be Refused, Loyal, Learning Boundaries',
+        'Makes Self Necessary, Quietly Drowning, Warm',
+
+        // --- Curious-brave (Basil, Robert, Ibex) ---
+        'Investigates Before Retreating, Curious, Reckless',
+        'Takes Physical Risks for Knowledge, Fearless, Oblivious',
+        'Handles Dangerous Things Gently, Patient, Unflinching',
+        'Approaches the Strange Without Prejudice, Curious, Kind',
+
+        // --- Composed-aggressive (Wisteria, Weiss, Fallow) ---
+        'Closes Distance Fast, Aggressive, Physically Dominant',
+        'Overwhelms Before Being Overwhelmed, Competitive, Focused',
+        'Uses Terrain to Isolate, Aggressive, Tactically Narrow',
+        'Sets Up Opening Then Strikes, Aggressive, Controlled'
     ];
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
+
+    function pickRandom(arr) {
+        if (!Array.isArray(arr) || arr.length === 0) { return null; }
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function randomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function pickWeightedTier(tiers) {
+        var keys = Object.keys(tiers);
+        if (keys.length === 0) { return null; }
+
+        var total = 0;
+        for (var i = 0; i < keys.length; i++) {
+            total += tiers[keys[i]].weight;
+        }
+        if (total <= 0) { return tiers[keys[0]]; }
+
+        var roll = Math.random() * total;
+        var acc = 0;
+        for (var j = 0; j < keys.length; j++) {
+            acc += tiers[keys[j]].weight;
+            if (roll < acc) { return tiers[keys[j]]; }
+        }
+        return tiers[keys[keys.length - 1]];
+    }
+
+    function pickTraitPhrase() {
+        var total = TRAIT_CORE_WEIGHT + TRAIT_BEHAVIOURAL_WEIGHT;
+        var roll = Math.random() * total;
+        if (roll < TRAIT_CORE_WEIGHT) {
+            return pickRandom(TRAIT_POOL_CORE);
+        }
+        return pickRandom(TRAIT_POOL_BEHAVIOURAL);
+    }
+
+    // ============================================================
+    // PHYSICAL HELPERS
+    // ============================================================
+
+    function parseHeightCm(heightStr) {
+        if (typeof heightStr !== 'string') { return null; }
+        var m = heightStr.match(/^(\d+)\s*cm$/i);
+        if (!m) { return null; }
+        var n = parseInt(m[1], 10);
+        if (isNaN(n) || n <= 0) { return null; }
+        return n;
+    }
+
+    function parseWeightKg(weightStr) {
+        if (typeof weightStr !== 'string') { return null; }
+        var m = weightStr.match(/^(\d+)\s*kg$/i);
+        if (!m) { return null; }
+        var n = parseInt(m[1], 10);
+        if (isNaN(n) || n <= 0) { return null; }
+        return n;
+    }
+
+    function calculateWeightRange(heightCm, ratioRange) {
+        var heightM = heightCm / 100;
+        var sq = heightM * heightM;
+        var minWeight = Math.round(ratioRange[0] * sq);
+        var maxWeight = Math.round(ratioRange[1] * sq);
+        if (maxWeight < minWeight) { maxWeight = minWeight; }
+        return [minWeight, maxWeight];
+    }
+
+    function findProfilesForHeight(heightCm) {
+        var result = [];
+        var keys = Object.keys(BODY_PROFILES);
+        for (var i = 0; i < keys.length; i++) {
+            var p = BODY_PROFILES[keys[i]];
+            if (heightCm >= p.height[0] && heightCm <= p.height[1]) {
+                result.push(p);
+            }
+        }
+        return result;
+    }
+
+    function findProfilesForHeightAndWeight(heightCm, weightKg) {
+        var result = [];
+        var keys = Object.keys(BODY_PROFILES);
+        for (var i = 0; i < keys.length; i++) {
+            var p = BODY_PROFILES[keys[i]];
+            if (heightCm < p.height[0] || heightCm > p.height[1]) {
+                continue;
+            }
+            var range = calculateWeightRange(heightCm, p.ratio);
+            if (weightKg >= range[0] && weightKg <= range[1]) {
+                result.push(p);
+            }
+        }
+        return result;
+    }
+
+    function findComplexionTierForSkin(skin) {
+        if (typeof skin !== 'string') { return null; }
+        var keys = Object.keys(COMPLEXION_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var tones = COMPLEXION_TIERS[keys[i]].skinTones;
+            if (tones.indexOf(skin) !== -1) {
+                return COMPLEXION_TIERS[keys[i]];
+            }
+        }
+        return null;
+    }
+
+    function unionComplexionField(fieldName) {
+        var seen = Object.create(null);
+        var out = [];
+        var keys = Object.keys(COMPLEXION_TIERS);
+        for (var i = 0; i < keys.length; i++) {
+            var list = COMPLEXION_TIERS[keys[i]][fieldName] || [];
+            for (var j = 0; j < list.length; j++) {
+                if (!seen[list[j]]) {
+                    seen[list[j]] = true;
+                    out.push(list[j]);
+                }
+            }
+        }
+        return out;
+    }
+
+    // ============================================================
+    // PHYSICAL GENERATION
+    // ============================================================
+
+    function generatePhysical() {
+        var profile = pickWeightedTier(BODY_PROFILES);
+        var complexion = pickWeightedTier(COMPLEXION_TIERS);
+
+        var heightCm = randomInt(profile.height[0], profile.height[1]);
+        var weightRange = calculateWeightRange(heightCm, profile.ratio);
+        var weightKg = randomInt(weightRange[0], weightRange[1]);
+        var build = pickRandom(profile.builds) || 'Average';
+
+        return {
+            gender: pickRandom(GENDERS) || 'Other',
+            skin: pickRandom(complexion.skinTones) || 'Fair',
+            hair: pickRandom(complexion.hairColours) || 'Brown',
+            eyes: pickRandom(complexion.eyeColours) || 'Brown',
+            height: heightCm + 'cm',
+            weight: weightKg + 'kg',
+            build: build
+        };
+    }
+
+    function generatePhysicalField(field, current) {
+        current = current || {};
+
+        if (field === 'gender') {
+            return pickRandom(GENDERS) || 'Other';
+        }
+
+        if (field === 'height') {
+            var curWeight = parseWeightKg(current.weight);
+            var candidates = [];
+
+            if (curWeight !== null) {
+                var allProfiles = Object.keys(BODY_PROFILES);
+                for (var i = 0; i < allProfiles.length; i++) {
+                    var p = BODY_PROFILES[allProfiles[i]];
+                    var minH = p.height[0];
+                    var maxH = p.height[1];
+                    for (var h = minH; h <= maxH; h++) {
+                        var range = calculateWeightRange(h, p.ratio);
+                        if (curWeight >= range[0] && curWeight <= range[1]) {
+                            candidates.push(h);
+                        }
+                    }
+                }
+            }
+
+            if (candidates.length > 0) {
+                return pickRandom(candidates) + 'cm';
+            }
+
+            var fresh = generatePhysical();
+            return fresh.height;
+        }
+
+        if (field === 'weight') {
+            var curHeight = parseHeightCm(current.height);
+            var curBuild = current.build || '';
+
+            if (curHeight !== null) {
+                var profilesForHeight = findProfilesForHeight(curHeight);
+                if (profilesForHeight.length > 0) {
+                    var preferred = [];
+                    for (var pi = 0; pi < profilesForHeight.length; pi++) {
+                        if (profilesForHeight[pi].builds.indexOf(curBuild) !== -1) {
+                            preferred.push(profilesForHeight[pi]);
+                        }
+                    }
+                    var pool = preferred.length > 0
+                        ? preferred
+                        : profilesForHeight;
+
+                    var weights = [];
+                    for (var wi = 0; wi < pool.length; wi++) {
+                        var wr = calculateWeightRange(curHeight, pool[wi].ratio);
+                        for (var w = wr[0]; w <= wr[1]; w += 1) {
+                            weights.push(w);
+                        }
+                    }
+                    if (weights.length > 0) {
+                        return pickRandom(weights) + 'kg';
+                    }
+                }
+            }
+
+            var freshW = generatePhysical();
+            return freshW.weight;
+        }
+
+        if (field === 'build') {
+            var curHeightB = parseHeightCm(current.height);
+            var curWeightB = parseWeightKg(current.weight);
+
+            if (curHeightB !== null && curWeightB !== null) {
+                var profiles = findProfilesForHeightAndWeight(
+                    curHeightB, curWeightB
+                );
+
+                if (profiles.length > 0) {
+                    var builds = [];
+                    var seen = Object.create(null);
+                    for (var bi = 0; bi < profiles.length; bi++) {
+                        var bList = profiles[bi].builds;
+                        for (var bj = 0; bj < bList.length; bj++) {
+                            if (!seen[bList[bj]]) {
+                                seen[bList[bj]] = true;
+                                builds.push(bList[bj]);
+                            }
+                        }
+                    }
+                    if (builds.length > 0) {
+                        return pickRandom(builds);
+                    }
+                }
+            }
+
+            var freshB = generatePhysical();
+            return freshB.build;
+        }
+
+        if (field === 'skin' || field === 'hair' || field === 'eyes') {
+            var complexion = findComplexionTierForSkin(current.skin);
+
+            var poolName = field === 'skin'
+                ? 'skinTones'
+                : (field === 'hair' ? 'hairColours' : 'eyeColours');
+
+            if (complexion && Math.random() < 0.7) {
+                return pickRandom(complexion[poolName]);
+            }
+
+            return pickRandom(unionComplexionField(poolName));
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // PERSONALITY
+    // ============================================================
+
+    function generatePersonality() {
+        return {
+            traits: pickTraitPhrase() || 'Brave, Honest, Loyal',
+            ideals: pickRandom(PERSONALITY_POOLS.ideals) || 'Honor',
+            bonds: pickRandom(PERSONALITY_POOLS.bonds) || 'Family',
+            flaws: pickRandom(PERSONALITY_POOLS.flaws) || 'Proud',
+            alignment: pickRandom(PERSONALITY_POOLS.alignments) || 'Neutral Good',
+            likes: pickRandom(PERSONALITY_POOLS.likes) || 'Music',
+            dislikes: pickRandom(PERSONALITY_POOLS.dislikes) || 'Lies',
+            habits: pickRandom(PERSONALITY_POOLS.habits) || 'Hums',
+            fears: pickRandom(PERSONALITY_POOLS.fears) || 'Heights',
+            goals: pickRandom(PERSONALITY_POOLS.goals) || 'Find purpose',
+            authority: pickRandom(PERSONALITY_POOLS.authority) || 'Cooperative',
+            conflictStyle: pickRandom(PERSONALITY_POOLS.conflictStyle) || 'Negotiates',
+            socialStyle: pickRandom(PERSONALITY_POOLS.socialStyle) || 'Warm',
+            quirks: pickRandom(PERSONALITY_POOLS.quirks) || 'Corrects pronunciation'
+        };
+    }
+
+    function generatePersonalityField(field) {
+        if (field === 'traits') {
+            return pickTraitPhrase();
+        }
+        var pool = PERSONALITY_POOLS[field];
+        if (!Array.isArray(pool)) { return null; }
+        return pickRandom(pool);
+    }
 
     // ============================================================
     // PERSONALITY POOLS
     // ============================================================
-    //
-    // Every pool below carries single tags or two-word phrases.
-    // The field label (Ideals, Bonds, Flaws, Fears, Goals, Likes,
-    // Dislikes, Habits, Authority, Conflict, Social, Quirks)
-    // already says what the value is. The value does not repeat
-    // the label.
 
     var PERSONALITY_POOLS = {
         ideals: [
@@ -977,310 +1495,6 @@
             'Remembers names', 'Forgets faces'
         ]
     };
-
-    // ============================================================
-    // UTILITIES
-    // ============================================================
-
-    function pickRandom(arr) {
-        if (!Array.isArray(arr) || arr.length === 0) { return null; }
-        return arr[Math.floor(Math.random() * arr.length)];
-    }
-
-    function clamp(value, min, max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    function randomInt(min, max) {
-        return Math.floor(Math.random() * (max - min + 1)) + min;
-    }
-
-    function pickWeightedTier(tiers) {
-        var keys = Object.keys(tiers);
-        if (keys.length === 0) { return null; }
-
-        var total = 0;
-        for (var i = 0; i < keys.length; i++) {
-            total += tiers[keys[i]].weight;
-        }
-        if (total <= 0) { return tiers[keys[0]]; }
-
-        var roll = Math.random() * total;
-        var acc = 0;
-        for (var j = 0; j < keys.length; j++) {
-            acc += tiers[keys[j]].weight;
-            if (roll < acc) { return tiers[keys[j]]; }
-        }
-        return tiers[keys[keys.length - 1]];
-    }
-
-    function pickTraitPhrase() {
-        var total = TRAIT_CORE_WEIGHT + TRAIT_BEHAVIOURAL_WEIGHT;
-        var roll = Math.random() * total;
-        if (roll < TRAIT_CORE_WEIGHT) {
-            return pickRandom(TRAIT_POOL_CORE);
-        }
-        return pickRandom(TRAIT_POOL_BEHAVIOURAL);
-    }
-
-    // ============================================================
-    // PHYSICAL HELPERS
-    // ============================================================
-
-    function parseHeightCm(heightStr) {
-        if (typeof heightStr !== 'string') { return null; }
-        var m = heightStr.match(/^(\d+)\s*cm$/i);
-        if (!m) { return null; }
-        var n = parseInt(m[1], 10);
-        if (isNaN(n) || n <= 0) { return null; }
-        return n;
-    }
-
-    function parseWeightKg(weightStr) {
-        if (typeof weightStr !== 'string') { return null; }
-        var m = weightStr.match(/^(\d+)\s*kg$/i);
-        if (!m) { return null; }
-        var n = parseInt(m[1], 10);
-        if (isNaN(n) || n <= 0) { return null; }
-        return n;
-    }
-
-    function calculateWeightRange(heightCm, ratioRange) {
-        var heightM = heightCm / 100;
-        var sq = heightM * heightM;
-        var minWeight = Math.round(ratioRange[0] * sq);
-        var maxWeight = Math.round(ratioRange[1] * sq);
-        if (maxWeight < minWeight) { maxWeight = minWeight; }
-        return [minWeight, maxWeight];
-    }
-
-    function findProfilesForHeight(heightCm) {
-        var result = [];
-        var keys = Object.keys(BODY_PROFILES);
-        for (var i = 0; i < keys.length; i++) {
-            var p = BODY_PROFILES[keys[i]];
-            if (heightCm >= p.height[0] && heightCm <= p.height[1]) {
-                result.push(p);
-            }
-        }
-        return result;
-    }
-
-    function findProfilesForHeightAndWeight(heightCm, weightKg) {
-        var result = [];
-        var keys = Object.keys(BODY_PROFILES);
-        for (var i = 0; i < keys.length; i++) {
-            var p = BODY_PROFILES[keys[i]];
-            if (heightCm < p.height[0] || heightCm > p.height[1]) {
-                continue;
-            }
-            var range = calculateWeightRange(heightCm, p.ratio);
-            if (weightKg >= range[0] && weightKg <= range[1]) {
-                result.push(p);
-            }
-        }
-        return result;
-    }
-
-    function findComplexionTierForSkin(skin) {
-        if (typeof skin !== 'string') { return null; }
-        var keys = Object.keys(COMPLEXION_TIERS);
-        for (var i = 0; i < keys.length; i++) {
-            var tones = COMPLEXION_TIERS[keys[i]].skinTones;
-            if (tones.indexOf(skin) !== -1) {
-                return COMPLEXION_TIERS[keys[i]];
-            }
-        }
-        return null;
-    }
-
-    function unionComplexionField(fieldName) {
-        var seen = Object.create(null);
-        var out = [];
-        var keys = Object.keys(COMPLEXION_TIERS);
-        for (var i = 0; i < keys.length; i++) {
-            var list = COMPLEXION_TIERS[keys[i]][fieldName] || [];
-            for (var j = 0; j < list.length; j++) {
-                if (!seen[list[j]]) {
-                    seen[list[j]] = true;
-                    out.push(list[j]);
-                }
-            }
-        }
-        return out;
-    }
-
-    // ============================================================
-    // PHYSICAL GENERATION
-    // ============================================================
-
-    function generatePhysical() {
-        var profile = pickWeightedTier(BODY_PROFILES);
-        var complexion = pickWeightedTier(COMPLEXION_TIERS);
-
-        var heightCm = randomInt(profile.height[0], profile.height[1]);
-        var weightRange = calculateWeightRange(heightCm, profile.ratio);
-        var weightKg = randomInt(weightRange[0], weightRange[1]);
-        var build = pickRandom(profile.builds) || 'Average';
-
-        return {
-            gender: pickRandom(GENDERS) || 'Other',
-            skin: pickRandom(complexion.skinTones) || 'Fair',
-            hair: pickRandom(complexion.hairColours) || 'Brown',
-            eyes: pickRandom(complexion.eyeColours) || 'Brown',
-            height: heightCm + 'cm',
-            weight: weightKg + 'kg',
-            build: build
-        };
-    }
-
-    function generatePhysicalField(field, current) {
-        current = current || {};
-
-        if (field === 'gender') {
-            return pickRandom(GENDERS) || 'Other';
-        }
-
-        if (field === 'height') {
-            var curWeight = parseWeightKg(current.weight);
-            var candidates = [];
-
-            if (curWeight !== null) {
-                var allProfiles = Object.keys(BODY_PROFILES);
-                for (var i = 0; i < allProfiles.length; i++) {
-                    var p = BODY_PROFILES[allProfiles[i]];
-                    var minH = p.height[0];
-                    var maxH = p.height[1];
-                    for (var h = minH; h <= maxH; h++) {
-                        var range = calculateWeightRange(h, p.ratio);
-                        if (curWeight >= range[0] && curWeight <= range[1]) {
-                            candidates.push(h);
-                        }
-                    }
-                }
-            }
-
-            if (candidates.length > 0) {
-                return pickRandom(candidates) + 'cm';
-            }
-
-            var fresh = generatePhysical();
-            return fresh.height;
-        }
-
-        if (field === 'weight') {
-            var curHeight = parseHeightCm(current.height);
-            var curBuild = current.build || '';
-
-            if (curHeight !== null) {
-                var profilesForHeight = findProfilesForHeight(curHeight);
-                if (profilesForHeight.length > 0) {
-                    var preferred = [];
-                    for (var pi = 0; pi < profilesForHeight.length; pi++) {
-                        if (profilesForHeight[pi].builds.indexOf(curBuild) !== -1) {
-                            preferred.push(profilesForHeight[pi]);
-                        }
-                    }
-                    var pool = preferred.length > 0
-                        ? preferred
-                        : profilesForHeight;
-
-                    var weights = [];
-                    for (var wi = 0; wi < pool.length; wi++) {
-                        var wr = calculateWeightRange(curHeight, pool[wi].ratio);
-                        for (var w = wr[0]; w <= wr[1]; w += 1) {
-                            weights.push(w);
-                        }
-                    }
-                    if (weights.length > 0) {
-                        return pickRandom(weights) + 'kg';
-                    }
-                }
-            }
-
-            var freshW = generatePhysical();
-            return freshW.weight;
-        }
-
-        if (field === 'build') {
-            var curHeightB = parseHeightCm(current.height);
-            var curWeightB = parseWeightKg(current.weight);
-
-            if (curHeightB !== null && curWeightB !== null) {
-                var profiles = findProfilesForHeightAndWeight(
-                    curHeightB, curWeightB
-                );
-
-                if (profiles.length > 0) {
-                    var builds = [];
-                    var seen = Object.create(null);
-                    for (var bi = 0; bi < profiles.length; bi++) {
-                        var bList = profiles[bi].builds;
-                        for (var bj = 0; bj < bList.length; bj++) {
-                            if (!seen[bList[bj]]) {
-                                seen[bList[bj]] = true;
-                                builds.push(bList[bj]);
-                            }
-                        }
-                    }
-                    if (builds.length > 0) {
-                        return pickRandom(builds);
-                    }
-                }
-            }
-
-            var freshB = generatePhysical();
-            return freshB.build;
-        }
-
-        if (field === 'skin' || field === 'hair' || field === 'eyes') {
-            var complexion = findComplexionTierForSkin(current.skin);
-
-            var poolName = field === 'skin'
-                ? 'skinTones'
-                : (field === 'hair' ? 'hairColours' : 'eyeColours');
-
-            if (complexion && Math.random() < 0.7) {
-                return pickRandom(complexion[poolName]);
-            }
-
-            return pickRandom(unionComplexionField(poolName));
-        }
-
-        return null;
-    }
-
-    // ============================================================
-    // PERSONALITY
-    // ============================================================
-
-    function generatePersonality() {
-        return {
-            traits: pickTraitPhrase() || 'Brave, Honest, Loyal',
-            ideals: pickRandom(PERSONALITY_POOLS.ideals) || 'Honor',
-            bonds: pickRandom(PERSONALITY_POOLS.bonds) || 'Family',
-            flaws: pickRandom(PERSONALITY_POOLS.flaws) || 'Proud',
-            alignment: pickRandom(PERSONALITY_POOLS.alignments) || 'Neutral Good',
-            likes: pickRandom(PERSONALITY_POOLS.likes) || 'Music',
-            dislikes: pickRandom(PERSONALITY_POOLS.dislikes) || 'Lies',
-            habits: pickRandom(PERSONALITY_POOLS.habits) || 'Hums',
-            fears: pickRandom(PERSONALITY_POOLS.fears) || 'Heights',
-            goals: pickRandom(PERSONALITY_POOLS.goals) || 'Find purpose',
-            authority: pickRandom(PERSONALITY_POOLS.authority) || 'Cooperative',
-            conflictStyle: pickRandom(PERSONALITY_POOLS.conflictStyle) || 'Negotiates',
-            socialStyle: pickRandom(PERSONALITY_POOLS.socialStyle) || 'Warm',
-            quirks: pickRandom(PERSONALITY_POOLS.quirks) || 'Corrects pronunciation'
-        };
-    }
-
-    function generatePersonalityField(field) {
-        if (field === 'traits') {
-            return pickTraitPhrase();
-        }
-        var pool = PERSONALITY_POOLS[field];
-        if (!Array.isArray(pool)) { return null; }
-        return pickRandom(pool);
-    }
 
     // ============================================================
     // STATS
