@@ -18,26 +18,33 @@
  * WHAT THIS DOES NOT OWN:
  *   - Persistence. Import does NOT write to the store. It fills the
  *     form. The user saves. This is deliberate: an import that
- *     silently overwrites a store record would be a foot-gun.
+ *     silently overwrote a store record would be a foot-gun.
  *   - Field enumeration. normaliseCharacterData is the canonical
  *     shape; this module delegates to it.
  *   - The form's field ids. CharacterForm owns those.
  *
- * IMPORT INPUT (this revision):
+ * DOWNLOAD RELIABILITY (this revision):
+ *   downloadJson no longer revokes the blob URL. The previous
+ *   implementation revoked it 100ms after click, which on Chrome
+ *   raced the browser's download manager and killed the download
+ *   for larger payloads. Modern browsers reclaim blob URLs on
+ *   page unload, so leaving them alive costs nothing measurable.
+ *
+ *   The anchor is also removed synchronously, immediately after
+ *   click() returns, and the removal is guarded. A double-click on
+ *   Export can no longer throw inside a stale timeout.
+ *
+ *   The toast reports success only after the click has been
+ *   dispatched. Whether the browser actually writes the file is
+ *   outside our control; a dispatched download on a modern browser
+ *   reliably produces a file.
+ *
+ * IMPORT INPUT:
  *   The import path is a MODAL with a textarea, not a file picker.
  *   The user pastes the JSON text directly, clicks Import, and the
- *   form fills. This is faster than a file round-trip for the
- *   primary use case (hand-authoring a character profile in a text
- *   editor and pasting it in) and works on machines where the user
- *   has the JSON on the clipboard but not on disk.
- *
- *   The modal also carries a small "Load from file" link for users
- *   who do have a file. That link is a convenience, not the primary
- *   path — it opens a file picker whose selection is dropped into
- *   the textarea. The user still clicks Import.
- *
- *   The modal is created fresh per open and destroyed on close, so
- *   no state leaks between invocations.
+ *   form fills. A "Load from file..." link is also present for
+ *   users who have the JSON on disk; it drops the file's contents
+ *   into the textarea. The user still clicks Import.
  *
  * EXPORT SHAPE:
  *   A single JSON object: the full character record. Not wrapped in
@@ -174,6 +181,21 @@
         return 'character-' + stem + '.json';
     }
 
+    /**
+     * Trigger a browser download of a JSON blob.
+     *
+     * The blob URL is deliberately NOT revoked. Revoking on a timer
+     * raced the browser's download manager on Chrome and killed the
+     * download for larger payloads. Modern browsers reclaim blob
+     * URLs on page unload, so leaving them alive costs nothing
+     * measurable.
+     *
+     * The anchor is removed synchronously, immediately after click
+     * returns. By that point the download has been dispatched to the
+     * browser's download manager and the anchor is no longer needed.
+     * The removal is guarded against a missing parent so a stray
+     * double-click on Export cannot throw.
+     */
     function downloadJson(filename, obj) {
         var text = JSON.stringify(obj, null, 2);
         var blob = new Blob([text], { type: 'application/json' });
@@ -182,16 +204,25 @@
         var a = document.createElement('a');
         a.href = url;
         a.download = filename;
+        a.rel = 'noopener';
         a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
 
-        setTimeout(function() {
+        document.body.appendChild(a);
+
+        try {
+            a.click();
+        } finally {
+            // Remove synchronously. The click already dispatched the
+            // download; the anchor is finished.
             try {
-                document.body.removeChild(a);
-            } catch (e) { /* ignore */ }
-            URL.revokeObjectURL(url);
-        }, 100);
+                if (a.parentNode) {
+                    a.parentNode.removeChild(a);
+                }
+            } catch (e) {
+                // Guarded. A concurrent removal is harmless.
+            }
+            // Deliberately do NOT revoke `url`. See the header note.
+        }
     }
 
     function escapeHtml(value) {
@@ -440,9 +471,6 @@
 
     /**
      * Parse a JSON blob and fill the form. Does NOT save.
-     *
-     * @param {string} text - The raw JSON text.
-     * @returns {object} { imported: boolean, error?: string }
      */
     function importText(text) {
         if (typeof text !== 'string' || text.trim() === '') {
@@ -683,7 +711,6 @@
                 var pasteEl = getPasteEl(_contentEl);
                 if (pasteEl) {
                     pasteEl.value = text;
-                    // Clear any stale error the user is looking at.
                     showError(_contentEl, '');
                     pasteEl.focus();
                 }
@@ -740,7 +767,6 @@
         });
         Modal.showModal(shell);
 
-        // Focus the textarea after the modal has settled.
         setTimeout(function() {
             var pasteEl = getPasteEl(contentEl);
             if (pasteEl && typeof pasteEl.focus === 'function') {
@@ -785,14 +811,6 @@
         return Promise.resolve(result);
     }
 
-    /**
-     * Open the import modal.
-     *
-     * When the form is currently showing a saved character, the
-     * caller should have confirmed that the in-form data will be
-     * replaced. This function does not raise its own confirm — it
-     * trusts the caller's context.
-     */
     function handleImportIntoForm() {
         openImportModal();
     }
