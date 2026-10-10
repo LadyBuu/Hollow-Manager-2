@@ -22,7 +22,7 @@
  *         week. A GRID: days across the top, hours down the left,
  *         one cell per (day, hour) showing discipline and instructor.
  *
- *     CHARACTER DAY VIEW (this revision)
+ *     CHARACTER DAY VIEW
  *       exportStudentDayScheduleText(charId, week, day)
  *         Every session and commitment the character has on ONE day,
  *         as a three-row strip: Time, Discipline, Instructor, one
@@ -70,9 +70,11 @@
  *   Multi-hour sessions are ONE column, not one per hour. The strip
  *   is a schedule, not a calendar.
  *
- *   Column gap is three spaces. Trailing whitespace is trimmed from
- *   each line. Empty day: three blank lines. No header, no footer,
- *   no title.
+ *   Column widths are computed per column: each column is as wide as
+ *   the widest cell across the three rows. Cells are padded to that
+ *   width. Column gap is three spaces. Trailing whitespace is
+ *   trimmed from each line. Empty day: three blank lines. No header,
+ *   no footer, no title.
  *
  * SESSION SOURCES:
  *   The character's sessions come from
@@ -84,9 +86,14 @@
  *   AcademyInstructorCommitments.getActiveCommitmentsForInstructor(
  *   charId, week).
  *
- *   Both sources are optional at the module-load level. Missing at
- *   call time is a hard failure: an export that silently omitted
- *   sessions would be worse than no export.
+ *   The projector is a LAZY-BUT-MANDATORY dependency: it is resolved
+ *   at call time, and a missing projector is treated as a runtime
+ *   failure of that one export, not as a module-load failure. The
+ *   public getters catch the projector's throw and return null; the
+ *   public text-content functions return '' for a null VM. This
+ *   keeps the three schedule views (class, character weekly,
+ *   character day) consistent from the caller's perspective: every
+ *   one of them returns either a value or null, never a throw.
  *
  * WEEK SCOPE:
  *   One week. The caller supplies it.
@@ -137,9 +144,10 @@
  *   Instructor  Alice Example   Bob Smith       —
  *
  * FAIL-CLOSED:
- *   When a mandatory dependency is unavailable, the export
- *   functions return an error result. Partial output is not
- *   emitted.
+ *   When a mandatory load-time dependency is unavailable, the module
+ *   throws at load time. When the character-schedule projector is
+ *   unavailable at call time, the affected export returns an error
+ *   result; the module does not emit partial output.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.AcademyClasses
@@ -265,6 +273,24 @@
                 'by ' + contextLabel + '. Check the script load order ' +
                 'in index.html.'
             );
+        }
+        return ATP;
+    }
+
+    /**
+     * Resolve the projector, or null if unavailable.
+     * The character-schedule public API uses this to avoid throwing.
+     */
+    function tryResolveAcademyTeachingProjector(contextLabel) {
+        var ATP = window.AcademyTeachingProjector;
+        if (!ATP ||
+            typeof ATP.projectForStudent !== 'function') {
+            console.warn(
+                '[ScheduleExport] AcademyTeachingProjector is not ' +
+                'available for ' + contextLabel + '. The character ' +
+                'schedule export will return an empty result.'
+            );
+            return null;
         }
         return ATP;
     }
@@ -916,9 +942,12 @@
     //   }
 
     function collectStudentSessionsForWeek(charId, weekNum) {
-        var Projector = requireAcademyTeachingProjector(
+        var Projector = tryResolveAcademyTeachingProjector(
             'getStudentScheduleExport'
         );
+        if (!Projector) {
+            return [];
+        }
 
         var occurrences;
         try {
@@ -1033,6 +1062,10 @@
         var weekNum = resolveWeek(week);
         if (weekNum === null) { return null; }
 
+        // collectStudentSessionsForWeek returns [] when the
+        // projector is unavailable (logged). The projection
+        // continues with an empty session list, so a commitment-only
+        // schedule is still produced rather than a null result.
         var sessions = collectStudentSessionsForWeek(
             char.id, weekNum
         );
@@ -1358,16 +1391,42 @@
     //   Discipline  Combat Training History
     //   Instructor  Alice Example   Bob Smith
     //
-    // One column per meeting, chronological. Column gap is three
-    // spaces. Trailing whitespace is trimmed from each line. An
-    // empty day emits three blank lines.
+    // One column per meeting, chronological. Column widths are
+    // computed per column: each column is as wide as the widest cell
+    // across the three rows. Column gap is three spaces. Trailing
+    // whitespace is trimmed from each line. An empty day emits three
+    // blank lines.
 
-    function buildStripRow(label, values) {
+    function computeStripColumnWidths(times, disciplines, instructors) {
+        var count = times.length;
+        var widths = new Array(count);
+
+        for (var i = 0; i < count; i++) {
+            var t = String(times[i] || '').length;
+            var d = String(disciplines[i] || '').length;
+            var ins = String(instructors[i] || '').length;
+            widths[i] = Math.max(t, d, ins);
+        }
+
+        return widths;
+    }
+
+    function padToWidth(value, width) {
+        var s = String(value === undefined || value === null
+            ? ''
+            : value);
+        while (s.length < width) {
+            s += ' ';
+        }
+        return s;
+    }
+
+    function buildStripRow(label, values, widths) {
         var labelCol = padRight(label, STRIP_ROW_LABEL_WIDTH);
         var parts = [];
 
         for (var i = 0; i < values.length; i++) {
-            parts.push(String(values[i]));
+            parts.push(padToWidth(values[i], widths[i]));
         }
 
         var joined = parts.join(STRIP_COLUMN_GAP);
@@ -1401,10 +1460,17 @@
             instructors.push(b.line2);
         }
 
+        // Compute per-column widths so the three rows line up
+        // regardless of the relative length of discipline names,
+        // instructor names, and time labels.
+        var widths = computeStripColumnWidths(
+            times, disciplines, instructors
+        );
+
         var rows = [];
-        rows.push(buildStripRow('Time', times));
-        rows.push(buildStripRow('Discipline', disciplines));
-        rows.push(buildStripRow('Instructor', instructors));
+        rows.push(buildStripRow('Time', times, widths));
+        rows.push(buildStripRow('Discipline', disciplines, widths));
+        rows.push(buildStripRow('Instructor', instructors, widths));
 
         return rows.join('\n');
     }
