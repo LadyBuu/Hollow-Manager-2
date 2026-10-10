@@ -162,9 +162,13 @@
     <!-- Mission CSV (schema, export, import, template). -->
     <script src="js/import-export/mission-csv.js"></script>
 
-    <!-- Consolidated team export bundle.
-         Installs: TeamExport, TeamExportPicker. -->
+    <!-- Team export bundle. Installs: TeamExport. -->
     <script src="js/import-export/team-export.js"></script>
+
+    <!-- Team export picker. Needs TeamExport (above) and
+         TeamQueries / TeamConstants / Modal / NotificationSystem /
+         DomUtils, all loaded earlier. -->
+    <script src="js/import-export/team-export-picker.js"></script>
 
     <!-- Character export picker. Reads only the character CSV /
          roster / report globals, all installed above. -->
@@ -341,6 +345,16 @@
     <script src="js/modules/teams/team-render.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
 
+    <!-- Naming: fires on member add via TeamCore's post-commit
+         hook. Needs TeamCore.updateTeam and TeamQueries; both are
+         loaded above. -->
+    <script src="js/modules/teams/team-naming.js"></script>
+
+    <!-- Kill modal: opened from the .kill-team button in
+         team-render. Needs CharacterCRUD.save, loaded in the
+         character domain block above. -->
+    <script src="js/modules/teams/team-kill-modal.js"></script>
+
     <script src="js/modules/teams/team-matchmaking.js"></script>
     <script src="js/modules/teams/team-matchmaking-view.js"></script>
 
@@ -419,6 +433,7 @@
     <script src="js/modules/missions/mission-cascade.js"></script>
     <script src="js/modules/missions/mission-core.js"></script>
     <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-export.js"></script>
     <script src="js/modules/missions/mission-render.js"></script>
     <script src="js/modules/missions/mission-aggregator.js"></script>
     <script src="js/modules/missions/mission-ui.js"></script>
