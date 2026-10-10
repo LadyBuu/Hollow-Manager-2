@@ -84,6 +84,33 @@
  *   The characters export does not consult EliminationQueries at
  *   all, so it is unaffected by the module's absence.
  *
+ * ELIMINATION QUERIES SIGNATURE:
+ *   This module calls EliminationQueries.getEliminationWeek(charId)
+ *   with a character ID string. character-export.js's
+ *   resolveEliminationMarker calls EliminationQueries
+ *   .getEliminationYear(char) with a character record. If
+ *   EliminationQueries exposes one signature or the other (not
+ *   both), one of those two call sites is silently falling
+ *   through to its fallback. Verify against elimination-queries.js
+ *   before relying on the "elimination year" column.
+ *
+ * VM SHAPE:
+ *   Both getGraduates() and getCharacters() return a VM of the
+ *   shape:
+ *
+ *     {
+ *       classId:   string,
+ *       className: string,
+ *       members:   array,   // accurate name for the contents
+ *       graduates: array    // legacy alias; same array reference
+ *     }
+ *
+ *   `members` is the accurate key. `graduates` is retained so
+ *   external callers written against the shared VM shape
+ *   continue to work without modification. Both keys reference
+ *   the same array; mutating one mutates the other. New code
+ *   should read `members`.
+ *
  * TEXT SHAPE:
  *
  *   Hollow Blades — Graduates of Class of 1926
@@ -295,6 +322,20 @@
             return Object.keys(value).length > 0;
         }
         return false;
+    }
+
+    /**
+     * Read the accurate `members` key from a roster VM, falling
+     * back to the legacy `graduates` key. Both keys are populated
+     * by getGraduates() and getCharacters(); the fallback exists
+     * for any VM that was produced before the rename or by an
+     * external producer.
+     */
+    function getVMMembers(vm) {
+        if (!vm || typeof vm !== 'object') { return []; }
+        if (Array.isArray(vm.members)) { return vm.members; }
+        if (Array.isArray(vm.graduates)) { return vm.graduates; }
+        return [];
     }
 
     // ============================================================
@@ -592,11 +633,17 @@
                 .localeCompare(String(b.displayName || ''));
         });
 
+        // Two keys point at the same array:
+        //   `members`   — accurate name for the contents.
+        //   `graduates` — legacy name from the shared VM shape.
+        //                 Kept for external callers that read
+        //                 vm.graduates directly.
         return {
             classId: String(cls.id),
             className: isNonEmptyString(cls.name)
                 ? String(cls.name)
                 : 'Unnamed Class',
+            members: graduates,
             graduates: graduates
         };
     }
@@ -637,11 +684,22 @@
                 .localeCompare(String(b.displayName || ''));
         });
 
+        // Two keys point at the same array:
+        //   `members`   — accurate name: every character in the
+        //                 class, including eliminated ones.
+        //   `graduates` — legacy name. It is a lie in this VM
+        //                 (the array is NOT the graduates), but
+        //                 it is kept so that external callers
+        //                 written against the shared VM shape
+        //                 continue to work.
+        //
+        // The renderer reads `members` and ignores `graduates`.
         return {
             classId: String(cls.id),
             className: isNonEmptyString(cls.name)
                 ? String(cls.name)
                 : 'Unnamed Class',
+            members: characters,
             graduates: characters
         };
     }
@@ -969,7 +1027,8 @@
      *
      * @param {object} vm       The VM from getGraduates() or
      *                          getCharacters(). Both share the
-     *                          { className, graduates } shape.
+     *                          { className, members, graduates }
+     *                          shape.
      * @param {string} label    'Graduates' or 'Characters'. Used in
      *                          the header line and the singular /
      *                          plural count line.
@@ -979,7 +1038,9 @@
         var out = '';
         var useLabel = isNonEmptyString(label) ? label : 'Roster';
 
-        var count = vm.graduates.length;
+        var members = getVMMembers(vm);
+
+        var count = members.length;
         var singular = useLabel.toLowerCase().replace(/s$/, '');
 
         out += 'Hollow Blades \u2014 ' + useLabel + ' of ' +
@@ -994,11 +1055,11 @@
             return out;
         }
 
-        for (var i = 0; i < vm.graduates.length; i++) {
+        for (var i = 0; i < members.length; i++) {
             if (i > 0) {
                 out += '\n';
             }
-            out += emitRosterBlock(vm.graduates[i]);
+            out += emitRosterBlock(members[i]);
         }
 
         return out;
@@ -1035,7 +1096,9 @@
             };
         }
 
-        if (vm.graduates.length === 0) {
+        var members = getVMMembers(vm);
+
+        if (members.length === 0) {
             return {
                 exported: false,
                 filename: null,
@@ -1068,7 +1131,7 @@
         return {
             exported: true,
             filename: filename,
-            count: vm.graduates.length,
+            count: members.length,
             error: null
         };
     }
@@ -1092,7 +1155,9 @@
             };
         }
 
-        if (vm.graduates.length === 0) {
+        var members = getVMMembers(vm);
+
+        if (members.length === 0) {
             return {
                 exported: false,
                 filename: null,
@@ -1127,7 +1192,7 @@
         return {
             exported: true,
             filename: filename,
-            count: vm.graduates.length,
+            count: members.length,
             error: null
         };
     }
@@ -1146,50 +1211,79 @@
     // CSV EXPORTS (graduates only)
     // ============================================================
 
+    /**
+     * Formula-injection guard for spreadsheet-oriented exports.
+     *
+     * A cell whose first character is `=`, `+`, `-`, `@`, tab, or
+     * CR is evaluated as a formula by Excel / LibreOffice when the
+     * file is opened. Prefixing a single quote tells those apps to
+     * treat the cell as a literal string. The quote does not
+     * appear in the cell once rendered.
+     *
+     * CSV.isPotentialFormula (in csv-parser.js) owns the prefix
+     * test. When it is unavailable, this function is a passthrough.
+     */
+    function guardFormula(value) {
+        if (value === undefined || value === null) { return value; }
+        if (typeof value !== 'string') { return value; }
+        if (value === '') { return value; }
+
+        if (!CSV || typeof CSV.isPotentialFormula !== 'function') {
+            return value;
+        }
+
+        if (CSV.isPotentialFormula(value)) {
+            return "'" + value;
+        }
+        return value;
+    }
+
     function buildCSVRows(vm) {
         var rows = [];
+
+        var members = getVMMembers(vm);
 
         rows.push([SECTION_HEADER]);
         rows.push(COLUMNS.slice());
 
-        for (var i = 0; i < vm.graduates.length; i++) {
-            var g = vm.graduates[i];
+        for (var i = 0; i < members.length; i++) {
+            var g = members[i];
             rows.push([
-                g.firstName,
-                g.middleName,
-                g.lastName,
-                g.nickname,
-                g.alias,
+                guardFormula(g.firstName),
+                guardFormula(g.middleName),
+                guardFormula(g.lastName),
+                guardFormula(g.nickname),
+                guardFormula(g.alias),
                 jsonOrEmpty(g.previousNames),
-                g.age,
-                g.birthYear,
-                g.gender,
-                g.attraction,
-                g.sexuality,
-                g.eyes,
-                g.hair,
-                g.skin,
-                g.height,
-                g.weight,
-                g.build,
-                g.appearanceNotes,
-                g.traits,
-                g.ideals,
-                g.bonds,
-                g.flaws,
-                g.alignment,
-                g.likes,
-                g.dislikes,
-                g.habits,
-                g.fears,
-                g.goals,
+                guardFormula(g.age),
+                guardFormula(g.birthYear),
+                guardFormula(g.gender),
+                guardFormula(g.attraction),
+                guardFormula(g.sexuality),
+                guardFormula(g.eyes),
+                guardFormula(g.hair),
+                guardFormula(g.skin),
+                guardFormula(g.height),
+                guardFormula(g.weight),
+                guardFormula(g.build),
+                guardFormula(g.appearanceNotes),
+                guardFormula(g.traits),
+                guardFormula(g.ideals),
+                guardFormula(g.bonds),
+                guardFormula(g.flaws),
+                guardFormula(g.alignment),
+                guardFormula(g.likes),
+                guardFormula(g.dislikes),
+                guardFormula(g.habits),
+                guardFormula(g.fears),
+                guardFormula(g.goals),
                 jsonOrEmpty(g.stats),
                 jsonOrEmpty(g.magic),
                 String(g.hp),
                 String(g.mp),
                 jsonOrEmpty(g.weapons),
                 jsonOrEmpty(g.specialMoves),
-                g.combatNotes
+                guardFormula(g.combatNotes)
             ]);
         }
 
@@ -1216,7 +1310,9 @@
             };
         }
 
-        if (vm.graduates.length === 0) {
+        var members = getVMMembers(vm);
+
+        if (members.length === 0) {
             return {
                 exported: false,
                 filename: null,
@@ -1259,7 +1355,7 @@
         return {
             exported: true,
             filename: filename,
-            count: vm.graduates.length,
+            count: members.length,
             error: null
         };
     }
