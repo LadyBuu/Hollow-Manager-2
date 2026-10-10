@@ -22,6 +22,23 @@
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
  *
+ * PROFESSIONAL TAB STINT ACTIONS (this revision):
+ *   Each professional stint row carries End and Remove buttons
+ *   when the stint is open. The buttons carry
+ *   data-action="end-professional-stint" and
+ *   data-action="remove-professional-stint" plus the team id and
+ *   join period. character-events.js dispatches them.
+ *
+ *   Rows are per-stint, not per-team. A character who has left
+ *   and rejoined the same team appears twice, once per stint,
+ *   because End and Remove act on a single interval. A closed
+ *   stint shows only Remove (nothing to end).
+ *
+ *   The mutations route through TeamCore.endMemberInterval and
+ *   TeamCore.purgeMemberInterval, which are the canonical paths
+ *   already used by the team Members modal. Nothing new is
+ *   introduced in the domain layer.
+ *
  * RELATIONSHIP FORM OWNERSHIP:
  *   The character-tab relationship form has been RETIRED.
  *   buildRelationshipFormHTML and buildCharacterOptions used to
@@ -410,39 +427,90 @@
 
             var member = null;
             try {
-                member = TeamQueries.getTeamMember(team, char.id);
+                member = TeamQueries.getCharacterTeamMembership(
+                    team.id, char.id
+                );
             } catch (e) {
                 member = null;
             }
             if (!member) { continue; }
 
-            var row = buildProfessionalTeamRow(team, member);
+            // One row per stint. A character who left and rejoined
+            // appears twice.
+            var intervals = Array.isArray(member.intervals)
+                ? member.intervals
+                : [];
 
-            if (canSplit) {
-                var isActive = false;
-                var isFormer = false;
-                try {
-                    isActive = TeamQueries.isMemberActive(
-                        member, currentYear
-                    ) === true;
-                } catch (e) {
-                    isActive = false;
-                }
-                try {
-                    isFormer = TeamQueries.isMemberFormer(
-                        member, currentYear
-                    ) === true;
-                } catch (e) {
-                    isFormer = false;
+            if (intervals.length === 0) {
+                continue;
+            }
+
+            for (var s = 0; s < intervals.length; s++) {
+                var interval = intervals[s];
+                if (!interval || typeof interval !== 'object') {
+                    continue;
                 }
 
-                if (isActive) {
+                var row = buildProfessionalStintRow(
+                    team, member, interval
+                );
+
+                // Classification follows the STINT, not the member.
+                // A stint is "active at currentYear" when its window
+                // contains the current year.
+                var stintActive = false;
+                var stintFormer = false;
+
+                if (canSplit) {
+                    try {
+                        stintActive = TeamQueries.intervalContains(
+                            interval, currentYear
+                        ) === true;
+                    } catch (e) {
+                        stintActive = false;
+                    }
+
+                    if (!stintActive) {
+                        var leave = interval.leavePeriod === undefined ||
+                            interval.leavePeriod === null
+                            ? ''
+                            : String(interval.leavePeriod).trim();
+                        var join = interval.joinPeriod === undefined ||
+                            interval.joinPeriod === null
+                            ? ''
+                            : String(interval.joinPeriod).trim();
+                        var joinNum = parseInt(join, 10);
+                        var leaveNum = parseInt(leave, 10);
+
+                        if (leave !== '' &&
+                            !isNaN(leaveNum) &&
+                            leaveNum < currentYear) {
+                            stintFormer = true;
+                        } else if (join !== '' &&
+                                   !isNaN(joinNum) &&
+                                   joinNum > currentYear) {
+                            // Future stint. Not currently active,
+                            // not formerly active. Not shown in
+                            // either partition today; keep it out
+                            // of the "former" bucket.
+                            stintFormer = false;
+                        }
+                    }
+                }
+
+                if (stintActive) {
                     activeRows.push(row);
-                } else if (isFormer) {
+                } else if (stintFormer) {
                     formerRows.push(row);
+                } else if (!canSplit) {
+                    activeRows.push(row);
+                } else {
+                    // Neither active nor former at the current year.
+                    // Fall back to the "active" bucket so the row is
+                    // still editable. A row with no bucket at all
+                    // would be invisible.
+                    activeRows.push(row);
                 }
-            } else {
-                activeRows.push(row);
             }
         }
 
@@ -638,14 +706,34 @@
         return html;
     }
 
-    function buildProfessionalTeamRow(team, member) {
+    // ============================================================
+    // PROFESSIONAL STINT ROW
+    // ============================================================
+    //
+    // One row per interval. The row's data attributes carry
+    // (teamId, joinPeriod, leavePeriod) so character-events.js can
+    // dispatch the two mutations without having to re-derive the
+    // stint identity from the DOM.
+
+    function buildProfessionalStintRow(team, member, interval) {
         var teamName = team.name || 'Unnamed Team';
         var role = member.role || 'Member';
-        var periodDisplay = buildMemberPeriodDisplay(member);
+
+        var join = isNonEmptyString(interval.joinPeriod)
+            ? String(interval.joinPeriod).trim()
+            : '';
+        var leave = isNonEmptyString(interval.leavePeriod)
+            ? String(interval.leavePeriod).trim()
+            : '';
+
+        var periodDisplay = buildStintPeriodDisplay(join, leave);
+        var isOpen = leave === '';
 
         var html = '';
         html += '<div class="character-professional-team-row" ' +
                     'data-team-id="' + escapeAttribute(team.id) + '" ' +
+                    'data-join-period="' + escapeAttribute(join) + '" ' +
+                    'data-leave-period="' + escapeAttribute(leave) + '" ' +
                     'style="padding:4px 8px;background:var(--bg);' +
                     'border-radius:4px;border-left:3px solid ' +
                     'var(--accent);margin-bottom:4px;' +
@@ -670,46 +758,63 @@
                     '</span>';
         }
 
+        // Push the actions to the right.
+        html += '<span style="flex:1;"></span>';
+
+        html += buildStintActions(team, join, leave, isOpen);
+
         html += '</div>';
 
         return {
-            sortKey: teamName,
+            sortKey: teamName + '|' + (join || ''),
             html: html
         };
     }
 
-    function compareProfessionalRows(a, b) {
-        return a.sortKey.localeCompare(b.sortKey);
+    function buildStintActions(team, join, leave, isOpen) {
+        var html = '';
+        html += '<span class="stint-actions" ' +
+                    'style="display:flex;gap:4px;align-items:center;">';
+
+        if (isOpen) {
+            html += '<button type="button" ' +
+                        'class="small secondary stint-end-btn" ' +
+                        'data-action="end-professional-stint" ' +
+                        'data-team-id="' + escapeAttribute(team.id) + '" ' +
+                        'data-join-period="' + escapeAttribute(join) + '" ' +
+                        'title="Set a leave year for this stint">' +
+                        'End' +
+                    '</button>';
+        }
+
+        html += '<button type="button" ' +
+                    'class="small danger stint-remove-btn" ' +
+                    'data-action="remove-professional-stint" ' +
+                    'data-team-id="' + escapeAttribute(team.id) + '" ' +
+                    'data-join-period="' + escapeAttribute(join) + '" ' +
+                    'title="Remove this stint">' +
+                    '\u2715' +
+                '</button>';
+
+        html += '</span>';
+        return html;
     }
 
-    function buildMemberPeriodDisplay(member) {
-        if (!member || !Array.isArray(member.intervals) ||
-            member.intervals.length === 0) {
-            return '';
+    function buildStintPeriodDisplay(join, leave) {
+        if (join && leave) {
+            return join + ' \u2013 ' + leave;
         }
-
-        var parts = [];
-        for (var i = 0; i < member.intervals.length; i++) {
-            var iv = member.intervals[i];
-            if (!iv || typeof iv !== 'object') { continue; }
-
-            var join = isNonEmptyString(iv.joinPeriod)
-                ? String(iv.joinPeriod).trim()
-                : '';
-            var leave = isNonEmptyString(iv.leavePeriod)
-                ? String(iv.leavePeriod).trim()
-                : '';
-
-            if (join && leave) {
-                parts.push(join + ' \u2013 ' + leave);
-            } else if (join) {
-                parts.push('From ' + join);
-            } else if (leave) {
-                parts.push('Until ' + leave);
-            }
+        if (join) {
+            return 'From ' + join;
         }
+        if (leave) {
+            return 'Until ' + leave;
+        }
+        return '';
+    }
 
-        return parts.join('; ');
+    function compareProfessionalRows(a, b) {
+        return a.sortKey.localeCompare(b.sortKey);
     }
 
     function isNonEmptyString(value) {
