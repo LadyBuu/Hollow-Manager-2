@@ -90,12 +90,26 @@
  *   data-touched="true" attribute that the controller sets on the
  *   first input or change event on that field.
  *
+ * EXPORT ACTION (this revision):
+ *   The mission detail panel exposes an Export action that
+ *   downloads a plain-text report for the current mission. The
+ *   action is dispatched through the same delegated click handler
+ *   as every other action, routed through handleExport, which
+ *   defers to window.MissionExport. MissionExport is resolved
+ *   lazily; when the module is unavailable, the toast explains
+ *   that and the mission view is left untouched. Export does not
+ *   mutate anything, does not refresh the view, and does not
+ *   close the detail modal.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.NotificationSystem
  *   - window.MissionCore
  *   - window.MissionQueries
  *   - window.MissionAggregator
  *   - window.MissionRender
+ *
+ * DEPENDENCIES (LAZY, resolved at click time):
+ *   - window.MissionExport
  */
 
 (function() {
@@ -472,6 +486,11 @@
             case 'mission-edit':
                 event.preventDefault();
                 openFormModal(missionId);
+                return;
+
+            case 'mission-export':
+                event.preventDefault();
+                handleExport(missionId);
                 return;
 
             case 'mission-archive':
@@ -1002,6 +1021,65 @@
     // ============================================================
     // DOMAIN MUTATIONS
     // ============================================================
+
+    /**
+     * Export a single mission as a plain-text report.
+     *
+     * Synchronous through to the download. MissionExport builds
+     * the report from the mission record and triggers a Blob
+     * download in the same tick. No pipeline, no state change, no
+     * refresh — the modal stays open and the mission is untouched.
+     *
+     * Failure modes surfaced as an error toast:
+     *   - MissionExport module not loaded (script tag missing).
+     *   - Mission no longer exists (deleted between render and
+     *     click).
+     *   - Download blocked (rare; Blob or URL API unavailable).
+     */
+    function handleExport(missionId) {
+        if (!missionId) { return; }
+
+        var Exporter = window.MissionExport;
+        if (!Exporter ||
+            typeof Exporter.exportMission !== 'function') {
+            notify(
+                'Mission export is not available. Check that ' +
+                'mission-export.js is loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportMission(missionId);
+        } catch (err) {
+            console.warn(
+                '[MissionUI] MissionExport.exportMission threw:',
+                err
+            );
+            notify(
+                'Mission export failed: ' +
+                (err && err.message ? err.message : String(err)),
+                'error'
+            );
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Mission exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            'Mission export failed: ' +
+                ((result && result.error) || 'Unknown error'),
+            'error'
+        );
+    }
 
     function handleArchive(missionId) {
         if (!missionId) { return; }
