@@ -19,6 +19,10 @@
  *   - Public read APIs. Team reads go through TeamQueries.
  *   - Rendering, notifications, DOM.
  *   - saveData. The pipeline owns persistence.
+ *   - Team naming. TeamNaming owns the suffix rule. This module
+ *     fires a post-commit hook so the name stays in sync with the
+ *     distinct-member count; the naming logic itself lives in
+ *     team-naming.js.
  *
  * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
@@ -57,6 +61,18 @@
  *   is strictly after the character's deathYear. A stint starting
  *   after death is a data error, not something the cascade repairs.
  *
+ * TEAM NAMING HOOK:
+ *   After any successful member add, this module fires
+ *   TeamNaming.applyTeamName(teamId) for each team touched by the
+ *   mutation. That call recomputes the team's display name and
+ *   name history from the distinct-member count and persists the
+ *   change through TeamCore.updateTeam if either differs.
+ *
+ *   The hook is fire-and-forget: it does not block the caller's
+ *   promise, and an error inside it does not fail the member
+ *   mutation. If TeamNaming is not loaded, the hook is skipped
+ *   and a warning is logged once.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
  *   - window.IdUtils
@@ -67,6 +83,8 @@
  * DEPENDENCIES (LAZY, at call time):
  *   - window.TournamentCore (deleteTeam cascade; mandatory at that
  *     call, throws if unavailable)
+ *   - window.TeamNaming (post-member-add rename; optional, skipped
+ *     if absent)
  */
 
 (function() {
@@ -195,6 +213,58 @@
 
     function success(data) {
         return { success: true, data: data };
+    }
+
+    // ============================================================
+    // TEAM NAMING HOOK
+    // ============================================================
+
+    var _namingUnavailableWarned = false;
+
+    /**
+     * Fire the naming recomputation for one team.
+     *
+     * Called after any successful member add. Fire-and-forget:
+     * returns nothing, never throws, never blocks. The naming
+     * module runs its own updateTeam when the display name or
+     * name history needs to change.
+     */
+    function fireNamingHook(teamId) {
+        var Naming = window.TeamNaming || null;
+
+        if (!Naming ||
+            typeof Naming.applyTeamName !== 'function') {
+            if (!_namingUnavailableWarned) {
+                _namingUnavailableWarned = true;
+                console.warn(
+                    '[TeamCore] TeamNaming module is not loaded. ' +
+                    'Team names will not be renumbered after member ' +
+                    'changes.'
+                );
+            }
+            return;
+        }
+
+        try {
+            // applyTeamName returns a Promise; we do not chain it
+            // into the caller. Any rejection is handled here.
+            var p = Naming.applyTeamName(teamId);
+            if (p && typeof p.then === 'function') {
+                p.catch(function(err) {
+                    console.warn(
+                        '[TeamCore] TeamNaming.applyTeamName ' +
+                        'rejected for team ' + teamId + ':',
+                        err
+                    );
+                });
+            }
+        } catch (err) {
+            console.warn(
+                '[TeamCore] TeamNaming.applyTeamName threw for ' +
+                'team ' + teamId + ':',
+                err
+            );
+        }
     }
 
     // ============================================================
@@ -358,15 +428,6 @@
     // INTERVAL HELPERS
     // ============================================================
 
-    /**
-     * Numeric interval bounds for overlap comparison.
-     *
-     * Malformed periods THROW. This is deliberate: a malformed
-     * interval in stored data is a bug, and treating it as
-     * [0, Infinity] would silently produce "member forever" state.
-     * Callers that might encounter malformed data must validate
-     * first (validateMemberIntervals does).
-     */
     function intervalStart(interval) {
         var join = canonicalisePeriod(interval.joinPeriod);
         if (join === null) {
@@ -894,8 +955,6 @@
             candidate.teamNumber = numStr;
         }
 
-        // Type change revalidates existing intervals and rankings
-        // against the new type's period bounds.
         if (Array.isArray(candidate.members)) {
             for (var m = 0; m < candidate.members.length; m++) {
                 var member = candidate.members[m];
@@ -1207,9 +1266,6 @@
 
         var teamName = current.name || 'Unknown Team';
 
-        // The tournament-reference cascade is a mutation invariant.
-        // If TournamentCore is not available, the delete would leave
-        // dangling references. Fail rather than produce corrupt state.
         var TournamentCore = window.TournamentCore;
         if (!TournamentCore ||
             typeof TournamentCore.stripTeamRefs !== 'function') {
@@ -1315,7 +1371,6 @@
             return Promise.resolve(failure(incomingCheck.message));
         }
 
-        // Pre-flight: no-overlap check against the live store.
         var existingEntry = null;
         if (Array.isArray(current.members)) {
             for (var i = 0; i < current.members.length; i++) {
@@ -1346,8 +1401,6 @@
             }
         }
 
-        // Pre-flight: reject an assignment that starts after the
-        // character's death year.
         var preflightChar = findCharacterInData(
             getDataStore(), targetChar
         );
@@ -1407,7 +1460,6 @@
                     };
                 }
 
-                // Snapshot-scoped: add-after-death guard.
                 var snapshotChar = findCharacterInData(
                     snapshot, targetChar
                 );
@@ -1512,12 +1564,6 @@
 
                 target.updatedAt = new Date().toISOString();
 
-                // Add-after-death guard runs the death cascade
-                // against this snapshot. Since the validator has
-                // already rejected joinPeriod > deathYear, this is
-                // a belt-and-braces call that only closes an
-                // interval whose joinPeriod is at or before
-                // deathYear but whose leavePeriod is blank.
                 var character = findCharacterInData(
                     snapshot, targetChar
                 );
@@ -1543,6 +1589,11 @@
                 (current.name || targetId),
             successMessage: 'Member added successfully!',
             failureMessage: 'Failed to add member.'
+        }).then(function(result) {
+            if (result && result.success) {
+                fireNamingHook(targetId);
+            }
+            return result;
         });
     }
 
@@ -1561,19 +1612,6 @@
         });
     }
 
-    /**
-     * Add several (team, character) intervals in one transaction.
-     *
-     * A (teamId, charId) pair may appear more than once in the
-     * batch provided the intervals do not overlap. The batch
-     * validates the full proposed set against itself and against
-     * the snapshot.
-     *
-     * Add-after-death guard: intervals whose joinPeriod is strictly
-     * after the character's deathYear are rejected outright. The
-     * cascade then runs once per distinct character after all their
-     * intervals have been added.
-     */
     function batchAddMembers(assignments) {
         if (failIfMissing(
             checkMemberDependencies(), 'batchAddMembers'
@@ -1596,8 +1634,6 @@
             }));
         }
 
-        // Normalise each row. Duplicates are allowed; overlap is
-        // checked later.
         var cleanRows = [];
 
         for (var i = 0; i < assignments.length; i++) {
@@ -1654,7 +1690,6 @@
             });
         }
 
-        // Pre-flight against live store.
         var preflightStore = getDataStore();
         if (!preflightStore) {
             return Promise.resolve(failure(
@@ -1733,7 +1768,6 @@
                         };
                     }
 
-                    // Add-after-death guard.
                     var snapshotChar = findCharacterInData(
                         snapshot, row.charId
                     );
@@ -1764,7 +1798,6 @@
                         leavePeriod: row.leavePeriod
                     };
 
-                    // Overlap against existing intervals on the team.
                     if (Array.isArray(team.members)) {
                         for (var m = 0;
                              m < team.members.length;
@@ -1798,7 +1831,6 @@
                         }
                     }
 
-                    // Overlap within the batch, per pair.
                     var pairKey = row.teamId + '::' + row.charId;
                     var prior = pendingByPair[pairKey];
                     if (prior) {
@@ -1886,8 +1918,6 @@
                     added++;
                 }
 
-                // Run the death cascade once per distinct character
-                // after all their intervals have been added.
                 var charIdsTouched = Object.keys(charactersTouched);
                 for (var c = 0; c < charIdsTouched.length; c++) {
                     var charId = charIdsTouched[c];
@@ -1908,7 +1938,8 @@
 
                 return {
                     added: added,
-                    teamsTouched: Object.keys(teamsTouched).length
+                    teamsTouched: Object.keys(teamsTouched).length,
+                    touchedTeamIds: Object.keys(teamsTouched)
                 };
             },
 
@@ -1942,6 +1973,18 @@
             },
 
             failureMessage: 'Failed to add members.'
+        }).then(function(result) {
+            if (result && result.success && result.data) {
+                var touched = Array.isArray(
+                    result.data.touchedTeamIds
+                )
+                    ? result.data.touchedTeamIds
+                    : [];
+                for (var t = 0; t < touched.length; t++) {
+                    fireNamingHook(touched[t]);
+                }
+            }
+            return result;
         });
     }
 
@@ -2455,8 +2498,6 @@
                     };
                 }
 
-                // Reopening makes the target interval [join, Infinity].
-                // It must not overlap any sibling interval.
                 var reopened = {
                     joinPeriod: canonicalisePeriod(
                         liveIv.joinPeriod
@@ -2653,8 +2694,6 @@
                 liveEntry.intervals = liveEntry.intervals.filter(
                     function(iv) {
                         if (!iv || typeof iv !== 'object') {
-                            // Preserve malformed entries; the
-                            // caller did not ask to clean them.
                             return true;
                         }
                         var ivJoin = canonicalisePeriod(
@@ -2906,31 +2945,6 @@
     // CROSS-DOMAIN CASCADES
     // ============================================================
 
-    /**
-     * End every open professional-team stint for a character at the
-     * given year.
-     *
-     * Called from:
-     *   - CharacterCRUD.save (death cascade)
-     *   - CharacterCRUD.backfillDeathCascades
-     *   - CharacterCRUD.setCareerTransition
-     *   - CharacterCRUD.applyCareerStatusTimeline
-     *   - addMember / batchAddMembers (add-after-death guard)
-     *
-     * Scope: professional teams only.
-     * Granularity: year. deathWeek is not read.
-     * Never throws. Idempotent.
-     *
-     * SEMANTICS:
-     *   For each open professional stint with parseable joinPeriod:
-     *     - leavePeriod already set and <= deathYear: skip.
-     *     - joinPeriod strictly > deathYear: skip (would produce
-     *       leave < join; validators reject that elsewhere).
-     *     - otherwise: set leavePeriod = String(deathYear).
-     *
-     *   joinPeriod === deathYear is ended at deathYear, producing
-     *   [Y, Y].
-     */
     function endStintsForCharacter(appData, charId, deathYear) {
         var result = {
             stintsEnded: 0,
