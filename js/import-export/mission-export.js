@@ -7,7 +7,7 @@
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one mission.
- *   - Downloading it via a Blob URL.
+ *   - Handing the payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. MissionQueries, CharacterQueries, and TeamQueries
@@ -19,6 +19,9 @@
  *   - UI. MissionEvents / MissionUI triggers the export; this module
  *     returns a result object.
  *   - Format selection. One format: plain text.
+ *   - Download mechanics. ExportUtils.downloadBlob owns the anchor,
+ *     the blob URL, and the filename uniquification. This module
+ *     supplies a base filename and hands over the payload.
  *
  * REPORT CONTENTS (in order):
  *   - Header: title, mission ID (derived), status, priority.
@@ -49,6 +52,15 @@
  *   content. If the mission itself does not resolve, the export
  *   returns { error } rather than an empty file.
  *
+ * DOWNLOAD FILENAMES:
+ *   This module produces a base filename of the form
+ *   "mission_<slug>_<id>_<timestamp>.txt". ExportUtils.downloadBlob
+ *   inserts its own local-time timestamp before the extension, so a
+ *   second export of the same mission in the same session never
+ *   collides with the first. The per-module timestamp remains
+ *   because it makes the base name human-readable in logs; the
+ *   central timestamp is what guarantees uniqueness.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
  *   - window.MissionId
@@ -57,6 +69,7 @@
  *   - window.MissionViews
  *   - window.CharacterQueries
  *   - window.TeamQueries
+ *   - window.ExportUtils
  *
  * DEPENDENCIES (LAZY, at call time):
  *   - (none)
@@ -81,6 +94,7 @@
     var MissionViews = window.MissionViews;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
+    var ExportUtils = window.ExportUtils;
 
     var _missing = [];
 
@@ -136,6 +150,10 @@
     if (!TeamQueries ||
         typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
+    }
+    if (!ExportUtils ||
+        typeof ExportUtils.downloadBlob !== 'function') {
+        _missing.push('ExportUtils.downloadBlob');
     }
 
     if (_missing.length > 0) {
@@ -683,45 +701,6 @@
     }
 
     // ============================================================
-    // DOWNLOAD
-    // ============================================================
-
-    function triggerDownload(filename, text) {
-        if (typeof window.Blob !== 'function' ||
-            typeof window.URL === 'undefined' ||
-            typeof window.URL.createObjectURL !== 'function') {
-            return false;
-        }
-
-        try {
-            var blob = new Blob([text], {
-                type: 'text/plain;charset=utf-8'
-            });
-            var url = window.URL.createObjectURL(blob);
-
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-
-            setTimeout(function() {
-                try { window.URL.revokeObjectURL(url); }
-                catch (e) { /* ignore */ }
-            }, 1000);
-
-            return true;
-        } catch (e) {
-            console.warn(
-                '[MissionExport] Download failed:', e
-            );
-            return false;
-        }
-    }
-
-    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -750,13 +729,23 @@
 
         if (built.error) { return built; }
 
-        var ok = triggerDownload(built.filename, built.text);
-        if (!ok) {
-            return { error: 'Download failed.' };
+        var blob;
+        try {
+            blob = new Blob([built.text], {
+                type: 'text/plain;charset=utf-8'
+            });
+        } catch (e) {
+            return { error: 'Failed to build file blob: ' + e.message };
         }
 
-        // "count" here mirrors team-export.js: it reports the number
-        // of primary entities written. A mission report is one
+        try {
+            ExportUtils.downloadBlob(blob, built.filename);
+        } catch (e) {
+            return { error: 'Download failed: ' + e.message };
+        }
+
+        // "count" mirrors team-export.js: it reports the number of
+        // primary entities written. A mission report is one
         // mission, so the count is 1. The field exists for shape
         // parity with the other exporters.
         return {
