@@ -21,35 +21,17 @@
  *   - Field enumeration. normaliseCharacterData is the canonical
  *     shape; this module delegates to it.
  *   - The form's field ids. CharacterForm owns those.
+ *   - Download mechanics. ExportUtils.downloadBlob owns the anchor,
+ *     the blob URL, and the filename uniquification. This module
+ *     supplies a base filename and hands over the payload.
  *
- * DOWNLOAD RELIABILITY:
- *   Every download uses a fresh anchor, a fresh blob URL, and a
- *   TIMESTAMP-SUFFIXED filename. The timestamp is what makes the
- *   second download in a session work:
- *
- *     Browsers refuse to write a second file with the same name
- *     in the same session without user confirmation. If the
- *     confirmation dialog is suppressed (which it is when the tab
- *     is unfocused or "ask where to save" is off), the download
- *     is silently dropped and JS has no way to know.
- *
- *     A unique filename sidesteps the collision entirely. The
- *     browser sees a new file and writes it.
- *
- *   The blob URL is deliberately NOT revoked. Revoking on a timer
- *   raced the browser's download manager and killed the download
- *   for larger payloads. Modern browsers reclaim blob URLs on
- *   page unload, so leaving them alive costs nothing measurable.
- *
- *   The anchor is removed synchronously, immediately after click
- *   returns, and the removal is guarded.
- *
- *   The click MUST be dispatched synchronously inside the user
- *   gesture handler. Any async step in the click path (a
- *   Promise.then, a setTimeout, an await) causes the browser to
- *   stop treating the download as user-initiated and apply the
- *   "one automatic download per gesture" rule. handleExportCurrent
- *   is synchronous through to a.click() for this reason.
+ * DOWNLOAD FILENAMES:
+ *   This module produces a base filename of the form
+ *   "character-<first>-<last>.json". ExportUtils.downloadBlob
+ *   inserts a local-time timestamp before the extension, so a
+ *   second export of the same character in the same session never
+ *   collides with the first. The timestamp logic is centralised in
+ *   ExportUtils and is not duplicated here.
  *
  * IMPORT INPUT:
  *   The import path is a MODAL with a textarea, not a file picker.
@@ -60,8 +42,8 @@
  *
  * EXPORT SHAPE:
  *   A single JSON object: the full character record. Not wrapped in
- *   an envelope, not arrayed. Filename:
- *     character-<first>-<last>-<YYYYMMDD-HHMMSS>.json
+ *   an envelope, not arrayed. Base filename:
+ *     character-<first>-<last>.json
  *
  * IMPORT SHAPE:
  *   The pasted text may contain either:
@@ -87,6 +69,7 @@
  *   - window.FormUtils
  *   - window.Modal
  *   - window.NotificationSystem
+ *   - window.ExportUtils
  */
 
 (function() {
@@ -106,6 +89,7 @@
     var FormUtils = window.FormUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var ExportUtils = window.ExportUtils;
 
     var _missing = [];
 
@@ -139,6 +123,10 @@
     if (!NotificationSystem ||
         typeof NotificationSystem.notify !== 'function') {
         _missing.push('NotificationSystem.notify');
+    }
+    if (!ExportUtils ||
+        typeof ExportUtils.downloadBlob !== 'function') {
+        _missing.push('ExportUtils.downloadBlob');
     }
 
     if (_missing.length > 0) {
@@ -193,99 +181,6 @@
         return 'character-' + stem + '.json';
     }
 
-    function pad2(n) {
-        return n < 10 ? '0' + n : String(n);
-    }
-
-    /**
-     * Insert a local-time timestamp into a filename, immediately
-     * before the extension.
-     *
-     *   "character-alice.json"  ->  "character-alice-20261009-143052.json"
-     *   "character-alice"       ->  "character-alice-20261009-143052"
-     *   ""                      ->  "download-20261009-143052"
-     *
-     * Two-digit fields, no punctuation inside the timestamp itself,
-     * so the result is filesystem-safe on every OS.
-     *
-     * The timestamp is what makes the second download in a session
-     * work: browsers silently drop a download whose target file
-     * already exists, and JS has no way to detect the drop.
-     */
-    function appendTimestampToFilename(filename) {
-        var now = new Date();
-        var stamp =
-            String(now.getFullYear()) +
-            pad2(now.getMonth() + 1) +
-            pad2(now.getDate()) + '-' +
-            pad2(now.getHours()) +
-            pad2(now.getMinutes()) +
-            pad2(now.getSeconds());
-
-        var name = String(filename || '').trim();
-        if (name === '') {
-            return 'download-' + stamp;
-        }
-
-        var dotIndex = name.lastIndexOf('.');
-        if (dotIndex <= 0) {
-            // No extension, or dotfile. Append at the end.
-            return name + '-' + stamp;
-        }
-
-        var stem = name.substring(0, dotIndex);
-        var ext = name.substring(dotIndex);
-
-        return stem + '-' + stamp + ext;
-    }
-
-    /**
-     * Trigger a browser download of a JSON blob.
-     *
-     * Every call uses a fresh anchor, a fresh blob URL, and a
-     * timestamp-suffixed filename. See the file header for the
-     * reasoning behind each.
-     *
-     * The blob URL is deliberately NOT revoked. Revoking on a
-     * timer raced the browser's download manager and killed the
-     * download for larger payloads. Modern browsers reclaim blob
-     * URLs on page unload.
-     *
-     * The anchor is removed synchronously, immediately after click
-     * returns. By that point the download has been dispatched to
-     * the browser's download manager and the anchor is finished.
-     * The removal is guarded against a missing parent so a stray
-     * double-click on Export cannot throw.
-     */
-    function downloadJson(filename, obj) {
-        var text = JSON.stringify(obj, null, 2);
-        var blob = new Blob([text], { type: 'application/json' });
-        var url = URL.createObjectURL(blob);
-
-        var stampedName = appendTimestampToFilename(filename);
-
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = stampedName;
-        a.rel = 'noopener';
-        a.style.display = 'none';
-
-        document.body.appendChild(a);
-
-        try {
-            a.click();
-        } finally {
-            try {
-                if (a.parentNode) {
-                    a.parentNode.removeChild(a);
-                }
-            } catch (e) {
-                // Guarded. A concurrent removal is harmless.
-            }
-            // Deliberately do NOT revoke `url`. See the header note.
-        }
-    }
-
     function escapeHtml(value) {
         if (window.DomUtils &&
             typeof window.DomUtils.escapeHtml === 'function') {
@@ -324,10 +219,12 @@
             };
         }
 
-        var filename = buildFilename(char);
+        var baseFilename = buildFilename(char);
+        var text = JSON.stringify(snapshot, null, 2);
 
         try {
-            downloadJson(filename, snapshot);
+            var blob = new Blob([text], { type: 'application/json' });
+            ExportUtils.downloadBlob(blob, baseFilename);
         } catch (e) {
             return {
                 exported: false,
@@ -335,7 +232,7 @@
             };
         }
 
-        return { exported: true, filename: filename };
+        return { exported: true, filename: baseFilename };
     }
 
     // ============================================================
@@ -889,8 +786,7 @@
 
         // Exposed for tests / advanced callers
         writeRecordToForm: writeRecordToForm,
-        buildFilename: buildFilename,
-        appendTimestampToFilename: appendTimestampToFilename
+        buildFilename: buildFilename
     });
 
     // ============================================================
