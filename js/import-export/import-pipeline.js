@@ -26,6 +26,22 @@
  *   8. Atomic commit via MutationPipeline
  *   9. Activity log
  * 
+ * ENTRY POINTS (this revision):
+ *   importFromFile(file, options)
+ *     Read a File object as text, then parse.
+ *
+ *   importFromJSON(text, options)
+ *     Parse a JSON string, then delegate.
+ *
+ *   importFromObject(data, options)
+ *     Take an already-parsed object. Skips the parse step.
+ *     Callers that already have a parsed object (the UI
+ *     handler, for example) should use this instead of
+ *     stringifying the object to feed importFromJSON, which
+ *     would parse the same content twice.
+ *
+ *   All three eventually reach importFromEnvelope.
+ *
  * DEPARTMENTS (this revision):
  *   Departments joined the top-level store in DATA_VERSION 32 and
  *   the export envelope in ExportSchema. This module now:
@@ -58,6 +74,9 @@
  *   
  *   // From JSON string
  *   var result = await Pipeline.importFromJSON(jsonText);
+ *   
+ *   // From a pre-parsed object
+ *   var result = await Pipeline.importFromObject(obj);
  *   
  *   // From envelope object
  *   var result = await Pipeline.importFromEnvelope(envelope);
@@ -823,6 +842,10 @@
     /**
      * Import data from a JSON string.
      * 
+     * Parses the string and delegates to importFromObject. Callers
+     * that already have a parsed object should use importFromObject
+     * directly rather than serializing to a string and back.
+     * 
      * @param {string} jsonText - JSON text to import
      * @param {object} options - Import options
      * @returns {Promise<object>} Import result
@@ -838,16 +861,54 @@
             ));
         }
 
+        var data;
         try {
-            // Parse JSON
-            var data = JSON.parse(jsonText);
+            data = JSON.parse(jsonText);
+        } catch (err) {
+            return Promise.resolve(createFailureResult(
+                ['Invalid JSON: ' + (err.message || 'Parse error.')],
+                [],
+                'Import failed: invalid JSON'
+            ));
+        }
 
-            // If the parsed data is an envelope, use it directly
+        return importFromObject(data, options);
+    }
+
+    /**
+     * Import data from an already-parsed object.
+     * 
+     * If the object is an envelope (has `format` matching
+     * Schema.FORMAT_NAME), it is passed straight to
+     * importFromEnvelope. Otherwise, an envelope is built around it
+     * via Envelope.create, and the built envelope is passed to
+     * importFromEnvelope.
+     * 
+     * This is the entry point for callers that have already parsed
+     * the import payload (the UI file handler, for example). It
+     * skips the parse/serialize round-trip that importFromJSON
+     * would otherwise perform on a value that is already an object.
+     * 
+     * @param {object} data - Parsed import payload
+     * @param {object} options - Import options
+     * @returns {Promise<object>} Import result
+     */
+    function importFromObject(data, options) {
+        options = options || {};
+
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return Promise.resolve(createFailureResult(
+                ['Invalid data: must be a plain object.'],
+                [],
+                'Import failed: invalid input'
+            ));
+        }
+
+        try {
             if (data.format && data.format === Schema.FORMAT_NAME) {
                 return importFromEnvelope(data, options);
             }
 
-            // Otherwise, treat it as raw data and wrap in an envelope
             var envelope = Envelope.create(data, {
                 applicationName: options.applicationName || 'Hollow Manager 2',
                 applicationVersion: options.applicationVersion || '2.0.0',
@@ -858,10 +919,14 @@
             return importFromEnvelope(envelope, options);
 
         } catch (err) {
+            // Envelope.create is the only thing here that can throw
+            // for data that has already passed the object check. The
+            // failure is about building the envelope, not about
+            // parsing, so the message reflects that.
             return Promise.resolve(createFailureResult(
-                ['Invalid JSON: ' + (err.message || 'Parse error.')],
+                [err.message || 'Failed to build envelope.'],
                 [],
-                'Import failed: invalid JSON'
+                'Import failed: could not prepare envelope'
             ));
         }
     }
@@ -961,6 +1026,13 @@
         // Pass `options.allowEmptyRequiredSections = true` to
         // bypass (for callers who deliberately want to wipe a
         // specific section, e.g. a "reset characters only" flow).
+        //
+        // This guard composes with the UI-layer check that refuses
+        // to import when ImportPipeline is unavailable (see
+        // import-export/ui.js). The two policies together mean a
+        // caller has to both route through the pipeline AND pass
+        // the explicit opt-in in order to overwrite existing data
+        // with an empty file.
         var requiredSections = Schema.getRequiredSections();
         var emptySections = [];
         for (var s = 0; s < requiredSections.length; s++) {
@@ -1180,6 +1252,7 @@
         // ---- Main import functions ----
         importFromFile: importFromFile,
         importFromJSON: importFromJSON,
+        importFromObject: importFromObject,
         importFromEnvelope: importFromEnvelope,
 
         // ---- Candidate state building ----
@@ -1206,6 +1279,7 @@
         var required = [
             'importFromFile',
             'importFromJSON',
+            'importFromObject',
             'importFromEnvelope',
             'buildCandidateState',
             'ensureUniqueIds',
@@ -1222,7 +1296,6 @@
 
         if (missing.length > 0) {
             console.warn('[ImportPipeline] Verification - some exports may be missing:', missing.join(', '));
-        } else {
         }
     })();
 
