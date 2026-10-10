@@ -38,6 +38,32 @@
  *   3. CharacterRosterExport  — tab-separated roster text
  *   4. CharacterExport        — full-detail character report
  *                             + general report
+ *
+ * STRICT MODE:
+ *   CharacterCSV.importCharacters does not pre-filter its result in
+ *   strict mode. Strict mode is a policy decision that belongs to
+ *   the CONSUMER of the ImportResult. The result already carries
+ *   every valid record, every error (with row metadata), and every
+ *   warning; a strict caller filters getValid(true) against
+ *   getErrorsForRow() itself.
+ *
+ *   The import loop applies the strict rule for row-level enum and
+ *   range failures, which the module owns. Anything beyond that is
+ *   the caller's responsibility.
+ *
+ * FORMULA INJECTION:
+ *   The CSV export prefixes a single quote to any cell whose first
+ *   character could be interpreted as a spreadsheet formula
+ *   (=, +, -, @, tab, CR). See the guardFormula helper in section 2.
+ *
+ * ELIMINATION QUERIES SIGNATURE:
+ *   CharacterRosterExport.resolveEliminationMarker calls
+ *   EliminationQueries.getEliminationYear(char) with a character
+ *   record. class-roster-export.js calls getEliminationWeek(charId)
+ *   with a character ID. If EliminationQueries exposes one
+ *   signature or the other (not both), one of those two call sites
+ *   is silently falling through to its fallback. Verify against
+ *   elimination-queries.js before relying on either.
  */
 
 (function() {
@@ -103,6 +129,34 @@
 
     function trimmed(value) {
         return safeString(value).trim();
+    }
+
+    /**
+     * Formula-injection guard for spreadsheet-oriented exports.
+     *
+     * A cell whose first character is `=`, `+`, `-`, `@`, tab, or
+     * CR is evaluated as a formula by Excel / LibreOffice when the
+     * file is opened. Prefixing a single quote tells those apps to
+     * treat the cell as a literal string. The quote does not
+     * appear in the cell once rendered.
+     *
+     * CSV.isPotentialFormula owns the prefix test. When the CSV
+     * module is unavailable or lacks the function, this is a
+     * passthrough.
+     */
+    function guardFormula(value) {
+        if (value === undefined || value === null) { return value; }
+        if (typeof value !== 'string') { return value; }
+        if (value === '') { return value; }
+
+        if (!CSV || typeof CSV.isPotentialFormula !== 'function') {
+            return value;
+        }
+
+        if (CSV.isPotentialFormula(value)) {
+            return "'" + value;
+        }
+        return value;
     }
 
     // ============================================================
@@ -607,31 +661,13 @@
                 }
             }
 
-            if (strict) {
-                var filteredValid = [];
-                var validItems = result.getValid(true);
-                for (var k = 0; k < validItems.length; k++) {
-                    var item = validItems[k];
-                    var rowNum = item.metadata &&
-                                 item.metadata.row;
-                    if (rowNum) {
-                        var rowErrors =
-                            result.getErrorsForRow(rowNum);
-                        if (rowErrors.length === 0) {
-                            filteredValid.push(item);
-                        } else {
-                            result.addSkipped(
-                                item.record,
-                                'Row had errors',
-                                { row: rowNum }
-                            );
-                        }
-                    } else {
-                        filteredValid.push(item);
-                    }
-                }
-                result._valid = filteredValid;
-            }
+            // Strict-mode policy is enforced by the CONSUMER, not
+            // here. The result already carries every valid record,
+            // every error (with row metadata), and every warning;
+            // a strict caller filters getValid(true) against
+            // getErrorsForRow() itself. The import loop above has
+            // already applied the strict rule for the row-level
+            // enum and range failures this module owns.
 
             return result;
         }
@@ -1002,6 +1038,13 @@
             return 'Yes';
         }
 
+        // The roster format is TSV, not CSV. TSV has no quoting
+        // convention, so a tab or a newline inside a cell would
+        // split the row. Both are replaced with a single space
+        // before the row is joined. This is lossy by design: the
+        // roster is a display grid, and losing the newline in a
+        // multi-line note is preferable to corrupting the row.
+
         function stripTabs(value) {
             return String(value).replace(/\t/g, ' ');
         }
@@ -1239,6 +1282,12 @@
                 };
             }
 
+            // Only after validity is confirmed does a count of
+            // zero mean "nothing to export". Before the validity
+            // check, a zero count is the default the error paths
+            // leave behind, and the specific error message
+            // (e.g. "characterIds must be an array") would be
+            // swallowed by the generic one.
             if (built.count === 0) {
                 return {
                     exported: false,
