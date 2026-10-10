@@ -27,18 +27,26 @@
  *   - Ranking history.
  *   - Members section: every member entry (active and former),
  *     with role, intervals, and an embedded character snapshot.
- *   - Character snapshot: name, status, age, stats, career status
- *     history, department memberships (when Departments lands),
- *     and other team memberships.
+ *   - Character snapshot: name, status, age, physical stats
+ *     (with modifiers), magic proficiencies (non-zero only),
+ *     HP / MP, weapons, special moves, career status history,
+ *     department memberships, and OTHER PROFESSIONAL team
+ *     memberships.
+ *
+ * ACADEMIC TEAMS ARE EXCLUDED FROM THE SNAPSHOT (this revision):
+ *   pushOtherTeamMemberships now filters to professional teams
+ *   only. The snapshot already carries every professional
+ *   membership from the top-level TEAMS section; the OTHER
+ *   TEAMS line is a cross-reference to teams the reader is not
+ *   looking at. Academic teams are a different domain and are
+ *   covered by the Academy view, not this report.
  *
  * DOWNLOAD FILENAMES:
  *   This module produces a base filename of the form
  *   "team_<slug>_<timestamp>.txt". ExportUtils.downloadBlob
  *   inserts its own local-time timestamp before the extension, so
  *   a second export of the same team in the same session never
- *   collides with the first. The per-module timestamp remains
- *   because it makes the base name human-readable in logs; the
- *   central timestamp is what guarantees uniqueness.
+ *   collides with the first.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -47,13 +55,13 @@
  *   - window.ExportUtils
  *
  * DEPENDENCIES (LAZY, at call time):
- *   - window.CharacterStats     (stats line in character snapshot;
- *                                absent = "(unavailable)")
+ *   - window.CharacterStats     (stats and magic; absent =
+ *                                "(unavailable)")
+ *   - window.MagicConstants     (magic type labels; absent = raw
+ *                                keys)
  *   - window.MissionQueries     (mission title resolution)
- *   - window.DepartmentQueries  (department memberships; absent
- *                                until Departments lands)
- *   - window.AcademyClasses     (class name resolution; absent =
- *                                raw class id)
+ *   - window.DepartmentQueries  (department memberships)
+ *   - window.AcademyClasses     (class name resolution)
  */
 
 (function() {
@@ -117,6 +125,10 @@
 
     function getCharacterStats() {
         return window.CharacterStats || null;
+    }
+
+    function getMagicConstants() {
+        return window.MagicConstants || null;
     }
 
     function getMissionQueries() {
@@ -183,6 +195,16 @@
         return value === undefined || value === null
             ? ''
             : String(value);
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
+    function isObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function lineUnder(text) {
@@ -474,6 +496,8 @@
             safeString(char.gender || '\u2014'));
 
         pushStats(lines, char);
+        pushMagic(lines, char);
+        pushWeaponsAndMoves(lines, char);
         pushCareerStatus(lines, char);
         pushDepartmentMemberships(lines, char);
         pushOtherTeamMemberships(lines, char);
@@ -481,9 +505,9 @@
 
     function pushStats(lines, char) {
         // CharacterStats is a lazy dependency. When it is not
-        // loaded — which can happen if the export is triggered
+        // loaded -- which can happen if the export is triggered
         // before the character module hierarchy finishes loading
-        // — the line reports "(unavailable)" and the report
+        // -- the line reports "(unavailable)" and the report
         // continues.
         var CharacterStats = getCharacterStats();
         if (!CharacterStats ||
@@ -509,10 +533,136 @@
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var v = stats[k];
-            parts.push(k.toUpperCase() + ' ' +
-                (typeof v === 'number' ? v : '\u2014'));
+            var display = (typeof v === 'number') ? v : '\u2014';
+
+            // Include the modifier when the module can compute
+            // one. The modifier is derived from the value; a
+            // missing helper falls back to the value alone.
+            if (typeof CharacterStats.getModifierDisplay ===
+                'function' && typeof v === 'number') {
+                try {
+                    display = v + ' (' +
+                        CharacterStats.getModifierDisplay(v) + ')';
+                } catch (e) {
+                    // Fall through to the plain value.
+                }
+            }
+
+            parts.push(k.toUpperCase() + ' ' + display);
         }
         lines.push('      Stats:     ' + parts.join(' \u00b7 '));
+
+        var hp = isFiniteNumber(char.hp) ? char.hp : 0;
+        var mp = isFiniteNumber(char.mp) ? char.mp : 0;
+        lines.push('      HP / MP:   ' + hp + ' / ' + mp);
+    }
+
+    function pushMagic(lines, char) {
+        var CharacterStats = getCharacterStats();
+        var MC = getMagicConstants();
+
+        if (!CharacterStats ||
+            typeof CharacterStats.getCharacterMagic !== 'function') {
+            return;
+        }
+
+        var magic;
+        try {
+            magic = CharacterStats.getCharacterMagic(char);
+        } catch (e) {
+            magic = null;
+        }
+
+        if (!magic || typeof magic !== 'object') {
+            return;
+        }
+
+        var keys = [];
+        if (MC && typeof MC.getTypeKeys === 'function') {
+            keys = MC.getTypeKeys();
+        } else {
+            keys = Object.keys(magic);
+        }
+
+        var parts = [];
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var value = magic[key];
+            if (!isFiniteNumber(value) || value <= 0) {
+                continue;
+            }
+
+            var label = key;
+            if (MC && typeof MC.getTypeLabel === 'function') {
+                label = MC.getTypeLabel(key) || key;
+            }
+
+            parts.push(label + ' ' + value);
+        }
+
+        if (parts.length === 0) {
+            return;
+        }
+
+        lines.push('      Magic:     ' + parts.join(' \u00b7 '));
+    }
+
+    function pushWeaponsAndMoves(lines, char) {
+        // ---- Weapons ----
+        if (Array.isArray(char.weapons) && char.weapons.length > 0) {
+            var weapons = [];
+            for (var i = 0; i < char.weapons.length; i++) {
+                var w = char.weapons[i];
+                if (!isObject(w)) { continue; }
+                var name = isNonEmptyString(w.name)
+                    ? String(w.name)
+                    : '';
+                if (name === '') { continue; }
+                if (isNonEmptyString(w.type)) {
+                    name += ' (' + w.type + ')';
+                }
+                weapons.push(name);
+            }
+            if (weapons.length > 0) {
+                lines.push('      Weapons:   ' +
+                    weapons.join('; '));
+            }
+        }
+
+        // ---- Special moves ----
+        var sm = isObject(char.specialMoves)
+            ? char.specialMoves
+            : null;
+
+        if (sm) {
+            var phys = listMoveNames(sm.physical);
+            var mag = listMoveNames(sm.magical);
+
+            if (phys) {
+                lines.push('      Moves (P): ' + phys);
+            }
+            if (mag) {
+                lines.push('      Moves (M): ' + mag);
+            }
+        }
+
+        if (isNonEmptyString(char.combatNotes)) {
+            lines.push('      Combat:    ' + char.combatNotes);
+        }
+    }
+
+    function listMoveNames(list) {
+        if (!Array.isArray(list) || list.length === 0) {
+            return '';
+        }
+        var names = [];
+        for (var i = 0; i < list.length; i++) {
+            var m = list[i];
+            if (!isObject(m)) { continue; }
+            if (!isNonEmptyString(m.name)) { continue; }
+            names.push(String(m.name));
+        }
+        return names.join(', ');
     }
 
     function pushCareerStatus(lines, char) {
@@ -589,18 +739,29 @@
             return;
         }
 
-        lines.push('      Other teams:');
+        // Filter to professional only. Academic, temporary, and
+        // civilian memberships are out of scope for this report:
+        // academic teams belong to the Academy view, and
+        // temporary / civilian are separate domains. The top-level
+        // TEAMS section above is already professional-only.
+        var professional = [];
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team || !team.name) { continue; }
-            var typeLabel = TeamConstants.getTypeLabel(team.type) ||
-                team.type || '';
-            var status = team.status || 'active';
+            if (team.type !== 'professional') { continue; }
+            professional.push(team);
+        }
+
+        if (professional.length === 0) { return; }
+
+        lines.push('      Other teams:');
+        for (var j = 0; j < professional.length; j++) {
+            var p = professional[j];
+            var status = p.status || 'active';
             var statusSuffix = status === 'deprecated'
                 ? ' [deprecated]'
                 : '';
-            lines.push('        - ' + team.name +
-                ' (' + typeLabel + ')' + statusSuffix);
+            lines.push('        - ' + p.name + statusSuffix);
         }
     }
 
