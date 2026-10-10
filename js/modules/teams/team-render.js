@@ -62,6 +62,13 @@
  *     - combat: STR/DEX/CON/INT/WIS/CHA · HP · MP
  *     - magic: only non-zero entries
  *
+ * TEAM ROW ACTIONS (this revision):
+ *   The row action strip now carries a Kill Team button between
+ *   Export and Edit. It opens the Kill Team modal via the
+ *   delegated .kill-team handler in team-events.js. The button is
+ *   present on every row regardless of status; the modal itself
+ *   decides whether there is anything to kill.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils
  *   - window.TeamConstants
@@ -193,6 +200,11 @@
         html += '<button type="button" ' +
                     'class="small export-team" ' +
                     'data-id="' + idAttr + '">Export</button>';
+        html += '<button type="button" ' +
+                    'class="small danger kill-team" ' +
+                    'data-id="' + idAttr + '" ' +
+                    'title="Mark every active member as deceased ' +
+                    'in a chosen year">Kill</button>';
         html += '<button type="button" ' +
                     'class="small edit-team" ' +
                     'data-id="' + idAttr + '">Edit</button>';
