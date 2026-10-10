@@ -17,6 +17,7 @@
  *   - Own the professional pool's expansion and selection state.
  *   - Open the team export picker and the candidate export.
  *   - Open the team verifier modal.
+ *   - Open the kill-team modal.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. TeamCore owns mutations; TeamQueries owns reads;
@@ -26,6 +27,8 @@
  *     owns it.
  *   - The verifier's checks. TeamVerifier owns them.
  *   - The verifier's HTML. TeamVerifierView owns it.
+ *   - The kill modal's HTML and per-character mutation.
+ *     TeamKillModal owns them.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
@@ -70,6 +73,7 @@
  *   - window.TeamExportPicker
  *   - window.CandidateExport
  *   - window.TeamVerifierView
+ *   - window.TeamKillModal
  */
 
 (function() {
@@ -313,20 +317,13 @@
 
     var _viewMode = 'teams';
 
-    // Timeline state.
     var _timelineYearStart = null;
     var _timelineYearEnd = null;
     var _timelineExpandedYears = Object.create(null);
 
-    // Pool expansion state: { [characterId]: true }
     var _poolExpandedIds = Object.create(null);
-
-    // Pool selection state: { [characterId]: true }
     var _poolSelectedIds = Object.create(null);
 
-    // Pending member assignments for the next createTeam success.
-    // Set by the Create Team from Selection flow; cleared on
-    // close or after the batch add completes.
     var _pendingTeamMemberIds = null;
 
     // ============================================================
@@ -536,6 +533,7 @@
         bindTeamExport();
         bindCandidateExport();
         bindTeamActions();
+        bindKillTeam();
         bindFilters();
         bindTimelineActions();
         bindPoolActions();
@@ -762,25 +760,12 @@
     // ============================================================
     // POOL ACTIONS
     // ============================================================
-    //
-    // Three interactions:
-    //   - Click on the data row (outside the checkbox) toggles
-    //     expansion of that row.
-    //   - Change on the checkbox toggles that character in the
-    //     selection set. The change handler stops propagation so
-    //     a checkbox click does not also reach the row click.
-    //   - Clear button empties the selection set.
-    //   - Create Team from Selection opens the team form with
-    //     _pendingTeamMemberIds stashed.
 
     function bindPoolActions() {
-        // Row click toggles expansion.
         delegate(
             '[data-action="pool-toggle-expand"]',
             'click',
             function(e, target) {
-                // Ignore clicks that originated on the checkbox or
-                // its container.
                 var clicked = e.target;
                 if (clicked && clicked.closest) {
                     if (clicked.closest('.pool-select-cell')) {
@@ -801,8 +786,6 @@
             }
         );
 
-        // Checkbox toggles selection. Change event (not click)
-        // so keyboard toggling works.
         delegate(
             '.pool-select-checkbox',
             'change',
@@ -824,8 +807,6 @@
             }
         );
 
-        // Prevent row-click handler from firing when the checkbox
-        // itself is clicked. The change event fires after click.
         delegate(
             '.pool-select-cell',
             'click',
@@ -836,7 +817,6 @@
             }
         );
 
-        // Clear selection.
         delegate(
             '#pool-clear-selection',
             'click',
@@ -847,7 +827,6 @@
             }
         );
 
-        // Create Team from Selection.
         delegate(
             '#pool-create-team-btn',
             'click',
@@ -904,9 +883,6 @@
         modal.appendChild(contentEl);
         contentEl.innerHTML = TeamRender.renderTeamForm(formVM);
 
-        // If we are creating from a pool selection, append a chip
-        // strip at the top of the form body so the user sees who
-        // is about to be added.
         if (!editId &&
             Array.isArray(_pendingTeamMemberIds) &&
             _pendingTeamMemberIds.length > 0) {
@@ -916,9 +892,6 @@
         }
 
         Modal.modalSetup(modal, function() {
-            // Modal dismissed without saving. Clear the pending
-            // list so a subsequent Add Team does not accidentally
-            // inherit it.
             _pendingTeamMemberIds = null;
         });
 
@@ -975,7 +948,6 @@
 
         strip.innerHTML = html;
 
-        // Insert before the first form-grid inside the form.
         var grid = form.querySelector('.form-grid');
         if (grid && grid.parentNode) {
             grid.parentNode.insertBefore(strip, grid);
@@ -1110,8 +1082,6 @@
             nameHistory: collectNameHistory(form)
         };
 
-        // Capture pending members before the async work begins.
-        // The callback chain uses this local copy.
         var pendingMembers = editId
             ? null
             : (_pendingTeamMemberIds
@@ -1127,7 +1097,6 @@
                 return;
             }
 
-            // For an edit, nothing more to do. Close and refresh.
             if (editId) {
                 _pendingTeamMemberIds = null;
                 closeModal(modal);
@@ -1135,8 +1104,6 @@
                 return;
             }
 
-            // For a new team, if there are pending members, add
-            // them at the team's start period.
             var newTeamId = result.data &&
                 result.data.team &&
                 result.data.team.id
@@ -1206,7 +1173,6 @@
                                 ? '' : 's') + '.',
                             'success'
                         );
-                        // Selection has been consumed.
                         _poolSelectedIds = Object.create(null);
                     }
 
@@ -1690,6 +1656,45 @@
             }
 
             refreshUI();
+        });
+    }
+
+    // ============================================================
+    // KILL TEAM
+    // ============================================================
+
+    function bindKillTeam() {
+        delegate('.kill-team', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            var teamId = target.dataset.id;
+            if (!teamId) { return; }
+
+            var Killer = window.TeamKillModal || null;
+            if (!Killer ||
+                typeof Killer.openModal !== 'function') {
+                notify(
+                    'Kill Team is not available. ' +
+                    'TeamKillModal is not loaded.',
+                    'error'
+                );
+                return;
+            }
+
+            try {
+                Killer.openModal(teamId);
+            } catch (err) {
+                console.warn(
+                    '[TeamEvents] TeamKillModal.openModal threw:',
+                    err
+                );
+                notify(
+                    'Failed to open Kill Team: ' +
+                    (err && err.message ? err.message : String(err)),
+                    'error'
+                );
+            }
         });
     }
 
