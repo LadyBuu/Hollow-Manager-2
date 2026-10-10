@@ -1,16 +1,48 @@
 /**
  * js/export/export-utils.js - Shared Export Utilities
- * 
+ *
  * This module provides utility functions for CSV/JSON import/export operations.
  * It focuses on file handling, CSV row validation, and JSON parsing for imports.
- * 
+ *
  * It does NOT contain:
  * - ID generation or normalisation (use IdUtils)
  * - Object cloning (use ObjectUtils)
  * - Application data detection (use ApplicationDataSchema)
  * - Business logic or domain knowledge
- * 
+ *
  * All other export/import modules should depend on these primitives.
+ *
+ * DOWNLOAD RELIABILITY (this revision):
+ *   downloadBlob now suffixes every filename with a local-time
+ *   timestamp before dispatching the download. The timestamp is
+ *   what makes the SECOND download in a session work:
+ *
+ *     Browsers refuse to write a second file with the same name
+ *     in the same session without user confirmation. If the
+ *     confirmation dialog is suppressed (which it is when the
+ *     tab is unfocused or "ask where to save" is off), the
+ *     download is silently dropped and JS has no way to know.
+ *
+ *     A unique filename sidesteps the collision entirely. The
+ *     browser sees a new file and writes it.
+ *
+ *   Every exporter in the codebase routes its downloads through
+ *   this helper, so the fix applies to all of them uniformly.
+ *   Exports that already include a timestamp in their filename
+ *   (team-export, candidate-export, character-json-io,
+ *   mission-export) get a second timestamp appended; that is
+ *   harmless and keeps the collision guarantee absolute.
+ *
+ *   The blob URL is deliberately NOT revoked on the same tick.
+ *   Revoking on a timer raced the browser's download manager and
+ *   killed the download for larger payloads. The new 60-second
+ *   delay is long enough for any realistic download to finish;
+ *   after that the URL is reclaimed. If the page unloads first,
+ *   the browser reclaims it anyway.
+ *
+ *   The anchor is removed synchronously, immediately after click
+ *   returns, and the removal is guarded so a stray double-click
+ *   cannot throw.
  */
 
 (function() {
@@ -27,7 +59,7 @@
 
     /**
      * Add a warning to a warnings array with a cap.
-     * 
+     *
      * @param {Array} warnings - Array to add warning to
      * @param {string} message - Warning message
      */
@@ -47,7 +79,7 @@
 
     /**
      * Check if a CSV row is completely blank.
-     * 
+     *
      * @param {Array} row - CSV row as array of strings
      * @returns {boolean} True if all cells are empty
      */
@@ -67,7 +99,7 @@
 
     /**
      * Require a field to be non-empty.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -84,7 +116,7 @@
 
     /**
      * Require a field to be a valid integer.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -117,7 +149,7 @@
 
     /**
      * Require a field to be a valid number.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -150,7 +182,7 @@
 
     /**
      * Require a field to be one of the allowed enum values.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -183,7 +215,7 @@
 
     /**
      * Parse a JSON array field from a CSV cell.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -213,7 +245,7 @@
 
     /**
      * Parse a JSON object field from a CSV cell.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -246,7 +278,7 @@
 
     /**
      * Parse any JSON value from a CSV cell with validation.
-     * 
+     *
      * @param {Array} row - CSV row
      * @param {number} index - Column index
      * @param {string} fieldName - Name of the field (for error messages)
@@ -291,29 +323,112 @@
     }
 
     // ============================================================
+    // Filename Uniquification
+    // ============================================================
+
+    function pad2(n) {
+        return n < 10 ? '0' + n : String(n);
+    }
+
+    /**
+     * Insert a local-time timestamp into a filename, immediately
+     * before the extension.
+     *
+     *   "character-alice.json"  ->  "character-alice-20261009-143052.json"
+     *   "character-alice"       ->  "character-alice-20261009-143052"
+     *   ""                      ->  "download-20261009-143052"
+     *
+     * Two-digit fields, no punctuation inside the timestamp itself,
+     * so the result is filesystem-safe on every OS.
+     *
+     * The timestamp is what makes the second download in a session
+     * work: browsers silently drop a download whose target file
+     * already exists, and JS has no way to detect the drop.
+     *
+     * @param {string} filename
+     * @returns {string}
+     */
+    function appendTimestampToFilename(filename) {
+        var now = new Date();
+        var stamp =
+            String(now.getFullYear()) +
+            pad2(now.getMonth() + 1) +
+            pad2(now.getDate()) + '-' +
+            pad2(now.getHours()) +
+            pad2(now.getMinutes()) +
+            pad2(now.getSeconds()) +
+            pad2(Math.floor(now.getMilliseconds() / 10));
+
+        var name = String(filename || '').trim();
+        if (name === '') {
+            return 'download-' + stamp;
+        }
+
+        var dotIndex = name.lastIndexOf('.');
+        if (dotIndex <= 0) {
+            // No extension, or dotfile. Append at the end.
+            return name + '-' + stamp;
+        }
+
+        var stem = name.substring(0, dotIndex);
+        var ext = name.substring(dotIndex);
+
+        return stem + '-' + stamp + ext;
+    }
+
+    // ============================================================
     // File Helpers
     // ============================================================
 
     /**
      * Download a blob as a file.
-     * 
+     *
+     * The filename is timestamp-suffixed before dispatch so the
+     * second download in a session never collides with the first.
+     *
+     * The blob URL is revoked on a 60-second timer, not on the
+     * same tick. Revoking immediately raced the browser's download
+     * manager and killed larger downloads; see the file header for
+     * the full reasoning.
+     *
      * @param {Blob} blob - Blob to download
-     * @param {string} filename - Name of the file to create
+     * @param {string} filename - Base filename; a timestamp is
+     *   inserted before the extension automatically
      */
     function downloadBlob(blob, filename) {
         var url = URL.createObjectURL(blob);
+        var stampedName = appendTimestampToFilename(filename);
+
         var a = document.createElement('a');
         a.href = url;
-        a.download = filename;
+        a.download = stampedName;
+        a.rel = 'noopener';
+        a.style.display = 'none';
+
         document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+
+        try {
+            a.click();
+        } finally {
+            try {
+                if (a.parentNode) {
+                    a.parentNode.removeChild(a);
+                }
+            } catch (e) {
+                // Guarded. A concurrent removal is harmless.
+            }
+
+            // Deliberately delayed. See file header.
+            setTimeout(function() {
+                try { URL.revokeObjectURL(url); }
+                catch (e) { /* ignore */ }
+            }, 60000);
+        }
     }
 
     /**
      * Read a file as text.
-     * 
+     *
      * @param {File} file - File to read
      * @returns {Promise<string>} Promise resolving to file contents
      */
@@ -332,7 +447,7 @@
 
     /**
      * Read a file as JSON.
-     * 
+     *
      * @param {File} file - File to read
      * @returns {Promise<Object>} Promise resolving to parsed JSON
      */
@@ -352,7 +467,7 @@
 
     /**
      * Check if text starts with UTF-8 BOM and remove it.
-     * 
+     *
      * @param {string} text - Text to check
      * @returns {string} Text without BOM
      */
@@ -365,7 +480,7 @@
 
     /**
      * Check if text has a UTF-8 BOM.
-     * 
+     *
      * @param {string} text - Text to check
      * @returns {boolean} True if BOM is present
      */
@@ -400,6 +515,9 @@
         downloadBlob: downloadBlob,
         readFileAsText: readFileAsText,
         readFileAsJSON: readFileAsJSON,
+
+        // Filename helpers
+        appendTimestampToFilename: appendTimestampToFilename,
 
         // BOM helpers
         stripBOM: stripBOM,
