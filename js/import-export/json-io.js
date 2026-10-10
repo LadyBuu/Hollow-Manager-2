@@ -29,6 +29,18 @@
  *   - Apply format migrations (that's FormatMigrations)
  *   - Commit to persistence (that's ImportPipeline + MutationPipeline)
  * 
+ * DOWNLOAD FILENAMES:
+ *   The filename produced here is a BASE name. ExportUtils.downloadBlob
+ *   inserts a local-time timestamp immediately before the extension
+ *   before dispatching, so a second export in the same session never
+ *   collides with the first. This module does not need to worry about
+ *   collision; it just supplies a descriptive base.
+ * 
+ * DEPARTMENTS:
+ *   Departments are a top-level store from DATA_VERSION 32. The
+ *   summary and structural-check helpers below include them so a
+ *   departments-only file is not misreported as empty.
+ * 
  * DEPENDENCIES:
  *   - window.ExportUtils (for file download and read) - MANDATORY
  *   - window.ExportEnvelope (for envelope creation/validation) - OPTIONAL
@@ -88,6 +100,37 @@
     var DEFAULT_PRETTY = true;
     var DEFAULT_INDENT = 2;
 
+    // The canonical collection keys that count as "application
+    // data" for the purposes of hasData / getDataSummary /
+    // validateJSONStructure. Kept in one place so the three
+    // helpers cannot drift apart.
+    //
+    // Includes departments (top-level store since DATA_VERSION
+    // 32) and every other array-shaped section defined in
+    // ExportSchema.SECTIONS.
+    var COLLECTION_KEYS = [
+        'characters',
+        'teams',
+        'departments',
+        'tournaments',
+        'missions',
+        'classes',
+        'locations'
+    ];
+
+    // The known-section keys used for raw-data detection. A file
+    // that has any of these at the top level is treated as raw
+    // application data (as opposed to an arbitrary JSON object).
+    var RAW_DATA_MARKER_KEYS = [
+        'characters',
+        'teams',
+        'departments',
+        'tournaments',
+        'missions',
+        'curriculum',
+        'social'
+    ];
+
     // ============================================================
     // ENVELOPE DETECTION
     // ============================================================
@@ -138,10 +181,8 @@
             return false;
         }
 
-        // Check for at least one known section
-        var knownSections = ['characters', 'teams', 'tournaments', 'missions', 'curriculum', 'social'];
-        for (var i = 0; i < knownSections.length; i++) {
-            if (knownSections[i] in data) {
+        for (var i = 0; i < RAW_DATA_MARKER_KEYS.length; i++) {
+            if (RAW_DATA_MARKER_KEYS[i] in data) {
                 return true;
             }
         }
@@ -283,8 +324,12 @@
                 type: 'application/json'
             });
 
+            // Base filename. ExportUtils.downloadBlob inserts a
+            // timestamp before the extension, so a second export
+            // in the same session does not collide.
             var filename = options.filename ||
-                DEFAULT_FILENAME_PREFIX + '-' + new Date().toISOString().slice(0, 10) + '.json';
+                DEFAULT_FILENAME_PREFIX + '-' +
+                new Date().toISOString().slice(0, 10) + '.json';
 
             ExportUtils.downloadBlob(blob, filename);
 
@@ -483,9 +528,8 @@
         }
 
         // Check collections
-        var collections = ['characters', 'teams', 'tournaments', 'missions', 'classes', 'locations'];
-        for (var i = 0; i < collections.length; i++) {
-            var key = collections[i];
+        for (var i = 0; i < COLLECTION_KEYS.length; i++) {
+            var key = COLLECTION_KEYS[i];
             if (Array.isArray(data[key]) && data[key].length > 0) {
                 return true;
             }
@@ -539,9 +583,8 @@
         var collections = {};
         var total = 0;
 
-        var keys = ['characters', 'teams', 'tournaments', 'missions', 'classes', 'locations'];
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
+        for (var i = 0; i < COLLECTION_KEYS.length; i++) {
+            var key = COLLECTION_KEYS[i];
             var value = innerData[key];
             if (Array.isArray(value)) {
                 collections[key] = value.length;
@@ -693,9 +736,8 @@
         }
 
         // Basic collection validation
-        var collections = ['characters', 'teams', 'tournaments', 'missions', 'classes', 'locations'];
-        for (var k = 0; k < collections.length; k++) {
-            var cKey = collections[k];
+        for (var k = 0; k < COLLECTION_KEYS.length; k++) {
+            var cKey = COLLECTION_KEYS[k];
             if (cKey in innerData && innerData[cKey] !== null && innerData[cKey] !== undefined) {
                 if (!Array.isArray(innerData[cKey])) {
                     warnings.push('"' + cKey + '" should be an array, got ' + typeof innerData[cKey]);
@@ -798,8 +840,6 @@
 
         if (missing.length > 0) {
             console.warn('[JSONIO] Verification - some exports may be missing:', missing.join(', '));
-        } else {
-            var envelopeStatus = getEnvelope() ? 'available' : 'NOT available (envelope features degraded)';
         }
     })();
 
