@@ -30,6 +30,50 @@
  *   init() (for its three), or by character-events.js's init()
  *   (for the two character-page buttons that are NOT bound here).
  *
+ * IMPORT SAFETY (this revision):
+ *   Every import path routes through its owning domain's import
+ *   entry point:
+ *
+ *     JSON backup   -> ImportPipeline.importFromEnvelope (or
+ *                      importFromJSON when the file is raw)
+ *     Character CSV -> CharacterCore.importCharacters
+ *     Mission CSV   -> MissionCore.importMissions
+ *
+ *   The previous version had fallback branches that called
+ *   MutationPipeline.performMutation directly, bypassing envelope
+ *   validation, format migration, cross-domain validation, the
+ *   empty-required-sections guard, ID uniquification, and
+ *   reference updating. Those branches are gone. When the owning
+ *   domain entry point is unavailable, the import refuses to run
+ *   and notifies the user, rather than proceeding through a
+ *   reduced-safety path.
+ *
+ *   The check is not a matter of caution for caution's sake: an
+ *   import that does not go through the pipeline is an import
+ *   that can silently wipe the store, and the confirm dialog
+ *   warns about data loss that the fallback path would actually
+ *   cause without the safeguards meant to prevent it.
+ *
+ * JSON IMPORT CONFIRM:
+ *   The file-content summary shown before a JSON import is
+ *   rendered as a native browser dialog (window.confirm). The
+ *   wording is deliberately front-loaded: filename and total on
+ *   the first line, "will replace" warning on the second, record
+ *   breakdown below. A follow-up pass will replace it with a
+ *   proper modal matching the pattern used by
+ *   character-json-io.js and character-export-picker.js.
+ *
+ * JSON ROUND-TRIP (temporary):
+ *   The raw-data branch below still calls
+ *   Pipeline.importFromJSON(JSON.stringify(result.data), ...)
+ *   even though result.data is already a parsed object. This is
+ *   a temporary inefficiency left over from before the pipeline
+ *   exposed an object-based entry point. It will be replaced by
+ *   Pipeline.importFromObject(result.data, ...) once that entry
+ *   point lands. The JSON round-trip is provably lossless for
+ *   data that came out of JSON.parse, so the current code is
+ *   correct; it is simply wasteful.
+ *
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
@@ -44,6 +88,8 @@
  * DEPENDENCIES (LAZY, resolved at click time):
  *   - window.GraduatesExportPicker
  *   - window.TeamExportPicker
+ *   - window.CharacterCore
+ *   - window.MissionCore
  */
 
 (function() {
@@ -284,12 +330,95 @@
         }
     }
 
+    /**
+     * Build the human-readable summary shown before a JSON import.
+     *
+     * Front-loaded for the native confirm dialog: filename and
+     * total on the first line, "will replace" warning next, then a
+     * compact breakdown of the top record counts.
+     */
+    function buildJSONImportConfirmMessage(filename, summary) {
+        var lines = [];
+
+        lines.push('Import "' + filename + '"?');
+        lines.push('');
+        lines.push('This will REPLACE all current application data.');
+        lines.push('');
+
+        // Show up to 5 top-level collections to keep the dialog
+        // readable. Anything beyond that is summarised as "and N
+        // more".
+        var collectionNames = Object.keys(summary.collections);
+        var shown = 0;
+        var shownNames = [];
+
+        for (var i = 0; i < collectionNames.length && shown < 5; i++) {
+            var key = collectionNames[i];
+            var val = summary.collections[key];
+
+            if (typeof val === 'number') {
+                if (val === 0) {
+                    continue;
+                }
+                shownNames.push(key + ': ' + val);
+                shown++;
+            } else if (typeof val === 'object' && val !== null) {
+                var subParts = [];
+                var subKeys = Object.keys(val);
+                for (var j = 0; j < subKeys.length; j++) {
+                    var subKey = subKeys[j];
+                    if (typeof val[subKey] === 'number' && val[subKey] > 0) {
+                        subParts.push(subKey + ': ' + val[subKey]);
+                    }
+                }
+                if (subParts.length > 0) {
+                    shownNames.push(key + ' (' + subParts.join(', ') + ')');
+                    shown++;
+                }
+            }
+        }
+
+        if (shownNames.length > 0) {
+            lines.push('Contents: ' + shownNames.join(', '));
+        }
+
+        var remaining = 0;
+        for (var k = 0; k < collectionNames.length; k++) {
+            var v = summary.collections[collectionNames[k]];
+            if (typeof v === 'number' && v > 0) {
+                remaining++;
+            }
+        }
+        if (remaining > shown) {
+            lines.push('  (and ' + (remaining - shown) + ' more sections)');
+        }
+
+        lines.push('');
+        lines.push('Total: ' + summary.total + ' records');
+        lines.push('');
+        lines.push('Continue?');
+
+        return lines.join('\n');
+    }
+
     function handleJSONImport(file) {
         var JSONIO = deps.JSONIO;
         var Pipeline = deps.ImportPipeline;
 
         if (!JSONIO || typeof JSONIO.importJSONFromFile !== 'function') {
             notifyError('JSON import not available');
+            return;
+        }
+
+        // Import safety: when the pipeline is unavailable, refuse
+        // to import rather than proceeding through a reduced path.
+        // A JSON import that does not go through the pipeline can
+        // wipe the store.
+        if (!Pipeline) {
+            notifyError(
+                'Import pipeline not available. Reload the page ' +
+                'and try again.'
+            );
             return;
         }
 
@@ -310,75 +439,40 @@
                 }
 
                 var summary = JSONIO.getDataSummary(result.data);
-                var msg = 'JSON import parsed successfully.\n\n';
-                msg += 'Records found:\n';
-                for (var key in summary.collections) {
-                    if (summary.collections.hasOwnProperty(key)) {
-                        var val = summary.collections[key];
-                        if (typeof val === 'object') {
-                            var subParts = [];
-                            for (var subKey in val) {
-                                if (val.hasOwnProperty(subKey)) {
-                                    subParts.push(subKey + ': ' + val[subKey]);
-                                }
-                            }
-                            msg += '  - ' + key + ': { ' + subParts.join(', ') + ' }\n';
-                        } else {
-                            msg += '  - ' + key + ': ' + val + '\n';
-                        }
-                    }
-                }
-                msg += '\nTotal: ' + summary.total + ' records';
-                msg += '\n\nThis will replace all current data. Continue?';
+                var confirmMsg = buildJSONImportConfirmMessage(
+                    file.name,
+                    summary
+                );
 
-                if (!confirm(msg)) {
+                if (!confirm(confirmMsg)) {
                     return;
                 }
 
-                if (Pipeline && typeof Pipeline.importFromEnvelope === 'function') {
-                    if (result.data.format && result.data.format === 'hollow-blades') {
-                        return Pipeline.importFromEnvelope(result.data, {
-                            sourceName: file.name,
-                            preserveExistingIds: true,
-                            autoFixIds: true,
-                            skipValidation: false
-                        });
-                    } else {
-                        return Pipeline.importFromJSON(JSON.stringify(result.data), {
-                            sourceName: file.name,
-                            preserveExistingIds: true,
-                            autoFixIds: true,
-                            skipValidation: false
-                        });
-                    }
-                } else {
-                    return new Promise(function(resolve, reject) {
-                        deps.MutationPipeline.performMutation({
-                            validate: function() {
-                                return { valid: true };
-                            },
-                            mutate: function(data) {
-                                var keys = Object.keys(data);
-                                for (var i = 0; i < keys.length; i++) {
-                                    delete data[keys[i]];
-                                }
-                                var newKeys = Object.keys(result.data);
-                                for (var j = 0; j < newKeys.length; j++) {
-                                    data[newKeys[j]] = result.data[newKeys[j]];
-                                }
-                            },
-                            logMessage: 'Imported data from JSON: ' + file.name,
-                            successMessage: 'JSON import completed: ' + summary.total + ' records imported',
-                            failureMessage: 'JSON import failed'
-                        }).then(function(mutationResult) {
-                            if (mutationResult.success) {
-                                resolve({ success: true });
-                            } else {
-                                reject(new Error(mutationResult.message || 'Import failed'));
-                            }
-                        });
+                if (result.data.format && result.data.format === 'hollow-blades') {
+                    return Pipeline.importFromEnvelope(result.data, {
+                        sourceName: file.name,
+                        preserveExistingIds: true,
+                        autoFixIds: true,
+                        skipValidation: false
                     });
                 }
+
+                // Raw data (no envelope). Route through
+                // importFromJSON, which builds an envelope from the
+                // raw object and delegates to importFromEnvelope.
+                //
+                // The JSON.stringify call is a temporary
+                // inefficiency: result.data is already a parsed
+                // object. When import-pipeline.js exposes
+                // importFromObject(data, options), this call will
+                // become Pipeline.importFromObject(result.data,
+                // ...) and the round-trip will disappear.
+                return Pipeline.importFromJSON(JSON.stringify(result.data), {
+                    sourceName: file.name,
+                    preserveExistingIds: true,
+                    autoFixIds: true,
+                    skipValidation: false
+                });
             })
             .then(function(importResult) {
                 if (importResult && importResult.success) {
@@ -417,11 +511,8 @@
                     return;
                 }
 
-                console.error(
-                    '[JSON import] unexpected result shape:',
-                    importResult
-                );
-                notifyError('JSON import failed: unexpected result.');
+                // The parse path returned nothing (user cancelled
+                // the confirm dialog). Silent return.
             })
             .catch(function(err) {
                 console.error('[JSON import] threw:', err);
@@ -445,6 +536,20 @@
         var CharacterCSV = deps.CharacterCSV;
         if (!CharacterCSV || typeof CharacterCSV.importFromFile !== 'function') {
             notifyError('Character import not available');
+            return;
+        }
+
+        var CharacterCore = window.CharacterCore || null;
+        if (!CharacterCore ||
+            typeof CharacterCore.importCharacters !== 'function') {
+            // Import safety: without CharacterCore, there is no
+            // entry point that validates the candidate list before
+            // it reaches the store. Refuse rather than mutating
+            // the store directly.
+            notifyError(
+                'Character import is not available. Reload the ' +
+                'page and try again.'
+            );
             return;
         }
 
@@ -482,49 +587,7 @@
 
                 if (!confirm(confirmMsg)) return;
 
-                if (window.CharacterCore && typeof window.CharacterCore.importCharacters === 'function') {
-                    return window.CharacterCore.importCharacters(candidates);
-                } else {
-                    return new Promise(function(resolve, reject) {
-                        deps.MutationPipeline.performMutation({
-                            validate: function(data) {
-                                if (!Array.isArray(data.characters)) {
-                                    return { valid: false, message: 'Characters data not available.' };
-                                }
-                                return { valid: true };
-                            },
-                            mutate: function(data) {
-                                for (var j = 0; j < candidates.length; j++) {
-                                    var candidate = candidates[j];
-                                    if (candidate.id) {
-                                        var found = false;
-                                        for (var k = 0; k < data.characters.length; k++) {
-                                            if (String(data.characters[k].id) === String(candidate.id)) {
-                                                data.characters[k] = candidate;
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found) {
-                                            data.characters.push(candidate);
-                                        }
-                                    } else {
-                                        data.characters.push(candidate);
-                                    }
-                                }
-                            },
-                            logMessage: 'Imported ' + candidates.length + ' characters from CSV',
-                            successMessage: 'Import completed: ' + candidates.length + ' characters imported',
-                            failureMessage: 'Character import failed'
-                        }).then(function(mutationResult) {
-                            if (mutationResult.success) {
-                                resolve({ success: true, added: candidates.length });
-                            } else {
-                                reject(new Error(mutationResult.message || 'Import failed'));
-                            }
-                        });
-                    });
-                }
+                return CharacterCore.importCharacters(candidates);
             })
             .then(function(importResult) {
                 if (importResult && importResult.success !== false) {
@@ -582,6 +645,17 @@
             return;
         }
 
+        var MissionCore = window.MissionCore || null;
+        if (!MissionCore ||
+            typeof MissionCore.importMissions !== 'function') {
+            // Import safety: see handleCharacterImport.
+            notifyError(
+                'Mission import is not available. Reload the ' +
+                'page and try again.'
+            );
+            return;
+        }
+
         MissionCSV.importFromFile(file)
             .then(function(result) {
                 if (result.hasErrors()) {
@@ -616,49 +690,7 @@
 
                 if (!confirm(confirmMsg)) return;
 
-                if (window.MissionCore && typeof window.MissionCore.importMissions === 'function') {
-                    return window.MissionCore.importMissions(candidates);
-                } else {
-                    return new Promise(function(resolve, reject) {
-                        deps.MutationPipeline.performMutation({
-                            validate: function(data) {
-                                if (!Array.isArray(data.missions)) {
-                                    return { valid: false, message: 'Missions data not available.' };
-                                }
-                                return { valid: true };
-                            },
-                            mutate: function(data) {
-                                for (var j = 0; j < candidates.length; j++) {
-                                    var candidate = candidates[j];
-                                    if (candidate.id) {
-                                        var found = false;
-                                        for (var k = 0; k < data.missions.length; k++) {
-                                            if (String(data.missions[k].id) === String(candidate.id)) {
-                                                data.missions[k] = candidate;
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found) {
-                                            data.missions.push(candidate);
-                                        }
-                                    } else {
-                                        data.missions.push(candidate);
-                                    }
-                                }
-                            },
-                            logMessage: 'Imported ' + candidates.length + ' missions from CSV',
-                            successMessage: 'Import completed: ' + candidates.length + ' missions imported',
-                            failureMessage: 'Mission import failed'
-                        }).then(function(mutationResult) {
-                            if (mutationResult.success) {
-                                resolve({ success: true, added: candidates.length });
-                            } else {
-                                reject(new Error(mutationResult.message || 'Import failed'));
-                            }
-                        });
-                    });
-                }
+                return MissionCore.importMissions(candidates);
             })
             .then(function(importResult) {
                 if (importResult && importResult.success !== false) {
