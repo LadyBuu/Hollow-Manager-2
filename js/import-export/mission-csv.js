@@ -33,6 +33,15 @@
  *   assigned at import time. The old check required the first cell
  *   (MissionId) to be non-empty, which dropped every fresh row.
  * 
+ * STRICT MODE:
+ *   Strict mode is a policy decision that belongs to the CONSUMER
+ *   of the ImportResult, not to this module. importMissions returns
+ *   a result carrying every valid record, every error (with row
+ *   metadata), and every warning. A strict caller filters
+ *   getValid(true) against getErrorsForRow() itself. This module
+ *   does not pre-filter the result or reach into the ImportResult's
+ *   private state.
+ * 
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
@@ -237,21 +246,38 @@
     // PARSING HELPERS
     // ============================================================
 
+    /**
+     * Parse a JSON-encoded field from a CSV cell.
+     *
+     * Delegates to ExportUtils.parseJSON, which owns the shared
+     * parsing behaviour (empty -> fallback, malformed -> warn and
+     * fallback). Kept as a named export on MissionCSV so callers
+     * that previously reached for this alias keep working.
+     *
+     * @param {string} value - Raw cell value
+     * @param {*} fallback - Fallback when value is empty or invalid
+     * @param {Function} warnFn - Optional warning callback
+     * @param {string} fieldName - Field name for the warning message
+     * @returns {*} Parsed value or fallback
+     */
     function parseJSONField(value, fallback, warnFn, fieldName) {
         var str = String(value == null ? '' : value).trim();
         if (str === '') {
             return fallback;
         }
 
-        try {
-            var parsed = JSON.parse(str);
-            return parsed;
-        } catch (e) {
-            if (typeof warnFn === 'function') {
-                warnFn('Invalid JSON in "' + fieldName + '": ' + e.message + ' - using fallback', fieldName);
-            }
-            return fallback;
-        }
+        var row = [str];
+        var wrappedWarnFn = (typeof warnFn === 'function')
+            ? function(msg) { warnFn(msg, fieldName); }
+            : undefined;
+
+        return ExportUtils.parseJSON(
+            row,
+            0,
+            fieldName || 'JSON field',
+            fallback,
+            wrappedWarnFn
+        );
     }
 
     function parseProgressField(value, warnFn) {
@@ -261,6 +287,9 @@
             return 0;
         }
 
+        // Strict non-negative integer. Negative signs, decimals,
+        // and trailing characters are rejected here; the clamp
+        // below only needs to handle the upper bound.
         if (!/^\d+$/.test(str)) {
             if (typeof warnFn === 'function') {
                 warnFn('Invalid progress value "' + str + '" - using 0', 'Progress');
@@ -273,13 +302,6 @@
         if (!Number.isSafeInteger(parsed)) {
             if (typeof warnFn === 'function') {
                 warnFn('Progress value "' + str + '" is outside safe range - using 0', 'Progress');
-            }
-            return 0;
-        }
-
-        if (parsed < 0) {
-            if (typeof warnFn === 'function') {
-                warnFn('Progress value "' + str + '" is below 0 - clamping to 0', 'Progress');
             }
             return 0;
         }
@@ -766,26 +788,26 @@
             }
         }
 
-        // Filter in strict mode
-        if (strict) {
-            var filteredValid = [];
-            var validItems = result.getValid(true);
-            for (var m = 0; m < validItems.length; m++) {
-                var item = validItems[m];
-                var rowNum = item.metadata && item.metadata.row;
-                if (rowNum) {
-                    var rowErrors = result.getErrorsForRow(rowNum);
-                    if (rowErrors.length === 0) {
-                        filteredValid.push(item);
-                    } else {
-                        result.addSkipped(item.record, 'Row had errors', { row: rowNum });
-                    }
-                } else {
-                    filteredValid.push(item);
-                }
-            }
-            result._valid = filteredValid;
-        }
+        // Strict-mode policy is enforced by the CONSUMER, not here.
+        //
+        // The result already carries every valid record, every
+        // error (with row metadata), and every warning. A strict
+        // caller filters getValid(true) against getErrorsForRow()
+        // itself.
+        //
+        // The loop above has already applied the strict rule for
+        // the row-level checks this module owns: when
+        // validateEnums runs and a row fails an enum or range
+        // check, the row is moved from valid to skipped
+        // immediately. That is the entire extent of this module's
+        // strict-mode responsibility.
+        //
+        // The previous code reached into result._valid to
+        // reassign it after the fact. That write was dead (the
+        // earlier loop had already filtered every error row), it
+        // violated the ImportResult encapsulation contract, and it
+        // would silently break if ImportResult's internal
+        // representation ever changed.
 
         return result;
     }
@@ -885,7 +907,7 @@
                     copy.title = statuses[i].charAt(0).toUpperCase() + statuses[i].slice(1) + ' Mission';
                     copy.progress = statuses[i] === 'completed' ? 100 :
                                     statuses[i] === 'cancelled' ? 0 :
-                                    Math.floor(Math.random() * 80) + 10;
+                                    50;
                     allExamples.push(copy);
                 }
             }
@@ -939,9 +961,15 @@
                                 priority.charAt(0).toUpperCase() + priority.slice(1) + ' ' +
                                 difficulty.charAt(0).toUpperCase() + difficulty.slice(1) + ' Mission';
 
+                    // Deterministic example progress. Replaces the
+                    // previous Math.random() call, which produced a
+                    // different template every time the button was
+                    // clicked. A stable example is easier to reason
+                    // about and easier to test against.
                     var progress = status === 'completed' ? '100' :
                                    status === 'cancelled' ? '0' :
-                                   String(Math.floor(Math.random() * 80) + 10);
+                                   status === 'on_hold'  ? '25' :
+                                   String(10 + ((exampleCount * 7) % 80));
 
                     var objectives = status === 'completed' ?
                         '[{"text":"Primary objective","done":true},{"text":"Secondary objective","done":true}]' :
@@ -955,8 +983,8 @@
                         difficulty,
                         '',
                         'Location ' + (exampleCount + 1),
-                        (Math.floor(Math.random() * 4) + 1) + ' weeks',
-                        String((Math.floor(Math.random() * 8) + 2) * 1000),
+                        (Math.floor(exampleCount / 2) % 4 + 1) + ' weeks',
+                        String(((exampleCount % 8) + 2) * 1000),
                         progress,
                         objectives
                     ]);
