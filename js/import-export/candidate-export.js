@@ -6,7 +6,7 @@
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report from the Professional Pool VM.
- *   - Downloading it via a Blob URL.
+ *   - Handing the payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
  *   - The pool projection. TeamAggregator.getProfessionalPoolViewModel
@@ -14,6 +14,9 @@
  *   - UI. team-events.js triggers the export; this module returns
  *     a result object.
  *   - Format selection. One format: plain text.
+ *   - Download mechanics. ExportUtils.downloadBlob owns the anchor,
+ *     the blob URL, and the filename uniquification. This module
+ *     supplies a base filename and hands over the payload.
  *
  * DATASET:
  *   The report covers exactly what the Professional Pool view is
@@ -31,9 +34,20 @@
  *   - Future Assignments section (when non-empty): same shape plus
  *     the next assignment.
  *
+ * DOWNLOAD FILENAMES:
+ *   This module produces a base filename of the form
+ *   "pool_candidates_<period>_<timestamp>.txt". ExportUtils
+ *   .downloadBlob inserts its own local-time timestamp before the
+ *   extension, so a second export at the same period in the same
+ *   session never collides with the first. The per-module
+ *   timestamp remains because it makes the base name
+ *   human-readable in logs; the central timestamp is what
+ *   guarantees uniqueness.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamAggregator
  *   - window.TeamConstants
+ *   - window.ExportUtils
  */
 
 (function() {
@@ -50,6 +64,7 @@
 
     var TeamAggregator = window.TeamAggregator;
     var TeamConstants = window.TeamConstants;
+    var ExportUtils = window.ExportUtils;
 
     var _missing = [];
 
@@ -63,6 +78,10 @@
     if (!TeamConstants ||
         typeof TeamConstants.parsePeriod !== 'function') {
         _missing.push('TeamConstants.parsePeriod');
+    }
+    if (!ExportUtils ||
+        typeof ExportUtils.downloadBlob !== 'function') {
+        _missing.push('ExportUtils.downloadBlob');
     }
 
     if (_missing.length > 0) {
@@ -292,45 +311,6 @@
     }
 
     // ============================================================
-    // DOWNLOAD
-    // ============================================================
-
-    function triggerDownload(filename, text) {
-        if (typeof window.Blob !== 'function' ||
-            typeof window.URL === 'undefined' ||
-            typeof window.URL.createObjectURL !== 'function') {
-            return false;
-        }
-
-        try {
-            var blob = new Blob([text], {
-                type: 'text/plain;charset=utf-8'
-            });
-            var url = window.URL.createObjectURL(blob);
-
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-
-            setTimeout(function() {
-                try { window.URL.revokeObjectURL(url); }
-                catch (e) { /* ignore */ }
-            }, 1000);
-
-            return true;
-        } catch (e) {
-            console.warn(
-                '[CandidateExport] Download failed:', e
-            );
-            return false;
-        }
-    }
-
-    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -365,9 +345,19 @@
 
         if (built.error) { return built; }
 
-        var ok = triggerDownload(built.filename, built.text);
-        if (!ok) {
-            return { error: 'Download failed.' };
+        var blob;
+        try {
+            blob = new Blob([built.text], {
+                type: 'text/plain;charset=utf-8'
+            });
+        } catch (e) {
+            return { error: 'Failed to build file blob: ' + e.message };
+        }
+
+        try {
+            ExportUtils.downloadBlob(blob, built.filename);
+        } catch (e) {
+            return { error: 'Download failed: ' + e.message };
         }
 
         return {
