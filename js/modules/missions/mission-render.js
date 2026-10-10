@@ -58,6 +58,13 @@
  *     #mission-detail-content
  *     #mission-form-content
  *
+ * DETAIL ACTIONS (this revision):
+ *   The action row carries an Export button between Edit and
+ *   Archive. Export is available for every mission, regardless of
+ *   status or capability flags; it is a read-only projection of the
+ *   mission record and does not depend on edit / archive /
+ *   completion capability.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  */
@@ -772,6 +779,19 @@
                         'Edit' +
                     '</button>';
         }
+
+        // ---- Export (available for every mission, any status) ----
+        //
+        // Export is a read-only projection. It is available
+        // regardless of edit / archive / completion capability.
+        // The exporter resolves every cross-domain reference; a
+        // missing team or character renders as "(missing ...)"
+        // inside the report rather than blocking the export.
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-export" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                    'Export' +
+                '</button>';
 
         if (vm.isArchived) {
             html += '<button type="button" class="secondary" ' +
