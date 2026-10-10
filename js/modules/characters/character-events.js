@@ -10,13 +10,34 @@
  *   - Save / delete / character-select handlers.
  *   - Character list selection checkboxes.
  *   - JSON import/export buttons (delegates to CharacterJSONIO).
+ *   - Professional stint End / Remove buttons on the character
+ *     Professional tab (delegates to TeamCore).
  *
  * WHAT THIS DOES NOT OWN:
- *   - Domain logic. All mutations route through CharacterCRUD.
+ *   - Domain logic. All character mutations route through
+ *     CharacterCRUD. Team mutations route through TeamCore.
  *   - Rendering. All HTML comes from CharacterForm / CharacterViews
  *     / CharacterClassView / CharacterList.
  *   - The relationship form. Delegates to SocialEvents.
  *   - The JSON import/export mechanics. CharacterJSONIO owns those.
+ *
+ * PROFESSIONAL STINT ACTIONS (this revision):
+ *   The character Professional tab renders one row per
+ *   professional stint, each carrying data-team-id and
+ *   data-join-period. Open stints also carry End and Remove
+ *   buttons. This module dispatches:
+ *
+ *     end-professional-stint     -> TeamCore.endMemberInterval
+ *     remove-professional-stint  -> TeamCore.purgeMemberInterval
+ *
+ *   After either succeeds, the character form re-renders so the
+ *   tab reflects the new state, and TeamEvents.refreshUI() is
+ *   called (when available) so a subsequent visit to the Teams
+ *   tab shows the same change.
+ *
+ *   End prompts for a year. There is no inline modal for it; the
+ *   prompt is intentional, matching the pattern used by the
+ *   mission log and report actions.
  *
  * RELATIONSHIP MODAL OWNERSHIP:
  *   The character-tab relationship form was retired. Opening the
@@ -69,6 +90,8 @@
  *   - window.UI_CONSTANTS.MOBILE_BREAKPOINT
  *   - window.SocialEvents (for relationship modal delegation)
  *   - window.CharacterJSONIO (for JSON import/export buttons)
+ *   - window.TeamCore (for professional stint End / Remove)
+ *   - window.TeamQueries (for stint resolution)
  *
  * DEPENDENCIES (OPTIONAL):
  *   - window.CharacterList
@@ -79,6 +102,7 @@
  *   - window.CareerStatusWizard
  *   - window.TeamQueries
  *   - window.AcademyEliminations
+ *   - window.TeamEvents (refresh after stint mutations)
  */
 
 (function() {
@@ -140,6 +164,8 @@
     function getCharacterRosterExport() { return window.CharacterRosterExport || null; }
     function getCareerStatusWizard() { return window.CareerStatusWizard || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
+    function getTeamCore() { return window.TeamCore || null; }
+    function getTeamEvents() { return window.TeamEvents || null; }
     function getCharacterList() { return window.CharacterList || null; }
     function getSocialEvents() { return window.SocialEvents || null; }
     function getSocialQueries() { return window.SocialQueries || null; }
@@ -209,6 +235,16 @@
             console.warn(
                 '[CharacterEvents] CharacterJSONIO not loaded — ' +
                 'JSON import/export buttons will be inactive.'
+            );
+        }
+
+        if (!window.TeamCore ||
+            typeof window.TeamCore.endMemberInterval !== 'function' ||
+            typeof window.TeamCore.purgeMemberInterval !== 'function') {
+            console.warn(
+                '[CharacterEvents] TeamCore is not loaded — ' +
+                'End / Remove buttons on professional stints will ' +
+                'not work.'
             );
         }
 
@@ -537,6 +573,210 @@
                 handleCharacterReportExport();
             }
         );
+    }
+
+    // ============================================================
+    // PROFESSIONAL STINT ACTIONS
+    // ============================================================
+    //
+    // The character Professional tab renders one row per
+    // professional stint. Each row carries data-team-id and
+    // data-join-period. Open stints carry End and Remove.
+    //
+    // Both handlers read the (teamId, joinPeriod) pair off the
+    // button, call the TeamCore mutation, then re-render the
+    // character form. TeamEvents.refreshUI is called afterwards
+    // when available so a subsequent visit to the Teams tab shows
+    // the same change.
+
+    function bindProfessionalStintActions() {
+        addSafeDelegatedListener(
+            '[data-action="end-professional-stint"]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleEndProfessionalStint(target);
+            }
+        );
+
+        addSafeDelegatedListener(
+            '[data-action="remove-professional-stint"]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleRemoveProfessionalStint(target);
+            }
+        );
+    }
+
+    function readStintIdentity(buttonEl) {
+        if (!buttonEl || !buttonEl.dataset) { return null; }
+
+        var teamId = buttonEl.dataset.teamId;
+        var joinPeriod = buttonEl.dataset.joinPeriod;
+
+        if (!teamId || !joinPeriod) { return null; }
+
+        return {
+            teamId: String(teamId),
+            joinPeriod: String(joinPeriod)
+        };
+    }
+
+    function resolveCharacterIdForStint() {
+        return typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId()
+            : null;
+    }
+
+    function refreshAfterStintMutation() {
+        var charId = resolveCharacterIdForStint();
+        if (charId) {
+            try {
+                CharacterForm.render(charId);
+            } catch (err) {
+                console.warn(
+                    '[CharacterEvents] form re-render after stint ' +
+                    'mutation failed:', err
+                );
+            }
+
+            var char = CharacterQueries.getCharacterById(charId);
+            if (char) {
+                refreshUI(char);
+            }
+        }
+
+        var TE = getTeamEvents();
+        if (TE && typeof TE.refreshUI === 'function') {
+            try { TE.refreshUI(); } catch (e) { /* ignore */ }
+        }
+    }
+
+    function handleEndProfessionalStint(buttonEl) {
+        var identity = readStintIdentity(buttonEl);
+        if (!identity) {
+            notify('Could not identify the stint to end.', 'error');
+            return;
+        }
+
+        var charId = resolveCharacterIdForStint();
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var TeamCore = getTeamCore();
+        if (!TeamCore ||
+            typeof TeamCore.endMemberInterval !== 'function') {
+            notify('Team module is not available.', 'error');
+            return;
+        }
+
+        var raw = window.prompt(
+            'End this stint in which year?\n' +
+            '(join year: ' + identity.joinPeriod + ')',
+            ''
+        );
+
+        if (raw === null) { return; }
+
+        var trimmed = String(raw).trim();
+        if (trimmed === '') {
+            notify('A year is required.', 'error');
+            return;
+        }
+
+        var yearNum = parseInt(trimmed, 10);
+        if (isNaN(yearNum) || yearNum < 1) {
+            notify('Enter a positive year.', 'error');
+            return;
+        }
+
+        TeamCore.endMemberInterval(
+            identity.teamId,
+            charId,
+            identity.joinPeriod,
+            String(yearNum)
+        ).then(function(result) {
+            if (result && result.success) {
+                notify(
+                    'Stint ended at ' + yearNum + '.',
+                    'success'
+                );
+                refreshAfterStintMutation();
+                return;
+            }
+            notify(
+                'Failed to end stint: ' +
+                ((result && result.message) || 'Unknown error'),
+                'error'
+            );
+        }).catch(function(err) {
+            console.warn(
+                '[CharacterEvents] endMemberInterval threw:', err
+            );
+            notify(
+                'Failed to end stint: ' + err.message,
+                'error'
+            );
+        });
+    }
+
+    function handleRemoveProfessionalStint(buttonEl) {
+        var identity = readStintIdentity(buttonEl);
+        if (!identity) {
+            notify('Could not identify the stint to remove.', 'error');
+            return;
+        }
+
+        var charId = resolveCharacterIdForStint();
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var TeamCore = getTeamCore();
+        if (!TeamCore ||
+            typeof TeamCore.purgeMemberInterval !== 'function') {
+            notify('Team module is not available.', 'error');
+            return;
+        }
+
+        if (!confirm(
+            'Remove this stint (join year ' +
+            identity.joinPeriod + ')? ' +
+            'The team will no longer show this membership.'
+        )) {
+            return;
+        }
+
+        TeamCore.purgeMemberInterval(
+            identity.teamId,
+            charId,
+            identity.joinPeriod
+        ).then(function(result) {
+            if (result && result.success) {
+                notify('Stint removed.', 'success');
+                refreshAfterStintMutation();
+                return;
+            }
+            notify(
+                'Failed to remove stint: ' +
+                ((result && result.message) || 'Unknown error'),
+                'error'
+            );
+        }).catch(function(err) {
+            console.warn(
+                '[CharacterEvents] purgeMemberInterval threw:', err
+            );
+            notify(
+                'Failed to remove stint: ' + err.message,
+                'error'
+            );
+        });
     }
 
     // ============================================================
@@ -1555,6 +1795,10 @@
         // action row.
         bindJsonImportExport();
 
+        // Professional stint End / Remove buttons on the
+        // Professional tab.
+        bindProfessionalStintActions();
+
         _initialized = true;
 
         refreshCharacterReportButton();
@@ -1977,8 +2221,7 @@
                 e.preventDefault();
                 e.stopPropagation();
 
-                var field = target.dataset
-                    ? target.dataset.field : null;
+                var field = target.dataset                    ? target.dataset.field : null;
                 if (!field) { return; }
 
                 var Generator = window.CharacterGenerator;
