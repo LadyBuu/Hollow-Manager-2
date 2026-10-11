@@ -2,7 +2,7 @@
  * modules/shared/team-constants.js - Team Constants
  * Single source of truth for all team-related constants.
  *
- * Path: js/modules/shared/team-constants.js
+ * Path: js/modules/teams/team-constants.js
  *
  * Provides:
  *   - Team type definitions and lookup

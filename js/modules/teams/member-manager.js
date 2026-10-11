@@ -1,7 +1,7 @@
 /**
  * modules/shared/member-manager.js - Shared Member Manager
  *
- * Path: js/modules/shared/member-manager.js
+ * Path: js/modules/teams/member-manager.js
  *
  * The ONE member manager. Rendered identically by the Teams tab and
  * Academy Weekly Teams. All domain knowledge lives in an adapter;

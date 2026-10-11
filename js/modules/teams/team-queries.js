@@ -2,7 +2,7 @@
  * shared/queries/team-queries.js - Team Queries
  * Read-only team domain queries.
  *
- * Path: js/modules/shared/queries/team-queries.js
+ * Path: js/modules/teams/team-queries.js
  *
  * WHAT THIS OWNS:
  *   - Team lookup by id, type, class, period.
