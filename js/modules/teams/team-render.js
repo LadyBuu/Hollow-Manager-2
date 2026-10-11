@@ -12,6 +12,8 @@
  *     "Create Team from Selection" action.
  *   - Timeline delegation (via TimelineView).
  *   - Modals: team form, ranking form/list, name history row.
+ *   - Style field and specialisation chip editor on the team
+ *     form.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads, mutations, projections. Every input is a view model.
@@ -36,8 +38,8 @@
  *
  * PAGE HEADER ACTIONS:
  *   Export / Matchmaking / Add Team appear on the Professional tab.
- *   Civilian shows only Add Team. Matchmaking and Export are
- *   professional-scoped features.
+ *   Civilian shows Add Team and Export. Matchmaking is
+ *   professional-scoped.
  *
  *   The Export button is a BULK export: it exports every team the
  *   user has ticked in the list below, into a single file. It is
@@ -48,7 +50,7 @@
  *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
  *   three for the professional tab; Civilian has no mode toggle.
  *
- * TEAM SELECTION (this revision):
+ * TEAM SELECTION:
  *   Each team row carries a checkbox at the leading edge of the
  *   row. The checkbox is the selection set for the bulk Export
  *   action. State is held by TeamEvents as a Set of teamIds and
@@ -60,6 +62,32 @@
  *   The checkbox is rendered for every team row, in every tab
  *   (professional and civilian), because the bulk Export button
  *   is available on both tabs.
+ *
+ * DESCRIPTIVE FIELDS (this revision):
+ *   A team carries two descriptive fields:
+ *
+ *     style            free text. Rendered as an input on the
+ *                      form, and as a plain-text line on the
+ *                      detail panel and expanded row.
+ *
+ *     specialisations  array of mission-type ids. On the form,
+ *                      rendered as a chip list edited via a
+ *                      select + Add button; each chip has a ✕
+ *                      that removes it. On the detail panel and
+ *                      expanded row, rendered as a plain-text
+ *                      comma-separated list matching the mission
+ *                      detail panel's convention.
+ *
+ *   The form reads from:
+ *     vm.style                 current string
+ *     vm.specialisations       array of currently-selected ids
+ *     vm.specialisationOptions array of { id, label } to pick from
+ *
+ *   The detail / expanded row read from:
+ *     team.style               string
+ *     team.specialisations     array of { id, label } refs
+ *
+ *   When both fields are empty, both display lines are omitted.
  *
  * POOL ROWS:
  *   Each pool row is a .professional-pool-item. It carries:
@@ -175,6 +203,10 @@
         return String(value);
     }
 
+    function isArray(value) {
+        return Array.isArray(value);
+    }
+
     /**
      * The types offered in the team form.
      *
@@ -197,6 +229,76 @@
 
     function getFormTeamStatuses() {
         return TeamConstants.getTeamStatuses();
+    }
+
+    /**
+     * Read a normalised specialisation id array off a VM.
+     * Prefers the aggregator's `specialisationIds` (the raw ids);
+     * falls back to `specialisations` (which the aggregator
+     * resolved to { id, label } refs) by extracting the ids.
+     */
+    function readSpecialisationIds(vm) {
+        if (!vm) { return []; }
+        if (isArray(vm.specialisationIds)) {
+            return vm.specialisationIds;
+        }
+        if (isArray(vm.specialisations)) {
+            var out = [];
+            for (var i = 0; i < vm.specialisations.length; i++) {
+                var entry = vm.specialisations[i];
+                if (!entry) { continue; }
+                if (typeof entry === 'string') {
+                    out.push(entry);
+                } else if (isNonEmptyString(entry.id)) {
+                    out.push(entry.id);
+                }
+            }
+            return out;
+        }
+        return [];
+    }
+
+    /**
+     * Read a resolved [{ id, label }] list off a VM.
+     * Accepts either the resolved form (`specialisations`) or a
+     * bare id array (`specialisationIds`) and resolves the bare
+     * ids through an optional label lookup map.
+     */
+    function readSpecialisationRefs(vm, labelById) {
+        if (!vm) { return []; }
+        if (isArray(vm.specialisations) &&
+            vm.specialisations.length > 0 &&
+            typeof vm.specialisations[0] === 'object' &&
+            vm.specialisations[0] !== null) {
+            var out = [];
+            for (var i = 0; i < vm.specialisations.length; i++) {
+                var entry = vm.specialisations[i];
+                if (!entry || !isNonEmptyString(entry.id)) {
+                    continue;
+                }
+                out.push({
+                    id: entry.id,
+                    label: isNonEmptyString(entry.label)
+                        ? entry.label
+                        : entry.id
+                });
+            }
+            return out;
+        }
+
+        // Fall back to the id array, using labelById when
+        // available. Without a label map, the label is the id.
+        var ids = readSpecialisationIds(vm);
+        var result = [];
+        for (var j = 0; j < ids.length; j++) {
+            var id = ids[j];
+            var label = id;
+            if (labelById && labelById[id]) {
+                label = labelById[id];
+            }
+            result.push({ id: id, label: label });
+        }
+        return result;
     }
 
     // ============================================================
@@ -253,6 +355,75 @@
         return '<span class="unassigned-age">(' +
                     escapeHtml(ageDisplay) +
                 ')</span>';
+    }
+
+    /**
+     * Read-only display block for the two descriptive fields.
+     *
+     * Renders:
+     *   <div class="team-descriptive-fields">
+     *     <div class="team-descriptive-row">
+     *       <span class="team-descriptive-label">Style:</span>
+     *       <span class="team-descriptive-value">...</span>
+     *     </div>
+     *     <div class="team-descriptive-row">
+     *       <span class="team-descriptive-label">
+     *         Specialisations:
+     *       </span>
+     *       <span class="team-descriptive-value">
+     *         Recovery, Investigation
+     *       </span>
+     *     </div>
+     *   </div>
+     *
+     * Either row is omitted when its field is empty. When both
+     * are empty, the whole block is omitted. The value reads as
+     * a single comma-separated line, matching the mission detail
+     * panel's typeDisplay convention.
+     */
+    function renderDescriptiveFields(team) {
+        if (!team || typeof team !== 'object') { return ''; }
+
+        var style = isNonEmptyString(team.style)
+            ? String(team.style)
+            : '';
+
+        var specs = readSpecialisationRefs(team, null);
+        var specLabels = [];
+        for (var i = 0; i < specs.length; i++) {
+            specLabels.push(specs[i].label);
+        }
+        var specText = specLabels.join(', ');
+
+        if (style === '' && specText === '') { return ''; }
+
+        var html = '';
+        html += '<div class="team-descriptive-fields">';
+
+        if (style !== '') {
+            html += '<div class="team-descriptive-row">' +
+                        '<span class="team-descriptive-label">' +
+                            'Style:' +
+                        '</span>' +
+                        '<span class="team-descriptive-value">' +
+                            escapeHtml(style) +
+                        '</span>' +
+                    '</div>';
+        }
+
+        if (specText !== '') {
+            html += '<div class="team-descriptive-row">' +
+                        '<span class="team-descriptive-label">' +
+                            'Specialisations:' +
+                        '</span>' +
+                        '<span class="team-descriptive-value">' +
+                            escapeHtml(specText) +
+                        '</span>' +
+                    '</div>';
+        }
+
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -787,6 +958,15 @@
     // ============================================================
     // EXPANDED MEMBERS
     // ============================================================
+    //
+    // The member list under an expanded team row. The
+    // descriptive fields are rendered above the member list, so
+    // a user who expands a row sees style and specialisations
+    // before the roster.
+    //
+    // The descriptive block is built from `membersVM.team`,
+    // which the page VM supplies. When it is absent (older
+    // callers), the block is skipped.
 
     function renderExpandedMembers(membersVM) {
         if (!membersVM) { return ''; }
@@ -809,6 +989,11 @@
         html += '<div class="team-members-expanded" ' +
                     'data-team-id="' +
                         escapeAttribute(membersVM.teamId) + '">';
+
+        // ---- Descriptive fields, if the VM supplied the team ----
+        if (membersVM.team) {
+            html += renderDescriptiveFields(membersVM.team);
+        }
 
         if (activeMembers.length === 0) {
             html += '<div class="member-entry empty">' +
@@ -971,6 +1156,8 @@
                         escapeHtml(team.temporaryMissionName) +
                     '</div>';
         }
+
+        html += renderDescriptiveFields(team);
 
         html += '<div class="team-card-actions">' +
                     renderTeamActions(team.id, false, false) +
@@ -1147,6 +1334,31 @@
     // ============================================================
     // TEAM FORM
     // ============================================================
+    //
+    // The form gained two descriptive fields:
+    //
+    //   #team-style               text input
+    //   #team-specialisations     chip editor
+    //
+    // The chip editor is composed of:
+    //
+    //   #team-specialisation-select    the <select> of pickable
+    //                                  types (from
+    //                                  vm.specialisationOptions)
+    //   .team-specialisation-add       the "+ Add" button
+    //   #team-specialisations-list     the chip list
+    //
+    // Each chip carries:
+    //
+    //   .team-specialisation-chip
+    //     data-specialisation-id="<id>"
+    //     .team-specialisation-chip-name     the label
+    //     .team-specialisation-remove        the ✕ button
+    //
+    // TeamEvents owns the add / remove handlers. This renderer
+    // emits the initial state from the VM; every subsequent
+    // mutation is a DOM-only edit inside the form modal, and the
+    // submit handler reads the chips back out.
 
     function renderTeamForm(formVM) {
         if (!formVM) {
@@ -1247,6 +1459,21 @@
         html += '</select>';
         html += '</div>';
 
+        // ---- Style (free text) ----
+        html += '<div class="form-group full-width">';
+        html += '<label for="team-style">Style</label>';
+        html += '<input type="text" id="team-style" value="' +
+                    escapeAttribute(formVM.style || '') + '" ' +
+                    'placeholder="e.g., Aggressive frontline, ' +
+                    'cautious recon, diplomatic-first">';
+        html += '<span class="field-hint">' +
+                    'How the team works together. Free text.' +
+                '</span>';
+        html += '</div>';
+
+        // ---- Specialisations (chip editor) ----
+        html += renderSpecialisationEditor(formVM);
+
         html += '<div class="form-group full-width">';
         html += '<label>Name History</label>';
         html += '<div id="name-history-container">' +
@@ -1271,6 +1498,144 @@
 
         html += '</form>';
 
+        return html;
+    }
+
+    /**
+     * The specialisation chip editor.
+     *
+     * Reads:
+     *   formVM.specialisations         currently-selected ids
+     *   formVM.specialisationOptions   full pickable list
+     *
+     * Builds:
+     *   .team-specialisation-editor
+     *     .team-specialisation-input-group
+     *       #team-specialisation-select   <select>
+     *       .team-specialisation-add      "+ Add" button
+     *     #team-specialisations-list      chip list
+     *
+     * The <select> lists every option not currently selected.
+     * When every option is selected (or the options list is
+     * empty), the select is disabled and the empty-state copy
+     * says so.
+     *
+     * Every chip carries data-specialisation-id and a remove
+     * button. TeamEvents wires the add and remove handlers
+     * directly on the form modal, not through delegation from
+     * the container, because the form is its own modal shell.
+     */
+    function renderSpecialisationEditor(formVM) {
+        var selectedIds = isArray(formVM.specialisations)
+            ? formVM.specialisations.slice()
+            : [];
+        var options = isArray(formVM.specialisationOptions)
+            ? formVM.specialisationOptions
+            : [];
+
+        var selectedSet = Object.create(null);
+        var labelById = Object.create(null);
+        for (var i = 0; i < selectedIds.length; i++) {
+            selectedSet[selectedIds[i]] = true;
+        }
+        for (var o = 0; o < options.length; o++) {
+            var opt = options[o];
+            if (!opt || !isNonEmptyString(opt.id)) { continue; }
+            labelById[opt.id] = isNonEmptyString(opt.label)
+                ? opt.label
+                : opt.id;
+        }
+
+        var available = [];
+        for (var a = 0; a < options.length; a++) {
+            var candidate = options[a];
+            if (!candidate || !isNonEmptyString(candidate.id)) {
+                continue;
+            }
+            if (selectedSet[candidate.id] === true) { continue; }
+            available.push(candidate);
+        }
+
+        var html = '';
+        html += '<div class="form-group full-width ' +
+                    'team-specialisation-editor">';
+
+        html += '<label>Specialisations</label>';
+        html += '<p class="field-hint">' +
+                    'What this team is used for. Add as many as ' +
+                    'apply.' +
+                '</p>';
+
+        html += '<div class="team-specialisation-input-group">';
+        html += '<select id="team-specialisation-select" ' +
+                    'class="team-specialisation-select"' +
+                    (available.length === 0 ? ' disabled' : '') + '>';
+
+        if (available.length === 0) {
+            var placeholderText = options.length === 0
+                ? 'No specialisations available'
+                : 'All specialisations are already selected';
+            html += '<option value="" disabled selected>' +
+                        escapeHtml(placeholderText) +
+                    '</option>';
+        } else {
+            html += '<option value="">Select...</option>';
+            for (var av = 0; av < available.length; av++) {
+                var avail = available[av];
+                html += '<option value="' +
+                            escapeAttribute(avail.id) + '">' +
+                            escapeHtml(avail.label) +
+                        '</option>';
+            }
+        }
+
+        html += '</select>';
+        html += '<button type="button" ' +
+                    'class="small primary team-specialisation-add"' +
+                    (available.length === 0 ? ' disabled' : '') + '>' +
+                    '+ Add' +
+                '</button>';
+        html += '</div>';
+
+        html += '<div id="team-specialisations-list" ' +
+                    'class="team-specialisations-list">';
+
+        if (selectedIds.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No specialisations selected.' +
+                    '</p>';
+        } else {
+            for (var s = 0; s < selectedIds.length; s++) {
+                var id = selectedIds[s];
+                var label = labelById[id];
+                if (!isNonEmptyString(label)) {
+                    label = id;
+                }
+                html += renderSpecialisationChip(id, label);
+            }
+        }
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderSpecialisationChip(id, label) {
+        var html = '';
+        html += '<div class="team-specialisation-chip" ' +
+                    'data-specialisation-id="' +
+                        escapeAttribute(id) + '">';
+        html += '<span class="team-specialisation-chip-name">' +
+                    escapeHtml(label) +
+                '</span>';
+        html += '<button type="button" class="small danger ' +
+                    'team-specialisation-remove" ' +
+                    'data-specialisation-id="' +
+                        escapeAttribute(id) + '">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
         return html;
     }
 
@@ -1451,7 +1816,12 @@
                 teamId: expandedTeam.id,
                 periodLabel: expandedTeam.periodLabel || 'Period',
                 period: period,
-                members: expandedTeam.members
+                members: expandedTeam.members,
+                // Pass the whole team VM through so the expanded
+                // block can render the descriptive fields. The
+                // renderer reads .style and .specialisations off
+                // it and ignores everything else.
+                team: expandedTeam
             };
         }
 
