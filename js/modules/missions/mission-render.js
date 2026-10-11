@@ -14,8 +14,10 @@
  *   - The mission form's team editor (a chip list, not a single
  *     <select>).
  *   - The mission form's participants panel: one section per
- *     assigned team, plus a searchable rookie section.
- *   - The mission detail panel's participants section.
+ *     assigned team, plus a rookie summary strip that opens the
+ *     rookie picker modal.
+ *   - The mission detail panel's participants section, including
+ *     the "Add Rookies" button on its header.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Data. Every value comes off the VM. No queries, no domain
@@ -46,17 +48,16 @@
  *         rows: one checkbox per active member at the mission's year
  *       </section>
  *       <section class="rookie-section">
- *         header: "Rookies" + count
- *         search input (data-action="mission-rookie-search")
- *         rows: one checkbox per rookie candidate
+ *         header: "Rookies" + count + "+ Add Rookies" button
+ *         chip list of current rookie participants with ✕ buttons
  *       </section>
  *     </div>
  *
- *   Every member checkbox carries:
+ *   Team-member checkboxes carry:
  *     data-action="mission-toggle-participant"
  *     data-character-id="..."
- *     data-team-id="..."     (empty for rookie entries)
- *     data-source="team"|"rookie"
+ *     data-team-id="..."
+ *     data-source="team"
  *
  *   The controller reads those attributes, calls
  *   MissionCore.addParticipant or MissionCore.removeParticipant,
@@ -64,9 +65,24 @@
  *   the participant's `isParticipant` flag on the VM, not from
  *   DOM state.
  *
- *   The rookie search box filters client-side. The controller
- *   re-renders with a `rookieFilter` string; the renderer applies
- *   a case-insensitive substring match on `displayName`.
+ *   Rookie rows are NOT rendered here. The rookie section is a
+ *   summary strip: a count, an "+ Add Rookies" button that opens
+ *   the MissionRookiePicker modal, and a chip list of currently-
+ *   selected rookies with a per-chip ✕ that calls
+ *   MissionCore.removeParticipant directly. The picker owns the
+ *   search box, the alphabetical list, and the bulk actions.
+ *
+ * ROOKIE PICKER LAUNCH POINTS:
+ *   Two buttons emit data-action="mission-open-rookie-picker":
+ *
+ *     - The "+ Add Rookies" button in the form's participants
+ *       panel, scoped to the currently-edited mission.
+ *     - The "Add Rookies" button in the detail panel's
+ *       Participants section header, scoped to the mission shown
+ *       in the detail panel.
+ *
+ *   Both carry data-mission-id. The controller routes both to
+ *   MissionRookiePicker.openModal(missionId, { onClose }).
  *
  * PARTICIPANTS SECTION (detail):
  *   The detail panel carries a participants block, grouped by
@@ -106,10 +122,10 @@
  *
  * MODAL SHELL CONVENTION:
  *   renderContainer() emits the mission detail and mission form
- *   modal shells. The report modal, the export modal, and the
- *   import modal are emitted lazily by the controller on first
- *   use; the controller supplies their markup. This module does
- *   not know about them.
+ *   modal shells. The report modal, the export modal, the import
+ *   modal, and the rookie picker are emitted lazily by the
+ *   controller (or by their own module) on first use. This module
+ *   does not know about the rookie picker's internal markup.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -321,10 +337,6 @@
         var redacted = vm.authorRedacted === true;
         var text = isNonEmptyString(vm.text) ? vm.text : '';
 
-        // In edit mode the author select is locked. The stored
-        // authorId is either a character id or null (redacted),
-        // and changing it after the fact would misattribute the
-        // report.
         var authorDisabled = isEdit || redacted;
 
         var title = isEdit
@@ -333,7 +345,6 @@
 
         var html = '';
 
-        // ---- Header ----
         html += '<div class="modal-header">';
         html += '<h3>' + escapeHtml(title) + ' \u2014 ' +
                     escapeHtml(missionTitle) +
@@ -343,7 +354,6 @@
                     'aria-label="Close">&times;</button>';
         html += '</div>';
 
-        // ---- Body ----
         html += '<div class="modal-body mission-report-body">';
 
         html += '<p class="field-hint" ' +
@@ -357,7 +367,6 @@
                           'mission\u2019s history.') +
                 '</p>';
 
-        // ---- Author ----
         html += '<div class="form-group">';
         html += '<label for="mission-report-author">Author</label>';
 
@@ -402,7 +411,6 @@
         }
         html += '</div>';
 
-        // ---- Redacted checkbox ----
         html += '<div class="form-group mission-report-redact-row">';
         html += '<label class="csw-checkbox-row" ' +
                     'style="display:flex;align-items:center;gap:8px;' +
@@ -425,7 +433,6 @@
         }
         html += '</div>';
 
-        // ---- Text ----
         html += '<div class="form-group">';
         html += '<label for="mission-report-text">Report</label>';
         html += '<textarea id="mission-report-text" ' +
@@ -452,7 +459,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Inline error region ----
         html += '<div id="mission-report-error" ' +
                     'class="mission-report-error" ' +
                     'style="display:none;margin-top:10px;' +
@@ -465,7 +471,6 @@
 
         html += '</div>';
 
-        // ---- Footer ----
         html += '<div class="form-actions mission-report-footer" ' +
                     'style="display:flex;gap:8px;' +
                     'justify-content:flex-end;' +
@@ -482,10 +487,6 @@
         return html;
     }
 
-    /**
-     * One <option> for the author select. Appends " (deceased)"
-     * to the label when the flag is set.
-     */
     function renderAuthorOption(option, selectedId) {
         if (!option || !option.id) { return ''; }
 
@@ -511,13 +512,6 @@
     // LIST
     // ============================================================
 
-    /**
-     * Render the list of missions.
-     *
-     * @param {array} missions - List item VMs from
-     *   MissionAggregator.getMissionListViewModel
-     * @returns {string} HTML string
-     */
     function renderList(missions) {
         if (!isArray(missions) || missions.length === 0) {
             return '<p class="empty-state">No missions found.</p>';
@@ -619,10 +613,6 @@
         return html;
     }
 
-    /**
-     * If more than one team is assigned, append " +N" to the
-     * primary team's name on the list row.
-     */
     function renderExtraTeamsCount(item) {
         var count = item.assignedTeamCount;
         if (!isFiniteNumber(count) || count <= 1) { return ''; }
@@ -636,13 +626,6 @@
     // DETAIL
     // ============================================================
 
-    /**
-     * Render the mission detail panel.
-     *
-     * @param {object} vm - Detail VM from
-     *   MissionAggregator.getMissionDetailViewModel
-     * @returns {string} HTML string
-     */
     function renderDetail(vm) {
         if (!vm || !vm.id) {
             return '<p class="empty-state">Mission not found.</p>';
@@ -977,6 +960,15 @@
     //       source, sourceLabel } ]
     //
     // Rows are grouped: team participants first, then rookies.
+    //
+    // The header carries TWO buttons:
+    //   - "Add Rookies" opens the rookie picker modal.
+    //   - "Edit Participants" opens the full mission form.
+    //
+    // The Add Rookies button is always present on the header so a
+    // user who only wants to add rookies does not have to open the
+    // whole form. The Edit Participants button is present only
+    // when the mission is editable (capabilities.edit).
 
     function renderParticipants(vm) {
         var html = '';
@@ -987,7 +979,15 @@
         html += '<span class="count">' +
                     escapeHtml(String(vm.participantCount || 0)) +
                 '</span>';
+
         if (vm.capabilities && vm.capabilities.edit) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-open-rookie-picker" ' +
+                        'data-mission-id="' +
+                            escapeAttribute(vm.id) + '">' +
+                        '+ Add Rookies' +
+                    '</button>';
+
             html += '<button type="button" class="small secondary" ' +
                         'data-action="mission-edit-participants" ' +
                         'data-mission-id="' +
@@ -995,6 +995,7 @@
                         'Edit Participants' +
                     '</button>';
         }
+
         html += '</div>';
 
         var participants = isArray(vm.participants)
@@ -1746,30 +1747,23 @@
     //     currentParticipants: [...]
     //   }
     //
-    // vm.rookieCandidatesVM is the shape returned by
-    // MissionAggregator.getRookieCandidatesViewModel:
+    // The panel renders one section per assigned team with a
+    // checkbox per member, plus a rookie section that is a summary
+    // strip: a count of currently-selected rookies, an
+    // "+ Add Rookies" button that opens the picker modal, and a
+    // chip list of the current rookie participants with per-chip
+    // ✕ buttons.
     //
-    //   {
-    //     missionId, missionTitle, missionYear,
-    //     candidates: [
-    //       { characterId, displayName, deceased,
-    //         isParticipant, onAssignedTeam }
-    //     ]
-    //   }
+    // The roster of ROOKIE CANDIDATES is not rendered here. It is
+    // the rookie picker's concern.
     //
-    // vm.rookieFilter is the current search string from the UI
-    // controller (default ''). It is applied case-insensitively
-    // as a substring match on displayName.
+    // When the aggregator did not supply a participants VM — for
+    // instance a fresh create form where no mission exists yet —
+    // the panel renders a muted hint instead of a broken editor.
 
     function renderParticipantsPanel(vm) {
         var participantsVM = vm.participantsVM || null;
-        var rookieVM = vm.rookieCandidatesVM || null;
 
-        // If the aggregator did not supply a participants VM — for
-        // instance a fresh create form where no mission exists yet
-        // — the panel renders a muted hint instead of a broken
-        // editor. The panel becomes functional once the mission
-        // exists and the form is reopened in edit mode.
         if (!participantsVM) {
             return renderParticipantsPanelPlaceholder(vm);
         }
@@ -1784,7 +1778,7 @@
                     'part in this mission. Members shown are those ' +
                     'active in ' +
                     escapeHtml(safeString(participantsVM.missionYear)) +
-                    '. Rookies may be added below.' +
+                    '. Rookies are added with the button below.' +
                 '</p>';
 
         // ---- One section per assigned team ----
@@ -1805,8 +1799,8 @@
             }
         }
 
-        // ---- Rookie section ----
-        html += renderRookieSection(vm, rookieVM);
+        // ---- Rookie summary strip ----
+        html += renderRookieSummarySection(vm, participantsVM);
 
         html += '</div>';
         return html;
@@ -1916,132 +1910,115 @@
         return html;
     }
 
-    function renderRookieSection(vm, rookieVM) {
-        var html = '';
-        html += '<div class="participant-rookie-section">';
+    // ============================================================
+    // ROOKIE SUMMARY SECTION (form)
+    // ============================================================
+    //
+    // The rookie summary strip. It is a count, an "+ Add Rookies"
+    // button that opens the picker modal, and a chip list of the
+    // currently-selected rookies with per-chip ✕ buttons that call
+    // MissionCore.removeParticipant directly.
+    //
+    // The chip's ✕ is a small convenience so the user does not
+    // have to open the picker just to remove one rookie. Every ✕
+    // carries the same data-* contract as a participant row on the
+    // detail panel: data-action="mission-remove-participant",
+    // data-mission-id, data-character-id, and a blank data-team-id
+    // (the rookie case).
 
-        var candidates = (rookieVM && isArray(rookieVM.candidates))
-            ? rookieVM.candidates
-            : [];
+    function renderRookieSummarySection(vm, participantsVM) {
+        var currentParticipants =
+            isArray(participantsVM.currentParticipants)
+                ? participantsVM.currentParticipants
+                : [];
 
-        // Apply the current filter string. The filter is a
-        // case-insensitive substring match on displayName.
-        var filter = isNonEmptyString(vm.rookieFilter)
-            ? String(vm.rookieFilter).toLowerCase()
-            : '';
-
-        var visible = [];
-        for (var i = 0; i < candidates.length; i++) {
-            var c = candidates[i];
-            if (!c || !c.characterId) { continue; }
-            if (filter !== '' &&
-                String(c.displayName || '')
-                    .toLowerCase()
-                    .indexOf(filter) === -1) {
-                continue;
-            }
-            visible.push(c);
+        var rookies = [];
+        for (var i = 0; i < currentParticipants.length; i++) {
+            var p = currentParticipants[i];
+            if (!p || !p.characterId) { continue; }
+            if (p.source !== 'rookie') { continue; }
+            rookies.push(p);
         }
 
-        var totalCount = candidates.length;
+        rookies.sort(function(a, b) {
+            return String(a.displayName || '')
+                .localeCompare(String(b.displayName || ''));
+        });
+
+        var editId = vm.editId || '';
+        var canEdit = editId !== '';
+
+        var html = '';
+        html += '<div class="participant-rookie-section">';
 
         html += '<div class="participant-section-header">';
         html += '<span class="participant-team-name">Rookies</span>';
         html += '<span class="participant-team-count">' +
-                    totalCount + ' candidate' +
-                    (totalCount === 1 ? '' : 's') +
+                    rookies.length + ' selected' +
                 '</span>';
+        if (canEdit) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-open-rookie-picker" ' +
+                        'data-mission-id="' +
+                            escapeAttribute(editId) + '">' +
+                        '+ Add Rookies' +
+                    '</button>';
+        }
         html += '</div>';
 
-        html += '<div class="rookie-search-row">';
-        html += '<input type="text" ' +
-                    'id="mission-rookie-search" ' +
-                    'class="rookie-search-input" ' +
-                    'placeholder="Search rookies by name..." ' +
-                    'data-action="mission-rookie-search" ' +
-                    'value="' +
-                        escapeAttribute(vm.rookieFilter || '') +
-                    '" ' +
-                    'autocomplete="off" ' +
-                    'spellcheck="false">';
-        html += '</div>';
-
-        if (totalCount === 0) {
+        if (rookies.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No rookie candidates.' +
+                        'No rookies selected.' +
                     '</p>';
             html += '</div>';
             return html;
         }
 
-        if (visible.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No rookies match "' +
-                        escapeHtml(vm.rookieFilter || '') +
-                        '".' +
-                    '</p>';
-            html += '</div>';
-            return html;
+        html += '<div class="rookie-chip-list">';
+        for (var r = 0; r < rookies.length; r++) {
+            var rookie = rookies[r];
+            html += renderRookieChip(vm, rookie);
         }
+        html += '</div>';
 
-        html += '<ul class="rookie-candidate-list">';
-
-        for (var j = 0; j < visible.length; j++) {
-            html += renderRookieCheckbox(vm, visible[j]);
-        }
-
-        html += '</ul>';
         html += '</div>';
         return html;
     }
 
-    function renderRookieCheckbox(vm, candidate) {
-        if (!candidate || !candidate.characterId) { return ''; }
+    function renderRookieChip(vm, rookie) {
+        if (!rookie || !rookie.characterId) { return ''; }
 
-        var checked = candidate.isParticipant === true;
-        var onTeam = candidate.onAssignedTeam === true;
-
-        // A rookie already on an assigned team is rendered as
-        // disabled with an explanatory note: the correct place to
-        // record them is the team-member section, not here.
-        var rowClass = 'rookie-candidate-row';
-        if (onTeam) {
-            rowClass += ' rookie-on-team';
-        }
+        var editId = vm.editId || '';
 
         var html = '';
-        html += '<li class="' + rowClass + '">';
-
-        html += '<label class="rookie-candidate-label">';
-        html += '<input type="checkbox" ' +
-                    'class="rookie-candidate-checkbox" ' +
-                    'data-action="mission-toggle-participant" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.editId || '') + '" ' +
+        html += '<span class="rookie-chip" ' +
                     'data-character-id="' +
-                        escapeAttribute(candidate.characterId) + '" ' +
-                    'data-team-id="" ' +
-                    'data-source="rookie"' +
-                    (checked ? ' checked' : '') +
-                    (onTeam ? ' disabled' : '') + '>';
+                        escapeAttribute(rookie.characterId) + '">';
 
-        html += '<span class="rookie-candidate-name">' +
-                    escapeHtml(candidate.displayName || 'Unknown') +
+        html += '<span class="rookie-chip-name">' +
+                    escapeHtml(rookie.displayName || 'Unknown') +
                 '</span>';
 
-        if (candidate.deceased === true) {
-            html += '<span class="rookie-candidate-deceased" ' +
+        if (rookie.deceased === true) {
+            html += '<span class="rookie-chip-deceased" ' +
                         'title="Deceased">\u2020</span>';
         }
 
-        if (onTeam) {
-            html += '<span class="rookie-candidate-note">' +
-                        'Already on an assigned team' +
-                    '</span>';
+        if (editId) {
+            html += '<button type="button" ' +
+                        'class="small danger rookie-chip-remove" ' +
+                        'data-action="mission-remove-participant" ' +
+                        'data-mission-id="' +
+                            escapeAttribute(editId) + '" ' +
+                        'data-character-id="' +
+                            escapeAttribute(rookie.characterId) + '" ' +
+                        'data-team-id="" ' +
+                        'title="Remove this rookie from the mission">' +
+                        '\u2715' +
+                    '</button>';
         }
 
-        html += '</label>';
-        html += '</li>';
+        html += '</span>';
         return html;
     }
 

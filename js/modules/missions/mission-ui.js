@@ -8,8 +8,7 @@
  * RESPONSIBILITIES:
  *   - Own transient UI state (current filter, current mission id,
  *     which modal is open, report-form scratch state, export
- *     picker state, import modal state, participant scratch state
- *     — including the rookie search filter).
+ *     picker state, import modal state, form scratch state).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -25,54 +24,52 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
- * PARTICIPANTS (this revision):
- *   The mission form carries a participant editor built from two
- *   aggregator VMs, attached to the form VM by this module before
+ * PARTICIPANTS:
+ *   The mission form carries a participant editor built from one
+ *   aggregator VM, attached to the form VM by this module before
  *   it is handed to the renderer:
  *
- *     participantsVM        getParticipantsViewModel(editId)
- *     rookieCandidatesVM    getRookieCandidatesViewModel(editId)
+ *     participantsVM    getParticipantsViewModel(editId)
  *
- *   Both VMs are rebuilt every time the form opens. For a create
- *   form (no editId), neither is attached and the renderer draws
- *   the placeholder panel.
+ *   The VM is rebuilt every time the form opens. For a create form
+ *   (no editId), it is not attached and the renderer draws the
+ *   placeholder panel.
  *
  *   Two event wires:
  *
  *     mission-toggle-participant
- *       fires from a member checkbox or a rookie checkbox. The
- *       controller reads characterId, teamId, source, and the
- *       checked flag, calls MissionCore.addParticipant or
- *       MissionCore.removeParticipant, and re-renders the form's
- *       participant panel in place. The surrounding form is not
- *       closed and its other inputs are not touched.
+ *       fires from a team-member checkbox inside the form's
+ *       participant panel. The controller reads characterId,
+ *       teamId, and the checked flag, calls
+ *       MissionCore.addParticipant or MissionCore.removeParticipant,
+ *       and re-renders the form's participant panel in place. The
+ *       surrounding form is not closed and its other inputs are
+ *       not touched.
  *
- *     mission-rookie-search
- *       fires from the rookie search input on 'input'. The
- *       controller records the filter string on the participant
- *       scratch state, then re-renders the form's participant
- *       panel in place. The filter itself is applied by
- *       MissionRender.renderRookieSection via the vm.rookieFilter
- *       field.
+ *     mission-open-rookie-picker
+ *       fires from the "+ Add Rookies" button on the form's
+ *       participant panel, from the "Add Rookies" button on the
+ *       detail panel's Participants section header, and from any
+ *       other surface that needs it. The controller opens the
+ *       MissionRookiePicker modal scoped to the mission id carried
+ *       on the button. The picker owns its own write path; when it
+ *       closes, its onClose callback refreshes whichever surface
+ *       launched it.
  *
- *   The panel is re-rendered by rebuilding the participantsVM and
- *   rookieCandidatesVM from MissionAggregator and calling a small
- *   in-place re-render of just the panel node, then re-inserting
- *   the new markup. The rest of the form is left as-is. That is
- *   important: an in-flight edit in an unrelated field must not
- *   be lost when the user ticks a participant checkbox.
+ *   The panel is re-rendered by rebuilding the participantsVM from
+ *   MissionAggregator and swapping the panel node in place. The
+ *   rest of the form is left as-is. That is important: an in-flight
+ *   edit in an unrelated field must not be lost when the user ticks
+ *   a participant checkbox or returns from the picker.
  *
- *   When no mission exists yet (create form), the participant
- *   editor is a placeholder. Ticking is only meaningful after the
- *   mission has been created and at least one team is assigned.
+ *   Rookie rows are NOT rendered by the form. The form's rookie
+ *   section is a summary strip (count + "+ Add Rookies" button +
+ *   chip list with per-chip remove). Everything else about rookies
+ *   is the picker's concern.
  *
  * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
  *   an author select, a redacted checkbox, and a large textarea.
- *   The author select is built from
- *   MissionAggregator.getReportAuthorOptionsViewModel(missionId),
- *   which returns two lists: team members of the mission's
- *   assigned teams, and everyone else.
  *
  * MULTIPLE TEAMS:
  *   The mission form's "Assign Team" control is a chip list. The
@@ -85,9 +82,7 @@
  *   modal with two options: Text and JSON.
  *
  * MISSION IMPORT:
- *   A header button opens the import modal. The modal carries a
- *   format radio (JSON / CSV), a large textarea, a "Load from
- *   file..." link, an inline error region, and Import / Cancel.
+ *   A header button opens the import modal.
  *
  * LOG ENTRY:
  *   The mission log entry uses window.prompt. It is a single-line
@@ -113,9 +108,12 @@
  *   of a `data-mission-id` attribute on the button.
  *
  *   The participant toggles are form-only. They always carry
- *   `data-mission-id`. There is no detail-panel counterpart; the
- *   detail panel's "Edit Participants" button simply opens the
- *   form, which contains the editor.
+ *   `data-mission-id`.
+ *
+ *   The rookie-picker launch button is emitted from two surfaces
+ *   (form panel and detail panel) and always carries
+ *   `data-mission-id`. The controller routes both to the same
+ *   opener.
  *
  * DETACHED CONTAINER GUARD:
  *   Modal openers check that state.container is still attached
@@ -131,6 +129,7 @@
  * DEPENDENCIES (LAZY, at click time):
  *   - window.MissionExport
  *   - window.MissionImport
+ *   - window.MissionRookiePicker
  *   - window.CharacterQueries
  */
 
@@ -200,8 +199,7 @@
             'getMissionFormViewModel',
             'getMissionStatisticsViewModel',
             'getReportAuthorOptionsViewModel',
-            'getParticipantsViewModel',
-            'getRookieCandidatesViewModel'
+            'getParticipantsViewModel'
         ];
         for (var a = 0; a < aggRequired.length; a++) {
             if (typeof MissionAggregator[aggRequired[a]] !== 'function') {
@@ -275,19 +273,11 @@
 
     // Form scratch state that must survive across in-place panel
     // re-renders. The form modal is rebuilt from the VM on open;
-    // the participant panel is re-rendered in place on toggle and
-    // on rookie-search input, and the surrounding form inputs are
-    // left untouched.
-    //
-    // _formState holds the editId of the open form so the
-    // in-place re-render knows which mission's participant VMs to
-    // rebuild. It is null for a create form.
-    //
-    // _rookieFilter holds the current rookie search string. It is
-    // reset on every form open and on close.
+    // the participant panel is re-rendered in place on a
+    // team-member toggle, and again when the rookie picker closes.
+    // The surrounding form inputs are left untouched.
     var _formState = {
-        editId: null,
-        rookieFilter: ''
+        editId: null
     };
 
     // ============================================================
@@ -300,6 +290,10 @@
 
     function getMissionImport() {
         return window.MissionImport || null;
+    }
+
+    function getMissionRookiePicker() {
+        return window.MissionRookiePicker || null;
     }
 
     // ============================================================
@@ -485,11 +479,15 @@
             return;
         }
 
-        // ---- Participant checkboxes ----
+        // ---- Participant checkboxes (team-member rows) ----
         //
         // The change event fires when a checkbox is toggled. The
         // click event also fires; that is handled below. We react
         // only to the change event so the toggle runs once.
+        //
+        // Rookie toggles are the rookie picker's concern; the
+        // form's rookie section is a chip list and does not carry
+        // these attributes.
         if (target.dataset &&
             target.dataset.action === 'mission-toggle-participant') {
             handleParticipantToggle(target);
@@ -536,12 +534,6 @@
 
     function handleContainerInput(event) {
         var target = event.target;
-
-        // ---- Rookie search ----
-        if (target.id === 'mission-rookie-search') {
-            handleRookieSearchInput(target);
-            return;
-        }
 
         if (target.id === 'mission-report-text') {
             _reportForm.text = String(target.value || '');
@@ -687,6 +679,11 @@
                 openFormModal(missionId);
                 return;
 
+            case 'mission-open-rookie-picker':
+                event.preventDefault();
+                handleOpenRookiePicker(missionId);
+                return;
+
             case 'mission-export':
                 event.preventDefault();
                 openExportModal(missionId);
@@ -800,10 +797,11 @@
 
             case 'mission-remove-participant':
                 event.preventDefault();
-                handleRemoveParticipantFromDetail(
+                handleRemoveParticipant(
                     missionId,
                     actionEl.dataset.characterId,
-                    actionEl.dataset.teamId || ''
+                    actionEl.dataset.teamId || '',
+                    actionEl
                 );
                 return;
 
@@ -961,22 +959,26 @@
             return;
         }
 
-        // Reset form scratch state. The rookie filter starts
-        // empty on every open. The editId is recorded so the
-        // in-place participant re-render knows which mission's
-        // VMs to rebuild.
         _formState.editId = editId || null;
-        _formState.rookieFilter = '';
 
-        // Attach the participant VMs when editing an existing
-        // mission. On the create form (editId null) they are not
+        // Attach the participants VM when editing an existing
+        // mission. On the create form (editId null) it is not
         // attached, and the renderer draws a placeholder panel.
+        //
+        // The rookie candidate list is NOT attached. The rookie
+        // section in the form is a summary strip; the picker
+        // fetches its own candidate list when opened.
         if (editId) {
-            vm.participantsVM =
-                MissionAggregator.getParticipantsViewModel(editId);
-            vm.rookieCandidatesVM =
-                MissionAggregator.getRookieCandidatesViewModel(editId);
-            vm.rookieFilter = _formState.rookieFilter;
+            try {
+                vm.participantsVM =
+                    MissionAggregator.getParticipantsViewModel(editId);
+            } catch (e) {
+                console.warn(
+                    '[MissionUI] getParticipantsViewModel threw:',
+                    e
+                );
+                vm.participantsVM = null;
+            }
         }
 
         var modal = state.container.querySelector('#mission-form-modal');
@@ -1031,7 +1033,6 @@
         if (contentEl) { contentEl.innerHTML = ''; }
 
         _formState.editId = null;
-        _formState.rookieFilter = '';
     }
 
     function updateSubtypeOptions(primarySelect, subtypeSelect) {
@@ -1069,25 +1070,15 @@
     }
 
     // ============================================================
-    // PARTICIPANT TOGGLE / ROOKIE SEARCH
+    // PARTICIPANT TOGGLE (team-member checkboxes)
     // ============================================================
 
     /**
-     * Toggle a participant on the mission.
+     * Toggle a team-member participant on the mission.
      *
      * The checkbox carries data-character-id, data-team-id, and
-     * data-source. The team-id is empty for rookie entries. The
-     * checked flag on the checkbox names the intended new state.
-     *
-     * When the checkbox is checked, we call addParticipant. When
-     * it is unchecked, we call removeParticipant. Both run through
-     * MissionCore, which validates against the transaction
-     * snapshot. On success, the participant panel is re-rendered
-     * in place so the aggregate state (current participant list,
-     * per-row flags) is fresh.
-     *
-     * On failure, the checkbox is reverted to its previous state
-     * and a notification explains why.
+     * data-source="team". Rookie toggles do not go through this
+     * path; the picker owns them.
      */
     function handleParticipantToggle(checkbox) {
         if (!checkbox) { return; }
@@ -1095,42 +1086,33 @@
         var missionId = checkbox.dataset.missionId;
         var characterId = checkbox.dataset.characterId;
         var teamId = checkbox.dataset.teamId || '';
-        var source = checkbox.dataset.source;
         var checked = checkbox.checked === true;
 
         if (!missionId || !characterId) { return; }
+        if (teamId === '') { return; }
 
         var promise;
         if (checked) {
-            // addParticipant accepts teamId = '' and treats it as
-            // the rookie case internally. Pass the string straight
-            // through.
             promise = MissionCore.addParticipant(
                 missionId,
                 characterId,
-                teamId === '' ? null : teamId
+                teamId
             );
         } else {
             promise = MissionCore.removeParticipant(
                 missionId,
                 characterId,
-                teamId === '' ? null : teamId
+                teamId
             );
         }
 
         promise.then(function(result) {
             if (result && result.success) {
-                // Rebuild the participant panel in place. The
-                // surrounding form is untouched.
                 refreshParticipantsPanelInPlace();
                 return;
             }
 
-            // Revert the checkbox. The pipeline rejected the
-            // toggle, which means the pair was already in the
-            // opposite state or the mission is gone.
             checkbox.checked = !checked;
-
             notify(
                 (result && result.message) ||
                     'Could not update participant.',
@@ -1146,61 +1128,161 @@
     }
 
     /**
-     * Remove a participant from the detail panel.
+     * Remove a participant. Called by the detail panel's per-row
+     * remove button and by the rookie chip's ✕ in the form.
      *
-     * The detail panel's participant list carries the same
-     * data-character-id / data-team-id attributes as the form's
-     * checkbox rows, minus the source. The source is not needed to
-     * remove: (characterId, teamId) is the identity.
+     * For a detail-panel remove, the surrounding mission is
+     * refreshed through the standard post-mutation path.
+     *
+     * For a form-side rookie chip remove, the form's participant
+     * panel is refreshed in place; the surrounding form is not
+     * closed.
+     *
+     * The two cases are distinguished by whether the form modal is
+     * open and the passed-in element is inside it.
      */
-    function handleRemoveParticipantFromDetail(
-        missionId, characterId, teamIdStr
+    function handleRemoveParticipant(
+        missionId, characterId, teamIdStr, actionEl
     ) {
         if (!missionId || !characterId) { return; }
 
-        if (!window.confirm('Remove this participant?')) { return; }
+        var teamId = (teamIdStr && teamIdStr !== '')
+            ? teamIdStr
+            : null;
 
-        var teamId = (teamIdStr && teamIdStr !== '') ? teamIdStr : null;
-
-        handleMutation(
-            MissionCore.removeParticipant(missionId, characterId, teamId),
-            {
-                onSuccess: function() {
-                    openDetailModal(missionId);
-                    refreshAfterMutation();
-                }
+        // Is the action element inside the mission form's
+        // participant panel?
+        var inForm = false;
+        if (actionEl && state.container) {
+            var formContent = state.container.querySelector(
+                '#mission-form-content'
+            );
+            if (formContent && formContent.contains(actionEl)) {
+                inForm = true;
             }
+        }
+
+        if (!inForm) {
+            if (!window.confirm('Remove this participant?')) {
+                return;
+            }
+        }
+
+        var promise = MissionCore.removeParticipant(
+            missionId, characterId, teamId
         );
+
+        promise.then(function(result) {
+            if (!result || !result.success) {
+                if (result && result.message) {
+                    notify(result.message, 'error');
+                }
+                return;
+            }
+
+            if (inForm) {
+                refreshParticipantsPanelInPlace();
+                return;
+            }
+
+            openDetailModal(missionId);
+            refreshAfterMutation();
+        }).catch(function(err) {
+            console.warn(
+                '[MissionUI] removeParticipant failed:', err
+            );
+            notify('Failed to remove participant.', 'error');
+        });
     }
+
+    // ============================================================
+    // ROOKIE PICKER
+    // ============================================================
 
     /**
-     * React to a rookie-search input. Records the filter string and
-     * re-renders the participant panel in place. The surrounding
-     * form is untouched.
+     * Open the rookie picker modal for a mission.
      *
-     * The filter is applied by MissionRender.renderRookieSection
-     * via vm.rookieFilter.
+     * The picker owns its own write path. On close, the onClose
+     * callback refreshes whichever surface launched it:
+     *
+     *   - If the mission form is open and editing the same
+     *     mission, the form's participant panel is re-rendered
+     *     in place.
+     *   - If the detail panel is open on the same mission, the
+     *     detail panel is re-rendered.
+     *   - Either way, the list is refreshed so the participant
+     *     count on the row is up to date.
      */
-    function handleRookieSearchInput(inputEl) {
-        if (!inputEl) { return; }
-        _formState.rookieFilter = String(inputEl.value || '');
-        refreshParticipantsPanelInPlace();
+    function handleOpenRookiePicker(missionId) {
+        if (!missionId) { return; }
+
+        var Picker = getMissionRookiePicker();
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notify(
+                'The rookie picker is not available. ' +
+                'MissionRookiePicker is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        // Determine whether the picker was launched from the form
+        // or from the detail panel. The onClose behaviour differs.
+        var formContent = state.container
+            ? state.container.querySelector('#mission-form-content')
+            : null;
+        var launchedFromForm = false;
+
+        if (formContent && _formState.editId &&
+            String(_formState.editId) === String(missionId)) {
+            launchedFromForm = true;
+        }
+
+        try {
+            Picker.openModal(missionId, {
+                onClose: function() {
+                    if (launchedFromForm) {
+                        refreshParticipantsPanelInPlace();
+                        return;
+                    }
+                    if (state.currentMissionId &&
+                        String(state.currentMissionId) ===
+                            String(missionId)) {
+                        openDetailModal(missionId);
+                    }
+                    refreshAfterMutation();
+                }
+            });
+        } catch (err) {
+            console.warn(
+                '[MissionUI] MissionRookiePicker.openModal threw:',
+                err
+            );
+            notify(
+                'Failed to open the rookie picker: ' +
+                (err && err.message ? err.message : String(err)),
+                'error'
+            );
+        }
     }
+
+    // ============================================================
+    // PARTICIPANT PANEL IN-PLACE REFRESH
+    // ============================================================
 
     /**
      * Rebuild the participants panel inside the open form and swap
      * the panel node in place.
      *
-     * The panel is re-rendered with fresh aggregator VMs, but the
+     * The panel is re-rendered with a fresh aggregator VM, but the
      * rest of the form — every other input, the team chips, the
-     * support rows, the objectives — is left byte-identical. That
-     * is the point: ticking a participant or typing in the rookie
-     * search box must not discard an unsaved edit elsewhere in the
-     * form.
+     * support rows, the objectives, the rookie chip list — is left
+     * byte-identical. That is the point: ticking a participant or
+     * returning from the picker must not discard an unsaved edit
+     * elsewhere in the form.
      *
-     * The function is a no-op when the form is not open, when the
-     * form is a create form (no editId), or when the panel node
-     * cannot be found.
+     * No-op when the form is not open, when the form is a create
+     * form (no editId), or when the panel node cannot be found.
      */
     function refreshParticipantsPanelInPlace() {
         if (!state.container) { return; }
@@ -1218,12 +1300,9 @@
         if (!panelNode) { return; }
 
         var participantsVM = null;
-        var rookieCandidatesVM = null;
         try {
             participantsVM =
                 MissionAggregator.getParticipantsViewModel(editId);
-            rookieCandidatesVM =
-                MissionAggregator.getRookieCandidatesViewModel(editId);
         } catch (e) {
             console.warn(
                 '[MissionUI] participant VM rebuild threw:', e
@@ -1231,98 +1310,29 @@
             return;
         }
 
-        // Build a small synthetic VM for the renderer. The
-        // renderer reads participantsVM, rookieCandidatesVM,
-        // rookieFilter, and editId.
-        var renderVM = {
-            editId: editId,
-            participantsVM: participantsVM,
-            rookieCandidatesVM: rookieCandidatesVM,
-            rookieFilter: _formState.rookieFilter
-        };
-
-        // Preserve the rookie search box's focus and caret.
-        //
-        // The panel re-render replaces the input node. Without
-        // intervention, the user's keystrokes would lose the
-        // caret every time they type a character. The fix is to
-        // record the caret position before the swap and restore it
-        // after, on the new input node.
-        var oldInput = panelNode.querySelector('#mission-rookie-search');
-        var hadFocus = oldInput === document.activeElement;
-        var caretPos = null;
-        if (hadFocus) {
-            try { caretPos = oldInput.selectionStart; } catch (e) {
-                caretPos = null;
-            }
+        // Reuse the current form VM's non-participant fields, so the
+        // renderer builds a panel that matches the form's own
+        // contract. Only the participant panel node is swapped.
+        var renderVM = null;
+        try {
+            renderVM = MissionAggregator.getMissionFormViewModel({
+                editId: editId
+            });
+        } catch (e) {
+            renderVM = null;
         }
+        if (!renderVM) { return; }
 
-        // Extract the panel markup from a fresh form render.
-        //
-        // Re-rendering the whole form to obtain the panel markup is
-        // the least invasive path: the panel's HTML is built by the
-        // same code that built it on open, so the shape is
-        // guaranteed consistent. We then keep only the panel node.
-        //
-        // We do NOT replace the entire form with the fresh render:
-        // that would discard unsaved edits elsewhere.
+        renderVM.editId = editId;
+        renderVM.participantsVM = participantsVM;
+
         var tmp = document.createElement('div');
-        tmp.innerHTML = MissionRender.renderForm(
-            buildFormVMWithParticipants(editId, renderVM)
-        );
+        tmp.innerHTML = MissionRender.renderForm(renderVM);
+
         var newPanel = tmp.querySelector('#mission-participants-panel');
         if (!newPanel) { return; }
 
         panelNode.parentNode.replaceChild(newPanel, panelNode);
-
-        if (hadFocus) {
-            var newInput = newPanel.querySelector(
-                '#mission-rookie-search'
-            );
-            if (newInput) {
-                try {
-                    newInput.focus();
-                    if (caretPos !== null) {
-                        newInput.setSelectionRange(
-                            caretPos, caretPos
-                        );
-                    }
-                } catch (e) { /* ignore */ }
-            }
-        }
-    }
-
-    /**
-     * Build a form VM for re-rendering only the participants panel.
-     *
-     * The full form VM is fetched from the aggregator (so all the
-     * selects, chips and lists are correct if the renderer ever
-     * needs to walk them), then the participant fields are
-     * overwritten with the fresh values we just rebuilt.
-     *
-     * This is deliberately cheap: the form VM is a plain data
-     * structure, and re-fetching it does not touch the store.
-     */
-    function buildFormVMWithParticipants(editId, participantRenderVM) {
-        var baseVM = null;
-        try {
-            baseVM = MissionAggregator.getMissionFormViewModel({
-                editId: editId
-            });
-        } catch (e) {
-            baseVM = null;
-        }
-        if (!baseVM) {
-            baseVM = {};
-        }
-
-        baseVM.editId = editId;
-        baseVM.participantsVM = participantRenderVM.participantsVM;
-        baseVM.rookieCandidatesVM =
-            participantRenderVM.rookieCandidatesVM;
-        baseVM.rookieFilter = participantRenderVM.rookieFilter;
-
-        return baseVM;
     }
 
     // ============================================================
@@ -1383,13 +1393,13 @@
         };
 
         // Participants are NOT collected from the form DOM.
-        // They are committed immediately as the user ticks each
-        // checkbox, via MissionCore.addParticipant and
-        // MissionCore.removeParticipant. The form's submit does
-        // not rewrite them. This avoids a race between a toggle
-        // and a save in flight, and it means the toggle's
-        // success/failure is reported at the moment it happens,
-        // not deferred to save.
+        // Team-member checkboxes and the rookie picker commit
+        // immediately as the user interacts with them, via
+        // MissionCore.addParticipant and removeParticipant. The
+        // form's submit does not rewrite them. This avoids a race
+        // between a toggle and a save in flight, and it means the
+        // toggle's success/failure is reported at the moment it
+        // happens, not deferred to save.
 
         var tagsRaw = readValue(form, '#mission-tags');
         data.tags = tagsRaw
@@ -1983,7 +1993,6 @@
                     'does not stop the rest.' +
                 '</p>';
 
-        // ---- Format radio ----
         html += '<div class="form-group">';
         html += '<label>Format</label>';
         html += '<div class="mission-import-formats">';
@@ -2009,7 +2018,6 @@
         html += '</div>';
         html += '</div>';
 
-        // ---- Textarea ----
         html += '<div class="form-group">';
         html += '<label for="mission-import-text">Import data</label>';
         html += '<textarea id="mission-import-text" ' +
@@ -2039,7 +2047,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- File loader ----
         html += '<div class="mission-import-file-row" ' +
                     'style="display:flex;justify-content:space-between;' +
                     'align-items:center;gap:8px;margin-top:10px;' +
@@ -2055,7 +2062,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Error region ----
         html += '<div id="mission-import-error" ' +
                     'class="mission-import-error" ' +
                     'style="display:none;margin-top:10px;' +
@@ -2097,8 +2103,6 @@
             ? '{ "title": ... } or [ ... ]'
             : 'MissionId,Title,Status,...';
 
-        // Toggle the is-selected class on the radio labels so the
-        // chosen one reads as active.
         var labels = modal.querySelectorAll(
             '.mission-import-format'
         );
@@ -2297,7 +2301,6 @@
             ? result.warnings
             : [];
 
-        // ---- Full success ----
         if (result.success && failed === 0) {
             var parts = [];
             if (created > 0) {
@@ -2318,7 +2321,6 @@
             return;
         }
 
-        // ---- Partial or full failure ----
         var lines = [];
 
         if (imported > 0) {
@@ -2924,7 +2926,6 @@
         resetExportPicker();
         resetImportModal();
         _formState.editId = null;
-        _formState.rookieFilter = '';
     }
 
     // ============================================================
