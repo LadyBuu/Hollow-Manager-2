@@ -33,6 +33,8 @@
  *   - Team-assignment shape. MissionQueries.getTeamIdsForMission
  *     owns the read-side coercion of the legacy singular
  *     assignedTeamId into the canonical array.
+ *   - The mission log. The log field has been retired; there is
+ *     no buildLogVM and no log / logCount on the detail VM.
  *
  * VM SHAPE PRINCIPLES:
  *   - Every VM is a plain data structure. No functions, no live
@@ -604,33 +606,6 @@
     }
 
     // ============================================================
-    // LOG PROJECTION
-    // ============================================================
-
-    function buildLogVM(mission) {
-        if (!mission || !Array.isArray(mission.log)) {
-            return [];
-        }
-
-        // Display order is newest first. Persistence order is
-        // append order (oldest first). Presentation reverses.
-        var result = [];
-        for (var i = mission.log.length - 1; i >= 0; i--) {
-            var entry = mission.log[i];
-            if (!isPlainObject(entry)) { continue; }
-            result.push({
-                timestamp: entry.timestamp || null,
-                timestampDisplay: MissionViews.formatTimestamp
-                    ? MissionViews.formatTimestamp(entry.timestamp)
-                    : '',
-                message: entry.message || ''
-            });
-        }
-
-        return result;
-    }
-
-    // ============================================================
     // OBJECTIVE PROJECTION
     // ============================================================
 
@@ -998,6 +973,9 @@
     // ============================================================
     // DETAIL VM
     // ============================================================
+    //
+    // The detail VM carries no `log` and no `logCount`. The mission
+    // log field has been retired. See the file header.
 
     function getMissionDetailViewModel(missionId) {
         var mission = MissionQueries.getMission(missionId);
@@ -1014,7 +992,6 @@
         var supportPersonnel = buildSupportPersonnelVM(mission);
         var participants = buildParticipantsVM(mission);
         var reports = buildReportsVM(mission);
-        var log = buildLogVM(mission);
         var objectives = buildObjectivesVM(mission);
         var capabilities = buildCapabilitiesVM(mission);
 
@@ -1108,9 +1085,6 @@
 
             reports: reports,
             reportCount: reports.length,
-
-            log: log,
-            logCount: log.length,
 
             tags: Array.isArray(mission.tags)
                 ? mission.tags.slice() : [],
@@ -1455,6 +1429,28 @@
         // Current participant entries, resolved to display shape.
         var currentParticipants = buildParticipantsVM(mission);
 
+        // Guard: drop participants whose teamId is no longer
+        // assigned. The write path (MissionCore.updateMission)
+        // prunes orphans on the snapshot, but a record saved
+        // before that guard existed can still carry them. Dropping
+        // them here keeps the VM honest.
+        var assignedSet = Object.create(null);
+        for (var at = 0; at < assignedTeamIds.length; at++) {
+            assignedSet[String(assignedTeamIds[at])] = true;
+        }
+
+        var filteredParticipants = [];
+        for (var cp = 0; cp < currentParticipants.length; cp++) {
+            var entry = currentParticipants[cp];
+            if (entry.teamId === null) {
+                filteredParticipants.push(entry);
+                continue;
+            }
+            if (assignedSet[String(entry.teamId)] === true) {
+                filteredParticipants.push(entry);
+            }
+        }
+
         return {
             missionId: String(mission.id),
             missionTitle: isNonEmptyString(mission.title)
@@ -1462,7 +1458,7 @@
                 : 'Mission',
             missionYear: missionYear,
             assignedTeams: assignedTeamsVM,
-            currentParticipants: currentParticipants
+            currentParticipants: filteredParticipants
         };
     }
 
