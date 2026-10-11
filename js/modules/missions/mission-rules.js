@@ -15,6 +15,9 @@
  *   - Status transition rules: which transitions are legal, and
  *     what target statuses are available from a given status.
  *   - Team eligibility for mission assignment.
+ *   - Participant source rules: which source a given selection
+ *     represents, and whether a character may be added as a
+ *     participant.
  *   - Domain-rule validation that MissionCore calls inside the
  *     pipeline transaction (as opposed to structural validation,
  *     which belongs to MissionSchema).
@@ -73,6 +76,39 @@
  *   an error. Self-transition is treated as "valid, no change" by
  *   MissionCore, not as a rule violation here.
  *
+ * TEAM ELIGIBILITY (this revision):
+ *   Only professional teams are eligible to be assigned to a
+ *   mission. The 'temporary' team type was retired; a record that
+ *   carried it is normalised to 'professional' by TeamConstants
+ *   before it reaches this module, so the check is
+ *   professional-or-nothing. Civilian and academic teams are not
+ *   eligible.
+ *
+ * PARTICIPANT SOURCE RULES:
+ *   A participant carries a `source` field:
+ *     'team'    a member of one of the mission's assigned teams
+ *     'rookie'  selected from the rookie candidate list
+ *
+ *   The source is not derived. It is chosen by the caller based on
+ *   the selection path:
+ *     - Adding via the team-member panel sets source 'team'.
+ *     - Adding via the rookie panel sets source 'rookie'.
+ *
+ *   resolveParticipantSource(teamId) is a helper for callers that
+ *   have only a teamId and need to pick the source. It returns
+ *   'team' when the teamId is a non-empty string and 'rookie' when
+ *   it is null. It does NOT inspect the candidate; it just names
+ *   the two-path contract.
+ *
+ *   canAddParticipant(mission, characterId, teamId) answers
+ *   whether a given participant entry is admissible. It checks:
+ *     - the mission has a participants array
+ *     - the (characterId, teamId) pair is not already present
+ *   It does NOT check character existence, team existence, or
+ *   whether the character was a member of the team. Those are
+ *   cross-domain concerns re-checked against the transaction
+ *   snapshot by MissionCore.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionConstants
  *   - window.MissionId
@@ -118,6 +154,10 @@
         if (typeof MissionConstants.isValidSubtype !== 'function') {
             _missing.push('MissionConstants.isValidSubtype');
         }
+        if (typeof MissionConstants.isValidParticipantSource !==
+            'function') {
+            _missing.push('MissionConstants.isValidParticipantSource');
+        }
         if (!Array.isArray(MissionConstants.VALID_STATUSES)) {
             _missing.push('MissionConstants.VALID_STATUSES');
         }
@@ -148,6 +188,8 @@
     var isValidEscalation = MissionConstants.isValidEscalation;
     var isValidMissionType = MissionConstants.isValidMissionType;
     var isValidSubtype = MissionConstants.isValidSubtype;
+    var isValidParticipantSource =
+        MissionConstants.isValidParticipantSource;
 
     // ============================================================
     // SMALL HELPERS
@@ -480,29 +522,23 @@
     // ============================================================
     // TEAM ELIGIBILITY
     // ============================================================
+    //
+    // Only professional teams are eligible for mission assignment.
+    //
+    // The 'temporary' team type was retired. A record that carried
+    // it is normalised to 'professional' by TeamConstants before it
+    // is passed to this module, so the type check here is
+    // professional-or-nothing. Civilian and academic teams are not
+    // eligible.
+    //
+    // The check is against the team record supplied. It does not
+    // verify the team exists in storage; that is the caller's
+    // responsibility.
 
-    /**
-     * Is the team eligible to be assigned to a mission?
-     *
-     * A team is eligible when:
-     *   - its type is 'professional' or 'temporary'
-     *   - its status is 'active'
-     *
-     * The check is against the team record supplied. It does not
-     * verify the team exists in storage; that is the caller's
-     * responsibility.
-     *
-     * @param {object} team
-     * @returns {boolean}
-     */
     function isTeamEligibleForMission(team) {
         if (!isPlainObject(team)) { return false; }
-        if (team.type !== 'professional' && team.type !== 'temporary') {
-            return false;
-        }
-        if (team.status !== 'active') {
-            return false;
-        }
+        if (team.type !== 'professional') { return false; }
+        if (team.status !== 'active') { return false; }
         return true;
     }
 
@@ -524,6 +560,136 @@
             }
         }
         return result;
+    }
+
+    // ============================================================
+    // PARTICIPANT RULES
+    // ============================================================
+    //
+    // A participant entry is { characterId, teamId, source }.
+    // The rules here govern the domain layer's choices about
+    // participants. Structural validation lives in MissionSchema;
+    // cross-domain existence checks live in MissionCore's pipeline.
+    //
+    // resolveParticipantSource: name the source from the selection
+    //   path. A caller that has a teamId has selected via the
+    //   team panel; a caller with null has selected via the rookie
+    //   panel.
+    //
+    // canAddParticipant: is this (characterId, teamId) pair
+    //   admissible against the current mission? Answers only the
+    //   structural question of whether the participant already
+    //   exists. Does not check character or team existence.
+
+    /**
+     * Resolve a participant source from a teamId.
+     *
+     * Non-empty string teamId  -> 'team'
+     * null / undefined / ''    -> 'rookie'
+     *
+     * The function is a naming helper, not a validator. If a caller
+     * passes a malformed teamId (a number, an object), the result
+     * is 'rookie', because the only well-formed teamId is a
+     * non-empty string. The caller is responsible for validating
+     * the teamId itself when source is 'team'.
+     *
+     * @param {*} teamId
+     * @returns {'team'|'rookie'}
+     */
+    function resolveParticipantSource(teamId) {
+        if (isNonEmptyString(teamId)) {
+            return 'team';
+        }
+        return 'rookie';
+    }
+
+    /**
+     * Does the mission already have this participant?
+     *
+     * A participant is identified by (characterId, teamId). The
+     * same character can appear under two different teams, or as a
+     * rookie with teamId null. But not twice for the same pair.
+     *
+     * Character comparison is by string form of the id; team
+     * comparison is by string form of the id, with null treated
+     * as a distinct key (the rookie case).
+     *
+     * @param {object} mission
+     * @param {string} characterId
+     * @param {string|null} teamId
+     * @returns {boolean}
+     */
+    function hasParticipant(mission, characterId, teamId) {
+        if (!isPlainObject(mission)) { return false; }
+        if (!Array.isArray(mission.participants)) { return false; }
+        if (!isNonEmptyString(characterId)) { return false; }
+
+        var targetChar = String(characterId);
+        var targetTeam = isNonEmptyString(teamId)
+            ? String(teamId)
+            : null;
+
+        for (var i = 0; i < mission.participants.length; i++) {
+            var p = mission.participants[i];
+            if (!isPlainObject(p)) { continue; }
+
+            var pChar = isNonEmptyString(p.characterId)
+                ? String(p.characterId)
+                : null;
+            if (pChar !== targetChar) { continue; }
+
+            var pTeam = isNonEmptyString(p.teamId)
+                ? String(p.teamId)
+                : null;
+            if (pTeam === targetTeam) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Can this participant be added to the mission?
+     *
+     * Structural check only. Returns true when the mission has a
+     * participants array and the (characterId, teamId) pair is not
+     * already present.
+     *
+     * Cross-domain checks — the character exists, the team exists,
+     * the character was a member of the team at the mission's
+     * year — are NOT done here. They belong to MissionCore's
+     * pipeline validate against the transaction snapshot.
+     *
+     * @param {object} mission
+     * @param {string} characterId
+     * @param {string|null} teamId
+     * @returns {{ valid: boolean, message?: string }}
+     */
+    function canAddParticipant(mission, characterId, teamId) {
+        if (!isPlainObject(mission)) {
+            return { valid: false, message: 'Mission is required.' };
+        }
+        if (!isNonEmptyString(characterId)) {
+            return {
+                valid: false,
+                message: 'Character id is required.'
+            };
+        }
+        if (!Array.isArray(mission.participants)) {
+            return {
+                valid: false,
+                message: 'Mission has no participants array.'
+            };
+        }
+        if (hasParticipant(mission, characterId, teamId)) {
+            return {
+                valid: false,
+                message: 'Character is already a participant ' +
+                    'for this team.'
+            };
+        }
+        return { valid: true };
     }
 
     // ============================================================
@@ -674,6 +840,11 @@
         isTeamEligibleForMission: isTeamEligibleForMission,
         filterEligibleTeams: filterEligibleTeams,
 
+        // Participant rules
+        resolveParticipantSource: resolveParticipantSource,
+        hasParticipant: hasParticipant,
+        canAddParticipant: canAddParticipant,
+
         // Derived field recomputation
         recalculateDerivedFields: recalculateDerivedFields,
 
@@ -707,6 +878,9 @@
             'getValidTransitions',
             'isTeamEligibleForMission',
             'filterEligibleTeams',
+            'resolveParticipantSource',
+            'hasParticipant',
+            'canAddParticipant',
             'recalculateDerivedFields',
             'validateStatusChange',
             'validateObjectivesEditable'
@@ -831,6 +1005,10 @@
             }
 
             // Team eligibility
+            // Only professional teams are eligible. The retired
+            // 'temporary' type is not eligible because the type
+            // no longer exists; a stored record carrying it is
+            // normalised to 'professional' before this check runs.
             if (isTeamEligibleForMission({
                 type: 'professional',
                 status: 'active'
@@ -848,6 +1026,64 @@
                 status: 'inactive'
             }) !== false) {
                 missing.push('isTeamEligibleForMission accepted inactive team');
+            }
+            if (isTeamEligibleForMission({
+                type: 'temporary',
+                status: 'active'
+            }) !== false) {
+                missing.push('isTeamEligibleForMission accepted a retired temporary team');
+            }
+            if (isTeamEligibleForMission({
+                type: 'civilian',
+                status: 'active'
+            }) !== false) {
+                missing.push('isTeamEligibleForMission accepted civilian team');
+            }
+
+            // resolveParticipantSource
+            if (resolveParticipantSource('team_a') !== 'team') {
+                missing.push("resolveParticipantSource('team_a') !== 'team'");
+            }
+            if (resolveParticipantSource(null) !== 'rookie') {
+                missing.push("resolveParticipantSource(null) !== 'rookie'");
+            }
+            if (resolveParticipantSource('') !== 'rookie') {
+                missing.push("resolveParticipantSource('') !== 'rookie'");
+            }
+            if (resolveParticipantSource(undefined) !== 'rookie') {
+                missing.push("resolveParticipantSource(undefined) !== 'rookie'");
+            }
+
+            // hasParticipant / canAddParticipant
+            var m1 = {
+                participants: [
+                    { characterId: 'c1', teamId: 't1', source: 'team' },
+                    { characterId: 'c1', teamId: null, source: 'rookie' }
+                ]
+            };
+            if (hasParticipant(m1, 'c1', 't1') !== true) {
+                missing.push('hasParticipant did not find team participant');
+            }
+            if (hasParticipant(m1, 'c1', null) !== true) {
+                missing.push('hasParticipant did not find rookie participant');
+            }
+            if (hasParticipant(m1, 'c1', 't2') !== false) {
+                missing.push('hasParticipant false positive on different team');
+            }
+            if (hasParticipant(m1, 'c2', 't1') !== false) {
+                missing.push('hasParticipant false positive on different character');
+            }
+            var add1 = canAddParticipant(m1, 'c2', 't1');
+            if (add1.valid !== true) {
+                missing.push('canAddParticipant rejected a valid new pair');
+            }
+            var add2 = canAddParticipant(m1, 'c1', 't1');
+            if (add2.valid !== false) {
+                missing.push('canAddParticipant accepted a duplicate pair');
+            }
+            var add3 = canAddParticipant({ participants: [] }, '', 't1');
+            if (add3.valid !== false) {
+                missing.push('canAddParticipant accepted an empty characterId');
             }
         } catch (e) {
             missing.push('smoke test threw: ' + e.message);

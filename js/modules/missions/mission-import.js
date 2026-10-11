@@ -46,20 +46,26 @@
  *   Update replaces every other field with the incoming value:
  *   title, description, dates, types, escalation, threat,
  *   environment, location, duration, difficulty, priority, pay
- *   inputs, billing, assignedTeamIds, supportPersonnel, status,
- *   objectives, notes, tags, graduatingClassId,
- *   classFilterEnabled, archivedAt, completedAt.
+ *   inputs, billing, assignedTeamIds, supportPersonnel,
+ *   participants, status, objectives, notes, tags,
+ *   graduatingClassId, classFilterEnabled, archivedAt,
+ *   completedAt.
  *
  *   reports and log are preserved on update because they are
  *   append-only histories that the user adds to over time. A
  *   JSON file that was exported once, before any reports existed,
  *   must not wipe the reports a user added since.
  *
- * ID PRESERVATION ON CREATE (this revision):
- *   MissionCore.createMission now accepts an optional `id`. A
- *   JSON import that carries a mission id passes it through and
- *   the created record uses that id directly. The two-step
- *   create-then-rename path from the previous revision is gone.
+ *   participants ARE replaced on update. They are not an
+ *   append-only history; they are the current state of who took
+ *   part. An import is an authoritative rewrite of that state.
+ *   The JSON file was exported from the same record, so its
+ *   participants array is exactly what the source had.
+ *
+ * ID PRESERVATION ON CREATE:
+ *   MissionCore.createMission accepts an optional `id`. A JSON
+ *   import that carries a mission id passes it through and the
+ *   created record uses that id directly.
  *
  *   When the incoming record carries no id (an empty string, or
  *   the field is absent entirely), createMission generates one as
@@ -76,11 +82,22 @@
  *
  *   CSV creation uses the incoming title and fields, and lets
  *   MissionCore.createMission generate a fresh id and allocate
- *   the sequence. The generated label may not match the label in
- *   the CSV file; the import reports the actual assigned label
- *   so the user can see what changed.
+ *   the sequence.
  *
- *   If the user needs to update existing missions, they use JSON.
+ * PARTICIPANTS IN CSV:
+ *   The CSV schema gained a Participants column. Its value is a
+ *   JSON array of { characterId, teamId, source } records. The
+ *   importer passes the array through to createMission the same
+ *   way it passes objectives through.
+ *
+ *   When the column is absent or empty, the created mission has
+ *   no participants.
+ *
+ *   When the column carries a malformed value (not a JSON array,
+ *   or an array whose entries are not well-formed participant
+ *   records), createMission's schema check rejects the row and
+ *   this module reports the error. Malformed rows are not
+ *   silently dropped.
  *
  * RESULT SHAPE:
  *   {
@@ -198,6 +215,35 @@
         return r;
     }
 
+    /**
+     * Normalise a participants array for the create/update
+     * payloads. Preserves the shape MissionSchema expects:
+     * characterId, teamId (or null), source.
+     *
+     * Returns null when the input is not an array; the caller
+     * decides whether that is a rejection or a default.
+     */
+    function normaliseParticipants(raw) {
+        if (!Array.isArray(raw)) { return null; }
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+            if (!isPlainObject(p)) {
+                // Preserve the malformed entry so the schema
+                // rejects it with a clear message rather than
+                // silently dropping it.
+                result.push(p);
+                continue;
+            }
+            result.push({
+                characterId: p.characterId,
+                teamId: (p.teamId !== undefined) ? p.teamId : null,
+                source: p.source
+            });
+        }
+        return result;
+    }
+
     // ============================================================
     // MISSION LOOKUP
     // ============================================================
@@ -223,6 +269,9 @@
     //
     // id, sequence, createdAt are absent by design.
     // reports and log are absent by design.
+    //
+    // participants ARE present: they are current state, not an
+    // append-only history. An import replaces them.
 
     function buildUpdatePayload(canonical) {
         return {
@@ -246,6 +295,7 @@
             billing:               canonical.billing,
             assignedTeamIds:       canonical.assignedTeamIds,
             supportPersonnel:      canonical.supportPersonnel,
+            participants:          canonical.participants,
             status:                canonical.status,
             objectives:            canonical.objectives,
             notes:                 canonical.notes,
@@ -324,6 +374,7 @@
             billing:            canonical.billing,
             assignedTeamIds:    canonical.assignedTeamIds,
             supportPersonnel:   canonical.supportPersonnel,
+            participants:       canonical.participants,
             status:             canonical.status,
             objectives:         canonical.objectives,
             notes:              canonical.notes,
@@ -472,6 +523,13 @@
      * touched. A record that fails canonicalisation is skipped and
      * its errors are reported.
      *
+     * The canonicaliser validates participants structurally: each
+     * entry must be an object with a valid characterId, a valid
+     * (or null) teamId, a known source, and the source/teamId
+     * combination must be coherent. Duplicate (characterId,
+     * teamId) pairs are rejected. A record with a malformed
+     * participants array fails canonicalisation.
+     *
      * @param {string} jsonText
      * @returns {Promise<object>} Import result
      */
@@ -596,6 +654,10 @@
     // uuids are generated, sequence is allocated, and the resulting
     // label is whatever the tuple (year, sequence, difficulty)
     // produces.
+    //
+    // The Participants column (if present) carries a JSON array
+    // of participant records. It is passed straight through to
+    // createMission; the schema validates each entry.
 
     function importFromCsv(csvText) {
         if (typeof csvText !== 'string') {
@@ -677,6 +739,9 @@
                 continue;
             }
 
+            var normalisedParticipants =
+                normaliseParticipants(candidate.participants);
+
             createData.push({
                 title:              candidate.title || '',
                 description:        candidate.description || '',
@@ -706,6 +771,9 @@
                 )
                     ? candidate.supportPersonnel.slice()
                     : [],
+                participants:       normalisedParticipants === null
+                    ? []
+                    : normalisedParticipants,
                 status:             candidate.status,
                 objectives:         Array.isArray(candidate.objectives)
                     ? candidate.objectives.slice()
@@ -825,6 +893,106 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test: participants flow through both payload
+        // builders.
+        try {
+            var sampleCanonical = {
+                id: 'miss_abc',
+                title: 'Operation Test',
+                description: '',
+                year: 2026,
+                month: 9,
+                day: 17,
+                sequence: 1,
+                primaryType: '',
+                subtype: '',
+                secondaryType: '',
+                escalation: 'tier_ii',
+                threatType: '',
+                environment: '',
+                location: '',
+                duration: '',
+                difficulty: 'medium',
+                priority: 'medium',
+                basePay: '',
+                surchargePay: '',
+                pay: '',
+                billing: 'original',
+                assignedTeamIds: ['team_a'],
+                supportPersonnel: ['char_1'],
+                participants: [
+                    {
+                        characterId: 'char_1',
+                        teamId: 'team_a',
+                        source: 'team'
+                    },
+                    {
+                        characterId: 'char_2',
+                        teamId: null,
+                        source: 'rookie'
+                    }
+                ],
+                status: 'active',
+                objectives: [],
+                progress: 0,
+                notes: '',
+                tags: [],
+                createdAt: '2026-09-17T12:00:00.000Z',
+                completedAt: null,
+                archivedAt: null,
+                reports: [],
+                log: [],
+                graduatingClassId: null,
+                classFilterEnabled: false
+            };
+
+            var payload = buildUpdatePayload(sampleCanonical);
+            if (!Array.isArray(payload.participants) ||
+                payload.participants.length !== 2) {
+                missing.push(
+                    'buildUpdatePayload did not carry participants'
+                );
+            }
+            if ('reports' in payload || 'log' in payload) {
+                missing.push(
+                    'buildUpdatePayload leaked a preserved field'
+                );
+            }
+            if ('id' in payload ||
+                'sequence' in payload ||
+                'createdAt' in payload) {
+                missing.push(
+                    'buildUpdatePayload leaked an identity field'
+                );
+            }
+
+            // normaliseParticipants keeps teamId null when
+            // missing, and passes malformed entries through.
+            var normalised = normaliseParticipants([
+                { characterId: 'c1', teamId: 't1', source: 'team' },
+                { characterId: 'c2', source: 'rookie' },
+                'not-an-object'
+            ]);
+            if (normalised === null || normalised.length !== 3) {
+                missing.push(
+                    'normaliseParticipants wrong length'
+                );
+            } else {
+                if (normalised[1].teamId !== null) {
+                    missing.push(
+                        'normaliseParticipants did not default teamId to null'
+                    );
+                }
+                if (normalised[2] !== 'not-an-object') {
+                    missing.push(
+                        'normaliseParticipants did not preserve malformed entry'
+                    );
+                }
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

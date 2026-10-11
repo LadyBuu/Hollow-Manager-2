@@ -16,10 +16,9 @@
  *   - ID grammar. MissionId owns that. This module composes with
  *     MissionId only for the derived-label materialisation used
  *     by searchMissions.
- *   - Cross-domain reads. This module does NOT query teams,
- *     characters, or any other domain. Callers that need mission
- *     data enriched with team or character information use
- *     MissionAggregator.
+ *   - Cross-domain reads beyond the two-hop character→team
+ *     derivation. This module does NOT query characters or any
+ *     other domain directly.
  *
  * ARCHIVED MISSIONS:
  *   A mission with a non-null `archivedAt` is archived. Archived
@@ -30,10 +29,9 @@
  *   exists, archived or not. Callers who need to check archive
  *   state read `mission.archivedAt` or use `isArchived(mission)`.
  *
- * TEAM ASSIGNMENTS (this revision):
- *   A mission may be assigned to any number of professional or
- *   temporary teams, stored in `assignedTeamIds` (an array of
- *   team UUIDs).
+ * TEAM ASSIGNMENTS:
+ *   A mission may be assigned to any number of professional teams,
+ *   stored in `assignedTeamIds` (an array of team UUIDs).
  *
  *   Legacy records carry a singular `assignedTeamId`. This module
  *   transparently coerces that scalar into a single-element array
@@ -44,9 +42,43 @@
  *   returns a fresh array of normalised team ids. Every read in
  *   this module that consults team assignment goes through it.
  *
- *   The old singular field is never returned, exposed, or read by
- *   callers. Reads produce arrays; writes go through MissionCore,
- *   which the schema guarantees produces canonical records.
+ * PARTICIPANTS:
+ *   A mission carries a `participants` array. Each entry is
+ *   { characterId, teamId, source } where source is 'team' or
+ *   'rookie'. teamId is a team UUID for a 'team' participant and
+ *   null for a 'rookie' participant.
+ *
+ *   The canonical accessor is `getParticipantsForMission(mission)`.
+ *   It returns a fresh array of normalised participant records
+ *   (characterId, teamId, source), dropping any malformed entries.
+ *
+ *   `isParticipantInMission(mission, characterId, teamId)` answers
+ *   whether a given (characterId, teamId) pair appears in the
+ *   participant list. `teamId === null` is treated as the rookie
+ *   case and matches only rookie entries.
+ *
+ *   `getParticipatingMissionsForCharacter(characterId, options)`
+ *   returns every mission the character is a participant in.
+ *   Distinct from getMissionsForCharacter, which answers a
+ *   different question (see below).
+ *
+ * getMissionsForCharacter vs getParticipatingMissionsForCharacter:
+ *   These are two different questions and both are useful:
+ *
+ *     getMissionsForCharacter(charId)
+ *       "What missions did the teams you were ever on run?"
+ *       Derived via character → teams → missions (the two-hop
+ *       team-assignment derivation). Includes missions the
+ *       character did not personally take part in.
+ *
+ *     getParticipatingMissionsForCharacter(charId)
+ *       "What missions are you listed as a participant in?"
+ *       A direct read of the participants array. Precise to the
+ *       individual, not the team.
+ *
+ *   A caller that wants "this character's history on missions"
+ *   almost always wants the second. A caller that wants "what was
+ *   happening around this character" wants the first.
  *
  * RETURNS:
  *   Every mission-returning function returns a DEEP CLONE. The
@@ -77,12 +109,12 @@
  *   - window.MissionConstants
  *   - window.MissionId            (MissionId.derive)
  *
- * DEPENDENCIES (LAZY, resolved at call time by getMissionsForCharacter):
+ * DEPENDENCIES (LAZY, resolved at call time):
  *   - window.TeamQueries
- *     Used only by getMissionsForCharacter. The two-hop derivation
- *     character → teams → missions belongs to the mission domain
- *     because the mission domain owns the assignment relationship,
- *     but the team lookup itself is delegated to TeamQueries.
+ *     Used by getMissionsForCharacter for the two-hop derivation
+ *     character → teams → missions. The mission domain owns the
+ *     assignment relationship, but the team lookup itself is
+ *     delegated to TeamQueries.
  */
 
 (function() {
@@ -264,6 +296,122 @@
             if (ids[i] === target) { return true; }
         }
         return false;
+    }
+
+    // ============================================================
+    // PARTICIPANT RESOLUTION
+    // ============================================================
+    //
+    // getParticipantsForMission normalises each participant record
+    // to { characterId, teamId, source }. Malformed entries are
+    // dropped from the returned array. Duplicates on
+    // (characterId, teamId) are also dropped; the schema forbids
+    // them at rest, but the query layer does not trust the store
+    // to be schema-clean.
+    //
+    // The returned array is freshly allocated. The caller cannot
+    // mutate the mission by mutating the result.
+
+    function getParticipantsForMission(mission) {
+        if (!isPlainObject(mission)) { return []; }
+        if (!Array.isArray(mission.participants)) { return []; }
+
+        var raw = mission.participants;
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+            if (!isPlainObject(p)) { continue; }
+
+            var cid = normaliseId(p.characterId);
+            if (cid === null) { continue; }
+
+            var tid = null;
+            if (p.teamId !== undefined && p.teamId !== null && p.teamId !== '') {
+                tid = normaliseId(p.teamId);
+                if (tid === null) { continue; }
+            }
+
+            var source = p.source;
+            if (source !== 'team' && source !== 'rookie') {
+                continue;
+            }
+
+            // Skip incoherent combinations rather than repairing
+            // them. A 'team' participant without a team and a
+            // 'rookie' participant with a team are both malformed.
+            if (source === 'team' && tid === null) { continue; }
+            if (source === 'rookie' && tid !== null) { continue; }
+
+            var key = cid + '::' + (tid === null ? '__null__' : tid);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+
+            result.push({
+                characterId: cid,
+                teamId: tid,
+                source: source
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Does the mission list this character as a participant for the
+     * given team?
+     *
+     * teamId === null (or undefined, or '') matches ONLY rookie
+     * entries. A non-empty teamId matches only entries on that
+     * specific team. A character can be a participant under two
+     * teams without either query answering "yes" for the other.
+     */
+    function isParticipantInMission(mission, characterId, teamId) {
+        if (!isPlainObject(mission)) { return false; }
+        var cid = normaliseId(characterId);
+        if (cid === null) { return false; }
+
+        var tid = null;
+        if (teamId !== undefined && teamId !== null && teamId !== '') {
+            tid = normaliseId(teamId);
+            if (tid === null) { return false; }
+        }
+
+        var participants = getParticipantsForMission(mission);
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.characterId !== cid) { continue; }
+            if (p.teamId !== tid) { continue; }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Every distinct team id the character is a participant under,
+     * across the given mission. Rookie participation (teamId null)
+     * does not contribute a team id.
+     */
+    function getParticipantTeamIdsForCharacter(mission, characterId) {
+        if (!isPlainObject(mission)) { return []; }
+        var cid = normaliseId(characterId);
+        if (cid === null) { return []; }
+
+        var participants = getParticipantsForMission(mission);
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.characterId !== cid) { continue; }
+            if (p.teamId === null) { continue; }
+            if (seen[p.teamId]) { continue; }
+            seen[p.teamId] = true;
+            result.push(p.teamId);
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -474,24 +622,75 @@
     }
 
     /**
+     * Get missions that list a specific character as a participant.
+     *
+     * A mission matches when the character's id appears in the
+     * participants array at all — regardless of source ('team' or
+     * 'rookie') and regardless of which team the character was
+     * participating under. The mission is a mission the character
+     * took part in.
+     *
+     * @param {string} characterId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsByParticipant(characterId, options) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
+
+        var target = normaliseId(characterId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            var participants = getParticipantsForMission(m);
+            for (var j = 0; j < participants.length; j++) {
+                if (participants[j].characterId === target) {
+                    result.push(m);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Alias of getMissionsByParticipant. Symmetric with the naming
+     * used by MissionAggregator's participant VM builder.
+     *
+     * @param {string} characterId
+     * @param {object} [options]
+     * @returns {array}
+     */
+    function getParticipatingMissionsForCharacter(characterId, options) {
+        return getMissionsByParticipant(characterId, options);
+    }
+
+    /**
      * Get every mission a character is connected to, via the teams
      * they are or were members of.
      *
      * A mission is assigned to one or more teams (assignedTeamIds).
      * A character is connected to a mission when they are or were a
-     * member of any of those teams. This is the participation model
-     * the mission domain actually has; there is no per-character
-     * participants array on the mission record.
+     * member of any of those teams. This is the "team-derived"
+     * connection, distinct from participation (see the file header
+     * for the distinction).
      *
      * TWO-HOP DERIVATION:
      *   character → teams (via TeamQueries) → missions (via the
      *   teams' assignedTeamIds).
-     *
-     *   The derivation lives here, on the query surface, rather than
-     *   inside a consumer, for the same reason getTeamsForCharacter
-     *   lives on TeamQueries: the mission domain owns the
-     *   assignment relationship, and the derivation is a read of
-     *   that relationship.
      *
      * TEAM SET:
      *   Every team the character has ever been a member of,
@@ -852,6 +1051,9 @@
         // Relationship reads
         getMissionsByTeam: getMissionsByTeam,
         getMissionsBySupportPersonnel: getMissionsBySupportPersonnel,
+        getMissionsByParticipant: getMissionsByParticipant,
+        getParticipatingMissionsForCharacter:
+            getParticipatingMissionsForCharacter,
         getMissionsForCharacter: getMissionsForCharacter,
 
         // Type and tag reads
@@ -872,7 +1074,13 @@
 
         // Team-assignment helpers
         getTeamIdsForMission: getTeamIdsForMission,
-        isMissionAssignedToTeam: isMissionAssignedToTeam
+        isMissionAssignedToTeam: isMissionAssignedToTeam,
+
+        // Participant helpers
+        getParticipantsForMission: getParticipantsForMission,
+        isParticipantInMission: isParticipantInMission,
+        getParticipantTeamIdsForCharacter:
+            getParticipantTeamIdsForCharacter
     });
 
     // ============================================================
@@ -892,6 +1100,8 @@
             'getArchivedMissions',
             'getMissionsByTeam',
             'getMissionsBySupportPersonnel',
+            'getMissionsByParticipant',
+            'getParticipatingMissionsForCharacter',
             'getMissionsForCharacter',
             'getMissionsByType',
             'getMissionsByTag',
@@ -900,13 +1110,81 @@
             'getUniqueTags',
             'isArchived',
             'getTeamIdsForMission',
-            'isMissionAssignedToTeam'
+            'isMissionAssignedToTeam',
+            'getParticipantsForMission',
+            'isParticipantInMission',
+            'getParticipantTeamIdsForCharacter'
         ];
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test: participant helpers against an in-memory
+        // mission object. Uses no store, so it runs at load.
+        try {
+            var sample = {
+                id: 'm1',
+                participants: [
+                    { characterId: 'c1', teamId: 't1',  source: 'team' },
+                    { characterId: 'c1', teamId: 't2',  source: 'team' },
+                    { characterId: 'c1', teamId: null,  source: 'rookie' },
+                    { characterId: 'c2', teamId: 't1',  source: 'team' },
+                    // Malformed: source/teamId mismatch, should be
+                    // dropped by getParticipantsForMission.
+                    { characterId: 'c3', teamId: 't1',  source: 'rookie' },
+                    // Malformed: missing characterId, dropped.
+                    { characterId: '',   teamId: 't1',  source: 'team' }
+                ]
+            };
+
+            var parsed = getParticipantsForMission(sample);
+            if (parsed.length !== 4) {
+                missing.push(
+                    'getParticipantsForMission: expected 4 valid ' +
+                    'entries, got ' + parsed.length
+                );
+            }
+
+            if (isParticipantInMission(sample, 'c1', 't1') !== true) {
+                missing.push(
+                    'isParticipantInMission: c1/t1 should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', 't2') !== true) {
+                missing.push(
+                    'isParticipantInMission: c1/t2 should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', null) !== true) {
+                missing.push(
+                    'isParticipantInMission: c1/rookie should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', 't3') !== false) {
+                missing.push(
+                    'isParticipantInMission: c1/t3 should be false'
+                );
+            }
+            if (isParticipantInMission(sample, 'c2', null) !== false) {
+                missing.push(
+                    'isParticipantInMission: c2/rookie should be false'
+                );
+            }
+
+            var teams = getParticipantTeamIdsForCharacter(sample, 'c1');
+            if (teams.length !== 2 ||
+                teams.indexOf('t1') === -1 ||
+                teams.indexOf('t2') === -1) {
+                missing.push(
+                    'getParticipantTeamIdsForCharacter: expected ' +
+                    '[t1, t2], got ' + JSON.stringify(teams)
+                );
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

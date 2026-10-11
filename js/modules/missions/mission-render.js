@@ -13,13 +13,17 @@
  *   - The report form modal markup (renderReportFormModal).
  *   - The mission form's team editor (a chip list, not a single
  *     <select>).
+ *   - The mission form's participants panel: one section per
+ *     assigned team, plus a searchable rookie section.
+ *   - The mission detail panel's participants section.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Data. Every value comes off the VM. No queries, no domain
  *     reads, no team lookups, no character lookups, no date parsing.
  *   - State. The UI controller owns which mission is selected,
- *     which filter is applied, which modal is open, and what the
- *     report form currently contains.
+ *     which filter is applied, which modal is open, what the
+ *     report form currently contains, and what the participant
+ *     search box currently contains.
  *   - Events. No addEventListener. All interaction is emitted as
  *     data-action attributes.
  *   - Composition. MissionAggregator builds VMs; this module only
@@ -32,44 +36,43 @@
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
  *
- * PAGE HEADER (this revision):
- *   The header carries two actions:
+ * PARTICIPANTS PANEL (form):
+ *   The mission form carries a participant editor between the
+ *   team chips and the support personnel block. Shape:
  *
- *     + New Mission   data-action="mission-new"
- *     ↑ Import        data-action="mission-import"
- *
- *   The import button opens the import modal, which is built and
- *   managed by the UI controller (MissionUI). The renderer only
- *   emits the button.
- *
- * MULTIPLE TEAMS:
- *   The mission form's "Assign Team" control is a chip list, not
- *   a single <select>. It carries:
- *
- *     <select id="mission-team-select">
- *       <option value="">Add a team...</option>
- *       <option value="team_x">Team X</option>
- *       ...
- *     </select>
- *     <button data-action="mission-add-team">+ Add</button>
- *
- *     <div id="mission-teams-list">
- *       <div class="mission-team-chip" data-team-id="team_x">
- *         <span class="mission-team-chip-name">Team X</span>
- *         <button data-action="mission-remove-team"
- *                 data-team-id="team_x">×</button>
- *       </div>
- *       ...
+ *     <div id="mission-participants-panel">
+ *       <section per assigned team>
+ *         header: team name + member count
+ *         rows: one checkbox per active member at the mission's year
+ *       </section>
+ *       <section class="rookie-section">
+ *         header: "Rookies" + count
+ *         search input (data-action="mission-rookie-search")
+ *         rows: one checkbox per rookie candidate
+ *       </section>
  *     </div>
  *
- *   The detail panel prints each team in `vm.assignedTeams` on
- *   its own line under "Assigned Teams". When the array is empty,
- *   the line reads "Unassigned".
+ *   Every member checkbox carries:
+ *     data-action="mission-toggle-participant"
+ *     data-character-id="..."
+ *     data-team-id="..."     (empty for rookie entries)
+ *     data-source="team"|"rookie"
  *
- *   The list rows still render one team. The row template reads
- *   `item.teamName`, which the aggregator sets to the first team's
- *   name (or "Unassigned"). When multiple teams are assigned, the
- *   row shows the first name and a "+N" suffix.
+ *   The controller reads those attributes, calls
+ *   MissionCore.addParticipant or MissionCore.removeParticipant,
+ *   and re-renders the panel. The checkbox state is derived from
+ *   the participant's `isParticipant` flag on the VM, not from
+ *   DOM state.
+ *
+ *   The rookie search box filters client-side. The controller
+ *   re-renders with a `rookieFilter` string; the renderer applies
+ *   a case-insensitive substring match on `displayName`.
+ *
+ * PARTICIPANTS SECTION (detail):
+ *   The detail panel carries a participants block, grouped by
+ *   team, with rookies at the bottom. Each row carries the
+ *   character name, the team name, the source label, a deceased
+ *   marker when set, and a remove button.
  *
  * REPORT FORM MODAL:
  *   The author select is built from two lists: `teamMembers`
@@ -82,23 +85,23 @@
  *   checkbox is also disabled. Both are frozen at creation.
  *
  * MISSION LABEL:
- *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value. The
- *   form does not preview it. On the edit form, `vm.currentLabel`
- *   is displayed as static text; it is not an input and is not
- *   submitted. On the create form, a muted hint states that the
- *   label will be assigned on save.
+ *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value.
+ *   The form does not preview it. On the edit form,
+ *   `vm.currentLabel` is displayed as static text; it is not an
+ *   input and is not submitted. On the create form, a muted hint
+ *   states that the label will be assigned on save.
  *
  * DATE FIELDS:
  *   The year / month / day inputs carry `data-mission-year-field`,
  *   `data-mission-month-field`, and `data-mission-day-field`
- *   respectively. The UI controller uses these to track whether the
- *   user has explicitly edited month/day, so that a year change can
- *   reset untouched values to Jan 1 without clobbering explicit
- *   ones.
+ *   respectively. The UI controller uses these to track whether
+ *   the user has explicitly edited month/day, so that a year
+ *   change can reset untouched values to Jan 1 without clobbering
+ *   explicit ones.
  *
  * DATA-ACTION CONVENTION:
- *   Every interactive element that the controller should respond to
- *   carries data-action="<verb>". The controller's delegated
+ *   Every interactive element that the controller should respond
+ *   to carries data-action="<verb>". The controller's delegated
  *   listener reads the attribute and dispatches.
  *
  * MODAL SHELL CONVENTION:
@@ -565,6 +568,11 @@
                         escapeHtml(String(item.supportCount)) +
                         ' support</span>';
         }
+        if (item.participantCount > 0) {
+            html += ' <span class="mission-participant-badge">' +
+                        escapeHtml(String(item.participantCount)) +
+                        ' participants</span>';
+        }
         html += '</span>';
 
         html += '<span class="mission-type">' +
@@ -648,8 +656,9 @@
         html += renderDetailHeader(vm);
         html += renderDetailFields(vm);
         html += renderObjectives(vm);
-        html += renderSupportPersonnel(vm);
         html += renderAssignedTeams(vm);
+        html += renderParticipants(vm);
+        html += renderSupportPersonnel(vm);
         html += renderReports(vm);
         html += renderLog(vm);
         html += renderDetailActions(vm);
@@ -960,6 +969,159 @@
     }
 
     // ============================================================
+    // PARTICIPANTS (detail panel)
+    // ============================================================
+    //
+    // VM shape (from MissionAggregator.buildParticipantsVM):
+    //   [ { characterId, displayName, deceased, teamId, teamName,
+    //       source, sourceLabel } ]
+    //
+    // Rows are grouped: team participants first, then rookies.
+
+    function renderParticipants(vm) {
+        var html = '';
+        html += '<div class="participants-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Participants</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.participantCount || 0)) +
+                '</span>';
+        if (vm.capabilities && vm.capabilities.edit) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-edit-participants" ' +
+                        'data-mission-id="' +
+                            escapeAttribute(vm.id) + '">' +
+                        'Edit Participants' +
+                    '</button>';
+        }
+        html += '</div>';
+
+        var participants = isArray(vm.participants)
+            ? vm.participants
+            : [];
+
+        if (participants.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No participants recorded.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="participants-list">';
+
+        for (var i = 0; i < participants.length; i++) {
+            html += renderParticipantRow(vm, participants[i]);
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderParticipantRow(vm, p) {
+        if (!p || !p.characterId) { return ''; }
+
+        var rowClass = 'participant-item';
+        if (p.source === 'rookie') {
+            rowClass += ' participant-rookie';
+        }
+
+        var html = '';
+        html += '<li class="' + rowClass + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(p.characterId) + '" ' +
+                    'data-team-id="' +
+                        escapeAttribute(p.teamId || '') + '" ' +
+                    'data-source="' +
+                        escapeAttribute(p.source || '') + '">';
+
+        html += '<span class="participant-name">' +
+                    escapeHtml(p.displayName || 'Unknown') +
+                '</span>';
+
+        if (p.deceased === true) {
+            html += '<span class="participant-deceased" ' +
+                        'title="Deceased">\u2020</span>';
+        }
+
+        if (isNonEmptyString(p.teamName)) {
+            html += '<span class="participant-team">' +
+                        escapeHtml(p.teamName) +
+                    '</span>';
+        }
+
+        html += '<span class="participant-source ' +
+                    'participant-source-' +
+                    escapeAttribute(p.source || 'unknown') + '">' +
+                    escapeHtml(p.sourceLabel || '') +
+                '</span>';
+
+        if (vm.capabilities && vm.capabilities.edit) {
+            html += '<button type="button" class="small danger" ' +
+                        'data-action="mission-remove-participant" ' +
+                        'data-mission-id="' +
+                            escapeAttribute(vm.id) + '" ' +
+                        'data-character-id="' +
+                            escapeAttribute(p.characterId) + '" ' +
+                        'data-team-id="' +
+                            escapeAttribute(p.teamId || '') + '">' +
+                        '×' +
+                    '</button>';
+        }
+
+        html += '</li>';
+        return html;
+    }
+
+    // ============================================================
+    // LOG
+    // ============================================================
+
+    function renderLog(vm) {
+        var html = '';
+        html += '<div class="log-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Activity Log</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.logCount || 0)) +
+                '</span>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="mission-add-log" ' +
+                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                    '+ Log Entry' +
+                '</button>';
+        html += '</div>';
+
+        if (!isArray(vm.log) || vm.log.length === 0) {
+            html += '<p class="empty-state small">No activity yet.</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<div class="log-list">';
+
+        for (var i = 0; i < vm.log.length; i++) {
+            var entry = vm.log[i];
+            if (!entry) { continue; }
+            html += '<div class="log-entry">';
+            html += '<span class="log-timestamp">' +
+                        escapeHtml(entry.timestampDisplay || '') +
+                    '</span>';
+            html += '<span class="log-message">' +
+                        escapeHtml(entry.message || '') +
+                    '</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
     // REPORTS
     // ============================================================
 
@@ -1047,52 +1209,6 @@
                 '</button>';
         html += '</div>';
 
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // LOG
-    // ============================================================
-
-    function renderLog(vm) {
-        var html = '';
-        html += '<div class="log-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Activity Log</strong>';
-        html += '<span class="count">' +
-                    escapeHtml(String(vm.logCount || 0)) +
-                '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-add-log" ' +
-                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
-                    '+ Log Entry' +
-                '</button>';
-        html += '</div>';
-
-        if (!isArray(vm.log) || vm.log.length === 0) {
-            html += '<p class="empty-state small">No activity yet.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<div class="log-list">';
-
-        for (var i = 0; i < vm.log.length; i++) {
-            var entry = vm.log[i];
-            if (!entry) { continue; }
-            html += '<div class="log-entry">';
-            html += '<span class="log-timestamp">' +
-                        escapeHtml(entry.timestampDisplay || '') +
-                    '</span>';
-            html += '<span class="log-message">' +
-                        escapeHtml(entry.message || '') +
-                    '</span>';
-            html += '</div>';
-        }
-
-        html += '</div>';
         html += '</div>';
         return html;
     }
@@ -1424,6 +1540,9 @@
         // ---- Assign Teams (chip list) ----
         html += renderTeamEditor(vm, m);
 
+        // ---- Participants panel ----
+        html += renderParticipantsPanel(vm);
+
         // ---- Support Personnel ----
         html += '<div class="form-group full-width">';
         html += '<label>Support Personnel</label>';
@@ -1541,7 +1660,7 @@
         html += '<label>Assigned Teams</label>';
         html += '<p class="field-hint">' +
                     'A mission may be assigned to any number of ' +
-                    'professional or temporary teams.' +
+                    'professional teams.' +
                 '</p>';
 
         html += '<div class="mission-team-input-group">';
@@ -1606,6 +1725,323 @@
                     '\u2715' +
                 '</button>';
         html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // PARTICIPANTS PANEL (form)
+    // ============================================================
+    //
+    // vm.participantsVM is the shape returned by
+    // MissionAggregator.getParticipantsViewModel:
+    //
+    //   {
+    //     missionId, missionTitle, missionYear,
+    //     assignedTeams: [
+    //       { teamId, teamName, members: [
+    //           { characterId, displayName, role, deceased,
+    //             isParticipant }
+    //       ] }
+    //     ],
+    //     currentParticipants: [...]
+    //   }
+    //
+    // vm.rookieCandidatesVM is the shape returned by
+    // MissionAggregator.getRookieCandidatesViewModel:
+    //
+    //   {
+    //     missionId, missionTitle, missionYear,
+    //     candidates: [
+    //       { characterId, displayName, deceased,
+    //         isParticipant, onAssignedTeam }
+    //     ]
+    //   }
+    //
+    // vm.rookieFilter is the current search string from the UI
+    // controller (default ''). It is applied case-insensitively
+    // as a substring match on displayName.
+
+    function renderParticipantsPanel(vm) {
+        var participantsVM = vm.participantsVM || null;
+        var rookieVM = vm.rookieCandidatesVM || null;
+
+        // If the aggregator did not supply a participants VM — for
+        // instance a fresh create form where no mission exists yet
+        // — the panel renders a muted hint instead of a broken
+        // editor. The panel becomes functional once the mission
+        // exists and the form is reopened in edit mode.
+        if (!participantsVM) {
+            return renderParticipantsPanelPlaceholder(vm);
+        }
+
+        var html = '';
+        html += '<div class="form-group full-width participants-panel" ' +
+                    'id="mission-participants-panel">';
+
+        html += '<label>Participants</label>';
+        html += '<p class="field-hint">' +
+                    'Tick the members of each assigned team who took ' +
+                    'part in this mission. Members shown are those ' +
+                    'active in ' +
+                    escapeHtml(safeString(participantsVM.missionYear)) +
+                    '. Rookies may be added below.' +
+                '</p>';
+
+        // ---- One section per assigned team ----
+        var teams = isArray(participantsVM.assignedTeams)
+            ? participantsVM.assignedTeams
+            : [];
+
+        if (teams.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'Assign a team above to choose participants ' +
+                        'from it.' +
+                    '</p>';
+        } else {
+            for (var t = 0; t < teams.length; t++) {
+                html += renderTeamParticipantsSection(
+                    vm, teams[t]
+                );
+            }
+        }
+
+        // ---- Rookie section ----
+        html += renderRookieSection(vm, rookieVM);
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderParticipantsPanelPlaceholder(vm) {
+        var html = '';
+        html += '<div class="form-group full-width participants-panel" ' +
+                    'id="mission-participants-panel">';
+        html += '<label>Participants</label>';
+        html += '<p class="field-hint">' +
+                    'Participants can be recorded once the mission ' +
+                    'has been created and at least one team is ' +
+                    'assigned.' +
+                '</p>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderTeamParticipantsSection(vm, teamRow) {
+        var teamId = teamRow.teamId;
+        var teamName = isNonEmptyString(teamRow.teamName)
+            ? teamRow.teamName
+            : 'Unknown Team';
+        var members = isArray(teamRow.members)
+            ? teamRow.members
+            : [];
+
+        var html = '';
+        html += '<div class="participant-team-section" ' +
+                    'data-team-id="' +
+                        escapeAttribute(teamId) + '">';
+
+        html += '<div class="participant-section-header">';
+        html += '<span class="participant-team-name">' +
+                    escapeHtml(teamName) +
+                '</span>';
+        html += '<span class="participant-team-count">' +
+                    members.length + ' member' +
+                    (members.length === 1 ? '' : 's') +
+                '</span>';
+        html += '</div>';
+
+        if (members.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No members active in ' +
+                        escapeHtml(safeString(
+                            vm.participantsVM.missionYear
+                        )) +
+                        '.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="participant-member-list">';
+
+        for (var i = 0; i < members.length; i++) {
+            html += renderTeamMemberCheckbox(
+                vm, teamId, members[i]
+            );
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderTeamMemberCheckbox(vm, teamId, member) {
+        if (!member || !member.characterId) { return ''; }
+
+        var checked = member.isParticipant === true;
+
+        var html = '';
+        html += '<li class="participant-member-row">';
+
+        html += '<label class="participant-member-label">';
+        html += '<input type="checkbox" ' +
+                    'class="participant-member-checkbox" ' +
+                    'data-action="mission-toggle-participant" ' +
+                    'data-mission-id="' +
+                        escapeAttribute(vm.editId || '') + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(member.characterId) + '" ' +
+                    'data-team-id="' +
+                        escapeAttribute(teamId) + '" ' +
+                    'data-source="team"' +
+                    (checked ? ' checked' : '') + '>';
+
+        html += '<span class="participant-member-name">' +
+                    escapeHtml(member.displayName || 'Unknown') +
+                '</span>';
+
+        if (isNonEmptyString(member.role)) {
+            html += '<span class="participant-member-role">(' +
+                        escapeHtml(member.role) +
+                    ')</span>';
+        }
+
+        if (member.deceased === true) {
+            html += '<span class="participant-member-deceased" ' +
+                        'title="Deceased">\u2020</span>';
+        }
+
+        html += '</label>';
+        html += '</li>';
+        return html;
+    }
+
+    function renderRookieSection(vm, rookieVM) {
+        var html = '';
+        html += '<div class="participant-rookie-section">';
+
+        var candidates = (rookieVM && isArray(rookieVM.candidates))
+            ? rookieVM.candidates
+            : [];
+
+        // Apply the current filter string. The filter is a
+        // case-insensitive substring match on displayName.
+        var filter = isNonEmptyString(vm.rookieFilter)
+            ? String(vm.rookieFilter).toLowerCase()
+            : '';
+
+        var visible = [];
+        for (var i = 0; i < candidates.length; i++) {
+            var c = candidates[i];
+            if (!c || !c.characterId) { continue; }
+            if (filter !== '' &&
+                String(c.displayName || '')
+                    .toLowerCase()
+                    .indexOf(filter) === -1) {
+                continue;
+            }
+            visible.push(c);
+        }
+
+        var totalCount = candidates.length;
+
+        html += '<div class="participant-section-header">';
+        html += '<span class="participant-team-name">Rookies</span>';
+        html += '<span class="participant-team-count">' +
+                    totalCount + ' candidate' +
+                    (totalCount === 1 ? '' : 's') +
+                '</span>';
+        html += '</div>';
+
+        html += '<div class="rookie-search-row">';
+        html += '<input type="text" ' +
+                    'id="mission-rookie-search" ' +
+                    'class="rookie-search-input" ' +
+                    'placeholder="Search rookies by name..." ' +
+                    'data-action="mission-rookie-search" ' +
+                    'value="' +
+                        escapeAttribute(vm.rookieFilter || '') +
+                    '" ' +
+                    'autocomplete="off" ' +
+                    'spellcheck="false">';
+        html += '</div>';
+
+        if (totalCount === 0) {
+            html += '<p class="empty-state small">' +
+                        'No rookie candidates.' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        if (visible.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No rookies match "' +
+                        escapeHtml(vm.rookieFilter || '') +
+                        '".' +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="rookie-candidate-list">';
+
+        for (var j = 0; j < visible.length; j++) {
+            html += renderRookieCheckbox(vm, visible[j]);
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderRookieCheckbox(vm, candidate) {
+        if (!candidate || !candidate.characterId) { return ''; }
+
+        var checked = candidate.isParticipant === true;
+        var onTeam = candidate.onAssignedTeam === true;
+
+        // A rookie already on an assigned team is rendered as
+        // disabled with an explanatory note: the correct place to
+        // record them is the team-member section, not here.
+        var rowClass = 'rookie-candidate-row';
+        if (onTeam) {
+            rowClass += ' rookie-on-team';
+        }
+
+        var html = '';
+        html += '<li class="' + rowClass + '">';
+
+        html += '<label class="rookie-candidate-label">';
+        html += '<input type="checkbox" ' +
+                    'class="rookie-candidate-checkbox" ' +
+                    'data-action="mission-toggle-participant" ' +
+                    'data-mission-id="' +
+                        escapeAttribute(vm.editId || '') + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.characterId) + '" ' +
+                    'data-team-id="" ' +
+                    'data-source="rookie"' +
+                    (checked ? ' checked' : '') +
+                    (onTeam ? ' disabled' : '') + '>';
+
+        html += '<span class="rookie-candidate-name">' +
+                    escapeHtml(candidate.displayName || 'Unknown') +
+                '</span>';
+
+        if (candidate.deceased === true) {
+            html += '<span class="rookie-candidate-deceased" ' +
+                        'title="Deceased">\u2020</span>';
+        }
+
+        if (onTeam) {
+            html += '<span class="rookie-candidate-note">' +
+                        'Already on an assigned team' +
+                    '</span>';
+        }
+
+        html += '</label>';
+        html += '</li>';
         return html;
     }
 

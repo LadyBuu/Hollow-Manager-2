@@ -9,7 +9,7 @@
  *   - The canonical mission shape.
  *   - Structural validation of a mission record.
  *   - Structural validation of nested records (objectives, log
- *     entries, reports, tags, support personnel, pairings).
+ *     entries, reports, tags, support personnel, participants).
  *   - Conservative canonicalisation: given a structurally valid
  *     input, produce the canonical representation.
  *
@@ -65,6 +65,12 @@
  *     assignedTeamIds:    [string],     // team UUIDs, unique
  *     supportPersonnel:   [string],     // character UUIDs, unique
  *
+ *     participants:       [{
+ *                           characterId,  // character UUID
+ *                           teamId,       // team UUID or null
+ *                           source        // 'team' | 'rookie'
+ *                         }],
+ *
  *     status:             string,       // VALID_STATUSES
  *     objectives:         [{ text, done }],
  *     progress:           number,       // 0..100, derived by MissionRules
@@ -91,10 +97,33 @@
  *     classFilterEnabled: boolean
  *   }
  *
- * MULTIPLE TEAMS (this revision):
+ * PARTICIPANTS:
+ *   A participant is a character who took part in a mission. The
+ *   participant record carries three fields:
+ *
+ *     characterId   the character UUID
+ *     teamId        the team UUID the character participated under,
+ *                   or null when the source is 'rookie'
+ *     source        'team' | 'rookie'
+ *
+ *   The (characterId, teamId) pair is unique within a mission. A
+ *   character can appear more than once if they participated under
+ *   more than one team, but never twice for the same team. For a
+ *   rookie entry, teamId is null and the pair is
+ *   (characterId, null); a character cannot have two rookie
+ *   entries on the same mission.
+ *
+ *   Cross-consistency:
+ *     - source 'team'   requires a non-null teamId.
+ *     - source 'rookie' requires teamId === null.
+ *   A record that violates either rule is malformed and is
+ *   rejected. This is structural, not cross-domain: it does not
+ *   check that the team exists, only that the shape is coherent.
+ *
+ * MULTIPLE TEAMS:
  *   The old singular `assignedTeamId` field is gone. A mission may
- *   be assigned to any number of professional or temporary teams,
- *   stored in `assignedTeamIds`.
+ *   be assigned to any number of professional teams, stored in
+ *   `assignedTeamIds`.
  *
  *   The canonicaliser and the validator accept an input that still
  *   carries the singular `assignedTeamId` and coerce it into a
@@ -148,8 +177,8 @@
  *     - Generate sequence numbers. Sequence is assigned at creation
  *       by MissionCore via MissionId.generate.
  *     - Silently drop malformed nested records. A bad objective,
- *       log entry, report, or support personnel entry makes the
- *       whole canonicalisation fail.
+ *       log entry, report, participant, or support personnel entry
+ *       makes the whole canonicalisation fail.
  *     - Compare `pay` / `progress` to their derived values.
  *       MissionRules owns that comparison.
  *
@@ -163,6 +192,9 @@
  *     - Wrap a legacy scalar `assignedTeamId` into a single-element
  *       `assignedTeamIds` array.
  *     - Drop empty tags after surfacing the error.
+ *     - Canonicalise participants: normalise the characterId and
+ *       teamId via IdUtils, coerce source to a string, and dedup on
+ *       (characterId, teamId).
  *     - Preserve unknown top-level fields (deep-cloned) so future
  *       schema extensions and domain-specific metadata survive a
  *       round trip.
@@ -238,11 +270,17 @@
         if (!Array.isArray(MissionConstants.VALID_ESCALATION_TIERS)) {
             _missing.push('MissionConstants.VALID_ESCALATION_TIERS');
         }
+        if (!Array.isArray(MissionConstants.VALID_PARTICIPANT_SOURCES)) {
+            _missing.push('MissionConstants.VALID_PARTICIPANT_SOURCES');
+        }
         if (typeof MissionConstants.isValidMissionType !== 'function') {
             _missing.push('MissionConstants.isValidMissionType');
         }
         if (typeof MissionConstants.isValidSubtype !== 'function') {
             _missing.push('MissionConstants.isValidSubtype');
+        }
+        if (typeof MissionConstants.isValidParticipantSource !== 'function') {
+            _missing.push('MissionConstants.isValidParticipantSource');
         }
     }
 
@@ -270,6 +308,8 @@
     var VALID_ESCALATION_TIERS = MissionConstants.VALID_ESCALATION_TIERS;
     var isValidMissionType = MissionConstants.isValidMissionType;
     var isValidSubtype = MissionConstants.isValidSubtype;
+    var isValidParticipantSource =
+        MissionConstants.isValidParticipantSource;
     var isValidYear = MissionId.isValidYear;
 
     var SCHEMA_VERSION = 1;
@@ -587,6 +627,106 @@
         }
     }
 
+    /**
+     * Validate a single participant record.
+     *
+     * Rules:
+     *   - the record is a plain object
+     *   - characterId resolves via IdUtils.normaliseId
+     *   - teamId is either null/absent (rookie) or a valid id (team)
+     *   - source is a known participant source
+     *   - source 'team'   requires a non-null teamId
+     *   - source 'rookie' requires teamId === null
+     *
+     * A record that fails any rule contributes to the caller's
+     * error list. It does not throw and does not mutate the input.
+     */
+    function validateParticipant(participant, index, errors) {
+        if (!isPlainObject(participant)) {
+            errors.push(
+                'Participant ' + (index + 1) + ' must be an object.'
+            );
+            return;
+        }
+
+        if (normaliseId(participant.characterId) === null) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' requires a valid characterId.'
+            );
+        }
+
+        var hasTeamId = participant.teamId !== undefined &&
+                        participant.teamId !== null;
+
+        if (hasTeamId) {
+            if (normaliseId(participant.teamId) === null) {
+                errors.push(
+                    'Participant ' + (index + 1) +
+                    ' teamId must be a valid id or null.'
+                );
+            }
+        }
+
+        if (!isValidParticipantSource(participant.source)) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' source must be "team" or "rookie".'
+            );
+            return;
+        }
+
+        if (participant.source === 'team' && !hasTeamId) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' with source "team" requires a teamId.'
+            );
+        }
+
+        if (participant.source === 'rookie' && hasTeamId) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' with source "rookie" must have teamId null.'
+            );
+        }
+    }
+
+    /**
+     * Validate the participant list for uniqueness on
+     * (characterId, teamId).
+     *
+     * Two entries with the same characterId and the same teamId
+     * (including both having teamId null, i.e. two rookie entries
+     * for the same character) are a duplicate. Character id alone
+     * is not sufficient for dedup: the same character can be a
+     * participant under two different teams.
+     */
+    function validateParticipantUniqueness(participants, errors) {
+        var seen = Object.create(null);
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (!isPlainObject(p)) { continue; }
+
+            var cid = normaliseId(p.characterId);
+            if (cid === null) { continue; }
+
+            var tid = (p.teamId === undefined || p.teamId === null)
+                ? '__null__'
+                : normaliseId(p.teamId);
+            if (tid === null) { continue; }
+
+            var key = cid + '::' + tid;
+            if (seen[key] === true) {
+                errors.push(
+                    'Duplicate participant: character ' + cid +
+                    ' on ' + (tid === '__null__' ? '(no team)' : tid) +
+                    '.'
+                );
+            }
+            seen[key] = true;
+        }
+    }
+
     // ============================================================
     // FULL MISSION VALIDATION
     // ============================================================
@@ -765,6 +905,20 @@
             }
             validateSupportPersonnelUniqueness(
                 mission.supportPersonnel, errors
+            );
+        }
+
+        // ---- participants ----
+        if (!Array.isArray(mission.participants)) {
+            errors.push('Participants must be an array.');
+        } else {
+            for (var pi = 0; pi < mission.participants.length; pi++) {
+                validateParticipant(
+                    mission.participants[pi], pi, errors
+                );
+            }
+            validateParticipantUniqueness(
+                mission.participants, errors
             );
         }
 
@@ -1096,6 +1250,87 @@
     }
 
     /**
+     * Canonicalise a single participant record.
+     *
+     * Preserves the two-source contract: a 'team' participant
+     * carries a normalised teamId; a 'rookie' participant carries
+     * teamId: null. Any violation is reported and the participant
+     * is dropped from the canonical result (the caller will fail
+     * the whole canonicalisation on the error).
+     */
+    function canonicaliseParticipant(participant, index, errors) {
+        if (!isPlainObject(participant)) {
+            errors.push(
+                'Participant ' + (index + 1) + ' must be an object.'
+            );
+            return null;
+        }
+
+        var characterId = normaliseId(participant.characterId);
+        if (characterId === null) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' requires a valid characterId.'
+            );
+            return null;
+        }
+
+        if (!isValidParticipantSource(participant.source)) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' source must be "team" or "rookie".'
+            );
+            return null;
+        }
+
+        var teamId = null;
+        var hasTeamId = participant.teamId !== undefined &&
+                        participant.teamId !== null;
+
+        if (hasTeamId) {
+            teamId = normaliseId(participant.teamId);
+            if (teamId === null) {
+                errors.push(
+                    'Participant ' + (index + 1) +
+                    ' teamId must be a valid id or null.'
+                );
+                return null;
+            }
+        }
+
+        if (participant.source === 'team' && teamId === null) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' with source "team" requires a teamId.'
+            );
+            return null;
+        }
+
+        if (participant.source === 'rookie' && teamId !== null) {
+            errors.push(
+                'Participant ' + (index + 1) +
+                ' with source "rookie" must have teamId null.'
+            );
+            return null;
+        }
+
+        var result = {
+            characterId: characterId,
+            teamId: teamId,
+            source: participant.source
+        };
+
+        var knownKeys = ['characterId', 'teamId', 'source'];
+        Object.keys(participant).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = deepClone(participant[key]);
+            }
+        });
+
+        return result;
+    }
+
+    /**
      * Canonicalise a mission.
      *
      * @param {object} input
@@ -1349,6 +1584,50 @@
             }
         }
 
+        // ---- participants ----
+        //
+        // Dedup on (characterId, teamId). The same character can
+        // appear under two different teams; the same character can
+        // appear once as a rookie. But not twice on the same team,
+        // and not twice as a rookie.
+        var participants = [];
+        if (input.participants !== undefined &&
+            input.participants !== null) {
+            if (!Array.isArray(input.participants)) {
+                errors.push('Participants must be an array.');
+            } else {
+                var pSeen = Object.create(null);
+                for (var pi = 0;
+                     pi < input.participants.length;
+                     pi++) {
+                    var canonicalParticipant = canonicaliseParticipant(
+                        input.participants[pi], pi, errors
+                    );
+                    if (canonicalParticipant === null) { continue; }
+
+                    var pkey = canonicalParticipant.characterId + '::' +
+                        (canonicalParticipant.teamId === null
+                            ? '__null__'
+                            : canonicalParticipant.teamId);
+
+                    if (pSeen[pkey] === true) {
+                        errors.push(
+                            'Duplicate participant: character ' +
+                            canonicalParticipant.characterId +
+                            ' on ' +
+                            (canonicalParticipant.teamId === null
+                                ? '(no team)'
+                                : canonicalParticipant.teamId) +
+                            '.'
+                        );
+                        continue;
+                    }
+                    pSeen[pkey] = true;
+                    participants.push(canonicalParticipant);
+                }
+            }
+        }
+
         // ---- assigned teams ----
         //
         // Accepts either the canonical array or the legacy scalar.
@@ -1513,6 +1792,7 @@
 
             assignedTeamIds: assignedTeamIds,
             supportPersonnel: supportPersonnel,
+            participants: participants,
 
             status: status,
             objectives: objectives,
@@ -1564,6 +1844,7 @@
             'assignedTeamIds',
             'assignedTeamId',   // consumed above, dropped from the result
             'supportPersonnel',
+            'participants',
             'status',
             'objectives',
             'progress',
@@ -1604,6 +1885,7 @@
         validateReport: validateReport,
         validateTag: validateTag,
         validateSupportPersonnel: validateSupportPersonnel,
+        validateParticipant: validateParticipant,
 
         // Canonicalisation
         canonicaliseMissionShape: canonicaliseMissionShape
@@ -1624,6 +1906,7 @@
             'validateReport',
             'validateTag',
             'validateSupportPersonnel',
+            'validateParticipant',
             'canonicaliseMissionShape'
         ];
 
@@ -1659,6 +1942,7 @@
                 billing: 'original',
                 assignedTeamIds: [],
                 supportPersonnel: [],
+                participants: [],
                 status: 'active',
                 objectives: [],
                 progress: 0,
@@ -1755,6 +2039,119 @@
                 missing.push(
                     'smoke test: mission with duplicate support personnel ' +
                     'was not rejected'
+                );
+            }
+
+            // ---- Participant smoke tests ----
+
+            // A valid team participant must round-trip.
+            var withTeamParticipant = JSON.parse(JSON.stringify(sample));
+            withTeamParticipant.assignedTeamIds = ['team_a'];
+            withTeamParticipant.participants = [{
+                characterId: 'char_1',
+                teamId: 'team_a',
+                source: 'team'
+            }];
+            var wtpCanonical = canonicaliseMissionShape(withTeamParticipant);
+            if (!wtpCanonical.valid) {
+                missing.push(
+                    'smoke test: valid team participant failed: ' +
+                    wtpCanonical.errors.join('; ')
+                );
+            } else if (
+                wtpCanonical.value.participants.length !== 1 ||
+                wtpCanonical.value.participants[0].teamId !== 'team_a' ||
+                wtpCanonical.value.participants[0].source !== 'team'
+            ) {
+                missing.push(
+                    'smoke test: team participant did not round-trip'
+                );
+            }
+
+            // A valid rookie participant must round-trip.
+            var withRookie = JSON.parse(JSON.stringify(sample));
+            withRookie.participants = [{
+                characterId: 'char_2',
+                teamId: null,
+                source: 'rookie'
+            }];
+            var rookCanonical = canonicaliseMissionShape(withRookie);
+            if (!rookCanonical.valid) {
+                missing.push(
+                    'smoke test: valid rookie participant failed: ' +
+                    rookCanonical.errors.join('; ')
+                );
+            } else if (
+                rookCanonical.value.participants.length !== 1 ||
+                rookCanonical.value.participants[0].teamId !== null ||
+                rookCanonical.value.participants[0].source !== 'rookie'
+            ) {
+                missing.push(
+                    'smoke test: rookie participant did not round-trip'
+                );
+            }
+
+            // 'team' source without a teamId must be rejected.
+            var teamNoTeam = JSON.parse(JSON.stringify(sample));
+            teamNoTeam.participants = [{
+                characterId: 'char_1',
+                teamId: null,
+                source: 'team'
+            }];
+            if (canonicaliseMissionShape(teamNoTeam).valid) {
+                missing.push(
+                    'smoke test: "team" source without teamId was accepted'
+                );
+            }
+
+            // 'rookie' source with a teamId must be rejected.
+            var rookieWithTeam = JSON.parse(JSON.stringify(sample));
+            rookieWithTeam.participants = [{
+                characterId: 'char_1',
+                teamId: 'team_a',
+                source: 'rookie'
+            }];
+            if (canonicaliseMissionShape(rookieWithTeam).valid) {
+                missing.push(
+                    'smoke test: "rookie" source with teamId was accepted'
+                );
+            }
+
+            // Duplicate (characterId, teamId) must be rejected.
+            var dupParticipants = JSON.parse(JSON.stringify(sample));
+            dupParticipants.participants = [
+                { characterId: 'char_1', teamId: 'team_a', source: 'team' },
+                { characterId: 'char_1', teamId: 'team_a', source: 'team' }
+            ];
+            if (canonicaliseMissionShape(dupParticipants).valid) {
+                missing.push(
+                    'smoke test: duplicate (character, team) participants ' +
+                    'were accepted'
+                );
+            }
+
+            // Same character on two different teams must be accepted.
+            var twoTeams = JSON.parse(JSON.stringify(sample));
+            twoTeams.assignedTeamIds = ['team_a', 'team_b'];
+            twoTeams.participants = [
+                { characterId: 'char_1', teamId: 'team_a', source: 'team' },
+                { characterId: 'char_1', teamId: 'team_b', source: 'team' }
+            ];
+            if (!canonicaliseMissionShape(twoTeams).valid) {
+                missing.push(
+                    'smoke test: same character on two teams was rejected'
+                );
+            }
+
+            // Duplicate rookie entry must be rejected.
+            var dupRookie = JSON.parse(JSON.stringify(sample));
+            dupRookie.participants = [
+                { characterId: 'char_1', teamId: null, source: 'rookie' },
+                { characterId: 'char_1', teamId: null, source: 'rookie' }
+            ];
+            if (canonicaliseMissionShape(dupRookie).valid) {
+                missing.push(
+                    'smoke test: duplicate rookie participant was accepted'
                 );
             }
         } catch (e) {

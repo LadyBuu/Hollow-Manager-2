@@ -1,7 +1,6 @@
 /**
  * modules/teams/team-verifier.js - Team Verifier
- * Read-only consistency checks for professional and temporary
- * teams.
+ * Read-only consistency checks for professional teams.
  *
  * Path: js/modules/teams/team-verifier.js
  *
@@ -17,11 +16,17 @@
  *   - Reads beyond window.data.teams and CharacterQueries. No
  *     aggregator, no UI, no pipeline.
  *
- * SCOPE:
- *   Professional and temporary teams only. Civilian and academic
- *   teams are skipped because their timing semantics differ
- *   (academic uses weeks, not years) and their invariants are
- *   enforced by the academy modules.
+ * SCOPE (this revision):
+ *   Professional teams only. The 'temporary' team type was
+ *   retired; records that carried it are normalised to
+ *   'professional' by TeamConstants.LEGACY_TYPE_MAP, so a
+ *   previously-temporary team is scanned here as a professional
+ *   team without any special handling.
+ *
+ *   Civilian and academic teams are skipped. Civilian teams have
+ *   no timing invariants to reconcile. Academic teams use weeks,
+ *   not years, and their invariants are enforced by the academy
+ *   modules.
  *
  * CHECKS:
  *   Each check has an id, a severity, a human-readable title,
@@ -141,9 +146,15 @@
     // ============================================================
 
     // Scanned team types. Everything else is skipped.
+    //
+    // Only 'professional' remains. The retired 'temporary' type is
+    // not listed: a persisted record carrying it is normalised to
+    // 'professional' by TeamConstants.LEGACY_TYPE_MAP before the
+    // type comparison below, so it is scanned as a professional
+    // team automatically. Listing 'temporary' here would be dead
+    // code that implies the type still exists.
     var SCANNED_TYPES = {
-        'professional': true,
-        'temporary': true
+        'professional': true
     };
 
     // Severity levels. Order matters for sorting.
@@ -674,8 +685,8 @@
     // ============================================================
 
     /**
-     * Walk every professional and temporary team and collect
-     * findings. Returns a result object:
+     * Walk every professional team and collect findings. Returns a
+     * result object:
      *
      *   {
      *     scannedTeams:      number,

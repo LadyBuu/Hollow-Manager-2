@@ -42,6 +42,34 @@
  *   does not pre-filter the result or reach into the ImportResult's
  *   private state.
  * 
+ * PARTICIPANTS COLUMN (this revision):
+ *   The schema gained a Participants column. Its value is a JSON
+ *   array of participant records:
+ * 
+ *     [
+ *       { "characterId": "char_x", "teamId": "team_y", "source": "team" },
+ *       { "characterId": "char_z", "teamId": null,     "source": "rookie" }
+ *     ]
+ * 
+ *   The column is parsed with the same JSON discipline the
+ *   Objectives column uses: an empty value yields [], a malformed
+ *   value produces a warning and yields [], and every entry is
+ *   structurally checked against the participant shape
+ *   (characterId, teamId, source). Entries that violate the
+ *   source/teamId contract are dropped with a warning. The schema
+ *   layer (MissionSchema.validateMission via MissionCore) will
+ *   reject the whole row if a malformed participant survives; this
+ *   module does not pre-reject on shape, it reports.
+ * 
+ *   The column is serialised as a compact JSON string, matching the
+ *   Objectives column's convention. An empty participant list
+ *   serialises as '[]'.
+ * 
+ *   Older CSV files exported by a previous version of this module
+ *   have no Participants column. The parser tolerates that: a row
+ *   with fewer cells than COLUMNS.length treats the missing
+ *   trailing cells as empty, so participants come through as [].
+ * 
  * DEPENDENCIES:
  *   - window.CSV (from csv-parser.js) - MANDATORY
  *   - window.ImportResult (from import-result.js) - MANDATORY
@@ -105,9 +133,17 @@
     var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical', ''];
     var VALID_DIFFICULTIES = ['easy', 'medium', 'hard', 'extreme', ''];
 
+    var VALID_PARTICIPANT_SOURCES = ['team', 'rookie'];
+
     // ============================================================
     // COLUMN DEFINITIONS
     // ============================================================
+    //
+    // Participants is the last column. Appending is the safe
+    // position: older files that lack the column still parse, and
+    // files written by this revision carry the column at the end
+    // where a future addition can append after it without
+    // renumbering.
 
     var COLUMNS = [
         'MissionId',
@@ -120,7 +156,8 @@
         'Duration',
         'Pay',
         'Progress',
-        'Objectives'
+        'Objectives',
+        'Participants'
     ];
 
     var FIELD_MAP = {
@@ -134,7 +171,8 @@
         7: 'duration',
         8: 'pay',
         9: 'progress',
-        10: 'objectives'
+        10: 'objectives',
+        11: 'participants'
     };
 
     // ============================================================
@@ -362,6 +400,170 @@
         }
     }
 
+    /**
+     * Parse the Participants column.
+     *
+     * Shape expected:
+     *   [ { characterId, teamId, source }, ... ]
+     *
+     * Rules:
+     *   - empty cell -> []
+     *   - malformed JSON -> warning, []
+     *   - non-array JSON -> warning, []
+     *   - an entry that is not an object -> warning, skip
+     *   - an entry with a bad/missing characterId -> warning, skip
+     *   - an entry with a bad source -> warning, skip
+     *   - an entry whose source/teamId combination is incoherent
+     *     ('team' without a teamId, 'rookie' with a teamId) ->
+     *     warning, skip
+     *   - duplicate (characterId, teamId) entries -> warning,
+     *     keep the first
+     *
+     * The parser is deliberately forgiving of individual malformed
+     * entries: a single bad row inside the JSON does not throw the
+     * whole cell away. The consumer (MissionImport) will pass the
+     * resulting array through MissionSchema, which will reject the
+     * whole mission if the cell could not be salvaged — but this
+     * module does its best to salvage first.
+     */
+    function parseParticipantsField(value, warnFn) {
+        var raw = String(value == null ? '' : value).trim();
+
+        if (raw === '') {
+            return [];
+        }
+
+        var parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (e) {
+            if (typeof warnFn === 'function') {
+                warnFn(
+                    'Invalid JSON in Participants: ' + e.message +
+                    ' - using empty array',
+                    'Participants'
+                );
+            }
+            return [];
+        }
+
+        if (!Array.isArray(parsed)) {
+            if (typeof warnFn === 'function') {
+                warnFn(
+                    'Participants must be a JSON array - using empty array',
+                    'Participants'
+                );
+            }
+            return [];
+        }
+
+        var result = [];
+        var seen = Object.create(null);
+
+        for (var i = 0; i < parsed.length; i++) {
+            var p = parsed[i];
+
+            if (!p || typeof p !== 'object' || Array.isArray(p)) {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Participant at index ' + i +
+                        ' is not an object - skipping',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+
+            var characterId = (typeof p.characterId === 'string')
+                ? p.characterId.trim()
+                : '';
+
+            if (characterId === '') {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Participant at index ' + i +
+                        ' has no characterId - skipping',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+
+            var source = p.source;
+            if (VALID_PARTICIPANT_SOURCES.indexOf(source) === -1) {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Participant at index ' + i +
+                        ' has invalid source - skipping',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+
+            var teamId = null;
+            var hasTeamId = p.teamId !== undefined &&
+                            p.teamId !== null &&
+                            p.teamId !== '';
+
+            if (hasTeamId) {
+                teamId = (typeof p.teamId === 'string')
+                    ? p.teamId.trim()
+                    : String(p.teamId);
+                if (teamId === '') {
+                    teamId = null;
+                    hasTeamId = false;
+                }
+            }
+
+            if (source === 'team' && !hasTeamId) {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Participant at index ' + i +
+                        ' source "team" requires a teamId - skipping',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+
+            if (source === 'rookie' && hasTeamId) {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Participant at index ' + i +
+                        ' source "rookie" must have teamId null - ' +
+                        'skipping',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+
+            var key = characterId + '::' +
+                (teamId === null ? '__null__' : teamId);
+
+            if (seen[key]) {
+                if (typeof warnFn === 'function') {
+                    warnFn(
+                        'Duplicate participant at index ' + i +
+                        ' - keeping the first',
+                        'Participants'
+                    );
+                }
+                continue;
+            }
+            seen[key] = true;
+
+            result.push({
+                characterId: characterId,
+                teamId: teamId,
+                source: source
+            });
+        }
+
+        return result;
+    }
+
     function isValidCandidate(candidate) {
         if (!candidate || typeof candidate !== 'object') return false;
         var title = candidate.title || '';
@@ -432,6 +634,12 @@
         var progress = parseProgressField(row[9], warnFn);
         var objectives = parseObjectivesField(row[10], warnFn);
 
+        // Participants column may be absent in older files. A row
+        // with fewer cells than COLUMNS.length simply yields
+        // undefined at row[11], which parseParticipantsField
+        // treats as the empty string.
+        var participants = parseParticipantsField(row[11], warnFn);
+
         var mission = {
             id: id,
             title: title,
@@ -443,7 +651,8 @@
             duration: String(row[7] || '').trim(),
             pay: String(row[8] || '').trim(),
             progress: progress,
-            objectives: objectives
+            objectives: objectives,
+            participants: participants
         };
 
         return {
@@ -480,7 +689,8 @@
             mission.duration != null ? mission.duration : '',
             mission.pay != null ? mission.pay : '',
             mission.progress != null ? mission.progress : 0,
-            JSON.stringify(mission.objectives != null ? mission.objectives : [])
+            JSON.stringify(mission.objectives != null ? mission.objectives : []),
+            JSON.stringify(mission.participants != null ? mission.participants : [])
         ];
     }
 
@@ -769,6 +979,43 @@
                             }
                         }
                     }
+
+                    // Validate participants structure. The parser
+                    // already dropped entries that violate the shape
+                    // rules; this pass is a belt-and-braces check
+                    // that any entry which survived is coherent.
+                    if (Array.isArray(mission.participants)) {
+                        for (var pi = 0;
+                             pi < mission.participants.length;
+                             pi++) {
+                            var part = mission.participants[pi];
+                            if (!part || typeof part !== 'object') {
+                                result.addWarning(
+                                    'Participant at index ' + pi +
+                                    ' is not an object',
+                                    { row: rowNumber, field: 'Participants' }
+                                );
+                                continue;
+                            }
+                            if (typeof part.characterId !== 'string' ||
+                                part.characterId.trim() === '') {
+                                result.addWarning(
+                                    'Participant at index ' + pi +
+                                    ' has no characterId',
+                                    { row: rowNumber, field: 'Participants' }
+                                );
+                            }
+                            if (VALID_PARTICIPANT_SOURCES.indexOf(
+                                part.source
+                            ) === -1) {
+                                result.addWarning(
+                                    'Participant at index ' + pi +
+                                    ' has invalid source',
+                                    { row: rowNumber, field: 'Participants' }
+                                );
+                            }
+                        }
+                    }
                 }
 
                 if (strict && hasError) {
@@ -787,27 +1034,6 @@
                 result.addError(parsed.errors[k], { row: rowNumber });
             }
         }
-
-        // Strict-mode policy is enforced by the CONSUMER, not here.
-        //
-        // The result already carries every valid record, every
-        // error (with row metadata), and every warning. A strict
-        // caller filters getValid(true) against getErrorsForRow()
-        // itself.
-        //
-        // The loop above has already applied the strict rule for
-        // the row-level checks this module owns: when
-        // validateEnums runs and a row fails an enum or range
-        // check, the row is moved from valid to skipped
-        // immediately. That is the entire extent of this module's
-        // strict-mode responsibility.
-        //
-        // The previous code reached into result._valid to
-        // reassign it after the fact. That write was dead (the
-        // earlier loop had already filtered every error row), it
-        // violated the ImportResult encapsulation contract, and it
-        // would silently break if ImportResult's internal
-        // representation ever changed.
 
         return result;
     }
@@ -873,6 +1099,13 @@
                 objectives: [
                     { text: 'Infiltrate base', done: true },
                     { text: 'Retrieve documents', done: true }
+                ],
+                participants: [
+                    {
+                        characterId: 'char_example_1',
+                        teamId: 'team_example_1',
+                        source: 'team'
+                    }
                 ]
             },
             {
@@ -889,6 +1122,13 @@
                 objectives: [
                     { text: 'Find hostages', done: false },
                     { text: 'Extract safely', done: false }
+                ],
+                participants: [
+                    {
+                        characterId: 'char_example_2',
+                        teamId: null,
+                        source: 'rookie'
+                    }
                 ]
             }
         ];
@@ -975,6 +1215,8 @@
                         '[{"text":"Primary objective","done":true},{"text":"Secondary objective","done":true}]' :
                         '[{"text":"Primary objective","done":false},{"text":"Secondary objective","done":false}]';
 
+                    var participants = '[]';
+
                     rows.push([
                         '',
                         title,
@@ -986,7 +1228,8 @@
                         (Math.floor(exampleCount / 2) % 4 + 1) + ' weeks',
                         String(((exampleCount % 8) + 2) * 1000),
                         progress,
-                        objectives
+                        objectives,
+                        participants
                     ]);
 
                     exampleCount++;
@@ -1109,7 +1352,10 @@
             'Duration': 'Optional. Mission duration (e.g., 2 weeks, 3 days)',
             'Pay': 'Optional. Mission payment (e.g., 5000)',
             'Progress': 'Optional. Number between 0 and 100',
-            'Objectives': 'Optional. JSON array of objectives: [{"text":"...","done":true/false}]'
+            'Objectives': 'Optional. JSON array of objectives: [{"text":"...","done":true/false}]',
+            'Participants': 'Optional. JSON array of participants: ' +
+                '[{"characterId":"...","teamId":"...","source":"team"}] or ' +
+                '[{"characterId":"...","teamId":null,"source":"rookie"}]'
         };
     }
 
@@ -1212,6 +1458,41 @@
                         }
                     }
                 }
+
+                if (Array.isArray(candidate.participants)) {
+                    for (var p = 0; p < candidate.participants.length; p++) {
+                        var part = candidate.participants[p];
+                        if (!part || typeof part !== 'object') {
+                            warnings.push({
+                                index: i,
+                                candidate: candidate,
+                                field: 'participants',
+                                value: part,
+                                message: 'Participant at index ' + p + ' is not an object'
+                            });
+                            continue;
+                        }
+                        if (typeof part.characterId !== 'string' ||
+                            part.characterId.trim() === '') {
+                            warnings.push({
+                                index: i,
+                                candidate: candidate,
+                                field: 'participants',
+                                value: part,
+                                message: 'Participant at index ' + p + ' has no characterId'
+                            });
+                        }
+                        if (VALID_PARTICIPANT_SOURCES.indexOf(part.source) === -1) {
+                            warnings.push({
+                                index: i,
+                                candidate: candidate,
+                                field: 'participants',
+                                value: part,
+                                message: 'Participant at index ' + p + ' has invalid source'
+                            });
+                        }
+                    }
+                }
             }
 
             valid.push(candidate);
@@ -1293,6 +1574,7 @@
         VALID_STATUSES: VALID_STATUSES,
         VALID_PRIORITIES: VALID_PRIORITIES,
         VALID_DIFFICULTIES: VALID_DIFFICULTIES,
+        VALID_PARTICIPANT_SOURCES: VALID_PARTICIPANT_SOURCES,
 
         // ---- Schema helpers ----
         getColumns: getColumns,
@@ -1312,6 +1594,7 @@
         parseProgressField: parseProgressField,
         parseJSONField: parseJSONField,
         parseObjectivesField: parseObjectivesField,
+        parseParticipantsField: parseParticipantsField,
         isValidCandidate: isValidCandidate,
         extractRows: extractRows,
 
@@ -1359,13 +1642,113 @@
             'parseRow', 'toRow', 'toRows',
             'getColumns', 'getHeader', 'getSection',
             'getValidStatuses', 'getValidPriorities', 'getValidDifficulties',
-            'isValidStatus', 'isValidPriority', 'isValidDifficulty'
+            'isValidStatus', 'isValidPriority', 'isValidDifficulty',
+            'parseParticipantsField'
         ];
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test: participants round-trip through parse + toRow.
+        try {
+            // Parse a well-formed cell.
+            var parsedOk = parseParticipantsField(
+                '[{"characterId":"c1","teamId":"t1","source":"team"},' +
+                '{"characterId":"c2","teamId":null,"source":"rookie"}]',
+                null
+            );
+            if (parsedOk.length !== 2) {
+                missing.push(
+                    'parseParticipantsField: expected 2 entries, got ' +
+                    parsedOk.length
+                );
+            } else if (parsedOk[0].source !== 'team' ||
+                       parsedOk[0].teamId !== 't1' ||
+                       parsedOk[1].source !== 'rookie' ||
+                       parsedOk[1].teamId !== null) {
+                missing.push(
+                    'parseParticipantsField: entries did not round-trip'
+                );
+            }
+
+            // Empty cell yields [].
+            var parsedEmpty = parseParticipantsField('', null);
+            if (parsedEmpty.length !== 0) {
+                missing.push(
+                    'parseParticipantsField: empty cell should yield []'
+                );
+            }
+
+            // Malformed JSON yields [].
+            var parsedBad = parseParticipantsField('not json', null);
+            if (parsedBad.length !== 0) {
+                missing.push(
+                    'parseParticipantsField: bad JSON should yield []'
+                );
+            }
+
+            // Incoherent source/teamId combinations are dropped.
+            var parsedIncoherent = parseParticipantsField(
+                '[{"characterId":"c1","teamId":null,"source":"team"},' +
+                '{"characterId":"c2","teamId":"t1","source":"rookie"}]',
+                null
+            );
+            if (parsedIncoherent.length !== 0) {
+                missing.push(
+                    'parseParticipantsField: incoherent combos should be dropped'
+                );
+            }
+
+            // Duplicate pairs are dropped.
+            var parsedDup = parseParticipantsField(
+                '[{"characterId":"c1","teamId":"t1","source":"team"},' +
+                '{"characterId":"c1","teamId":"t1","source":"team"}]',
+                null
+            );
+            if (parsedDup.length !== 1) {
+                missing.push(
+                    'parseParticipantsField: duplicate pairs should be deduped'
+                );
+            }
+
+            // toRow serialises participants as JSON.
+            var row = toRow({
+                id: 'm1',
+                title: 'Test',
+                status: 'active',
+                priority: 'medium',
+                difficulty: 'medium',
+                assignedTeamId: null,
+                location: '',
+                duration: '',
+                pay: '',
+                progress: 0,
+                objectives: [],
+                participants: [
+                    { characterId: 'c1', teamId: 't1', source: 'team' }
+                ]
+            });
+            if (typeof row[11] !== 'string' ||
+                row[11].indexOf('"characterId":"c1"') === -1) {
+                missing.push(
+                    'toRow: participants column was not serialised as JSON'
+                );
+            }
+
+            // Column count is consistent with FIELD_MAP.
+            var columns = getColumns();
+            var expectedField = getFieldName(columns.length - 1);
+            if (expectedField !== 'participants') {
+                missing.push(
+                    'COLUMNS/FIELD_MAP mismatch: last field is "' +
+                    expectedField + '"'
+                );
+            }
+        } catch (e) {
+            missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {

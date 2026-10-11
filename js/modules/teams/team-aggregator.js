@@ -18,6 +18,16 @@
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it; this module projects the resulting records.
  *
+ * TAB VOCABULARY (this revision):
+ *   The page VM emits counts and type descriptors for two tabs:
+ *     professional | civilian
+ *
+ *   The 'temporary' tab was retired. Temporary teams no longer
+ *   exist as a type. There is no countTemporary, no
+ *   counts.temporary, and no types.temporary. Any caller that
+ *   still reaches for those keys gets undefined, which is the
+ *   correct answer for a type that does not exist.
+ *
  * MEMBER ORDERING:
  *   getTeamMembersViewModel sorts members within their
  *   active/former partition by:
@@ -27,7 +37,7 @@
  *   TeamQueries.isMemberActive / isMemberFormer; this module
  *   does not decide the partition, only the order within it.
  *
- * SHORTAGE HISTORY (this revision):
+ * SHORTAGE HISTORY:
  *   Each planner team row carries a `shortagePeriods` array and a
  *   `shortageDisplay` string, both computed from
  *   TeamQueries.getTeamShortagePeriods. The display string is a
@@ -877,7 +887,6 @@
         }
 
         var countProfessional = countTeamsByType('professional');
-        var countTemporary = countTeamsByType('temporary');
         var countCivilian = countTeamsByType('civilian');
 
         return {
@@ -890,17 +899,12 @@
             expandedTeamId: resolvedExpandedId,
             counts: {
                 professional: countProfessional,
-                temporary: countTemporary,
                 civilian: countCivilian
             },
             types: {
                 professional: {
                     label: getTypeLabel('professional'),
                     periodLabel: getPeriodLabel('professional')
-                },
-                temporary: {
-                    label: getTypeLabel('temporary'),
-                    periodLabel: getPeriodLabel('temporary')
                 },
                 civilian: {
                     label: getTypeLabel('civilian'),

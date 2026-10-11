@@ -5,7 +5,7 @@
  * Path: js/modules/teams/team-ui.js
  *
  * This module is the SINGLE SOURCE OF TRUTH for Team UI state:
- *   - Which tab is selected (professional | temporary | civilian)
+ *   - Which tab is selected (professional | civilian)
  *   - Which team is expanded in the list
  *   - Per-tab filter values (year, status)
  *
@@ -23,18 +23,27 @@
  *     form arguments). There is no cross-render modal state.
  *
  * STORAGE VERSION:
- *   The key is versioned ('team_ui_state_v1'). A version bump
+ *   The key is versioned ('team_ui_state_v2'). A version bump
  *   abandons the previous state entirely; there is no migration
  *   between versions. This is deliberate — UI state is a cache,
  *   and caching stale shape across a code change produces bugs
  *   that are harder to diagnose than losing a saved tab.
  *
+ *   v1 -> v2: the 'temporary' tab was retired. A persisted
+ *   v1 state could carry currentTab: 'temporary' or a filters
+ *   entry for it. Rather than migrate, v2 starts clean. The
+ *   previous key is not read.
+ *
  * TAB VOCABULARY:
  *   The valid tabs are:
- *     'professional' | 'temporary' | 'civilian'
+ *     'professional' | 'civilian'
  *
  *   'academic' is NOT a tab here. Academic teams are managed by the
  *   Academy module. TeamUI never sees them.
+ *
+ *   'temporary' was retired. The team type it labelled no longer
+ *   exists in TeamConstants; records that carried it normalise to
+ *   'professional'. There is nothing for a 'temporary' tab to show.
  *
  * FILTER SEMANTICS:
  *   Filters are per-tab. Each tab has its own filter object. Setting
@@ -64,9 +73,9 @@
     // CONSTANTS
     // ============================================================
 
-    var STORAGE_KEY = 'team_ui_state_v1';
+    var STORAGE_KEY = 'team_ui_state_v2';
 
-    var VALID_TABS = ['professional', 'temporary', 'civilian'];
+    var VALID_TABS = ['professional', 'civilian'];
     var DEFAULT_TAB = 'professional';
 
     // ============================================================
@@ -85,10 +94,6 @@
                 filterYear: '',
                 filterStatus: 'active'
             }),
-            temporary: Object.freeze({
-                filterYear: '',
-                filterStatus: 'active'
-            }),
             civilian: Object.freeze({
                 filterStatus: 'active'
             })
@@ -98,10 +103,6 @@
     // Frozen. Same rationale as DEFAULT_STATE.
     var DEFAULT_FILTERS = Object.freeze({
         professional: Object.freeze({
-            filterYear: '',
-            filterStatus: 'active'
-        }),
-        temporary: Object.freeze({
             filterYear: '',
             filterStatus: 'active'
         }),
@@ -163,6 +164,10 @@
      * Unknown fields are dropped. Invalid values fall back to the
      * default. This is what makes a future schema change safe: a
      * stale value is rejected instead of being carried forward.
+     *
+     * In particular, a persisted currentTab of 'temporary' (from a
+     * v1 key that somehow reached this version) is rejected because
+     * VALID_TABS no longer contains it. The default tab wins.
      */
     function mergeWithDefaults(parsed) {
         var merged = getDefaultState();
@@ -271,6 +276,9 @@
      * caller would otherwise persist and surface as an empty list
      * on the next render, which is harder to diagnose than a
      * rejected setter.
+     *
+     * A caller that still passes 'temporary' is rejected. The type
+     * no longer exists; there is nothing to show.
      *
      * @param {string} tab
      * @returns {boolean} true when the value was accepted

@@ -24,15 +24,24 @@
  *   A broken VM produces a visible failure, not a plausible empty
  *   list.
  *
+ * TAB VOCABULARY (this revision):
+ *   The Teams tab renders two top-level tabs:
+ *     professional | civilian
+ *
+ *   The 'temporary' tab was retired. Temporary teams no longer
+ *   exist as a type; records that carried the type are normalised
+ *   to professional by TeamConstants.LEGACY_TYPE_MAP. There is no
+ *   stat card, no tab button, no empty-state label for it, and no
+ *   branch in the form's type dropdown.
+ *
  * PAGE HEADER ACTIONS:
  *   Export / Matchmaking / Add Team appear on the Professional tab.
- *   Temporary and Civilian tabs show only Add Team. Matchmaking and
- *   Export are professional-scoped features.
+ *   Civilian shows only Add Team. Matchmaking and Export are
+ *   professional-scoped features.
  *
  * VIEW MODES (professional only):
  *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
- *   three for the professional tab; Temporary and Civilian tabs
- *   have no mode toggle.
+ *   three for the professional tab; Civilian has no mode toggle.
  *
  * POOL ROWS:
  *   Each pool row is a .professional-pool-item. It carries:
@@ -62,8 +71,8 @@
  *     - combat: STR/DEX/CON/INT/WIS/CHA · HP · MP
  *     - magic: only non-zero entries
  *
- * TEAM ROW ACTIONS (this revision):
- *   The row action strip now carries a Kill Team button between
+ * TEAM ROW ACTIONS:
+ *   The row action strip carries a Kill Team button between
  *   Export and Edit. It opens the Kill Team modal via the
  *   delegated .kill-team handler in team-events.js. The button is
  *   present on every row regardless of status; the modal itself
@@ -152,6 +161,16 @@
         return String(value);
     }
 
+    /**
+     * The types offered in the team form.
+     *
+     * Academic teams are managed by the Academy module and never
+     * created through this form. The retired 'temporary' type is
+     * gone from TeamConstants entirely, so it cannot appear here
+     * even by accident.
+     *
+     * The remaining types are: professional, civilian.
+     */
     function getFormTeamTypes() {
         var all = TeamConstants.getTeamTypes();
         var result = [];
@@ -235,7 +254,6 @@
         if (!Array.isArray(teams) || teams.length === 0) {
             var labels = {
                 'professional': 'professional teams',
-                'temporary': 'temporary teams',
                 'civilian': 'civilian teams'
             };
             var label = labels[type] || 'teams';
@@ -1033,39 +1051,17 @@
         }
 
         // ---- Civilian tab: only the inactive checkbox ----
-        if (tab === 'civilian') {
-            html += '<div class="filter-row">';
-            html += '<div class="filter-group">';
-            html += '<label for="civilian-show-inactive">' +
-                        'Show Inactive:' +
-                    '</label>';
-            html += '<input type="checkbox" ' +
-                        'id="civilian-show-inactive"' +
-                        (status === 'inactive' ? ' checked' : '') +
-                    '>';
-            html += '</div>';
-            html += '<button type="button" id="apply-filter-btn" ' +
-                        'class="small primary">Apply</button>';
-            html += '</div>';
-            return html;
-        }
-
-        // ---- Temporary tab: year + inactive ----
+        //
+        // Civilian teams have no period filter: they are scoped to
+        // unbounded years and are not displayed against a specific
+        // year in the list. Only the status filter is exposed.
         html += '<div class="filter-row">';
         html += '<div class="filter-group">';
-        html += '<label for="team-filter-year">' +
-                    escapeHtml(periodLabel) + ':' +
+        html += '<label for="civilian-show-inactive">' +
+                    'Show Inactive:' +
                 '</label>';
-        html += '<input type="number" id="team-filter-year" ' +
-                    'value="' +
-                        escapeAttribute(safeString(yearValue)) +
-                    '" placeholder="All">';
-        html += '</div>';
-        html += '<div class="filter-group">';
-        html += '<label for="' + escapeAttribute(tab) +
-                    '-show-inactive">Show Inactive:</label>';
-        html += '<input type="checkbox" id="' +
-                    escapeAttribute(tab) + '-show-inactive"' +
+        html += '<input type="checkbox" ' +
+                    'id="civilian-show-inactive"' +
                     (status === 'inactive' ? ' checked' : '') +
                 '>';
         html += '</div>';
@@ -1480,10 +1476,6 @@
                     '<p class="stat-number">' +
                         renderCount(counts.professional) +
                     '</p></div>';
-        html += '<div class="stat-card"><h3>Temporary</h3>' +
-                    '<p class="stat-number">' +
-                        renderCount(counts.temporary) +
-                    '</p></div>';
         html += '<div class="stat-card"><h3>Civilian</h3>' +
                     '<p class="stat-number">' +
                         renderCount(counts.civilian) +
@@ -1507,9 +1499,6 @@
         html += '<div class="tab-nav" id="team-tab-nav">';
         html += tabBtn(
             'professional', 'Professional', counts.professional
-        );
-        html += tabBtn(
-            'temporary', 'Temporary', counts.temporary
         );
         html += tabBtn(
             'civilian', 'Civilian', counts.civilian

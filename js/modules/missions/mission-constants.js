@@ -18,6 +18,11 @@
  *   - The canonical difficulty vocabulary (easy / medium / hard /
  *     expert). "extreme" is NOT a valid difficulty. If a caller ever
  *     supplies it, it is rejected, not silently coerced.
+ *   - The participant source vocabulary: 'team' and 'rookie'.
+ *     These label the origin of a mission participant. A
+ *     participant whose source is 'team' carries a teamId; a
+ *     participant whose source is 'rookie' carries teamId: null
+ *     and was selected from the rookie candidate list.
  *
  * WHAT THIS MODULE DOES NOT DO:
  *   - Validate missions (MissionSchema).
@@ -40,9 +45,7 @@
  *         id, label, description,
  *         subtypes: [{ id, label }, ...]
  *       }
- *     The subtypes were previously a flat array of IDs with a
- *     separate SUBTYPE_LABELS map. That map has been folded into
- *     the taxonomy so a subtype's label lives with the subtype.
+ *     A subtype's label lives with the subtype.
  *
  * YEAR SEMANTICS:
  *   Years are UNBOUNDED positive integers. There is no MIN_YEAR or
@@ -175,6 +178,44 @@
         'tier_iii': 'Tier III - Dangerous',
         'tier_iv':  'Tier IV - Critical',
         'tier_v':   'Tier V - Catastrophic'
+    });
+
+    // ============================================================
+    // PARTICIPANT SOURCES
+    // ============================================================
+    //
+    // A mission participant is a character who took part in a
+    // mission. The participant record carries a `source` field
+    // that describes how the character was selected:
+    //
+    //   'team'    The character was a member of one of the
+    //             mission's assigned teams in the mission's year.
+    //             The record carries a non-null teamId.
+    //
+    //   'rookie'  The character was selected from the rookie
+    //             candidate list — every character who has ever
+    //             held a 'rookie' career status. The record
+    //             carries teamId: null. Rookies are not attached
+    //             to a team.
+    //
+    // The source is a canonical part of the participant record
+    // (see MissionSchema), not a derived value. It is stored
+    // because it disambiguates the two selection paths for the
+    // UI, for exports, and for the cascade.
+    //
+    // When a character is both a team member and a rookie
+    // candidate, they are recorded once, as a team member.
+    // Rookie selection is offered only for characters who are
+    // not already on an assigned team at the mission's year.
+
+    var VALID_PARTICIPANT_SOURCES = Object.freeze([
+        'team',
+        'rookie'
+    ]);
+
+    var PARTICIPANT_SOURCE_LABELS = Object.freeze({
+        'team':   'Team member',
+        'rookie': 'Rookie'
     });
 
     // ============================================================
@@ -384,6 +425,10 @@
         return false;
     }
 
+    function isValidParticipantSource(source) {
+        return VALID_PARTICIPANT_SOURCES.indexOf(source) !== -1;
+    }
+
     function getDifficultyCode(difficulty) {
         if (!isValidDifficulty(difficulty)) {
             return null;
@@ -431,6 +476,13 @@
             return null;
         }
         return ESCALATION_LABELS[tier];
+    }
+
+    function getParticipantSourceLabel(source) {
+        if (!isValidParticipantSource(source)) {
+            return null;
+        }
+        return PARTICIPANT_SOURCE_LABELS[source];
     }
 
     function getMissionType(typeId) {
@@ -499,6 +551,10 @@
         return VALID_ESCALATION_TIERS.slice();
     }
 
+    function getValidParticipantSources() {
+        return VALID_PARTICIPANT_SOURCES.slice();
+    }
+
     function getMissionTypes() {
         var result = {};
         var keys = Object.keys(MISSION_TYPES);
@@ -534,6 +590,7 @@
         VALID_DIFFICULTIES: VALID_DIFFICULTIES,
         VALID_BILLING_TYPES: VALID_BILLING_TYPES,
         VALID_ESCALATION_TIERS: VALID_ESCALATION_TIERS,
+        VALID_PARTICIPANT_SOURCES: VALID_PARTICIPANT_SOURCES,
 
         // Label maps (frozen, read-only references)
         STATUS_LABELS: STATUS_LABELS,
@@ -543,6 +600,7 @@
         DIFFICULTY_FROM_CODE: DIFFICULTY_FROM_CODE,
         BILLING_LABELS: BILLING_LABELS,
         ESCALATION_LABELS: ESCALATION_LABELS,
+        PARTICIPANT_SOURCE_LABELS: PARTICIPANT_SOURCE_LABELS,
 
         // Taxonomy (frozen, read-only reference)
         MISSION_TYPES: MISSION_TYPES,
@@ -567,6 +625,7 @@
         isValidEscalation: isValidEscalation,
         isValidMissionType: isValidMissionType,
         isValidSubtype: isValidSubtype,
+        isValidParticipantSource: isValidParticipantSource,
 
         // Lookup helpers (return null for unknown, never a default)
         getDifficultyCode: getDifficultyCode,
@@ -576,6 +635,7 @@
         getDifficultyLabel: getDifficultyLabel,
         getBillingLabel: getBillingLabel,
         getEscalationLabel: getEscalationLabel,
+        getParticipantSourceLabel: getParticipantSourceLabel,
         getMissionType: getMissionType,
         getMissionTypeLabel: getMissionTypeLabel,
         getSubtypeLabel: getSubtypeLabel,
@@ -586,6 +646,7 @@
         getValidDifficulties: getValidDifficulties,
         getValidBillingTypes: getValidBillingTypes,
         getValidEscalationTiers: getValidEscalationTiers,
+        getValidParticipantSources: getValidParticipantSources,
         getMissionTypes: getMissionTypes,
         getSubtypesForType: getSubtypesForType,
         getDefaults: getDefaults
@@ -604,7 +665,8 @@
             'VALID_PRIORITIES',
             'VALID_DIFFICULTIES',
             'VALID_BILLING_TYPES',
-            'VALID_ESCALATION_TIERS'
+            'VALID_ESCALATION_TIERS',
+            'VALID_PARTICIPANT_SOURCES'
         ];
         for (var i = 0; i < requiredArrays.length; i++) {
             if (!Array.isArray(exports[requiredArrays[i]]) ||
@@ -621,6 +683,7 @@
             'isValidEscalation',
             'isValidMissionType',
             'isValidSubtype',
+            'isValidParticipantSource',
             'getDifficultyCode',
             'getDifficultyFromCode',
             'getStatusLabel',
@@ -628,6 +691,7 @@
             'getDifficultyLabel',
             'getBillingLabel',
             'getEscalationLabel',
+            'getParticipantSourceLabel',
             'getMissionType',
             'getMissionTypeLabel',
             'getSubtypeLabel',
@@ -636,6 +700,7 @@
             'getValidDifficulties',
             'getValidBillingTypes',
             'getValidEscalationTiers',
+            'getValidParticipantSources',
             'getMissionTypes',
             'getSubtypesForType',
             'getDefaults'
@@ -692,6 +757,28 @@
                     'ESCALATION_LABELS[' + VALID_ESCALATION_TIERS[e] + ']'
                 );
             }
+        }
+
+        // Confirm every participant source has a label.
+        for (var ps = 0; ps < VALID_PARTICIPANT_SOURCES.length; ps++) {
+            if (!PARTICIPANT_SOURCE_LABELS[VALID_PARTICIPANT_SOURCES[ps]]) {
+                missing.push(
+                    'PARTICIPANT_SOURCE_LABELS[' +
+                    VALID_PARTICIPANT_SOURCES[ps] + ']'
+                );
+            }
+        }
+
+        // Confirm the participant source enum has exactly the two
+        // known values. A third value without a corresponding
+        // selection path would be dead vocabulary.
+        if (VALID_PARTICIPANT_SOURCES.length !== 2 ||
+            VALID_PARTICIPANT_SOURCES.indexOf('team') === -1 ||
+            VALID_PARTICIPANT_SOURCES.indexOf('rookie') === -1) {
+            missing.push(
+                'VALID_PARTICIPANT_SOURCES must contain exactly ' +
+                '"team" and "rookie"'
+            );
         }
 
         // Confirm every mission type has an id, label, description,

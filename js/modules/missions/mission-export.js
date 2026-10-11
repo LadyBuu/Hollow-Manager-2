@@ -30,8 +30,8 @@
  *   Text   - human-readable, plain text. The default. Built by
  *            exportMissionText. A full report with sections:
  *            header, classification, timing, assignment,
- *            description, objectives, support personnel, reports,
- *            activity log, notes and tags.
+ *            description, objectives, participants, support
+ *            personnel, reports, activity log, notes and tags.
  *
  *   JSON   - the full mission record, verbatim. Built by
  *            exportMissionJson. Not wrapped in an envelope, not
@@ -40,12 +40,35 @@
  *            serialisation so the caller cannot mutate the store
  *            through the exported object.
  *
- * MULTIPLE TEAMS (this revision):
+ * MULTIPLE TEAMS:
  *   The mission's assigned teams are read via
  *   MissionQueries.getTeamIdsForMission, which handles the legacy
  *   singular assignedTeamId transparently. The text report prints
  *   one line per team. The JSON export is verbatim, so whatever
  *   the record carries is what gets written.
+ *
+ * PARTICIPANTS (this revision):
+ *   The text report prints a PARTICIPANTS section. Participants
+ *   are grouped by source:
+ *
+ *     Team participants   listed under the team they belong to,
+ *                         one block per team. The block header is
+ *                         the team name.
+ *
+ *     Rookie participants listed under a "Rookies" header, one
+ *                         line per rookie.
+ *
+ *   When no participants are recorded, the section prints
+ *   "(none recorded)".
+ *
+ *   Participant names are resolved via CharacterQueries; a
+ *   deceased character is annotated with a dagger marker, matching
+ *   the UI convention. The JSON export carries the participants
+ *   array verbatim — no resolution, no filtering.
+ *
+ *   The section is ordered to match the UI: team blocks first
+ *   (sorted by team name), then the rookie block (sorted by
+ *   character name within it).
  *
  * SECTIONS COLLAPSE when empty. A mission with no reports shows
  * "(none)" under REPORTS rather than an empty section. The reader
@@ -59,10 +82,11 @@
  *   continues.
  *
  * FAIL-CLOSED:
- *   A malformed nested record (objective, report, log entry) is
- *   skipped with a visible marker. The report never fabricates
- *   content. If the mission itself does not resolve, the export
- *   returns { error } rather than an empty file.
+ *   A malformed nested record (objective, report, log entry,
+ *   participant) is skipped with a visible marker. The report
+ *   never fabricates content. If the mission itself does not
+ *   resolve, the export returns { error } rather than an empty
+ *   file.
  *
  * DOWNLOAD FILENAMES:
  *   Text export base filename: "mission_<slug>_<id>_<timestamp>.txt".
@@ -117,6 +141,10 @@
         typeof MissionQueries.getTeamIdsForMission !== 'function') {
         _missing.push('MissionQueries.getTeamIdsForMission');
     }
+    if (!MissionQueries ||
+        typeof MissionQueries.getParticipantsForMission !== 'function') {
+        _missing.push('MissionQueries.getParticipantsForMission');
+    }
     if (!MissionId ||
         typeof MissionId.derive !== 'function') {
         _missing.push('MissionId.derive');
@@ -144,6 +172,10 @@
         }
         if (typeof MissionConstants.getBillingLabel !== 'function') {
             _missing.push('MissionConstants.getBillingLabel');
+        }
+        if (typeof MissionConstants.getParticipantSourceLabel !==
+            'function') {
+            _missing.push('MissionConstants.getParticipantSourceLabel');
         }
     }
     if (!MissionRules ||
@@ -271,6 +303,16 @@
         } catch (e) {
             return '(unnamed)';
         }
+    }
+
+    function resolveCharacterDeceased(charId) {
+        if (!isNonEmptyString(charId)) { return false; }
+        var c = null;
+        try {
+            c = CharacterQueries.getCharacterById(charId);
+        } catch (e) { c = null; }
+        if (!c) { return false; }
+        return c.deceased === true;
     }
 
     function resolveTeamName(teamId) {
@@ -443,7 +485,6 @@
             );
             lines.push(firstLine);
 
-            // Continuation lines align under the first team name.
             var indent = '';
             while (indent.length < LABEL_WIDTH + 1) {
                 indent += ' ';
@@ -515,6 +556,124 @@
         }
 
         lines.push('');
+    }
+
+    // ============================================================
+    // PARTICIPANTS (this revision)
+    // ============================================================
+    //
+    // The section groups team participants by team, then prints
+    // rookies in their own block. Team blocks are sorted by team
+    // name; within each block participants are sorted by
+    // character name. The rookie block is sorted by character
+    // name.
+    //
+    // The mission's participant list is read via
+    // MissionQueries.getParticipantsForMission, which normalises
+    // each record and drops malformed ones.
+
+    function pushParticipants(lines, mission) {
+        var heading = 'PARTICIPANTS';
+        lines.push(heading);
+        lines.push(lineDash(heading));
+        lines.push('');
+
+        var participants =
+            MissionQueries.getParticipantsForMission(mission);
+
+        if (participants.length === 0) {
+            lines.push('  (none recorded)');
+            lines.push('');
+            return;
+        }
+
+        // Partition into team participants and rookies.
+        var byTeam = Object.create(null);
+        var teamOrder = [];
+        var rookies = [];
+
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.source === 'rookie' || p.teamId === null) {
+                rookies.push(p);
+                continue;
+            }
+
+            var teamId = p.teamId;
+            if (!byTeam[teamId]) {
+                byTeam[teamId] = [];
+                teamOrder.push(teamId);
+            }
+            byTeam[teamId].push(p);
+        }
+
+        // Sort team blocks by resolved team name.
+        teamOrder.sort(function(a, b) {
+            var na = resolveTeamName(a);
+            var nb = resolveTeamName(b);
+            return na.localeCompare(nb);
+        });
+
+        // ---- Team blocks ----
+        for (var t = 0; t < teamOrder.length; t++) {
+            var tid = teamOrder[t];
+            var teamName = resolveTeamName(tid);
+            var members = byTeam[tid];
+
+            members.sort(function(a, b) {
+                return resolveCharacterName(a.characterId)
+                    .localeCompare(
+                        resolveCharacterName(b.characterId)
+                    );
+            });
+
+            lines.push('  ' + teamName + ':');
+
+            for (var m = 0; m < members.length; m++) {
+                lines.push(
+                    '    - ' + formatParticipantLine(
+                        members[m].characterId
+                    )
+                );
+            }
+            lines.push('');
+        }
+
+        // ---- Rookies ----
+        if (rookies.length > 0) {
+            rookies.sort(function(a, b) {
+                return resolveCharacterName(a.characterId)
+                    .localeCompare(
+                        resolveCharacterName(b.characterId)
+                    );
+            });
+
+            lines.push('  Rookies:');
+
+            for (var r = 0; r < rookies.length; r++) {
+                lines.push(
+                    '    - ' + formatParticipantLine(
+                        rookies[r].characterId
+                    )
+                );
+            }
+            lines.push('');
+        }
+    }
+
+    /**
+     * Format a single participant line. The name is resolved
+     * against the character store; a deceased character gets a
+     * dagger suffix matching the UI convention. A character who
+     * does not resolve in the store prints as "(missing
+     * character)" from resolveCharacterName.
+     */
+    function formatParticipantLine(charId) {
+        var name = resolveCharacterName(charId);
+        if (resolveCharacterDeceased(charId)) {
+            name += ' \u2020';
+        }
+        return name;
     }
 
     function pushSupportPersonnel(lines, mission) {
@@ -703,6 +862,7 @@
         pushAssignment(lines, mission);
         pushDescription(lines, mission);
         pushObjectives(lines, mission);
+        pushParticipants(lines, mission);
         pushSupportPersonnel(lines, mission);
         pushReports(lines, mission);
         pushActivityLog(lines, mission);
@@ -746,7 +906,7 @@
     //
     // The JSON export is the mission record verbatim. No envelope,
     // no projection, no stripping. Every field the store carries is
-    // present.
+    // present, including the participants array.
     //
     // The record is deep-cloned before it is handed back. This is
     // the same discipline the read layer follows: an export is a

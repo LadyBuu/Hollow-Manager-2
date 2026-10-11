@@ -6,17 +6,20 @@
  * Presentation metadata for missions.
  *
  * WHAT THIS MODULE OWNS:
- *   - CSS class names for statuses, priorities, mission types.
- *   - CSS colour tokens for statuses and priorities (used by
- *     anything that needs a raw colour rather than a class).
- *   - Icons for mission types.
+ *   - CSS class names for statuses, priorities, mission types,
+ *     and participant sources.
+ *   - CSS colour tokens for statuses, priorities, and participant
+ *     sources (used by anything that needs a raw colour rather
+ *     than a class).
+ *   - Icons for mission types and participant sources.
  *   - Display formatting for timestamps and pay strings.
  *   - The { label, class } / { label, class, color } composite
  *     shapes that the aggregator attaches to VMs.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Domain vocabulary. Every label comes from MissionConstants.
- *     This module never redefines "Medium" or "Tier III".
+ *     This module never redefines "Medium" or "Tier III" or
+ *     "Team member".
  *   - Querying or validating. It receives a value and returns
  *     presentation metadata for it.
  *   - Rendering HTML. MissionRender owns that.
@@ -29,16 +32,29 @@
  *   "unknown" result, never a fabricated valid-looking value.
  *
  *   Specifically:
- *     getStatusInfo('banana')   -> { label: 'Unknown', class: 'status-unknown' }
- *     getStatusInfo('')         -> same
- *     getStatusInfo(null)       -> same
+ *     getStatusInfo('banana')          -> { label: 'Unknown', ... }
+ *     getParticipantSourceInfo('x')    -> { label: 'Unknown', ... }
+ *     getParticipantSourceInfo(null)   -> same
  *
- *   Not: { label: 'Active', class: 'status-active' }
+ *   Not: { label: 'Active', ... }
  *
- *   The old behaviour of defaulting unknown values to a
- *   plausible-looking alternative has been removed. If a caller
- *   receives "Unknown", the mission data is malformed; that is
- *   information, and the renderer can display it as such.
+ *   If a caller receives "Unknown", the mission data is malformed;
+ *   that is information, and the renderer can display it as such.
+ *
+ * PARTICIPANT SOURCES:
+ *   Every participant carries a source: 'team' or 'rookie'. This
+ *   module adds the presentation layer for that vocabulary:
+ *
+ *     getParticipantSourceLabel(source)   the human label from
+ *                                         MissionConstants
+ *     getParticipantSourceClass(source)   a CSS class name
+ *     getParticipantSourceColor(source)   a CSS colour token
+ *     getParticipantSourceIcon(source)    a short glyph
+ *     getParticipantSourceInfo(source)    the composite object
+ *
+ *   The icons are chosen to match the UI vocabulary elsewhere in
+ *   the app: monochrome glyphs, not emoji. See the icon table
+ *   below.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionConstants
@@ -82,6 +98,10 @@
         }
         if (typeof MissionConstants.getSubtypeLabel !== 'function') {
             _missing.push('MissionConstants.getSubtypeLabel');
+        }
+        if (typeof MissionConstants.getParticipantSourceLabel !==
+            'function') {
+            _missing.push('MissionConstants.getParticipantSourceLabel');
         }
     }
 
@@ -155,6 +175,36 @@
         'research':      'var(--info)',
         'diplomatic':    'var(--accent)',
         'assassination': 'var(--danger)'
+    });
+
+    // ============================================================
+    // PARTICIPANT SOURCE PRESENTATION
+    // ============================================================
+    //
+    // Two sources: 'team' and 'rookie'.
+    //
+    // Icons: monochrome glyphs, matching the character module's
+    // icon discipline. A dagger for the individual rookie path, a
+    // set-square for the team path — both are plain Unicode
+    // symbols and inherit their surrounding text colour.
+    //
+    // Colours: team uses the standard informational accent, rookie
+    // uses the warning token. Neither is a status colour; the
+    // sources are orthogonal to the mission's status.
+
+    var PARTICIPANT_SOURCE_CLASSES = Object.freeze({
+        'team':   'participant-source-team',
+        'rookie': 'participant-source-rookie'
+    });
+
+    var PARTICIPANT_SOURCE_COLORS = Object.freeze({
+        'team':   'var(--info)',
+        'rookie': 'var(--warning)'
+    });
+
+    var PARTICIPANT_SOURCE_ICONS = Object.freeze({
+        'team':   '\u25A3',   // U+25A3 WHITE SQUARE CONTAINING BLACK SMALL SQUARE
+        'rookie': '\u2020'    // U+2020 DAGGER
     });
 
     // ============================================================
@@ -281,6 +331,55 @@
 
     function getMissionTypeColor(typeId) {
         return MISSION_TYPE_COLORS[typeId] || 'var(--text-dim)';
+    }
+
+    // ============================================================
+    // PARTICIPANT SOURCE
+    // ============================================================
+
+    /**
+     * Composite participant-source presentation.
+     *
+     * @param {string} source - 'team' | 'rookie'
+     * @returns {object} { label, class, color, icon, isKnown }
+     */
+    function getParticipantSourceInfo(source) {
+        var label = MissionConstants.getParticipantSourceLabel(source);
+
+        if (label === null) {
+            return {
+                label: 'Unknown',
+                class: 'participant-source-unknown',
+                color: 'var(--text-dim)',
+                icon: '\u2022',   // U+2022 BULLET
+                isKnown: false
+            };
+        }
+
+        return {
+            label: label,
+            class: PARTICIPANT_SOURCE_CLASSES[source],
+            color: PARTICIPANT_SOURCE_COLORS[source],
+            icon: PARTICIPANT_SOURCE_ICONS[source] || '\u2022',
+            isKnown: true
+        };
+    }
+
+    function getParticipantSourceLabel(source) {
+        return MissionConstants.getParticipantSourceLabel(source);
+    }
+
+    function getParticipantSourceClass(source) {
+        return PARTICIPANT_SOURCE_CLASSES[source] ||
+            'participant-source-unknown';
+    }
+
+    function getParticipantSourceColor(source) {
+        return PARTICIPANT_SOURCE_COLORS[source] || 'var(--text-dim)';
+    }
+
+    function getParticipantSourceIcon(source) {
+        return PARTICIPANT_SOURCE_ICONS[source] || '\u2022';
     }
 
     // ============================================================
@@ -445,6 +544,7 @@
         getStatusInfo: getStatusInfo,
         getPriorityInfo: getPriorityInfo,
         getMissionTypeInfo: getMissionTypeInfo,
+        getParticipantSourceInfo: getParticipantSourceInfo,
 
         // Individual class / colour / icon lookups
         getStatusClass: getStatusClass,
@@ -453,6 +553,12 @@
         getPriorityColor: getPriorityColor,
         getMissionTypeIcon: getMissionTypeIcon,
         getMissionTypeColor: getMissionTypeColor,
+
+        // Participant-source lookups
+        getParticipantSourceLabel: getParticipantSourceLabel,
+        getParticipantSourceClass: getParticipantSourceClass,
+        getParticipantSourceColor: getParticipantSourceColor,
+        getParticipantSourceIcon: getParticipantSourceIcon,
 
         // Vocabulary pass-throughs (canonical home: MissionConstants)
         getDifficultyLabel: getDifficultyLabel,
@@ -474,7 +580,10 @@
         PRIORITY_CLASSES: PRIORITY_CLASSES,
         PRIORITY_COLORS: PRIORITY_COLORS,
         MISSION_TYPE_ICONS: MISSION_TYPE_ICONS,
-        MISSION_TYPE_COLORS: MISSION_TYPE_COLORS
+        MISSION_TYPE_COLORS: MISSION_TYPE_COLORS,
+        PARTICIPANT_SOURCE_CLASSES: PARTICIPANT_SOURCE_CLASSES,
+        PARTICIPANT_SOURCE_COLORS: PARTICIPANT_SOURCE_COLORS,
+        PARTICIPANT_SOURCE_ICONS: PARTICIPANT_SOURCE_ICONS
     });
 
     // ============================================================
@@ -489,12 +598,17 @@
             'getStatusInfo',
             'getPriorityInfo',
             'getMissionTypeInfo',
+            'getParticipantSourceInfo',
             'getStatusClass',
             'getStatusColor',
             'getPriorityClass',
             'getPriorityColor',
             'getMissionTypeIcon',
             'getMissionTypeColor',
+            'getParticipantSourceLabel',
+            'getParticipantSourceClass',
+            'getParticipantSourceColor',
+            'getParticipantSourceIcon',
             'getDifficultyLabel',
             'getDifficultyCode',
             'getDifficultyFromCode',
@@ -560,6 +674,78 @@
             if (unknownType.label !== 'Unclassified' ||
                 unknownType.isKnown !== false) {
                 missing.push('getMissionTypeInfo("banana") did not return the unknown variant');
+            }
+
+            // ---- Participant source smoke tests ----
+
+            var teamInfo = getParticipantSourceInfo('team');
+            if (teamInfo.label !== 'Team member' ||
+                teamInfo.class !== 'participant-source-team' ||
+                teamInfo.icon !== '\u25A3' ||
+                teamInfo.isKnown !== true) {
+                missing.push(
+                    'getParticipantSourceInfo("team") returned wrong shape'
+                );
+            }
+
+            var rookieInfo = getParticipantSourceInfo('rookie');
+            if (rookieInfo.label !== 'Rookie' ||
+                rookieInfo.class !== 'participant-source-rookie' ||
+                rookieInfo.icon !== '\u2020' ||
+                rookieInfo.isKnown !== true) {
+                missing.push(
+                    'getParticipantSourceInfo("rookie") returned wrong shape'
+                );
+            }
+
+            var unknownSource = getParticipantSourceInfo('banana');
+            if (unknownSource.label !== 'Unknown' ||
+                unknownSource.class !== 'participant-source-unknown' ||
+                unknownSource.isKnown !== false) {
+                missing.push(
+                    'getParticipantSourceInfo("banana") did not return the unknown variant'
+                );
+            }
+
+            var nullSource = getParticipantSourceInfo(null);
+            if (nullSource.label !== 'Unknown' ||
+                nullSource.isKnown !== false) {
+                missing.push(
+                    'getParticipantSourceInfo(null) did not return the unknown variant'
+                );
+            }
+
+            if (getParticipantSourceLabel('team') !== 'Team member') {
+                missing.push(
+                    'getParticipantSourceLabel("team") !== "Team member"'
+                );
+            }
+            if (getParticipantSourceLabel('banana') !== null) {
+                missing.push(
+                    'getParticipantSourceLabel("banana") !== null'
+                );
+            }
+            if (getParticipantSourceClass('team') !==
+                'participant-source-team') {
+                missing.push(
+                    'getParticipantSourceClass("team") wrong class'
+                );
+            }
+            if (getParticipantSourceClass('banana') !==
+                'participant-source-unknown') {
+                missing.push(
+                    'getParticipantSourceClass("banana") wrong fallback'
+                );
+            }
+            if (getParticipantSourceIcon('rookie') !== '\u2020') {
+                missing.push(
+                    'getParticipantSourceIcon("rookie") !== dagger'
+                );
+            }
+            if (getParticipantSourceColor('team') !== 'var(--info)') {
+                missing.push(
+                    'getParticipantSourceColor("team") !== var(--info)'
+                );
             }
 
             // Pay formatting

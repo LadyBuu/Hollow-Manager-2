@@ -36,6 +36,17 @@
  *   operation that needs week bounds throws. There is no silent
  *   fallback.
  *
+ * TEMPORARY TEAMS ARE RETIRED:
+ *   The 'temporary' team type is gone. Temporary teams were a
+ *   parallel model to professional teams with no distinct
+ *   invariants; every operation that could be performed on a
+ *   temporary team is already supported by a professional team.
+ *
+ *   Persisted records that still carry type 'temporary' are
+ *   normalised to 'professional' on read through LEGACY_TYPE_MAP.
+ *   A migrated record never re-emits 'temporary', and no new code
+ *   can create one.
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants (lazy)
  */
@@ -111,6 +122,16 @@
     // ============================================================
     // TEAM TYPES
     // ============================================================
+    //
+    // Three types remain:
+    //
+    //   academic      weeks 1-52, bounded by CalendarConstants
+    //   professional  unbounded years
+    //   civilian      unbounded years
+    //
+    // The 'temporary' type was removed. Records that carry it are
+    // migrated to 'professional' via LEGACY_TYPE_MAP. See the file
+    // header.
 
     var TEAM_TYPES = [
         {
@@ -128,13 +149,6 @@
             description: 'Professional working teams, scoped to years'
         },
         {
-            id: 'temporary',
-            label: 'Temporary',
-            periodLabel: 'Year',
-            isAcademic: false,
-            description: 'Temporary or project-based teams, scoped to years'
-        },
-        {
             id: 'civilian',
             label: 'Civilian',
             periodLabel: 'Year',
@@ -146,12 +160,23 @@
     /**
      * Legacy type mappings, applied before any lookup.
      *
-     * 'internship' was a persisted value in early builds. It maps to
-     * 'professional'. Every public lookup normalises through this
-     * map; it is not consulted by isValidTeamType alone.
+     * Every public lookup normalises through this map.
+     *
+     *   'internship'  a persisted value from early builds.
+     *                 Migrates to 'professional'.
+     *
+     *   'temporary'   a retired type. Migrates to 'professional'.
+     *                 Every operation that could be performed on a
+     *                 temporary team is already supported by a
+     *                 professional team; the split carried no
+     *                 invariant of its own.
+     *
+     * A migrated record never re-emits its legacy value: the
+     * canonicaliser in TeamCore writes the normalised type back.
      */
     var LEGACY_TYPE_MAP = Object.freeze({
-        'internship': 'professional'
+        'internship': 'professional',
+        'temporary': 'professional'
     });
 
     // ============================================================
@@ -519,6 +544,18 @@
             }
         });
 
+        // ---- The retired type must not be reachable as canonical ----
+        //
+        // 'temporary' is a legacy alias, not a type. If it ever
+        // appears in TEAM_TYPES the retirement has been reverted
+        // by accident. Surface that loudly.
+        if (seenTypeIds['temporary']) {
+            errors.push(
+                'TEAM_TYPES still contains the retired "temporary" ' +
+                'type. It must only exist in LEGACY_TYPE_MAP.'
+            );
+        }
+
         if (!Array.isArray(TEAM_STATUSES) || TEAM_STATUSES.length === 0) {
             errors.push('TEAM_STATUSES must be a non-empty array.');
         }
@@ -544,6 +581,10 @@
             if (!_typeMap[target]) {
                 errors.push('LEGACY_TYPE_MAP["' + key +
                     '"] points to unknown type "' + target + '".');
+            }
+            if (_typeMap[key]) {
+                errors.push('LEGACY_TYPE_MAP["' + key +
+                    '"] shadows a canonical type id.');
             }
         });
 

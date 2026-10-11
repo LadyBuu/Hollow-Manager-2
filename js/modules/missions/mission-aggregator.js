@@ -18,6 +18,9 @@
  *     first, then the rest of the character store alphabetically.
  *     Filler characters are excluded; deceased characters are
  *     marked.
+ *   - Building the participant VM (getParticipantsViewModel) and
+ *     the rookie-candidate VM (getRookieCandidatesViewModel) used
+ *     by the mission form's participant panel.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Reads, mutations, structural validation, domain rules, or
@@ -39,51 +42,102 @@
  *   - Derived values (missionId, progress, pay, capability flags)
  *     are present on VMs so renderers never compute them.
  *
- * MULTIPLE TEAMS (this revision):
- *   The detail and list VMs now carry `assignedTeamIds` (array of
- *   ids) and `assignedTeams` (array of resolved { id, name }
- *   refs). The singular `teamId` / `teamName` fields are kept for
- *   backward compatibility: they carry the FIRST team in the array,
- *   or null / 'Unassigned' when the array is empty.
+ * MULTIPLE TEAMS:
+ *   The detail and list VMs carry `assignedTeamIds` (array of ids)
+ *   and `assignedTeams` (array of resolved { id, name } refs). The
+ *   singular `teamId` / `teamName` fields are kept for backward
+ *   compatibility: they carry the FIRST team in the array, or null
+ *   / 'Unassigned' when the array is empty.
  *
- *   Renderers that only care about "the team" (list rows) read the
- *   scalar. Renderers that render every team (detail panel,
- *   export) read the array.
- *
- * REPORT AUTHOR OPTIONS (this revision):
+ * REPORT AUTHOR OPTIONS:
  *   getReportAuthorOptionsViewModel(missionId) builds the option
- *   list for the report form's author <select>. The shape is:
+ *   list for the report form's author <select>. Shape:
  *
  *     {
  *       missionId,
  *       missionTitle,
- *       teamMembers: [ { id, name, deceased } ],   // may be empty
+ *       teamMembers:     [ { id, name, deceased } ],   // may be []
  *       otherCharacters: [ { id, name, deceased } ]
  *     }
  *
- *   Ordering within each list is alphabetical by display name.
- *   Filler characters (char.isFiller === true) are excluded from
- *   BOTH lists.
+ *   Team members are the active members of the mission's assigned
+ *   teams at the current application year. Filler characters are
+ *   excluded from both lists. Deceased characters are marked.
  *
- *   "Team members" means characters who are active members of ANY
- *   of the mission's assigned teams, at the current application
- *   year. A character who is a member of two assigned teams
- *   appears once, in the teamMembers list. A character who is not
- *   on any of the assigned teams appears once, in
- *   otherCharacters.
+ * PARTICIPANTS VM:
+ *   getParticipantsViewModel(missionId) builds the data the
+ *   mission form's participant panel needs. Shape:
  *
- *   The current application year is read from window.data
- *   .currentYear; when unavailable, team membership is not
- *   filtered by year and every historical member of the assigned
- *   teams counts as a team member.
+ *     {
+ *       missionId,
+ *       missionTitle,
+ *       missionYear,          // the year the mission takes place
+ *       assignedTeams: [      // one row per assigned team
+ *         {
+ *           teamId,
+ *           teamName,
+ *           members: [      // active members at missionYear
+ *             {
+ *               characterId,
+ *               displayName,
+ *               deceased,
+ *               isParticipant   // true when this (char, team)
+ *                               // is already a participant
+ *             }
+ *           ]
+ *         }
+ *       ],
+ *       currentParticipants: [ // all current participant entries
+ *         {
+ *           characterId,
+ *           displayName,
+ *           teamId,
+ *           teamName,           // null for rookies
+ *           source,             // 'team' | 'rookie'
+ *           sourceLabel,        // human label
+ *           deceased
+ *         }
+ *       ]
+ *     }
+ *
+ *   The panel renders `assignedTeams` as one section per team, with
+ *   a checkbox per member. The checkbox is checked when
+ *   isParticipant is true. Below that, the rookie section is
+ *   rendered from getRookieCandidatesViewModel.
+ *
+ * ROOKIE CANDIDATES VM:
+ *   getRookieCandidatesViewModel(missionId) builds the list for
+ *   the rookie search panel. Shape:
+ *
+ *     {
+ *       missionId,
+ *       candidates: [         // sorted alphabetically by name
+ *         {
+ *           characterId,
+ *           displayName,
+ *           deceased,
+ *           isParticipant,    // already added as a rookie
+ *           onAssignedTeam    // already a team member on the mission
+ *         }
+ *       ]
+ *     }
+ *
+ *   A candidate is any character who has ever held a 'rookie'
+ *   career status, is not filler, and is not already a team member
+ *   of any of the mission's assigned teams. A character who is
+ *   already a rookie participant appears with isParticipant true
+ *   so the UI can render them as selected; the UI can filter them
+ *   out or show them checked.
+ *
+ *   The character pool is walked once; there is no per-call cache.
+ *   The candidate list is small (rookies are a bounded slice of
+ *   the character store) and the VM is rebuilt on every open of
+ *   the form.
  *
  * DATE DEFAULTS:
  *   The form VM's date defaults are (applicationYear, 1, 1).
  *   `applicationYear` is `window.data.currentYear` when present,
- *   else the current calendar year. The year is the only "now"-
- *   dependent value; month and day are the fixed start of the
- *   year. The UI layer may reset untouched month/day when the
- *   year input changes; the aggregator does not.
+ *   else the current calendar year.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
@@ -95,10 +149,7 @@
  *   - window.TeamQueries
  *
  * DEPENDENCIES (LAZY, at call time):
- *   - window.AcademyEliminations  (optional; used only when the
- *     report-author options need to know who is eliminated. When
- *     absent, eliminated characters are not filtered out of the
- *     otherCharacters list.)
+ *   - window.CharacterConstants   (rookie status check)
  */
 
 (function() {
@@ -136,6 +187,12 @@
         }
         if (typeof MissionQueries.getTeamIdsForMission !== 'function') {
             _missing.push('MissionQueries.getTeamIdsForMission');
+        }
+        if (typeof MissionQueries.getParticipantsForMission !== 'function') {
+            _missing.push('MissionQueries.getParticipantsForMission');
+        }
+        if (typeof MissionQueries.isParticipantInMission !== 'function') {
+            _missing.push('MissionQueries.isParticipantInMission');
         }
     }
 
@@ -199,8 +256,8 @@
     // LAZY DEPENDENCIES
     // ============================================================
 
-    function getAcademyEliminations() {
-        return window.AcademyEliminations || null;
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
     }
 
     // ============================================================
@@ -258,6 +315,81 @@
         return null;
     }
 
+    /**
+     * Resolve the year a mission takes place. Prefers mission.year
+     * when it is a valid positive integer; otherwise falls back to
+     * the application year. Never returns null.
+     */
+    function resolveMissionYear(mission) {
+        if (isPlainObject(mission)) {
+            var y = parseInt(mission.year, 10);
+            if (!isNaN(y) && y > 0) {
+                return y;
+            }
+        }
+        return getApplicationYear();
+    }
+
+    // ============================================================
+    // ROOKIE DETECTION
+    // ============================================================
+    //
+    // "Rookie" is a career status. A character has ever been a
+    // rookie when any entry in `char.careerStatus` normalises to
+    // 'rookie'. Normalisation:
+    //
+    //   - lowercase
+    //   - strip a trailing ' (former)' suffix
+    //   - trim
+    //
+    // This is the same normalisation the team domain uses in
+    // TeamQueries.normaliseCareerStatusKey. It is duplicated here
+    // rather than imported because the mission domain does not
+    // depend on TeamQueries' private helpers, and the rule is
+    // three lines.
+    //
+    // A character with a `'rookie (Former)'` entry counts. A
+    // character whose current status is no longer rookie but who
+    // was a rookie in a past year counts.
+    //
+    // The check does NOT consult CharacterConstants.STUDENT_STATUSES
+    // or classifyStatus. Those treat 'rookie' as one of five
+    // student statuses; the question here is narrower. A character
+    // who was a 'junior' has never been a rookie.
+
+    function normaliseCareerStatusKey(status) {
+        if (status === undefined || status === null) { return ''; }
+        var raw = String(status).trim().toLowerCase();
+        if (raw === '') { return ''; }
+        var formerIdx = raw.indexOf(' (former)');
+        if (formerIdx !== -1) {
+            raw = raw.substring(0, formerIdx).trim();
+        }
+        return raw;
+    }
+
+    /**
+     * Has this character ever held a 'rookie' career status?
+     *
+     * A filler character is not a rookie candidate, so this returns
+     * false for fillers regardless of their careerStatus entries.
+     */
+    function hasEverBeenRookie(char) {
+        if (!isPlainObject(char)) { return false; }
+        if (char.isFiller === true) { return false; }
+        if (!Array.isArray(char.careerStatus)) { return false; }
+
+        for (var i = 0; i < char.careerStatus.length; i++) {
+            var entry = char.careerStatus[i];
+            if (!isPlainObject(entry)) { continue; }
+            var key = normaliseCareerStatusKey(entry.status);
+            if (key === 'rookie') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ============================================================
     // ENTITY RESOLUTION
     // ============================================================
@@ -295,14 +427,6 @@
                 ? team.name
                 : 'Unnamed Team'
         };
-    }
-
-    function resolveTeamNameOrUnassigned(teamId) {
-        if (!isNonEmptyString(teamId)) {
-            return 'Unassigned';
-        }
-        var ref = resolveTeamRef(teamId);
-        return ref ? ref.name : 'Unknown Team';
     }
 
     /**
@@ -410,6 +534,70 @@
 
         result.sort(function(a, b) {
             return String(a.name).localeCompare(String(b.name));
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // PARTICIPANT PROJECTION
+    // ============================================================
+    //
+    // The detail panel's participant list, and the data the form's
+    // participant panel needs. See the file header for VM shapes.
+
+    function buildParticipantsVM(mission) {
+        if (!mission) { return []; }
+
+        var raw = MissionQueries.getParticipantsForMission(mission);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+
+            var charRef = resolveCharacterRef(p.characterId);
+            var name = charRef ? charRef.name : 'Unknown';
+            var deceased = false;
+            if (charRef) {
+                var char = CharacterQueries.getCharacterById(p.characterId);
+                deceased = char && char.deceased === true;
+            }
+
+            var teamRef = p.teamId ? resolveTeamRef(p.teamId) : null;
+
+            var sourceLabel = 'Unknown';
+            if (typeof MissionConstants.getParticipantSourceLabel ===
+                'function') {
+                var lbl = MissionConstants.getParticipantSourceLabel(
+                    p.source
+                );
+                if (lbl) { sourceLabel = lbl; }
+            }
+
+            result.push({
+                characterId: p.characterId,
+                displayName: name,
+                deceased: deceased,
+                teamId: p.teamId,
+                teamName: teamRef ? teamRef.name : null,
+                source: p.source,
+                sourceLabel: sourceLabel
+            });
+        }
+
+        // Stable ordering: team participants sorted by team name
+        // then by character name; rookies (teamId null) come last
+        // within their own block, sorted by character name.
+        result.sort(function(a, b) {
+            if (a.teamId === null && b.teamId !== null) { return 1; }
+            if (a.teamId !== null && b.teamId === null) { return -1; }
+            if (a.teamId !== null && b.teamId !== null) {
+                var tn = String(a.teamName || '')
+                    .localeCompare(String(b.teamName || ''));
+                if (tn !== 0) { return tn; }
+            }
+            return String(a.displayName || '')
+                .localeCompare(String(b.displayName || ''));
         });
 
         return result;
@@ -638,6 +826,8 @@
         var supportCount = Array.isArray(mission.supportPersonnel)
             ? mission.supportPersonnel.length
             : 0;
+        var participantCount =
+            MissionQueries.getParticipantsForMission(mission).length;
 
         // Resolve the assignment list. The scalar fields below are
         // derived from the first entry of the array so list rows
@@ -667,7 +857,7 @@
 
             progress: progress,
 
-            // Multiple teams (new shape).
+            // Multiple teams.
             assignedTeamIds: assignedTeams.map(function(t) {
                 return t.id;
             }),
@@ -683,6 +873,7 @@
                 : 'Unassigned',
 
             supportCount: supportCount,
+            participantCount: participantCount,
 
             location: mission.location || '',
 
@@ -821,6 +1012,7 @@
         );
 
         var supportPersonnel = buildSupportPersonnelVM(mission);
+        var participants = buildParticipantsVM(mission);
         var reports = buildReportsVM(mission);
         var log = buildLogVM(mission);
         var objectives = buildObjectivesVM(mission);
@@ -891,7 +1083,7 @@
             surchargePay: mission.surchargePay || '',
             pay: mission.pay || '',
 
-            // Multiple teams (new shape).
+            // Multiple teams.
             assignedTeamIds: assignedTeams.map(function(t) {
                 return t.id;
             }),
@@ -899,9 +1091,7 @@
             assignedTeamCount: assignedTeams.length,
 
             // Singular compatibility (old shape). The FIRST team,
-            // or null. The detail panel renders every team from
-            // the array above; the scalar is kept for callers that
-            // have not migrated.
+            // or null.
             teamId: primaryTeam ? primaryTeam.id : null,
             teamName: primaryTeam
                 ? primaryTeam.name
@@ -909,6 +1099,9 @@
 
             supportPersonnel: supportPersonnel,
             supportCount: supportPersonnel.length,
+
+            participants: participants,
+            participantCount: participants.length,
 
             objectives: objectives,
             progress: progress,
@@ -1137,6 +1330,18 @@
             )
                 ? mission.supportPersonnel.slice()
                 : [],
+            participants: Array.isArray(mission.participants)
+                ? mission.participants.map(function(p) {
+                    if (!isPlainObject(p)) { return p; }
+                    return {
+                        characterId: p.characterId,
+                        teamId: p.teamId !== undefined
+                            ? p.teamId
+                            : null,
+                        source: p.source
+                    };
+                })
+                : [],
             status: mission.status || '',
             objectives: buildObjectivesVM(mission),
             notes: mission.notes || '',
@@ -1149,43 +1354,248 @@
     }
 
     // ============================================================
-    // REPORT AUTHOR OPTIONS VM
+    // PARTICIPANTS VM
     // ============================================================
     //
-    // The report form's author <select> reads this VM. Shape:
+    // See the file header for the full shape.
     //
-    //   {
-    //     missionId,
-    //     missionTitle,
-    //     teamMembers:     [ { id, name, deceased } ],   // may be []
-    //     otherCharacters: [ { id, name, deceased } ]
-    //   }
+    // The panel renders one section per assigned team, with a
+    // checkbox per active member at the mission's year. The
+    // checkbox is checked when the (character, team) pair already
+    // appears in participants.
     //
-    // Ordering:
-    //   teamMembers     — alphabetical by display name
-    //   otherCharacters — alphabetical by display name
+    // The mission's year is the mission's own `year` when set,
+    // else the application year. Using the mission's year (not the
+    // application year) is deliberate: a mission in 1930 should
+    // list the team's 1930 membership, not the 2026 membership.
+
+    function getParticipantsViewModel(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return null;
+        }
+
+        var mission = MissionQueries.getMission(missionId);
+        if (!mission) {
+            return null;
+        }
+
+        var missionYear = resolveMissionYear(mission);
+        var assignedTeamIds =
+            MissionQueries.getTeamIdsForMission(mission);
+
+        var assignedTeamsVM = [];
+
+        for (var t = 0; t < assignedTeamIds.length; t++) {
+            var teamId = assignedTeamIds[t];
+            var team = null;
+            try {
+                team = TeamQueries.getTeamById(teamId);
+            } catch (e) {
+                team = null;
+            }
+
+            var teamName = team && isNonEmptyString(team.name)
+                ? team.name
+                : 'Unknown Team';
+
+            var members = [];
+            if (team) {
+                var activeMembers = [];
+                try {
+                    activeMembers = TeamQueries.getActiveTeamMembers(
+                        team, missionYear
+                    ) || [];
+                } catch (e) {
+                    activeMembers = [];
+                }
+
+                for (var m = 0; m < activeMembers.length; m++) {
+                    var member = activeMembers[m];
+                    if (!member || !member.characterId) { continue; }
+
+                    var charId = String(member.characterId);
+                    var charRef = resolveCharacterRef(charId);
+
+                    var deceased = false;
+                    if (charRef && charRef.id) {
+                        var charRecord =
+                            CharacterQueries.getCharacterById(charId);
+                        deceased = charRecord &&
+                            charRecord.deceased === true;
+                    }
+
+                    var isParticipant =
+                        MissionQueries.isParticipantInMission(
+                            mission, charId, teamId
+                        );
+
+                    members.push({
+                        characterId: charId,
+                        displayName: charRef ? charRef.name : 'Unknown',
+                        role: isNonEmptyString(member.role)
+                            ? member.role : 'Member',
+                        deceased: deceased,
+                        isParticipant: isParticipant
+                    });
+                }
+            }
+
+            members.sort(function(a, b) {
+                return String(a.displayName || '')
+                    .localeCompare(String(b.displayName || ''));
+            });
+
+            assignedTeamsVM.push({
+                teamId: teamId,
+                teamName: teamName,
+                members: members
+            });
+        }
+
+        // Current participant entries, resolved to display shape.
+        var currentParticipants = buildParticipantsVM(mission);
+
+        return {
+            missionId: String(mission.id),
+            missionTitle: isNonEmptyString(mission.title)
+                ? mission.title
+                : 'Mission',
+            missionYear: missionYear,
+            assignedTeams: assignedTeamsVM,
+            currentParticipants: currentParticipants
+        };
+    }
+
+    // ============================================================
+    // ROOKIE CANDIDATES VM
+    // ============================================================
     //
-    // Filler exclusion:
-    //   A character with char.isFiller === true is omitted from
-    //   BOTH lists. A filler placeholder is not a report author.
+    // See the file header for the full shape.
     //
-    // Team membership:
-    //   "Team member" means an active member of ANY of the
-    //   mission's assigned teams at the current application year.
-    //   A character on two assigned teams appears once, in
-    //   teamMembers.
+    // A candidate is any character who has ever held a 'rookie'
+    // career status and is not a filler. The list is sorted
+    // alphabetically by display name.
     //
-    //   When the application year is unavailable (window.data
-    //   .currentYear missing or invalid), membership is not
-    //   filtered by year: every member of every assigned team,
-    //   active or former, counts as a team member. The report
-    //   author list is still readable, and the alternative
-    //   (returning every character in otherCharacters) is worse.
+    // Each candidate carries three flags the UI reads:
     //
-    // Deceased marker:
-    //   Each option carries `deceased: boolean`. The renderer
-    //   decides how to render it (the current convention is
-    //   "(deceased)" appended to the option label).
+    //   deceased         the character is marked deceased
+    //   isParticipant    already added as a rookie participant
+    //   onAssignedTeam   already a member of one of the mission's
+    //                    assigned teams (i.e. they belong in the
+    //                    team-member panel, not the rookie panel)
+    //
+    // The UI decides how to render each combination. The aggregator
+    // does not filter candidates out; filtering is a presentation
+    // choice and belongs to the renderer.
+
+    function getRookieCandidatesViewModel(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return null;
+        }
+
+        var mission = MissionQueries.getMission(missionId);
+        if (!mission) {
+            return null;
+        }
+
+        var missionYear = resolveMissionYear(mission);
+        var assignedTeamIds =
+            MissionQueries.getTeamIdsForMission(mission);
+
+        // Build the set of characters who are on any of the
+        // mission's assigned teams at the mission's year.
+        var onAssignedTeamSet = Object.create(null);
+        for (var t = 0; t < assignedTeamIds.length; t++) {
+            var teamId = assignedTeamIds[t];
+            var team = null;
+            try {
+                team = TeamQueries.getTeamById(teamId);
+            } catch (e) {
+                team = null;
+            }
+            if (!team) { continue; }
+
+            var activeMembers = [];
+            try {
+                activeMembers = TeamQueries.getActiveTeamMembers(
+                    team, missionYear
+                ) || [];
+            } catch (e) {
+                activeMembers = [];
+            }
+            for (var m = 0; m < activeMembers.length; m++) {
+                var member = activeMembers[m];
+                if (!member || !member.characterId) { continue; }
+                onAssignedTeamSet[String(member.characterId)] = true;
+            }
+        }
+
+        // Build the set of characters already added as rookie
+        // participants on this mission.
+        var currentParticipants =
+            MissionQueries.getParticipantsForMission(mission);
+        var rookieParticipantSet = Object.create(null);
+        for (var p = 0; p < currentParticipants.length; p++) {
+            if (currentParticipants[p].source === 'rookie') {
+                rookieParticipantSet[
+                    currentParticipants[p].characterId
+                ] = true;
+            }
+        }
+
+        var allChars = [];
+        try {
+            allChars = CharacterQueries.getCharacters() || [];
+        } catch (e) {
+            allChars = [];
+        }
+
+        var candidates = [];
+
+        for (var c = 0; c < allChars.length; c++) {
+            var char = allChars[c];
+            if (!char || !char.id) { continue; }
+
+            if (!hasEverBeenRookie(char)) { continue; }
+
+            var charId = String(char.id);
+            var name = '';
+            try {
+                name = CharacterQueries.getDisplayName(char) || '';
+            } catch (e) {
+                name = '';
+            }
+            if (name === '') { name = charId; }
+
+            candidates.push({
+                characterId: charId,
+                displayName: name,
+                deceased: char.deceased === true,
+                isParticipant:
+                    rookieParticipantSet[charId] === true,
+                onAssignedTeam:
+                    onAssignedTeamSet[charId] === true
+            });
+        }
+
+        candidates.sort(function(a, b) {
+            return String(a.displayName || '')
+                .localeCompare(String(b.displayName || ''));
+        });
+
+        return {
+            missionId: String(mission.id),
+            missionTitle: isNonEmptyString(mission.title)
+                ? mission.title
+                : 'Mission',
+            missionYear: missionYear,
+            candidates: candidates
+        };
+    }
+
+    // ============================================================
+    // REPORT AUTHOR OPTIONS VM
+    // ============================================================
 
     function getReportAuthorOptionsViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -1224,9 +1634,6 @@
                     members = [];
                 }
             } else {
-                // No application year available. Fall back to the
-                // full member list on the team record. Active and
-                // former members both count.
                 members = Array.isArray(team.members)
                     ? team.members
                     : [];
@@ -1335,7 +1742,9 @@
         getMissionFormViewModel: getMissionFormViewModel,
         getMissionStatisticsViewModel: getMissionStatisticsViewModel,
         getReportAuthorOptionsViewModel:
-            getReportAuthorOptionsViewModel
+            getReportAuthorOptionsViewModel,
+        getParticipantsViewModel: getParticipantsViewModel,
+        getRookieCandidatesViewModel: getRookieCandidatesViewModel
     });
 
     // ============================================================
@@ -1351,13 +1760,50 @@
             'getMissionDetailViewModel',
             'getMissionFormViewModel',
             'getMissionStatisticsViewModel',
-            'getReportAuthorOptionsViewModel'
+            'getReportAuthorOptionsViewModel',
+            'getParticipantsViewModel',
+            'getRookieCandidatesViewModel'
         ];
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test: rookie detection.
+        try {
+            if (hasEverBeenRookie({
+                careerStatus: [{ status: 'rookie' }]
+            }) !== true) {
+                missing.push('hasEverBeenRookie did not accept a rookie');
+            }
+            if (hasEverBeenRookie({
+                careerStatus: [{ status: 'Rookie' }]
+            }) !== true) {
+                missing.push('hasEverBeenRookie did not handle case');
+            }
+            if (hasEverBeenRookie({
+                careerStatus: [{ status: 'rookie (Former)' }]
+            }) !== true) {
+                missing.push('hasEverBeenRookie did not accept former');
+            }
+            if (hasEverBeenRookie({
+                careerStatus: [{ status: 'junior' }]
+            }) !== false) {
+                missing.push('hasEverBeenRookie accepted a junior');
+            }
+            if (hasEverBeenRookie({
+                isFiller: true,
+                careerStatus: [{ status: 'rookie' }]
+            }) !== false) {
+                missing.push('hasEverBeenRookie accepted a filler');
+            }
+            if (hasEverBeenRookie({}) !== false) {
+                missing.push('hasEverBeenRookie accepted an empty record');
+            }
+        } catch (e) {
+            missing.push('rookie smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
