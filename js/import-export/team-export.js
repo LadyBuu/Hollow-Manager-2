@@ -1,12 +1,13 @@
 /**
  * modules/teams/team-export.js - Team Export
- * Full textual dump of a single team.
+ * Full textual dump of one or more teams.
  *
  * Path: js/modules/teams/team-export.js
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one team.
- *   - Handing the payload to ExportUtils.downloadBlob.
+ *   - Building a single plain-text report for MANY teams.
+ *   - Handing either payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamQueries, CharacterQueries, and the other
@@ -20,7 +21,34 @@
  *     This module supplies a base filename and hands over the
  *     payload.
  *
- * REPORT CONTENTS:
+ * TWO ENTRY POINTS:
+ *
+ *   exportTeam(teamId)
+ *     One team. The report is the same content as before: header,
+ *     name history, ranking history, members with character
+ *     snapshots.
+ *
+ *   exportTeamsText(teamIds)
+ *     Many teams in one file. Each team's report is built by the
+ *     same builder that exportTeam uses, and the parts are
+ *     concatenated under a bulk banner. The order is the order
+ *     the caller supplied the ids in; the caller is responsible
+ *     for sorting if a particular order is wanted.
+ *
+ *     Teams whose reports could not be built (missing team,
+ *     build failure) are skipped silently and their count is
+ *     reported in the result, so a caller with a stale selection
+ *     still gets a usable file for the teams that do resolve.
+ *
+ *     When NO team could be built, the function returns an error
+ *     and does not download.
+ *
+ * BULK FILENAME:
+ *   "teams-export-<count>.txt". ExportUtils.downloadBlob inserts
+ *   its own timestamp before the extension, so two bulk exports
+ *   in the same session do not collide.
+ *
+ * REPORT CONTENTS (per team):
  *   - Team header: name, type, status, period, class, team number,
  *     associated mission, created-at.
  *   - Name history.
@@ -33,20 +61,22 @@
  *     department memberships, and OTHER PROFESSIONAL team
  *     memberships.
  *
- * ACADEMIC TEAMS ARE EXCLUDED FROM THE SNAPSHOT (this revision):
- *   pushOtherTeamMemberships now filters to professional teams
- *   only. The snapshot already carries every professional
- *   membership from the top-level TEAMS section; the OTHER
- *   TEAMS line is a cross-reference to teams the reader is not
- *   looking at. Academic teams are a different domain and are
- *   covered by the Academy view, not this report.
+ * ACADEMIC TEAMS ARE EXCLUDED FROM THE SNAPSHOT:
+ *   pushOtherTeamMemberships filters to professional teams only.
+ *   The snapshot already carries every professional membership
+ *   from the top-level TEAMS section; the OTHER TEAMS line is a
+ *   cross-reference to teams the reader is not looking at.
+ *   Academic teams are a different domain and are covered by the
+ *   Academy view, not this report.
  *
  * DOWNLOAD FILENAMES:
- *   This module produces a base filename of the form
- *   "team_<slug>_<timestamp>.txt". ExportUtils.downloadBlob
- *   inserts its own local-time timestamp before the extension, so
- *   a second export of the same team in the same session never
- *   collides with the first.
+ *   Single team:  "team_<slug>_<timestamp>.txt"
+ *   Bulk:         "teams-export-<count>.txt"
+ *
+ *   ExportUtils.downloadBlob inserts its own local-time timestamp
+ *   before the extension, so a second export of the same team (or
+ *   the same bulk selection) in the same session never collides
+ *   with the first.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -766,7 +796,7 @@
     }
 
     // ============================================================
-    // PUBLIC API
+    // PUBLIC API - SINGLE TEAM
     // ============================================================
 
     /**
@@ -822,7 +852,8 @@
     }
 
     /**
-     * Build the report without downloading. For tests and preview.
+     * Build the report for one team without downloading. For
+     * tests and preview.
      *
      * @param {string} teamId
      * @returns {object}
@@ -856,12 +887,212 @@
     }
 
     // ============================================================
+    // PUBLIC API - BULK TEAM EXPORT
+    // ============================================================
+    //
+    // Concatenates the individual reports for a set of teams into
+    // one file, under a bulk banner.
+    //
+    // ORDER: the caller's order. If a specific order is wanted,
+    // the caller sorts teamIds before passing them in.
+    //
+    // SKIPPED TEAMS: teams whose reports could not be built
+    // (missing team, build threw) are dropped from the output.
+    // The result carries `count` (teams included) and `skipped`
+    // (teams dropped). A caller with a stale selection still gets
+    // a usable file for the teams that resolve.
+    //
+    // EMPTY RESULT: when no team could be built, the function
+    // returns { exported: false, error } and does not download.
+    // An empty bulk export is not a useful file.
+
+    function buildBulkBanner(count) {
+        var bannerWidth = 64;
+        var banner = '';
+        for (var i = 0; i < bannerWidth; i++) {
+            banner += '=';
+        }
+
+        return banner + '\n' +
+            'TEAM EXPORT \u2014 ' + count + ' team' +
+            (count === 1 ? '' : 's') + '\n' +
+            'Generated: ' + new Date().toISOString() + '\n' +
+            banner;
+    }
+
+    function buildBulkFilename(count) {
+        return 'teams-export-' + count + '.txt';
+    }
+
+    /**
+     * Export several teams into one plain-text file.
+     *
+     * @param {string[]} teamIds
+     * @returns {object}
+     *   { exported: true, filename, count, skipped } on success
+     *   { exported: false, error } on failure
+     */
+    function exportTeamsText(teamIds) {
+        if (!Array.isArray(teamIds)) {
+            return {
+                exported: false,
+                error: 'teamIds must be an array.'
+            };
+        }
+
+        if (teamIds.length === 0) {
+            return {
+                exported: false,
+                error: 'No teams selected.'
+            };
+        }
+
+        var parts = [];
+        var includedIds = [];
+        var skipped = 0;
+
+        for (var i = 0; i < teamIds.length; i++) {
+            var id = teamIds[i];
+            if (!isNonEmptyString(id)) {
+                skipped++;
+                continue;
+            }
+
+            var built;
+            try {
+                built = buildReport(String(id));
+            } catch (e) {
+                console.warn(
+                    '[TeamExport] buildReport threw for team ' +
+                    id + ':', e
+                );
+                skipped++;
+                continue;
+            }
+
+            if (!built || built.error) {
+                skipped++;
+                continue;
+            }
+
+            parts.push(built.text);
+            includedIds.push(String(id));
+        }
+
+        if (parts.length === 0) {
+            return {
+                exported: false,
+                error: 'No teams could be built.'
+            };
+        }
+
+        var count = parts.length;
+
+        var banner = buildBulkBanner(count);
+        var content = banner + '\n\n' + parts.join('\n\n');
+
+        var filename = buildBulkFilename(count);
+
+        var blob;
+        try {
+            blob = new Blob([content], {
+                type: 'text/plain;charset=utf-8'
+            });
+        } catch (e) {
+            return {
+                exported: false,
+                error: 'Failed to build file blob: ' + e.message
+            };
+        }
+
+        try {
+            ExportUtils.downloadBlob(blob, filename);
+        } catch (e) {
+            return {
+                exported: false,
+                error: 'Download failed: ' + e.message
+            };
+        }
+
+        return {
+            exported: true,
+            filename: filename,
+            count: count,
+            skipped: skipped
+        };
+    }
+
+    /**
+     * Build the bulk report without downloading. For tests and
+     * preview.
+     *
+     * @param {string[]} teamIds
+     * @returns {object}
+     *   { text, filename, count, skipped } on success
+     *   { error: string } on failure
+     */
+    function buildTeamsTextReport(teamIds) {
+        if (!Array.isArray(teamIds)) {
+            return { error: 'teamIds must be an array.' };
+        }
+        if (teamIds.length === 0) {
+            return { error: 'No teams selected.' };
+        }
+
+        var parts = [];
+        var skipped = 0;
+
+        for (var i = 0; i < teamIds.length; i++) {
+            var id = teamIds[i];
+            if (!isNonEmptyString(id)) {
+                skipped++;
+                continue;
+            }
+
+            var built;
+            try {
+                built = buildReport(String(id));
+            } catch (e) {
+                skipped++;
+                continue;
+            }
+
+            if (!built || built.error) {
+                skipped++;
+                continue;
+            }
+
+            parts.push(built.text);
+        }
+
+        if (parts.length === 0) {
+            return { error: 'No teams could be built.' };
+        }
+
+        var count = parts.length;
+        var banner = buildBulkBanner(count);
+        var content = banner + '\n\n' + parts.join('\n\n');
+
+        return {
+            text: content,
+            filename: buildBulkFilename(count),
+            count: count,
+            skipped: skipped
+        };
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.TeamExport = Object.freeze({
+        // Single team
         exportTeam: exportTeam,
-        buildTeamReport: buildTeamReport
+        buildTeamReport: buildTeamReport,
+
+        // Bulk
+        exportTeamsText: exportTeamsText,
+        buildTeamsTextReport: buildTeamsTextReport
     });
 
     // ============================================================
@@ -872,11 +1103,17 @@
         var exports = window.TeamExport;
         var missing = [];
 
-        if (typeof exports.exportTeam !== 'function') {
-            missing.push('exportTeam');
-        }
-        if (typeof exports.buildTeamReport !== 'function') {
-            missing.push('buildTeamReport');
+        var required = [
+            'exportTeam',
+            'buildTeamReport',
+            'exportTeamsText',
+            'buildTeamsTextReport'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
         }
 
         if (missing.length > 0) {
