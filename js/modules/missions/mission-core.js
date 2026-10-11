@@ -11,10 +11,17 @@
  *   - Objective mutations: add, remove, toggle.
  *   - Support personnel mutations: add, remove.
  *   - Participant mutations: add, remove.
- *   - Log entry mutations: append.
  *   - Report mutations: add, update, remove.
  *   - MutationPipeline orchestration for all of the above.
  *   - Cascade helper (stripCharacterRefs) for cross-domain cleanup.
+ *
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Reads. MissionQueries owns them.
+ *   - Structural validation. MissionSchema owns that.
+ *   - Domain rules. MissionRules owns them.
+ *   - The global audit trail. ActivityLog owns it, and it is
+ *     fed by MutationPipeline's logMessage hook, not by this
+ *     module.
  *
  * MUTATION PATTERN:
  *   Every mutation follows the same shape:
@@ -49,7 +56,7 @@
  *   atomic.
  *
  * SUB-MUTATIONS DO NOT RE-VALIDATE THE WHOLE MISSION:
- *   Report, log, objective, support-personnel, and participant
+ *   Report, objective, support-personnel, and participant
  *   mutations touch a narrow slice of a mission that is already in
  *   the store. They do NOT run MissionSchema.validateMission on the
  *   whole record.
@@ -150,6 +157,26 @@
  *   report leaves `updatedAt` null until first edit. Removed
  *   reports are dropped from the array entirely.
  *
+ * MISSION LOG HAS BEEN REMOVED:
+ *   Earlier versions of this module exposed an addLog(missionId,
+ *   message) mutation that appended a { timestamp, message } entry
+ *   to a `log` array on the mission record, and createMission
+ *   seeded that array with an empty list.
+ *
+ *   That field is gone. Reasons:
+ *
+ *     - only user-authored entries ever reached it, because no
+ *       mutation appended to it automatically;
+ *     - the global ActivityLog already covers the audit-trail
+ *       use case;
+ *     - for a single-user store, an empty per-mission audit trail
+ *       is dead weight and a populated one is noise.
+ *
+ *   A stored mission that still carries `log` keeps it in storage
+ *   until the record is next written, at which point
+ *   MissionSchema.canonicaliseMissionShape drops it. Nothing in
+ *   this module touches the field.
+ *
  * DERIVED FIELDS:
  *   progress and pay are recomputed from the candidate inside
  *   validate, via MissionRules.recalculateDerivedFields. The stored
@@ -240,9 +267,6 @@
         }
         if (typeof MissionSchema.validateObjective !== 'function') {
             _missing.push('MissionSchema.validateObjective');
-        }
-        if (typeof MissionSchema.validateLogEntry !== 'function') {
-            _missing.push('MissionSchema.validateLogEntry');
         }
         if (typeof MissionSchema.validateReport !== 'function') {
             _missing.push('MissionSchema.validateReport');
@@ -441,15 +465,6 @@
     // NESTED VALIDATION HELPERS
     // ============================================================
 
-    function validateSingleLogEntry(entry) {
-        var errors = [];
-        MissionSchema.validateLogEntry(entry, 0, errors);
-        return {
-            valid: errors.length === 0,
-            message: errors.join('; ')
-        };
-    }
-
     function validateSingleReport(report) {
         var errors = [];
         MissionSchema.validateReport(report, 0, errors);
@@ -484,6 +499,8 @@
      * Everything else falls back to MissionConstants.getDefaults()
      * for enum fields, to '' / [] / null for text, arrays, and IDs,
      * and to (currentYear, 1, 1) for absent date components.
+     *
+     * The created mission has NO `log` field. See the file header.
      *
      * @returns {Promise<{success, data?, message?}>}
      */
@@ -692,8 +709,6 @@
 
                     reports: [],
 
-                    log: [],
-
                     graduatingClassId: data.graduatingClassId !== undefined
                         ? data.graduatingClassId
                         : null,
@@ -795,6 +810,10 @@
      * points at a team that is no longer in the new array are
      * pruned from the candidate in the same transaction. See
      * pruneOrphanedParticipants above for the reasoning.
+     *
+     * A legacy `log` field on the stored record is dropped by the
+     * canonicaliser, because updateMission feeds the candidate
+     * through canonicaliseMissionShape. Nothing here touches it.
      *
      * @returns {Promise<{success, data?, message?}>}
      */
@@ -1710,75 +1729,6 @@
     }
 
     // ============================================================
-    // LOG COMMAND
-    // ============================================================
-
-    function addLog(missionId, message) {
-        var target = normaliseId(missionId);
-        if (target === null) {
-            return Promise.resolve(failure('Mission ID is required.'));
-        }
-        if (!isNonEmptyString(message)) {
-            return Promise.resolve(
-                failure('Log message is required.')
-            );
-        }
-        var trimmed = message.trim();
-
-        return MutationPipeline.performMutation({
-            validate: function(appData) {
-                var current = findMissionInSnapshot(appData, target);
-                if (!current) {
-                    return {
-                        valid: false,
-                        message: 'Mission no longer exists.'
-                    };
-                }
-
-                var nowIso = new Date().toISOString();
-                var candidate = deepClone(current);
-                if (!Array.isArray(candidate.log)) {
-                    candidate.log = [];
-                }
-
-                var entry = {
-                    timestamp: nowIso,
-                    message: trimmed
-                };
-
-                var check = validateSingleLogEntry(entry);
-                if (!check.valid) {
-                    return {
-                        valid: false,
-                        message: check.message
-                    };
-                }
-
-                candidate.log.push(entry);
-                var final = finaliseCandidate(candidate, nowIso);
-                final.completedAt = candidate.completedAt;
-
-                stagedCandidate = final;
-                return { valid: true };
-            },
-            mutate: function(appData) {
-                var idx = findMissionIndexInSnapshot(appData, target);
-                if (idx === -1) {
-                    throw new Error('Mission no longer exists.');
-                }
-                appData.missions[idx] = deepClone(stagedCandidate);
-                return { id: target, mission: stagedCandidate };
-            },
-            logMessage: function(result) {
-                return 'Added log entry to mission: ' +
-                    (result.mission.title || target);
-            },
-            successMessage: 'Log entry added.',
-            failureMessage: 'Failed to add log entry.'
-        });
-    }
-
-    // ============================================================
     // REPORT COMMANDS
     // ============================================================
 
@@ -2106,9 +2056,6 @@
         addParticipant: wrapMutation(addParticipant),
         removeParticipant: wrapMutation(removeParticipant),
 
-        // Log
-        addLog: wrapMutation(addLog),
-
         // Reports
         addReport: wrapMutation(addReport),
         updateReport: wrapMutation(updateReport),
@@ -2142,7 +2089,6 @@
             'removeSupportPersonnel',
             'addParticipant',
             'removeParticipant',
-            'addLog',
             'addReport',
             'updateReport',
             'removeReport',
