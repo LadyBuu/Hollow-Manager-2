@@ -15,6 +15,7 @@
  *   - Own the professional tab's view mode.
  *   - Own the timeline's range and expanded-years state.
  *   - Own the professional pool's expansion and selection state.
+ *   - Own the TEAM LIST's selection set (for bulk export).
  *   - Open the team export picker and the candidate export.
  *   - Open the team verifier modal.
  *   - Open the kill-team modal.
@@ -29,6 +30,7 @@
  *   - The verifier's HTML. TeamVerifierView owns it.
  *   - The kill modal's HTML and per-character mutation.
  *     TeamKillModal owns them.
+ *   - The single-file bulk export. TeamExport owns it.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
@@ -45,13 +47,39 @@
  *
  *   Both are passed onto the page VM by refreshUI.
  *
- * CREATE TEAM FROM SELECTION:
- *   Clicking Create Team from Selection opens the standard team
- *   form. The selected character IDs are stashed in
- *   _pendingTeamMemberIds. When the form submits successfully and
- *   the resulting team has a startPeriod, batchAddMembers is
- *   called with those IDs at that period. If the form is
- *   cancelled, the pending list is cleared.
+ * TEAM SELECTION STATE (this revision):
+ *   _teamSelectedIds  { [teamId]: true }
+ *
+ *   The set of teams ticked via the per-row checkbox. Feeds the
+ *   bulk Export button on the page header. Reset when:
+ *     - the tab changes
+ *     - init/destroy
+ *
+ *   Selection SURVIVES view mode changes within a tab. A user who
+ *   ticks three teams, switches to the pool, and switches back
+ *   expects the ticks to still be there. The set is scoped to the
+ *   tab, not the view mode.
+ *
+ *   Selection does NOT survive a tab change. Team ids are stable
+ *   across tabs but the user's intent ("export these professional
+ *   teams") does not carry over to civilian teams. Dropping the
+ *   set on tab switch keeps the bulk Export button's count honest.
+ *
+ * EXPORT BUTTONS:
+ *   There are two export surfaces:
+ *
+ *     Page header Export button (#team-export-btn)
+ *       Bulk. Exports every ticked team into ONE file. Disabled
+ *       when the selection is empty. Present on both professional
+ *       and civilian tabs.
+ *
+ *     Per-row .export-team button
+ *       Single team. Exports that team directly with no picker.
+ *       The picker's direct mode is used, so the user does not
+ *       see a list.
+ *
+ *   The picker (#team-export-btn previously) is no longer used for
+ *   the header button. The header button is now a bulk action.
  *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
@@ -70,7 +98,8 @@
  *   - window.NotificationSystem
  *
  * DEPENDENCIES (LAZY, at click time):
- *   - window.TeamExportPicker
+ *   - window.TeamExport       (bulk and single-team export)
+ *   - window.TeamExportPicker (per-row single-team export)
  *   - window.CandidateExport
  *   - window.TeamVerifierView
  *   - window.TeamKillModal
@@ -324,6 +353,11 @@
     var _poolExpandedIds = Object.create(null);
     var _poolSelectedIds = Object.create(null);
 
+    // Team list selection, for the bulk export. Keyed by teamId,
+    // value true. Cleared on tab change and init/destroy; kept
+    // across view mode changes within the same tab.
+    var _teamSelectedIds = Object.create(null);
+
     var _pendingTeamMemberIds = null;
 
     // ============================================================
@@ -433,6 +467,14 @@
 
         pageVM.viewMode = _viewMode;
 
+        // ---- Team list selection. ----
+        //
+        // Passed through unconditionally, not only when the
+        // current view is 'teams'. The header Export button is
+        // rendered on every view, and it needs the count from
+        // this set.
+        pageVM.teamSelectedIds = _teamSelectedIds;
+
         if (currentTab === 'professional' && _viewMode === 'pool') {
             if (period === null) {
                 throw new Error(
@@ -523,6 +565,7 @@
         _timelineExpandedYears = Object.create(null);
         _poolExpandedIds = Object.create(null);
         _poolSelectedIds = Object.create(null);
+        _teamSelectedIds = Object.create(null);
         _pendingTeamMemberIds = null;
 
         bindTabSwitching();
@@ -531,6 +574,7 @@
         bindMatchmaking();
         bindVerify();
         bindTeamExport();
+        bindTeamSelection();
         bindCandidateExport();
         bindTeamActions();
         bindKillTeam();
@@ -569,6 +613,7 @@
         _timelineExpandedYears = Object.create(null);
         _poolExpandedIds = Object.create(null);
         _poolSelectedIds = Object.create(null);
+        _teamSelectedIds = Object.create(null);
         _pendingTeamMemberIds = null;
     }
 
@@ -580,6 +625,14 @@
         delegate('.tab-btn', 'click', function(e, target) {
             var tab = target.dataset.tab;
             if (!tab) { return; }
+
+            var previousTab = TeamUI.getCurrentTab();
+            if (tab !== previousTab) {
+                // Selection is per-tab. Drop it when the tab
+                // changes so the bulk Export button's count
+                // reflects what is actually on screen.
+                _teamSelectedIds = Object.create(null);
+            }
 
             if (tab !== 'professional') {
                 _viewMode = 'teams';
@@ -614,6 +667,11 @@
             if (mode === _viewMode) { return; }
 
             _viewMode = mode;
+
+            // NOTE: _teamSelectedIds is deliberately NOT cleared
+            // here. The selection is scoped to the tab, not to
+            // the view mode. Switching to the pool and back must
+            // preserve the ticks.
 
             if (_viewMode !== 'teams') {
                 TeamUI.setExpandedTeamId(null);
@@ -850,6 +908,55 @@
         _pendingTeamMemberIds = selectedIds;
 
         showTeamForm(null);
+    }
+
+    // ============================================================
+    // TEAM SELECTION (bulk export)
+    // ============================================================
+    //
+    // The per-row checkbox toggles membership in the team
+    // selection set. The header Export button reads the set.
+    //
+    // The checkbox lives inside the row, so the change event has
+    // to stopPropagation to keep from also triggering any row
+    // click. The row does not currently have a click handler, but
+    // adding one later should not require touching this code.
+
+    function bindTeamSelection() {
+        delegate(
+            '.team-select-checkbox',
+            'change',
+            function(e, target) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+
+                var teamId = target.dataset.teamId;
+                if (!teamId) { return; }
+
+                if (target.checked) {
+                    _teamSelectedIds[String(teamId)] = true;
+                } else {
+                    delete _teamSelectedIds[String(teamId)];
+                }
+
+                // Re-render. The header Export button's label
+                // and disabled state depend on the count, so
+                // it needs to update even though the checkbox
+                // state is already reflected in the DOM.
+                refreshUI();
+            }
+        );
+
+        delegate(
+            '.team-select-cell',
+            'click',
+            function(e) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+            }
+        );
     }
 
     // ============================================================
@@ -1516,30 +1623,113 @@
     // ============================================================
     // EXPORTS
     // ============================================================
+    //
+    // Two surfaces, one binder:
+    //
+    //   #team-export-btn   bulk export of the ticked teams, one file
+    //   .export-team       single-team direct export, no picker
+    //
+    // The single-team path still goes through TeamExportPicker so
+    // the picker's existing single-team download logic is reused.
+    // The picker's direct mode calls TeamExport.exportTeam
+    // immediately and skips the list.
 
     function bindTeamExport() {
         delegate('#team-export-btn', 'click', function(e) {
             e.preventDefault();
-
-            var Picker = window.TeamExportPicker || null;
-            if (!Picker || typeof Picker.openModal !== 'function') {
-                notify('Team export is not available.', 'error');
-                return;
-            }
-
-            try {
-                Picker.openModal();
-            } catch (err) {
-                console.warn(
-                    '[TeamEvents] TeamExportPicker.openModal ' +
-                    'threw:', err
-                );
-                notify(
-                    'Team export failed: ' + err.message,
-                    'error'
-                );
-            }
+            handleBulkTeamExport();
         });
+    }
+
+    function handleBulkTeamExport() {
+        var Exporter = window.TeamExport || null;
+        if (!Exporter ||
+            typeof Exporter.exportTeamsText !== 'function') {
+            notify(
+                'Team export is not available.',
+                'error'
+            );
+            return;
+        }
+
+        var selectedIds = objectKeysWithTrue(_teamSelectedIds);
+
+        if (selectedIds.length === 0) {
+            notify(
+                'Select at least one team to export.',
+                'info'
+            );
+            return;
+        }
+
+        var result = null;
+        try {
+            result = Exporter.exportTeamsText(selectedIds);
+        } catch (err) {
+            console.warn(
+                '[TeamEvents] TeamExport.exportTeamsText threw:',
+                err
+            );
+            notify(
+                'Export failed: ' +
+                (err && err.message ? err.message : String(err)),
+                'error'
+            );
+            return;
+        }
+
+        if (result && result.exported) {
+            var msg = 'Exported ' + result.count + ' team' +
+                (result.count === 1 ? '' : 's') +
+                ': ' + result.filename;
+            if (typeof result.skipped === 'number' &&
+                result.skipped > 0) {
+                msg += ' (' + result.skipped +
+                    ' skipped)';
+            }
+            notify(msg, 'success');
+
+            // Clear the selection after a successful bulk
+            // export. The file is downloaded; the ticks have
+            // served their purpose. Leaving them selected would
+            // force the user to clear manually before the next
+            // bulk export.
+            _teamSelectedIds = Object.create(null);
+            refreshUI();
+            return;
+        }
+
+        notify(
+            'Export failed: ' +
+            ((result && result.error) || 'Unknown error'),
+            'error'
+        );
+    }
+
+    function openTeamExportPicker(teamId, options) {
+        options = options || {};
+
+        var Picker = window.TeamExportPicker || null;
+        if (!Picker || typeof Picker.openModal !== 'function') {
+            notify('Team export is not available.', 'error');
+            return;
+        }
+
+        try {
+            Picker.openModal({
+                teamId: teamId,
+                direct: options.direct === true
+            });
+        } catch (err) {
+            console.warn(
+                '[TeamEvents] TeamExportPicker.openModal threw:',
+                err
+            );
+            notify(
+                'Team export failed: ' + err.message,
+                'error'
+            );
+        }
     }
 
     function bindCandidateExport() {
@@ -1640,7 +1830,13 @@
         delegate('.export-team', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) { openTeamExportPicker(teamId); }
+            if (teamId) {
+                // Direct mode: export this team immediately, no
+                // picker list. The row's Export button already
+                // names the team, so making the user pick it
+                // again from a list is redundant.
+                openTeamExportPicker(teamId, { direct: true });
+            }
         });
 
         delegate('.toggle-members', 'click', function(e, target) {
@@ -1698,27 +1894,6 @@
         });
     }
 
-    function openTeamExportPicker(teamId) {
-        var Picker = window.TeamExportPicker || null;
-        if (!Picker || typeof Picker.openModal !== 'function') {
-            notify('Team export is not available.', 'error');
-            return;
-        }
-
-        try {
-            Picker.openModal({ teamId: teamId });
-        } catch (err) {
-            console.warn(
-                '[TeamEvents] TeamExportPicker.openModal threw:',
-                err
-            );
-            notify(
-                'Team export failed: ' + err.message,
-                'error'
-            );
-        }
-    }
-
     function deleteTeam(teamId) {
         var name = TeamQueries.getTeamName(teamId) || 'this team';
         if (!confirm('Delete "' + name +
@@ -1732,6 +1907,10 @@
             if (TeamUI.getExpandedTeamId() === teamId) {
                 TeamUI.setExpandedTeamId(null);
             }
+
+            // Drop the deleted team from the selection set so
+            // the bulk Export button's count stays accurate.
+            delete _teamSelectedIds[String(teamId)];
 
             refreshUI();
         }).catch(function(err) {
@@ -2004,7 +2183,7 @@
     function applyFilters() {
         var tab = TeamUI.getCurrentTab();
 
-        if (tab === 'professional' || tab === 'temporary') {
+        if (tab === 'professional') {
             var yearEl = _container.querySelector(
                 '#team-filter-year'
             );
