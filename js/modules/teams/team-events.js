@@ -16,6 +16,8 @@
  *   - Own the timeline's range and expanded-years state.
  *   - Own the professional pool's expansion and selection state.
  *   - Own the TEAM LIST's selection set (for bulk export).
+ *   - Own the form's specialisation chip list (DOM-only until
+ *     submit).
  *   - Open the team export picker and the candidate export.
  *   - Open the team verifier modal.
  *   - Open the kill-team modal.
@@ -31,6 +33,7 @@
  *   - The kill modal's HTML and per-character mutation.
  *     TeamKillModal owns them.
  *   - The single-file bulk export. TeamExport owns it.
+ *   - The specialisation vocabulary. MissionConstants owns it.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
@@ -47,7 +50,7 @@
  *
  *   Both are passed onto the page VM by refreshUI.
  *
- * TEAM SELECTION STATE (this revision):
+ * TEAM SELECTION STATE:
  *   _teamSelectedIds  { [teamId]: true }
  *
  *   The set of teams ticked via the per-row checkbox. Feeds the
@@ -55,15 +58,7 @@
  *     - the tab changes
  *     - init/destroy
  *
- *   Selection SURVIVES view mode changes within a tab. A user who
- *   ticks three teams, switches to the pool, and switches back
- *   expects the ticks to still be there. The set is scoped to the
- *   tab, not the view mode.
- *
- *   Selection does NOT survive a tab change. Team ids are stable
- *   across tabs but the user's intent ("export these professional
- *   teams") does not carry over to civilian teams. Dropping the
- *   set on tab switch keeps the bulk Export button's count honest.
+ *   Selection SURVIVES view mode changes within a tab.
  *
  * EXPORT BUTTONS:
  *   There are two export surfaces:
@@ -78,8 +73,23 @@
  *       The picker's direct mode is used, so the user does not
  *       see a list.
  *
- *   The picker (#team-export-btn previously) is no longer used for
- *   the header button. The header button is now a bulk action.
+ * FORM SPECIALISATIONS:
+ *   The team form carries a chip-list editor for the team's
+ *   specialisations. Unlike the mission form's team editor, the
+ *   team's specialisation chips are DOM-only until submit: the
+ *   form collects the current chip ids on submit and passes them
+ *   to TeamCore. There is no incremental pipeline write per chip.
+ *
+ *   Handlers:
+ *
+ *     .team-specialisation-add   click  — appends a chip for the
+ *                                        current select value
+ *     .team-specialisation-remove click — removes the chip it is
+ *                                        inside
+ *
+ *   Both are bound inside bindTeamFormEvents, on the modal, not
+ *   through the container delegation chain. The form is its own
+ *   modal shell and is not a descendant of the teams container.
  *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
@@ -1117,6 +1127,31 @@
             });
         }
 
+        // ---- Specialisations: add / remove ----
+        //
+        // Both handlers are bound directly on the modal content.
+        // The form is its own modal shell, not a descendant of
+        // the teams container, so the delegated container
+        // listeners do not reach it.
+
+        var specAddBtn = contentEl.querySelector(
+            '.team-specialisation-add'
+        );
+        if (specAddBtn) {
+            specAddBtn.addEventListener('click', function() {
+                appendSpecialisationChip(form);
+            });
+        }
+
+        contentEl.addEventListener('click', function(e) {
+            var removeBtn = e.target.closest
+                ? e.target.closest('.team-specialisation-remove')
+                : null;
+            if (!removeBtn) { return; }
+            e.preventDefault();
+            removeSpecialisationChip(form, removeBtn);
+        });
+
         contentEl.addEventListener('click', function(e) {
             var removeBtn = e.target.closest
                 ? e.target.closest('.remove-name')
@@ -1150,6 +1185,117 @@
         });
     }
 
+    // ============================================================
+    // SPECIALISATION CHIP EDITOR (form)
+    // ============================================================
+    //
+    // Appends a chip for the currently-selected option in
+    // #team-specialisation-select, and removes the chip the
+    // remove button lives inside.
+    //
+    // Neither handler touches the pipeline. The chips are a
+    // DOM-only staging area; saveTeam reads them back out and
+    // passes the ids to TeamCore. On a failed save, nothing has
+    // been written and the modal stays open with the chips in
+    // place.
+
+    function appendSpecialisationChip(form) {
+        var select = form.querySelector(
+            '#team-specialisation-select'
+        );
+        var list = form.querySelector(
+            '#team-specialisations-list'
+        );
+        if (!select || !list) { return; }
+
+        var id = select.value;
+        if (!id) {
+            notify(
+                'Select a specialisation first.',
+                'warning'
+            );
+            return;
+        }
+
+        // A chip for this id may already exist. The renderer
+        // removes the option from the select when a chip is
+        // present, but a stale value could survive a re-render
+        // that did not rebuild the select. Guard anyway.
+        var existing = list.querySelectorAll(
+            '.team-specialisation-chip'
+        );
+        for (var i = 0; i < existing.length; i++) {
+            if (existing[i].dataset.specialisationId === id) {
+                notify(
+                    'That specialisation is already selected.',
+                    'warning'
+                );
+                select.value = '';
+                return;
+            }
+        }
+
+        var label = '';
+        for (var o = 0; o < select.options.length; o++) {
+            if (select.options[o].value === id) {
+                label = select.options[o].textContent;
+                break;
+            }
+        }
+        if (!label) { label = id; }
+
+        var empty = list.querySelector('.empty-state');
+        if (empty) { empty.remove(); }
+
+        var chip = document.createElement('div');
+        chip.className = 'team-specialisation-chip';
+        chip.dataset.specialisationId = id;
+        chip.innerHTML =
+            '<span class="team-specialisation-chip-name">' +
+                escapeHtml(label) +
+            '</span>' +
+            '<button type="button" class="small danger ' +
+                'team-specialisation-remove" ' +
+                'data-specialisation-id="' +
+                    escapeAttribute(id) + '">' +
+                '\u2715' +
+            '</button>';
+
+        list.appendChild(chip);
+        select.value = '';
+    }
+
+    function removeSpecialisationChip(form, button) {
+        var chip = button.closest
+            ? button.closest('.team-specialisation-chip')
+            : null;
+        if (!chip) { return; }
+
+        var list = chip.parentNode;
+        chip.remove();
+
+        if (list && list.querySelectorAll(
+            '.team-specialisation-chip'
+        ).length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state small';
+            empty.textContent = 'No specialisations selected.';
+            list.appendChild(empty);
+        }
+    }
+
+    function escapeAttribute(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeAttribute === 'function') {
+            return window.DomUtils.escapeAttribute(value);
+        }
+        return escapeHtml(value);
+    }
+
+    // ============================================================
+    // FORM SUBMIT
+    // ============================================================
+
     function saveTeam(form, modal) {
         var editId = form.dataset.editId || null;
 
@@ -1161,6 +1307,7 @@
         var numberEl = form.querySelector('#team-number');
         var statusEl = form.querySelector('#team-status');
         var missionEl = form.querySelector('#team-mission');
+        var styleEl = form.querySelector('#team-style');
 
         var name = nameEl ? nameEl.value.trim() : '';
         if (!name) {
@@ -1177,6 +1324,8 @@
             ? (missionEl.value || null)
             : null;
 
+        var style = styleEl ? styleEl.value : '';
+
         var teamData = {
             name: name,
             type: type,
@@ -1186,6 +1335,8 @@
             classId: classEl ? classEl.value : null,
             teamNumber: numberEl ? numberEl.value.trim() : '',
             temporaryMission: temporaryMission,
+            style: style,
+            specialisations: collectSpecialisationIds(form),
             nameHistory: collectNameHistory(form)
         };
 
@@ -1304,6 +1455,35 @@
             console.warn('[TeamEvents] saveTeam failed:', err);
             notify('Failed to save team.', 'error');
         });
+    }
+
+    /**
+     * Read the current specialisation chips out of the form.
+     *
+     * Returns an array of ids in DOM order. The submit handler
+     * passes the array to TeamCore, which canonicalises it
+     * (dedupe, validate against MissionConstants, preserve
+     * order).
+     *
+     * An empty list is a valid submission: the team will have no
+     * specialisations. That is the "unselect everything" case,
+     * and it needs to be expressible as a real update.
+     */
+    function collectSpecialisationIds(form) {
+        var list = form.querySelector(
+            '#team-specialisations-list'
+        );
+        if (!list) { return []; }
+
+        var chips = list.querySelectorAll(
+            '.team-specialisation-chip'
+        );
+        var ids = [];
+        for (var i = 0; i < chips.length; i++) {
+            var id = chips[i].dataset.specialisationId;
+            if (id) { ids.push(id); }
+        }
+        return ids;
     }
 
     function collectNameHistory(form) {
