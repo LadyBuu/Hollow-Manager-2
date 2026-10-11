@@ -38,6 +38,16 @@
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
  *
+ * ACTIVITY LOG HAS BEEN REMOVED:
+ *   The mission detail panel used to render an ACTIVITY LOG
+ *   section from `vm.log` / `vm.logCount`. The log field on the
+ *   mission record has been retired; there is no such section any
+ *   more. The detail panel now renders: header, fields,
+ *   objectives, assigned teams, participants, support personnel,
+ *   reports, and actions. If a future revision reintroduces a
+ *   per-mission audit trail, this is the module where the section
+ *   would be re-added.
+ *
  * PARTICIPANTS PANEL (form):
  *   The mission form carries a participant editor between the
  *   team chips and the support personnel block. Shape:
@@ -625,6 +635,19 @@
     // ============================================================
     // DETAIL
     // ============================================================
+    //
+    // The detail panel renders these sections, in order:
+    //
+    //   header
+    //   fields
+    //   objectives
+    //   assigned teams
+    //   participants
+    //   support personnel
+    //   reports
+    //   actions
+    //
+    // The ACTIVITY LOG section is gone. See the file header.
 
     function renderDetail(vm) {
         if (!vm || !vm.id) {
@@ -643,7 +666,6 @@
         html += renderParticipants(vm);
         html += renderSupportPersonnel(vm);
         html += renderReports(vm);
-        html += renderLog(vm);
         html += renderDetailActions(vm);
 
         html += '</div>';
@@ -1073,52 +1095,6 @@
         }
 
         html += '</li>';
-        return html;
-    }
-
-    // ============================================================
-    // LOG
-    // ============================================================
-
-    function renderLog(vm) {
-        var html = '';
-        html += '<div class="log-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Activity Log</strong>';
-        html += '<span class="count">' +
-                    escapeHtml(String(vm.logCount || 0)) +
-                '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-add-log" ' +
-                    'data-mission-id="' + escapeAttribute(vm.id) + '">' +
-                    '+ Log Entry' +
-                '</button>';
-        html += '</div>';
-
-        if (!isArray(vm.log) || vm.log.length === 0) {
-            html += '<p class="empty-state small">No activity yet.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<div class="log-list">';
-
-        for (var i = 0; i < vm.log.length; i++) {
-            var entry = vm.log[i];
-            if (!entry) { continue; }
-            html += '<div class="log-entry">';
-            html += '<span class="log-timestamp">' +
-                        escapeHtml(entry.timestampDisplay || '') +
-                    '</span>';
-            html += '<span class="log-message">' +
-                        escapeHtml(entry.message || '') +
-                    '</span>';
-            html += '</div>';
-        }
-
-        html += '</div>';
-        html += '</div>';
         return html;
     }
 
