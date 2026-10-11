@@ -20,13 +20,15 @@
  *     anchor, the blob URL, and the filename uniquification.
  *     This module supplies a base filename and hands over the
  *     payload.
+ *   - The specialisation vocabulary. MissionConstants owns the
+ *     mission type taxonomy. This module reads it to resolve
+ *     ids to labels; it does not own the list of valid ids.
  *
  * TWO ENTRY POINTS:
  *
  *   exportTeam(teamId)
- *     One team. The report is the same content as before: header,
- *     name history, ranking history, members with character
- *     snapshots.
+ *     One team. The report is the team header, name history,
+ *     ranking history, members with character snapshots.
  *
  *   exportTeamsText(teamIds)
  *     Many teams in one file. Each team's report is built by the
@@ -50,7 +52,7 @@
  *
  * REPORT CONTENTS (per team):
  *   - Team header: name, type, status, period, class, team number,
- *     associated mission, created-at.
+ *     associated mission, style, specialisations, created-at.
  *   - Name history.
  *   - Ranking history.
  *   - Members section: every member entry (active and former),
@@ -60,6 +62,19 @@
  *     HP / MP, weapons, special moves, career status history,
  *     department memberships, and OTHER PROFESSIONAL team
  *     memberships.
+ *
+ * DESCRIPTIVE FIELDS:
+ *   Style and specialisations are rendered as two extra lines in
+ *   the team header, matching the detail panel's convention:
+ *
+ *     Style:           Aggressive frontline
+ *     Specialisations: Recovery, Investigation
+ *
+ *   Either line is omitted when its field is empty. The
+ *   specialisation labels are resolved from
+ *   MissionConstants.getMissionTypeLabel, comma-joined into a
+ *   single line. Unknown ids are dropped; the display is the
+ *   normalised set, not the raw stored array.
  *
  * ACADEMIC TEAMS ARE EXCLUDED FROM THE SNAPSHOT:
  *   pushOtherTeamMemberships filters to professional teams only.
@@ -85,6 +100,7 @@
  *   - window.ExportUtils
  *
  * DEPENDENCIES (LAZY, at call time):
+ *   - window.MissionConstants    (specialisation labels)
  *   - window.CharacterStats     (stats and magic; absent =
  *                                "(unavailable)")
  *   - window.MagicConstants     (magic type labels; absent = raw
@@ -152,6 +168,10 @@
     // ============================================================
     // LAZY DEPENDENCIES
     // ============================================================
+
+    function getMissionConstants() {
+        return window.MissionConstants || null;
+    }
 
     function getCharacterStats() {
         return window.CharacterStats || null;
@@ -254,6 +274,54 @@
     }
 
     // ============================================================
+    // DESCRIPTIVE FIELDS
+    // ============================================================
+    //
+    // Style is a plain string. Specialisations are resolved to
+    // labels via MissionConstants and comma-joined into a single
+    // line.
+    //
+    // Normalisation mirrors TeamAggregator's read-side handling:
+    // non-strings dropped, blanks dropped, unknown ids dropped,
+    // duplicates dropped. Order preserved.
+
+    function resolveSpecialisationLabels(raw) {
+        if (!Array.isArray(raw) || raw.length === 0) { return []; }
+
+        var MC = getMissionConstants();
+        var canLabel = MC &&
+            typeof MC.getMissionTypeLabel === 'function';
+        var canValidate = MC &&
+            typeof MC.isValidMissionType === 'function';
+
+        var seen = Object.create(null);
+        var labels = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var entry = raw[i];
+            if (typeof entry !== 'string') { continue; }
+            var id = entry.trim();
+            if (id === '') { continue; }
+            if (seen[id] === true) { continue; }
+            if (canValidate && !MC.isValidMissionType(id)) {
+                continue;
+            }
+            seen[id] = true;
+
+            var label = id;
+            if (canLabel) {
+                var resolved = MC.getMissionTypeLabel(id);
+                if (isNonEmptyString(resolved)) {
+                    label = resolved;
+                }
+            }
+            labels.push(label);
+        }
+
+        return labels;
+    }
+
+    // ============================================================
     // REPORT BUILDER
     // ============================================================
 
@@ -326,6 +394,24 @@
             missionLabel = missionName || team.temporaryMission;
         }
         lines.push('Mission:     ' + missionLabel);
+
+        // ---- Descriptive fields ----
+        //
+        // Either line is omitted when its field is empty. The
+        // padding keeps the label column aligned with the rest
+        // of the header.
+        if (isNonEmptyString(team.style)) {
+            lines.push('Style:       ' +
+                String(team.style).trim());
+        }
+
+        var specLabels = resolveSpecialisationLabels(
+            team.specialisations
+        );
+        if (specLabels.length > 0) {
+            lines.push('Specialisations: ' +
+                specLabels.join(', '));
+        }
 
         if (isNonEmptyString(team.createdAt)) {
             lines.push('Created:     ' + team.createdAt);
