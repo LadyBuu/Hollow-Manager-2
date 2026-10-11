@@ -1,3 +1,4 @@
+
 /**
  * css/missions.css - Hollow Blades Manager
  *
@@ -14,19 +15,30 @@
  *     .objective-item)
  *   - Support personnel (.support-section, .support-list,
  *     .support-item)
+ *   - Participants (.participants-section, .participants-list,
+ *     .participant-item, .participant-member-*)
+ *   - Rookie summary strip (.participant-rookie-section,
+ *     .rookie-chip-*)
  *   - Reports (.reports-section, .report-row, .report-meta,
  *     .report-body)
- *   - Activity log (.log-section, .log-list, .log-entry)
  *   - Form (.mission-form, .date-input-group, .objective-input-group,
  *     .support-input-group, .objective-row)
  *   - Form team editor (.mission-team-editor,
  *     .mission-team-input-group, .mission-team-chip)
+ *   - Form participants panel (.participants-panel,
+ *     .participant-team-section, .participant-member-row)
  *   - Export picker modal (.mission-export-format)
  *   - Import modal (.mission-import-format, .mission-import-file-row)
+ *   - Rookie picker modal (.mission-rookie-picker-*)
  *   - Status / priority / type badges
  *   - Progress bars
  *
  * Load order: shared.css → missions.css
+ *
+ * ACTIVITY LOG:
+ *   The ACTIVITY LOG section was removed from the mission detail
+ *   panel; the mission log field has been retired. The .log-*
+ *   classes that used to live here have been deleted.
  */
 
 /* ============================================================
@@ -92,14 +104,7 @@
 
 /* ============================================================
    PAGE HEADER ACTIONS
-   ============================================================
-   The mission manager header carries two buttons: Import and
-   New Mission. Import uses .secondary, New uses .primary.
-   The generic .header-actions container is styled by shared.css;
-   the button spacing is set here so the two sit close together
-   without the tab-specific tailwind-ish margin collapse rules
-   from the shared sheet fighting it.
- */
+   ============================================================ */
 
 .missions-list ~ * .header-actions,
 .page-header .header-actions {
@@ -213,6 +218,15 @@
     margin-left: 4px;
 }
 
+.mission-participant-badge {
+    font-size: 0.55rem;
+    color: var(--info);
+    background: var(--info-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-left: 4px;
+}
+
 .mission-type {
     font-size: 0.68rem;
     color: var(--text-dim);
@@ -243,11 +257,6 @@
     white-space: nowrap;
 }
 
-/*
- * The +N suffix on a row whose mission is assigned to more than
- * one team. Sits inline with the primary team name and reads as
- * a count, not as a team name.
- */
 .mission-team-extra {
     color: var(--accent);
     font-weight: 600;
@@ -486,7 +495,7 @@
 
 /* ============================================================
    SECTION HEADER (shared by objectives, support, teams,
-   reports, log)
+   participants, reports)
    ============================================================ */
 
 .section-header {
@@ -724,6 +733,101 @@
 }
 
 /* ============================================================
+   PARTICIPANTS (detail panel)
+   ============================================================ */
+
+.participants-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.participants-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.participant-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--info);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    flex-wrap: wrap;
+}
+
+.participant-item.participant-rookie {
+    border-left-color: var(--warning);
+}
+
+.participant-name {
+    font-weight: 600;
+    color: var(--text);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.participant-deceased {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+
+.participant-team {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+}
+
+.participant-source {
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.participant-source-team {
+    color: var(--info);
+    background: var(--info-soft);
+}
+
+.participant-source-rookie {
+    color: var(--warning);
+    background: var(--warning-soft);
+}
+
+.participant-source-unknown {
+    color: var(--text-dim);
+    background: var(--panel);
+}
+
+.participant-item button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
    REPORTS
    ============================================================ */
 
@@ -787,54 +891,6 @@
 .report-actions button.small {
     font-size: 0.6rem;
     padding: 1px 8px;
-}
-
-/* ============================================================
-   ACTIVITY LOG
-   ============================================================ */
-
-.log-section {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.log-list {
-    max-height: 180px;
-    overflow-y: auto;
-    background: var(--bg);
-    border-radius: 6px;
-    padding: 6px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.log-entry {
-    display: flex;
-    gap: 8px;
-    padding: 3px 0;
-    border-bottom: 1px solid var(--border-soft);
-    font-size: 0.7rem;
-}
-
-.log-entry:last-child {
-    border-bottom: none;
-}
-
-.log-timestamp {
-    color: var(--text-dim);
-    font-size: 0.62rem;
-    white-space: nowrap;
-    flex: 0 0 auto;
-    font-variant-numeric: tabular-nums;
-}
-
-.log-message {
-    color: var(--text);
-    flex: 1;
-    min-width: 0;
-    word-break: break-word;
 }
 
 /* ============================================================
@@ -924,18 +980,7 @@
     margin-top: 2px;
 }
 
-/* ---------- Mission ID display (read-only) ----------
- *
- * The form does not preview the label. On edit, the currently
- * derived label is shown as static text; on create, a muted
- * "Assigned on save" placeholder is shown. Neither is a form
- * field; neither is submitted.
- *
- * The .mission-id-preview class from the previous design (a
- * readonly input) is gone. If a future change reintroduces an
- * editable preview, do not reuse these classes; give it a
- * distinct name so its "this is a form field" nature is legible.
- */
+/* ---------- Mission ID display (read-only) ---------- */
 
 .mission-form-id-display {
     padding: 6px 10px;
@@ -962,27 +1007,19 @@
 /* ============================================================
    FORM TEAM EDITOR
    ============================================================
-   The mission's "Assigned Teams" control. Three pieces:
-
-     .mission-team-input-group
-       The <select> and its "+ Add" button, side by side.
-
-     .mission-teams-list
-       The chip list below. One .mission-team-chip per
-       currently-assigned team.
-
-     .mission-team-chip
-       Team name + a small × button.
-
-   The select is disabled when the eligible list is empty;
-   the empty-state copy is set by the renderer.
+   The mission's "Assigned Teams" control. The <select> lists
+   eligible teams; each option's label carries the team name
+   followed by " [Recovery, Investigation]" when the team has
+   any specialisations. Teams whose specialisations include the
+   mission's primary type appear at the top of the list; the
+   rest follow alphabetically.
 
    The visual language matches the support-personnel editor:
    the input group is horizontal on desktop, the chip list is a
-   stacked column. The chips are the same shape as the
-   detail panel's .assigned-team-item, deliberately, so the two
-   read as the same concept.
- */
+   stacked column. The chips are the same shape as the detail
+   panel's .assigned-team-item, deliberately, so the two read as
+   the same concept.
+   ============================================================ */
 
 .mission-team-editor {
     display: flex;
@@ -1060,21 +1097,188 @@
 }
 
 /* ============================================================
+   FORM PARTICIPANTS PANEL
+   ============================================================
+   The mission form's Participants editor. One section per
+   assigned team, each with a checkbox per active member. Below
+   them, a rookie summary strip: a count, an "+ Add Rookies"
+   button that opens the picker, and a chip list of current
+   rookies with per-chip remove buttons.
+   ============================================================ */
+
+.participants-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.participant-team-section {
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    margin-bottom: 4px;
+}
+
+.participant-team-section:last-child {
+    margin-bottom: 0;
+}
+
+.participant-section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.participant-team-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.participant-team-count {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 8px;
+    border-radius: 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.participant-section-header button.small {
+    margin-left: auto;
+    font-size: 0.65rem;
+    padding: 2px 10px;
+    white-space: nowrap;
+}
+
+.participant-member-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.participant-member-row {
+    padding: 0;
+}
+
+.participant-member-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s;
+    font-size: 0.72rem;
+}
+
+.participant-member-label:hover {
+    background: var(--panel-alt);
+}
+
+.participant-member-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.participant-member-name {
+    color: var(--text);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.participant-member-role {
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    flex: 0 0 auto;
+}
+
+.participant-member-deceased {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+
+/* ---------- Rookie summary strip ---------- */
+
+.participant-rookie-section {
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--warning);
+    border-radius: 6px;
+}
+
+.rookie-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.rookie-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px 2px 10px;
+    background: var(--warning-soft);
+    border: 1px solid var(--warning);
+    border-radius: 12px;
+    font-size: 0.68rem;
+    color: var(--text);
+}
+
+.rookie-chip-name {
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.rookie-chip-deceased {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+}
+
+.rookie-chip-remove {
+    font-size: 0.55rem;
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--danger);
+    cursor: pointer;
+    line-height: 1;
+}
+
+.rookie-chip-remove:hover {
+    color: var(--text);
+}
+
+/* ============================================================
    DATE INPUT GROUP
    ============================================================
    The three date inputs (year, month, day) carry data-* markers
    so the UI controller can detect "the user has explicitly
    edited this field" and reset untouched month/day to 1 when
-   the year changes:
-
-     data-mission-year-field="true"
-     data-mission-month-field="true"
-     data-mission-day-field="true"
-
-   Those attributes are BEHAVIORAL, not stylistic. Do not remove
-   them, and do not add CSS targeting them — the fields are
-   styled identically on purpose.
- */
+   the year changes. Those attributes are BEHAVIORAL, not
+   stylistic. Do not remove them, and do not add CSS targeting
+   them — the fields are styled identically on purpose.
+   ============================================================ */
 
 .date-input-group {
     display: flex;
@@ -1252,18 +1456,7 @@
 
 /* ============================================================
    REPORT FORM MODAL
-   ============================================================
-   The report form uses the shared .modal-content shell. The
-   inner .mission-report-body is the modal body; the report
-   textarea is full-width and tall. The author select groups
-   team members and other characters via <optgroup>; there is
-   no per-optgroup styling, the browser handles the group
-   header.
-
-   The inline error region sits below the textarea. It carries
-   its own display:none in the markup; the controller toggles
-   the display when an error needs to be shown.
- */
+   ============================================================ */
 
 .mission-report-body {
     display: flex;
@@ -1334,16 +1527,7 @@
 
 /* ============================================================
    EXPORT MODAL
-   ============================================================
-   Small format picker. Two radio rows, each carrying a title
-   and a short description. The selected row is highlighted.
-
-   The markup is emitted by mission-ui.js (buildExportModalHTML)
-   because the two templates fit in one screen and use no
-   cross-domain data. Keeping them in the controller means
-   MissionRender does not grow two public functions for two
-   trivial templates.
- */
+   ============================================================ */
 
 .modal-export-content {
     max-width: 460px;
@@ -1411,14 +1595,7 @@
 
 /* ============================================================
    IMPORT MODAL
-   ============================================================
-   Same shell pattern as the export modal, but taller. The
-   textarea is the primary control.
-
-   .mission-import-format rows share the visual language of the
-   export format rows, but the description is longer, so the
-   body has more vertical room per row.
- */
+   ============================================================ */
 
 .modal-import-content {
     max-width: 680px;
@@ -1474,9 +1651,7 @@
 }
 
 .mission-import-file-row {
-    /* Layout is set inline by the renderer; this rule exists to
-       give the row a place in the box model so future styling
-       has a hook. */
+    /* Layout is set inline by the renderer. */
 }
 
 .mission-import-error {
@@ -1484,6 +1659,166 @@
     white-space: pre-wrap;
     line-height: 1.45;
     word-break: break-word;
+}
+
+/* ============================================================
+   ROOKIE PICKER MODAL
+   ============================================================
+   Opened by the "+ Add Rookies" button from the mission form's
+   participants panel, and by the "Add Rookies" button from the
+   detail panel's Participants section header.
+
+   Layout:
+     - A hint paragraph.
+     - A search box and a bulk-action row (count + Select all +
+       Unselect all).
+     - A scrollable list of candidates. Each row is a checkbox
+       and a name. Rows that are already participants are shown
+       checked. Rows for characters already on an assigned team
+       are disabled and carry an "On assigned team" note.
+     - A "Done" footer.
+   ============================================================ */
+
+.mission-rookie-picker-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 65vh;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.mission-rookie-picker-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.mission-rookie-picker-search-input {
+    flex: 1 1 200px;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.mission-rookie-picker-search-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.mission-rookie-picker-bulk {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.mission-rookie-picker-count {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.mission-rookie-picker-bulk button.small {
+    font-size: 0.65rem;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.mission-rookie-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mission-rookie-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    flex-wrap: wrap;
+}
+
+.mission-rookie-picker-row:hover {
+    background: var(--panel-alt);
+}
+
+.mission-rookie-picker-row.mission-rookie-picker-row-selected {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.mission-rookie-picker-row.mission-rookie-picker-row-on-team {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.mission-rookie-picker-row.mission-rookie-picker-row-on-team:hover {
+    background: var(--bg);
+}
+
+.mission-rookie-picker-row.mission-rookie-picker-row-busy {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.mission-rookie-picker-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.mission-rookie-picker-row.mission-rookie-picker-row-on-team
+.mission-rookie-picker-checkbox {
+    cursor: not-allowed;
+}
+
+.mission-rookie-picker-name {
+    color: var(--text);
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mission-rookie-picker-deceased {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+
+.mission-rookie-picker-note {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 8px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.mission-rookie-picker-footer {
+    /* Layout is set inline by the renderer. */
 }
 
 /* ============================================================
@@ -1585,10 +1920,6 @@
         width: 100%;
     }
 
-    .log-timestamp {
-        font-size: 0.58rem;
-    }
-
     /* ---- Export and import modals ---- */
 
     .modal-export-content,
@@ -1615,5 +1946,56 @@
     .mission-team-chip {
         font-size: 0.68rem;
         padding: 3px 8px;
+    }
+
+    /* ---- Participants ---- */
+
+    .participant-item {
+        gap: 6px;
+    }
+
+    .participant-item button.small {
+        margin-left: 0;
+    }
+
+    .participant-section-header button.small {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .participant-member-label {
+        padding: 4px 6px;
+    }
+
+    /* ---- Rookie picker modal ---- */
+
+    .mission-rookie-picker-body {
+        max-height: none;
+    }
+
+    .mission-rookie-picker-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .mission-rookie-picker-search-input {
+        flex: 1 1 auto;
+    }
+
+    .mission-rookie-picker-bulk {
+        flex-wrap: wrap;
+        justify-content: space-between;
+    }
+
+    .mission-rookie-picker-bulk button.small {
+        flex: 1 1 auto;
+    }
+
+    .mission-rookie-picker-row {
+        padding: 6px 8px;
+    }
+
+    .mission-rookie-picker-name {
+        flex: 1 1 100%;
     }
 }
