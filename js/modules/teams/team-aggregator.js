@@ -10,6 +10,7 @@
  *   - The Matchmaking Planner VM
  *     (getMatchmakingPlannerViewModel).
  *   - Team list, team detail, member modal, ranking modal VMs.
+ *   - The specialisation options list for the team form.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamQueries owns them.
@@ -17,8 +18,12 @@
  *   - Rendering. TeamRender owns it.
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it; this module projects the resulting records.
+ *   - The specialisation vocabulary. MissionConstants owns the
+ *     mission type taxonomy. This module reads it to build the
+ *     form's option list and to resolve ids to labels; it does
+ *     not own the list of valid ids.
  *
- * TAB VOCABULARY (this revision):
+ * TAB VOCABULARY:
  *   The page VM emits counts and type descriptors for two tabs:
  *     professional | civilian
  *
@@ -48,6 +53,28 @@
  *   A period with `to: null` renders as "present". An empty array
  *   means the team has never been short between its startPeriod
  *   and the planning period.
+ *
+ * DESCRIPTIVE FIELDS (this revision):
+ *   A team carries two descriptive fields:
+ *
+ *     style            free text. How the team works together.
+ *     specialisations  array of mission-type ids.
+ *
+ *   Both appear on the team detail VM and the team form VM.
+ *   On the detail VM, specialisations are resolved to
+ *   { id, label } refs so the renderer never has to look up a
+ *   label. On the form VM, the raw ids are exposed as
+ *   `specialisations` (for the editor to see what is currently
+ *   selected) and the full pickable list is exposed as
+ *   `specialisationOptions` (for the picker's <select>).
+ *
+ *   A read-time normaliser (normaliseSpecialisations) drops
+ *   unknown ids and dedupes, so a stored record that carries an
+ *   id the current MissionConstants no longer knows about cannot
+ *   produce a broken VM. The resolver returns 'Unknown' as the
+ *   label for an id that has no entry — but the normaliser
+ *   strips those before the VM is built, so in practice that
+ *   path is unreachable on a read.
  *
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
@@ -106,6 +133,7 @@
  *
  * DEPENDENCIES (LAZY, at call time):
  *   - window.MissionQueries      (temporaryMission name resolution)
+ *   - window.MissionConstants    (specialisation vocabulary)
  *   - window.CharacterConstants  (stat keys, defaults)
  *   - window.MagicConstants      (magic type keys and labels)
  *   - window.EliminationQueries  (member modal eligibility)
@@ -266,6 +294,10 @@
         return window.MissionQueries || null;
     }
 
+    function getMissionConstants() {
+        return window.MissionConstants || null;
+    }
+
     function getCharacterConstants() {
         return window.CharacterConstants || null;
     }
@@ -387,6 +419,119 @@
         }
 
         return result;
+    }
+
+    // ============================================================
+    // SPECIALISATIONS
+    // ============================================================
+    //
+    // A team's specialisations are an array of mission-type ids.
+    // The vocabulary comes from MissionConstants.MISSION_TYPES.
+    //
+    // normaliseSpecialisations:
+    //   Read-time defence. Walks the stored array, drops anything
+    //   that is not a string, drops blanks, drops duplicates,
+    //   and (when MissionConstants is available) drops ids that
+    //   are not known mission types. Returns a fresh array of
+    //   trimmed strings. Order is preserved.
+    //
+    //   A stored record that carries an id the current
+    //   MissionConstants no longer knows about therefore cannot
+    //   produce a VM with a broken entry.
+    //
+    // resolveSpecialisations:
+    //   Turns a normalised id array into [{ id, label }] refs.
+    //   The label comes from MissionConstants.getMissionTypeLabel.
+    //   When MissionConstants is unavailable, the label falls
+    //   back to the id itself, which is a degraded display but
+    //   not a crash.
+    //
+    // getSpecialisationOptions:
+    //   The full pickable list for the team form. Same shape as
+    //   the mission form's `missionTypes`: [{ id, label }].
+    //   Sorted by label for stable presentation.
+
+    function normaliseSpecialisations(raw) {
+        if (!Array.isArray(raw)) { return []; }
+
+        var MC = getMissionConstants();
+        var canValidate = MC &&
+            typeof MC.isValidMissionType === 'function';
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var entry = raw[i];
+            if (typeof entry !== 'string') { continue; }
+            var id = entry.trim();
+            if (id === '') { continue; }
+            if (seen[id] === true) { continue; }
+            if (canValidate && !MC.isValidMissionType(id)) {
+                continue;
+            }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return result;
+    }
+
+    function resolveSpecialisations(ids) {
+        var MC = getMissionConstants();
+        var canLabel = MC &&
+            typeof MC.getMissionTypeLabel === 'function';
+
+        var result = [];
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            var label = id;
+            if (canLabel) {
+                var resolved = MC.getMissionTypeLabel(id);
+                if (isNonEmptyString(resolved)) {
+                    label = resolved;
+                }
+            }
+            result.push({ id: id, label: label });
+        }
+        return result;
+    }
+
+    function getSpecialisationOptions() {
+        var MC = getMissionConstants();
+        if (!MC ||
+            typeof MC.getMissionTypes !== 'function') {
+            return [];
+        }
+
+        var typesMap;
+        try {
+            typesMap = MC.getMissionTypes();
+        } catch (e) {
+            return [];
+        }
+        if (!typesMap || typeof typesMap !== 'object') {
+            return [];
+        }
+
+        var options = [];
+        var keys = Object.keys(typesMap);
+        for (var i = 0; i < keys.length; i++) {
+            var type = typesMap[keys[i]];
+            if (!type || !isNonEmptyString(type.id)) { continue; }
+            options.push({
+                id: type.id,
+                label: isNonEmptyString(type.label)
+                    ? type.label
+                    : type.id
+            });
+        }
+
+        options.sort(function(a, b) {
+            return a.label.localeCompare(b.label);
+        });
+
+        return options;
     }
 
     // ============================================================
@@ -610,6 +755,17 @@
             ? resolveMissionName(temporaryMissionId)
             : null;
 
+        // ---- Descriptive fields ----
+        var style = isNonEmptyString(team.style)
+            ? String(team.style)
+            : '';
+        var specialisationIds = normaliseSpecialisations(
+            team.specialisations
+        );
+        var specialisations = resolveSpecialisations(
+            specialisationIds
+        );
+
         var viewModel = {
             id: team.id,
             name: team.name,
@@ -631,7 +787,12 @@
             memberCount: team.members ? team.members.length : 0,
             isActive: team.status === 'active',
             isOperational: TeamQueries.isTeamOperational(team),
-            createdAt: team.createdAt || ''
+            createdAt: team.createdAt || '',
+
+            // Descriptive fields.
+            style: style,
+            specialisationIds: specialisationIds,
+            specialisations: specialisations
         };
 
         if (includeMembers) {
@@ -715,6 +876,13 @@
                 ? resolveMissionName(temporaryMissionId)
                 : null;
 
+            var specialisationIds = normaliseSpecialisations(
+                team.specialisations
+            );
+            var specialisations = resolveSpecialisations(
+                specialisationIds
+            );
+
             return {
                 id: team.id,
                 name: team.name,
@@ -732,7 +900,13 @@
                 teamNumber: team.teamNumber || '',
                 temporaryMission: temporaryMissionId,
                 temporaryMissionName: temporaryMissionName,
-                createdAt: team.createdAt || ''
+                createdAt: team.createdAt || '',
+
+                style: isNonEmptyString(team.style)
+                    ? String(team.style)
+                    : '',
+                specialisationIds: specialisationIds,
+                specialisations: specialisations
             };
         });
 
@@ -945,6 +1119,10 @@
             }
         }
 
+        var specialisationIds = normaliseSpecialisations(
+            t.specialisations
+        );
+
         return {
             isEdit: isEdit,
             teamId: t.id || null,
@@ -960,6 +1138,14 @@
             nameHistory: Array.isArray(t.nameHistory)
                 ? t.nameHistory.slice()
                 : [],
+
+            // Descriptive fields.
+            style: isNonEmptyString(t.style)
+                ? String(t.style)
+                : '',
+            specialisations: specialisationIds,
+            specialisationOptions: getSpecialisationOptions(),
+
             classOptions: classOptions,
             missionOptions: getMissionOptions()
         };
