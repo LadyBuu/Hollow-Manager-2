@@ -24,7 +24,7 @@
  *   A broken VM produces a visible failure, not a plausible empty
  *   list.
  *
- * TAB VOCABULARY (this revision):
+ * TAB VOCABULARY:
  *   The Teams tab renders two top-level tabs:
  *     professional | civilian
  *
@@ -39,9 +39,27 @@
  *   Civilian shows only Add Team. Matchmaking and Export are
  *   professional-scoped features.
  *
+ *   The Export button is a BULK export: it exports every team the
+ *   user has ticked in the list below, into a single file. It is
+ *   disabled when nothing is selected. The per-row Export button
+ *   on each team row remains a single-team export.
+ *
  * VIEW MODES (professional only):
  *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
  *   three for the professional tab; Civilian has no mode toggle.
+ *
+ * TEAM SELECTION (this revision):
+ *   Each team row carries a checkbox at the leading edge of the
+ *   row. The checkbox is the selection set for the bulk Export
+ *   action. State is held by TeamEvents as a Set of teamIds and
+ *   passed in as `selectedIds` on the render options.
+ *
+ *   The checkbox stops propagation in the events layer so
+ *   ticking does not also trigger a row click.
+ *
+ *   The checkbox is rendered for every team row, in every tab
+ *   (professional and civilian), because the bulk Export button
+ *   is available on both tabs.
  *
  * POOL ROWS:
  *   Each pool row is a .professional-pool-item. It carries:
@@ -51,10 +69,6 @@
  *       expansion.
  *     - an expand panel (.pool-expand-panel) rendered only when
  *       the row is in the expansion set.
- *
- *   The row's click target is the row itself; the checkbox stops
- *   propagation in the events layer so ticking does not also
- *   toggle expansion.
  *
  *   Expansion state is a Set of characterIds held by TeamEvents
  *   and passed into renderProfessionalPool as `expandedIds`.
@@ -250,6 +264,7 @@
         var type = options.type || 'professional';
         var expandedTeamId = options.expandedTeamId || null;
         var expandedMembersVM = options.expandedMembersVM || null;
+        var selectedIds = options.selectedIds || Object.create(null);
 
         if (!Array.isArray(teams) || teams.length === 0) {
             var labels = {
@@ -265,6 +280,7 @@
         var html = '';
 
         html += '<div class="list-header team-header">';
+        html += '<span class="team-header-check"></span>';
         html += '<span>Team Name</span>';
         html += '<span>Period</span>';
         html += '<span>Rank</span>';
@@ -278,14 +294,33 @@
             var isExpanded = expandedTeamId &&
                 String(expandedTeamId) === String(team.id);
 
+            var isSelected =
+                selectedIds[String(team.id)] === true;
+
             var rowClass = 'list-item team-item';
             if (team.isActive === false) {
                 rowClass += ' inactive';
+            }
+            if (isSelected) {
+                rowClass += ' team-item-selected';
             }
 
             html += '<div class="' + rowClass + '" ' +
                         'data-id="' +
                             escapeAttribute(team.id) + '">';
+
+            // ---- Selection checkbox ----
+            html += '<span class="team-select-cell">';
+            html += '<input type="checkbox" ' +
+                        'class="team-select-checkbox" ' +
+                        'data-team-id="' +
+                            escapeAttribute(team.id) + '"' +
+                        (isSelected ? ' checked' : '') +
+                        ' aria-label="Select ' +
+                            escapeAttribute(
+                                team.name || 'team'
+                            ) + '">';
+            html += '</span>';
 
             html += '<span class="team-name-cell">';
             html += '<strong>' +
@@ -1402,6 +1437,8 @@
             Object.create(null);
         var poolSelectedIds = pageVM.poolSelectedIds ||
             Object.create(null);
+        var teamSelectedIds = pageVM.teamSelectedIds ||
+            Object.create(null);
 
         var isPool = activeTab === 'professional' &&
             viewMode === 'pool';
@@ -1421,17 +1458,44 @@
         var html = '';
 
         // ---- Page header ----
+        //
+        // The Export button is a BULK export. It is disabled when
+        // nothing is selected. The selected count is shown next
+        // to it so the user can see the scope of what they are
+        // about to download.
+        var selectedCount = countTrue(teamSelectedIds);
+
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
+
         if (activeTab === 'professional') {
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
-                        'class="secondary">Export</button>';
+                        'class="secondary"' +
+                        (selectedCount === 0 ? ' disabled' : '') + '>' +
+                        'Export' +
+                        (selectedCount > 0
+                            ? ' (' + selectedCount + ')'
+                            : '') +
+                    '</button>';
             html += '<button type="button" ' +
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
+        } else {
+            // Civilian tab also gets a bulk Export button, since
+            // the checkbox column is present on every team row.
+            html += '<button type="button" ' +
+                        'id="team-export-btn" ' +
+                        'class="secondary"' +
+                        (selectedCount === 0 ? ' disabled' : '') + '>' +
+                        'Export' +
+                        (selectedCount > 0
+                            ? ' (' + selectedCount + ')'
+                            : '') +
+                    '</button>';
         }
+
         html += '<button type="button" id="add-team-btn" ' +
                     'class="primary">+ Add Team</button>';
         html += '</div>';
@@ -1460,13 +1524,26 @@
             html += renderList(teams, {
                 type: activeTab,
                 expandedTeamId: expandedTeamId,
-                expandedMembersVM: expandedMembersVM
+                expandedMembersVM: expandedMembersVM,
+                selectedIds: teamSelectedIds
             });
         }
 
         html += '</div>';
 
         return html;
+    }
+
+    function countTrue(obj) {
+        if (!obj) { return 0; }
+        var n = 0;
+        for (var k in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, k) &&
+                obj[k] === true) {
+                n++;
+            }
+        }
+        return n;
     }
 
     function renderStats(counts) {
