@@ -1,13 +1,17 @@
 /**
  * css/teams.css - Hollow Blades Manager
  *
- * The Teams tab (Professional / Temporary / Civilian), the
- * professional tab's Professional Pool view, and the professional
- * tab's Timeline view.
+ * The Teams tab (Professional / Civilian), the professional
+ * tab's Professional Pool view, and the professional tab's
+ * Timeline view.
  *
  * Covers:
  *   - Team list header + rows (#team-list-container,
  *     .list-header.team-header, .list-item.team-item)
+ *   - Team selection column (.team-select-cell,
+ *     .team-select-checkbox, .team-item-selected)
+ *   - Descriptive fields (.team-descriptive-*)
+ *   - Specialisation editor (.team-specialisation-*)
  *   - Team members expanded section (.team-members-expanded)
  *   - Team cards (.team-card)
  *   - Team form modal contents (.name-history-entry)
@@ -36,7 +40,10 @@
 
 #team-list-container,
 .team-list-container {
-    --team-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
+    /* Six columns: selection checkbox + five content columns.
+       The checkbox column matches the pool's, so the two lists
+       read the same when a user switches between them. */
+    --team-columns: 28px 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
 }
 
 .list-header.team-header {
@@ -51,6 +58,11 @@
     font-weight: 600;
     font-size: 0.7rem;
     color: var(--text-dim);
+    align-items: center;
+}
+
+.team-header-check {
+    /* Empty header cell above the selection checkbox column. */
 }
 
 .list-item.team-item {
@@ -71,11 +83,35 @@
     opacity: 0.6;
 }
 
+.list-item.team-item.team-item-selected {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 9px;
+}
+
 .list-item.team-item .actions {
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
 }
+
+/* ---------- Selection cell ---------- */
+
+.team-select-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.team-select-checkbox {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ---------- Row contents ---------- */
 
 .team-status-inactive {
     color: var(--text-dim);
@@ -118,6 +154,196 @@
 .team-member-count {
     font-size: 0.75rem;
     color: var(--text);
+}
+
+/* ============================================================
+   DESCRIPTIVE FIELDS (style + specialisations)
+   ============================================================
+   Rendered read-only in three places:
+     - inside .team-members-expanded when a row is expanded
+     - inside .team-card (a card-layout caller)
+     - (a future team detail view, if one is added)
+
+   When both fields are empty, the whole block is omitted by
+   the renderer. When either is present, its row is shown. The
+   layout matches the mission detail panel's convention: label
+   on the left, value on the right, one line per field.
+
+   Specialisation labels are comma-joined into a single value
+   string by the renderer; there is no chip styling on the
+   read-only side.
+   ============================================================ */
+
+.team-descriptive-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 0;
+    margin-bottom: 6px;
+    border-bottom: 1px dashed var(--border-soft);
+    font-size: 0.7rem;
+}
+
+.team-members-expanded .team-descriptive-fields {
+    /* Inside an expanded row, the block sits above the member
+       list. The dashed bottom border separates it. */
+    margin-bottom: 8px;
+}
+
+.team-card .team-descriptive-fields {
+    /* Inside a card, the block sits between the mission line
+       and the action strip. */
+    margin-top: 6px;
+    margin-bottom: 6px;
+}
+
+.team-descriptive-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 8px;
+    align-items: baseline;
+    padding: 2px 0;
+}
+
+.team-descriptive-label {
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+.team-descriptive-value {
+    color: var(--text);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    word-wrap: break-word;
+    min-width: 0;
+}
+
+@media (max-width: 600px) {
+    .team-descriptive-row {
+        grid-template-columns: 90px 1fr;
+        gap: 6px;
+    }
+
+    .team-descriptive-label {
+        font-size: 0.58rem;
+    }
+
+    .team-descriptive-value {
+        font-size: 0.68rem;
+    }
+}
+
+/* ============================================================
+   SPECIALISATION EDITOR (team form)
+   ============================================================
+   The team form's Specialisations control. Three pieces:
+
+     .team-specialisation-input-group
+       The <select> and its "+ Add" button, side by side.
+
+     .team-specialisations-list
+       The chip list below. One .team-specialisation-chip per
+       currently-selected specialisation.
+
+     .team-specialisation-chip
+       Label + a small × button.
+
+   The select is disabled when every option is already selected
+   (or when there are no options at all); the empty-state copy
+   is set by the renderer.
+
+   The visual language matches the mission form's team editor
+   and the support-personnel editor: the input group is
+   horizontal on desktop, the chip list is a stacked column.
+   ============================================================ */
+
+.team-specialisation-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.team-specialisation-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    margin-bottom: 6px;
+}
+
+.team-specialisation-input-group .team-specialisation-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.team-specialisation-input-group .team-specialisation-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.team-specialisation-input-group .team-specialisation-select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.team-specialisation-input-group button {
+    font-size: 0.65rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.team-specialisations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.team-specialisation-chip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--warning);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.team-specialisation-chip .team-specialisation-chip-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-specialisation-chip button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+@media (max-width: 600px) {
+    .team-specialisation-input-group {
+        flex-direction: column;
+    }
+
+    .team-specialisation-input-group button {
+        width: 100%;
+    }
 }
 
 /* ============================================================
@@ -306,7 +532,7 @@
 }
 
 /* ============================================================
-   TAB NAV (Professional / Temporary / Civilian)
+   TAB NAV (Professional / Civilian)
    ============================================================ */
 
 .tab-nav {
@@ -461,10 +687,6 @@
 /* ============================================================
    PROFESSIONAL POOL
    ============================================================
-   Replaces the retired "Unassigned" view. Answers "who is in
-   the professional personnel pool for this period, and when are
-   they available?" rather than "who isn't on a team right now?"
-
    The pool supports three interactions:
      - a selection checkbox per row (create-team flow)
      - a click-to-expand row (compact stats panel)
@@ -695,14 +917,6 @@
 
 /* ============================================================
    POOL EXPAND PANEL
-   ============================================================
-   Rendered as a sibling of the pool row when the row is
-   expanded. It spans the full grid width by living outside the
-   row element; the row itself carries no grid-span.
-
-   Layout is a stack of labelled lines. Each line is a
-   label-value pair on one row. Personality and combat lines are
-   grouped under a block header to keep the panel scannable.
    ============================================================ */
 
 .pool-expand-panel {
@@ -841,11 +1055,6 @@
 
 /* ============================================================
    PENDING-MEMBERS STRIP (team form)
-   ============================================================
-   Rendered at the top of the team form when the form was opened
-   from the pool's Create Team from Selection flow. Lists the
-   characters who will be added on save, so the user can confirm
-   the batch before committing.
    ============================================================ */
 
 .team-form-pending-members {
@@ -1497,12 +1706,6 @@
 
 /* ============================================================
    MATCHMAKING PLANNER
-   ============================================================
-   Two-column modal opened from the Teams tab's Matchmaking
-   button. Left column: professional teams under the target
-   size, each with its existing members and their intervals.
-   Right column: pool candidates, each with per-team checkboxes
-   and join/leave year inputs.
    ============================================================ */
 
 .planner-content {
@@ -1856,17 +2059,6 @@
 
 /* ============================================================
    TEAM VERIFIER MODAL
-   ============================================================
-   Opened by the Verify button (#team-verify-btn) in the Teams
-   tab header. Runs eight consistency checks over professional
-   and temporary teams and lists every finding.
-
-   Layout intent:
-     A summary bar at the top carries the error / warning counts
-     and how many teams, members, and stints were scanned. The
-     findings list below is grouped by team. Each finding is a
-     small row with a severity chip, the check title, the
-     affected character, and a plain-English message.
    ============================================================ */
 
 .verifier-content {
@@ -2397,15 +2589,22 @@
     }
 
     .list-item.team-item {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: 28px 1fr;
+        grid-template-areas:
+            "check name"
+            "period period"
+            "rank rank"
+            "count count"
+            "actions actions";
+        gap: 6px 8px;
         padding: 10px 12px;
         margin-bottom: 8px;
         background: var(--panel);
         border: 1px solid var(--border);
         border-top: 1px solid var(--border);
         border-radius: var(--radius);
+        align-items: center;
     }
 
     .list-item.team-item:last-child {
@@ -2416,7 +2615,18 @@
         opacity: 0.6;
     }
 
+    .list-item.team-item.team-item-selected {
+        padding-left: 12px;
+        border-left: 1px solid var(--accent);
+        background: var(--accent-soft);
+    }
+
+    .list-item.team-item > .team-select-cell {
+        grid-area: check;
+    }
+
     .list-item.team-item > .team-name-cell {
+        grid-area: name;
         display: flex;
         align-items: baseline;
         flex-wrap: wrap;
@@ -2457,6 +2667,18 @@
         font-style: italic;
     }
 
+    .list-item.team-item > .team-period {
+        grid-area: period;
+    }
+
+    .list-item.team-item > .team-rank {
+        grid-area: rank;
+    }
+
+    .list-item.team-item > .team-member-count {
+        grid-area: count;
+    }
+
     .list-item.team-item > .team-period,
     .list-item.team-item > .team-rank,
     .list-item.team-item > .team-member-count {
@@ -2474,6 +2696,7 @@
     }
 
     .list-item.team-item > .actions {
+        grid-area: actions;
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
