@@ -8,8 +8,8 @@
  * WHAT THIS MODULE OWNS:
  *   - The canonical mission shape.
  *   - Structural validation of a mission record.
- *   - Structural validation of nested records (objectives, log
- *     entries, reports, tags, support personnel, participants).
+ *   - Structural validation of nested records (objectives, reports,
+ *     tags, support personnel, participants).
  *   - Conservative canonicalisation: given a structurally valid
  *     input, produce the canonical representation.
  *
@@ -91,11 +91,27 @@
  *       updatedAt          // ISO 8601
  *     }],
  *
- *     log:                [{ timestamp, message }],
- *
  *     graduatingClassId:  string|null,  // UUID, or null
  *     classFilterEnabled: boolean
  *   }
+ *
+ * THE MISSION LOG IS GONE:
+ *   Early versions of this schema carried a `log` array of
+ *   { timestamp, message } entries on the mission record. It was
+ *   intended as an audit trail, but in practice:
+ *
+ *     - only user-authored entries ever reached it, because no
+ *       mutation appended to it automatically;
+ *     - the global ActivityLog already covers the audit-trail
+ *       use case;
+ *     - for a single-user store, an empty audit trail is dead
+ *       weight on every mission, and a populated one is noise.
+ *
+ *   The field is removed. It is NOT in the canonical shape, it is
+ *   NOT validated, it is NOT preserved through canonicalisation,
+ *   and it is NOT rejected when present on input — it is simply
+ *   dropped. A stored mission that still carries `log` will lose
+ *   it the next time the record is canonicalised.
  *
  * PARTICIPANTS:
  *   A participant is a character who took part in a mission. The
@@ -177,8 +193,8 @@
  *     - Generate sequence numbers. Sequence is assigned at creation
  *       by MissionCore via MissionId.generate.
  *     - Silently drop malformed nested records. A bad objective,
- *       log entry, report, participant, or support personnel entry
- *       makes the whole canonicalisation fail.
+ *       report, participant, or support personnel entry makes the
+ *       whole canonicalisation fail.
  *     - Compare `pay` / `progress` to their derived values.
  *       MissionRules owns that comparison.
  *
@@ -195,9 +211,11 @@
  *     - Canonicalise participants: normalise the characterId and
  *       teamId via IdUtils, coerce source to a string, and dedup on
  *       (characterId, teamId).
+ *     - Drop a legacy `log` field entirely, without error.
  *     - Preserve unknown top-level fields (deep-cloned) so future
  *       schema extensions and domain-specific metadata survive a
- *       round trip.
+ *       round trip. `log` is deliberately excluded from the
+ *       preserved set: it is a retired field, not unknown data.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.CalendarValidation
@@ -491,24 +509,6 @@
         }
     }
 
-    function validateLogEntry(entry, index, errors) {
-        if (!isPlainObject(entry)) {
-            errors.push('Log entry ' + (index + 1) + ' must be an object.');
-            return;
-        }
-        if (!isStrictIsoTimestamp(entry.timestamp)) {
-            errors.push(
-                'Log entry ' + (index + 1) +
-                ' timestamp must be an ISO 8601 string.'
-            );
-        }
-        if (!isNonEmptyString(entry.message)) {
-            errors.push(
-                'Log entry ' + (index + 1) + ' requires non-empty message.'
-            );
-        }
-    }
-
     function validateReport(report, index, errors) {
         if (!isPlainObject(report)) {
             errors.push('Report ' + (index + 1) + ' must be an object.');
@@ -747,6 +747,11 @@
      * complain about the absence of `assignedTeamIds` so long as
      * the scalar form is present.
      *
+     * The legacy `log` field is ignored entirely: it is neither
+     * required, nor validated, nor flagged. A record that still
+     * carries it passes validation. The canonicaliser is what drops
+     * it, so the field disappears on the next write.
+     *
      * Returns { valid: boolean, errors: [...] }.
      */
     function validateMission(mission) {
@@ -944,15 +949,6 @@
             }
         }
 
-        // ---- log ----
-        if (!Array.isArray(mission.log)) {
-            errors.push('Log must be an array.');
-        } else {
-            for (var l = 0; l < mission.log.length; l++) {
-                validateLogEntry(mission.log[l], l, errors);
-            }
-        }
-
         // ---- reports ----
         if (!Array.isArray(mission.reports)) {
             errors.push('Reports must be an array.');
@@ -1058,6 +1054,10 @@
     // MissionCore.updateMission, after creation defaults have been
     // applied by the caller. It is NOT a repair tool: malformed
     // input is reported, not silently fixed.
+    //
+    // The legacy `log` field is dropped silently. It is a retired
+    // field, not malformed input, so no error is produced. A
+    // canonicalised record never carries it.
 
     function canonicaliseObjective(objective, index, errors) {
         if (!isPlainObject(objective)) {
@@ -1083,33 +1083,6 @@
         return {
             text: text,
             done: objective.done === true
-        };
-    }
-
-    function canonicaliseLogEntry(entry, index, errors) {
-        if (!isPlainObject(entry)) {
-            errors.push('Log entry ' + (index + 1) + ' must be an object.');
-            return null;
-        }
-        if (!isStrictIsoTimestamp(entry.timestamp)) {
-            errors.push(
-                'Log entry ' + (index + 1) +
-                ' timestamp must be an ISO 8601 string.'
-            );
-            return null;
-        }
-        var message = typeof entry.message === 'string'
-            ? entry.message.trim()
-            : '';
-        if (message === '') {
-            errors.push(
-                'Log entry ' + (index + 1) + ' requires non-empty message.'
-            );
-            return null;
-        }
-        return {
-            timestamp: entry.timestamp,
-            message: message
         };
     }
 
@@ -1669,23 +1642,6 @@
             }
         }
 
-        // ---- log ----
-        var log = [];
-        if (input.log !== undefined && input.log !== null) {
-            if (!Array.isArray(input.log)) {
-                errors.push('Log must be an array.');
-            } else {
-                for (var li = 0; li < input.log.length; li++) {
-                    var logEntry = canonicaliseLogEntry(
-                        input.log[li], li, errors
-                    );
-                    if (logEntry !== null) {
-                        log.push(logEntry);
-                    }
-                }
-            }
-        }
-
         // ---- reports ----
         var reports = [];
         if (input.reports !== undefined && input.reports !== null) {
@@ -1762,6 +1718,10 @@
         }
 
         // ---- Build canonical object ----
+        //
+        // The canonical object has NO `log` field. Any input `log`
+        // is dropped here, silently, because it is a retired field
+        // rather than malformed data. See the file header.
         var result = {
             id: id,
             title: title,
@@ -1806,7 +1766,6 @@
             archivedAt: archivedAt,
 
             reports: reports,
-            log: log,
 
             graduatingClassId: graduatingClassId,
             classFilterEnabled: classFilterEnabled
@@ -1818,6 +1777,10 @@
         // assignedTeamIds and the legacy assignedTeamId. The
         // legacy field is deliberately excluded from the result,
         // so a canonicalised record never carries it.
+        //
+        // `log` is included in the known-key list so that a
+        // legacy record carrying it does NOT have the field
+        // preserved as "unknown data". It is dropped, not carried.
         var knownKeys = [
             'id',
             'missionId',        // explicitly not part of the canonical shape
@@ -1854,7 +1817,7 @@
             'completedAt',
             'archivedAt',
             'reports',
-            'log',
+            'log',              // retired field, dropped from the result
             'graduatingClassId',
             'classFilterEnabled'
         ];
@@ -1881,7 +1844,6 @@
         // Nested validation (used by MissionCore and by callers that
         // want to validate a single nested record)
         validateObjective: validateObjective,
-        validateLogEntry: validateLogEntry,
         validateReport: validateReport,
         validateTag: validateTag,
         validateSupportPersonnel: validateSupportPersonnel,
@@ -1902,7 +1864,6 @@
         var required = [
             'validateMission',
             'validateObjective',
-            'validateLogEntry',
             'validateReport',
             'validateTag',
             'validateSupportPersonnel',
@@ -1952,7 +1913,6 @@
                 completedAt: null,
                 archivedAt: null,
                 reports: [],
-                log: [],
                 graduatingClassId: null,
                 classFilterEnabled: false
             };
@@ -1973,7 +1933,33 @@
                 );
             }
 
-            // Legacy scalar must coerce into a single-element array.
+            // ---- log field is dropped ----
+            var withLog = JSON.parse(JSON.stringify(sample));
+            withLog.log = [
+                { timestamp: '2026-09-17T12:00:00.000Z', message: 'x' }
+            ];
+            var logCanonical = canonicaliseMissionShape(withLog);
+            if (!logCanonical.valid) {
+                missing.push(
+                    'smoke test: mission with legacy log failed ' +
+                    'canonicalisation'
+                );
+            } else if ('log' in logCanonical.value) {
+                missing.push(
+                    'smoke test: legacy log survived canonicalisation'
+                );
+            }
+
+            // Validation must NOT reject a mission that carries a
+            // legacy log; it must simply ignore it.
+            if (!validateMission(withLog).valid) {
+                missing.push(
+                    'smoke test: validateMission rejected a mission ' +
+                    'that carries a legacy log'
+                );
+            }
+
+            // ---- legacy scalar team id coerces into an array ----
             var legacy = JSON.parse(JSON.stringify(sample));
             delete legacy.assignedTeamIds;
             legacy.assignedTeamId = 'team_xyz';
@@ -1996,7 +1982,7 @@
                 );
             }
 
-            // Multi-team array must survive round-trip.
+            // ---- multi-team array survives round-trip ----
             var multi = JSON.parse(JSON.stringify(sample));
             multi.assignedTeamIds = ['team_a', 'team_b'];
             var multiCanonical = canonicaliseMissionShape(multi);
@@ -2011,7 +1997,7 @@
                 );
             }
 
-            // Duplicate team ids must be rejected.
+            // ---- duplicate team ids rejected ----
             var dupTeams = JSON.parse(JSON.stringify(sample));
             dupTeams.assignedTeamIds = ['team_a', 'team_a'];
             var dupResult = validateMission(dupTeams);
@@ -2021,7 +2007,7 @@
                 );
             }
 
-            // A mission with a stored missionId must be rejected.
+            // ---- stored missionId rejected ----
             var badMission = JSON.parse(JSON.stringify(sample));
             badMission.missionId = '2026-001-M';
             var badResult = validateMission(badMission);
@@ -2031,7 +2017,7 @@
                 );
             }
 
-            // Duplicate support personnel must be rejected.
+            // ---- duplicate support personnel rejected ----
             var dupSupport = JSON.parse(JSON.stringify(sample));
             dupSupport.supportPersonnel = ['char_1', 'char_1'];
             var dupResult2 = validateMission(dupSupport);
@@ -2042,7 +2028,7 @@
                 );
             }
 
-            // ---- Participant smoke tests ----
+            // ---- participant smoke tests ----
 
             // A valid team participant must round-trip.
             var withTeamParticipant = JSON.parse(JSON.stringify(sample));
