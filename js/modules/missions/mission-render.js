@@ -10,12 +10,14 @@
  *   - Rendering the shell markup (list container, modals).
  *   - Emitting data-* attributes for the UI controller to dispatch
  *     on.
+ *   - The report form modal markup (renderReportFormModal).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Data. Every value comes off the VM. No queries, no domain
  *     reads, no team lookups, no character lookups, no date parsing.
  *   - State. The UI controller owns which mission is selected,
- *     which filter is applied, which modal is open.
+ *     which filter is applied, which modal is open, and what the
+ *     report form currently contains.
  *   - Events. No addEventListener. All interaction is emitted as
  *     data-action attributes.
  *   - Composition. MissionAggregator builds VMs; this module only
@@ -49,21 +51,31 @@
  *   listener reads the attribute and dispatches.
  *
  * MODAL SHELL CONVENTION:
- *   renderContainer() emits the modal shells. Each shell has a
- *   stable id so the UI controller can find it:
+ *   renderContainer() emits the mission detail and mission form
+ *   modal shells. The report form modal is emitted lazily by the
+ *   controller on first use; renderReportFormModal() supplies its
+ *   markup.
+ *
+ *   Shells have stable ids:
  *     #mission-detail-modal
  *     #mission-form-modal
- *   The controller opens and closes them by toggling the `hidden`
- *   class. Modal content is written into stable host elements:
- *     #mission-detail-content
- *     #mission-form-content
+ *     #mission-report-modal  (lazy)
  *
- * DETAIL ACTIONS (this revision):
- *   The action row carries an Export button between Edit and
- *   Archive. Export is available for every mission, regardless of
- *   status or capability flags; it is a read-only projection of the
- *   mission record and does not depend on edit / archive /
- *   completion capability.
+ * REPORT MODAL (this revision):
+ *   The report form is a modal, not a browser prompt. It carries:
+ *
+ *     - An author <select>. Default is "Select author..." which
+ *       is an empty value. The user must pick someone or check
+ *       the redacted box.
+ *     - A "Submit anonymously / redacted" checkbox. When ticked,
+ *       the author select is disabled and the report is written
+ *       with authorId = null and authorRedacted = true.
+ *     - A large <textarea> for the report body.
+ *     - An inline error region.
+ *
+ *   In EDIT mode, the author select is disabled. Changing a
+ *   report's author after submission is a data-integrity problem,
+ *   not a feature. Delete and re-add instead.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -219,6 +231,202 @@
                         '</div>' +
                     '</div>' +
                 '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // REPORT FORM MODAL
+    // ============================================================
+    //
+    // The report form is a proper modal: a large textarea, an
+    // author select, and a redacted checkbox. The UI controller
+    // manages its state and dispatches the submission.
+    //
+    // VM shape (built by MissionUI):
+    //
+    //   {
+    //     mode:        'create' | 'edit',
+    //     missionId:   string,
+    //     missionTitle: string,
+    //     reportId:    string | null,
+    //     authorId:    string | null,
+    //     authorRedacted: boolean,
+    //     text:        string,
+    //     characters:  [ { id, name } ]
+    //   }
+
+    function renderReportFormModal(vm) {
+        if (!vm) {
+            throw new Error(
+                '[MissionRender] renderReportFormModal requires a VM.'
+            );
+        }
+
+        return buildReportFormHTML(vm);
+    }
+
+    function buildReportFormHTML(vm) {
+        var isEdit = vm.mode === 'edit';
+        var missionTitle = isNonEmptyString(vm.missionTitle)
+            ? vm.missionTitle
+            : 'Mission';
+        var characters = isArray(vm.characters)
+            ? vm.characters
+            : [];
+
+        var currentAuthorId = isNonEmptyString(vm.authorId)
+            ? String(vm.authorId)
+            : '';
+        var redacted = vm.authorRedacted === true;
+        var text = isNonEmptyString(vm.text) ? vm.text : '';
+
+        // In edit mode the author select is locked. The stored
+        // authorId is either a character id or null (redacted),
+        // and changing it after the fact would misattribute the
+        // report.
+        var authorDisabled = isEdit || redacted;
+
+        var title = isEdit
+            ? 'Edit Report'
+            : 'New Report';
+
+        var html = '';
+
+        // ---- Header ----
+        html += '<div class="modal-header">';
+        html += '<h3>' + escapeHtml(title) + ' \u2014 ' +
+                    escapeHtml(missionTitle) +
+                '</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-action="mission-report-cancel" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        // ---- Body ----
+        html += '<div class="modal-body mission-report-body">';
+
+        html += '<p class="field-hint" ' +
+                    'style="font-size:0.75rem;color:var(--text-dim);' +
+                    'margin:0 0 12px 0;line-height:1.5;">' +
+                    (isEdit
+                        ? 'Edit the report below. Changes are saved ' +
+                          'when you click Save.'
+                        : 'Write the report below. The author is ' +
+                          'shown alongside the report in the ' +
+                          'mission\u2019s history.') +
+                '</p>';
+
+        // ---- Author ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-report-author">Author</label>';
+
+        html += '<select id="mission-report-author"' +
+                    (authorDisabled ? ' disabled' : '') + '>';
+        html += '<option value="">Select author...</option>';
+        for (var i = 0; i < characters.length; i++) {
+            var c = characters[i];
+            if (!c || !c.id) { continue; }
+            var sel = String(c.id) === currentAuthorId
+                ? ' selected' : '';
+            html += '<option value="' +
+                        escapeAttribute(c.id) + '"' + sel + '>' +
+                        escapeHtml(c.name || 'Unknown') +
+                    '</option>';
+        }
+        html += '</select>';
+
+        if (isEdit) {
+            html += '<span class="field-hint">' +
+                        'The author cannot be changed after the ' +
+                        'report is saved. Delete the report and add ' +
+                        'a new one if it was attributed to the wrong ' +
+                        'character.' +
+                    '</span>';
+        } else {
+            html += '<span class="field-hint">' +
+                        'Leave as "Select author..." and tick the ' +
+                        'box below to submit without attribution.' +
+                    '</span>';
+        }
+        html += '</div>';
+
+        // ---- Redacted checkbox ----
+        html += '<div class="form-group mission-report-redact-row">';
+        html += '<label class="csw-checkbox-row" ' +
+                    'style="display:flex;align-items:center;gap:8px;' +
+                    'cursor:pointer;font-size:0.75rem;' +
+                    'color:var(--text);' +
+                    (isEdit ? 'opacity:0.5;cursor:not-allowed;' : '') +
+                    '">';
+        html += '<input type="checkbox" ' +
+                    'id="mission-report-redacted"' +
+                    (redacted ? ' checked' : '') +
+                    (isEdit ? ' disabled' : '') + '>';
+        html += '<span>Submit as redacted (Unknown author)</span>';
+        html += '</label>';
+        if (isEdit) {
+            html += '<span class="field-hint" ' +
+                        'style="margin-left:20px;">' +
+                        'Redaction state cannot be changed after ' +
+                        'save.' +
+                    '</span>';
+        }
+        html += '</div>';
+
+        // ---- Text ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-report-text">Report</label>';
+        html += '<textarea id="mission-report-text" ' +
+                    'rows="14" ' +
+                    'spellcheck="true" ' +
+                    'autocomplete="off" ' +
+                    'placeholder="What happened?" ' +
+                    'style="width:100%;min-height:280px;' +
+                    'padding:10px 12px;' +
+                    'background:var(--bg);' +
+                    'border:1px solid var(--border);' +
+                    'color:var(--text);' +
+                    'border-radius:6px;' +
+                    'font-family:inherit;' +
+                    'font-size:0.85rem;' +
+                    'line-height:1.55;' +
+                    'resize:vertical;' +
+                    'overflow:auto;">' +
+                    escapeHtml(text) +
+                '</textarea>';
+        html += '<span class="field-hint" ' +
+                    'style="font-size:0.65rem;">' +
+                    'Ctrl / Cmd + Enter to save.' +
+                '</span>';
+        html += '</div>';
+
+        // ---- Inline error region ----
+        html += '<div id="mission-report-error" ' +
+                    'class="mission-report-error" ' +
+                    'style="display:none;margin-top:10px;' +
+                    'padding:8px 12px;' +
+                    'background:var(--danger-soft);' +
+                    'border-left:3px solid var(--danger);' +
+                    'border-radius:4px;' +
+                    'font-size:0.75rem;' +
+                    'color:var(--danger);"></div>';
+
+        html += '</div>';
+
+        // ---- Footer ----
+        html += '<div class="form-actions mission-report-footer" ' +
+                    'style="display:flex;gap:8px;' +
+                    'justify-content:flex-end;' +
+                    'margin-top:12px;padding-top:12px;' +
+                    'border-top:1px solid var(--border-soft);">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-report-cancel">Cancel</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="mission-report-submit">' +
+                    (isEdit ? 'Save Changes' : 'Add Report') +
+                '</button>';
+        html += '</div>';
 
         return html;
     }
@@ -1310,6 +1518,7 @@
         renderListItem: renderListItem,
         renderDetail: renderDetail,
         renderForm: renderForm,
+        renderReportFormModal: renderReportFormModal,
         renderEmpty: renderEmpty,
         renderLoading: renderLoading
     });
@@ -1329,6 +1538,7 @@
             'renderListItem',
             'renderDetail',
             'renderForm',
+            'renderReportFormModal',
             'renderEmpty',
             'renderLoading'
         ];
