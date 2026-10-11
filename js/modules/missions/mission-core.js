@@ -94,7 +94,7 @@
  *       Permanently removes the mission. Administrative, not wired
  *       to any ordinary UI button.
  *
- * PARTICIPANTS (this revision):
+ * PARTICIPANTS:
  *   A mission carries a `participants` array. Each entry is
  *   { characterId, teamId, source }, where source is 'team' for a
  *   member of one of the mission's assigned teams, or 'rookie' for
@@ -121,6 +121,27 @@
  *   Those are cross-domain concerns. A caller that needs those
  *   guarantees enforces them at the UI layer before calling here.
  *   The mission domain trusts the caller to supply well-formed ids.
+ *
+ * ORPHANED PARTICIPANTS ON TEAM REMOVAL:
+ *   When updateMission is called with a new assignedTeamIds array
+ *   that OMITS a team that was previously assigned, any participant
+ *   whose teamId points at that removed team is pruned from the
+ *   candidate in the same transaction.
+ *
+ *   WHY: a participant whose team is no longer assigned becomes an
+ *   orphan. The participant record still carries a teamId, but no
+ *   code path that groups participants by team can resolve it.
+ *   Downstream consumers that expect one `members` array per
+ *   assigned team end up asking a group for its `.members` and
+ *   getting `undefined`, which surfaces as a validation error on
+ *   the next save.
+ *
+ *   Rookie participants (teamId === null) are not affected: they
+ *   are not attached to a team and survive the prune.
+ *
+ *   The prune is silent: no error, no warning. It is the correct
+ *   domain behaviour, not a repair. Removing a team from a mission
+ *   necessarily removes that team's participants from the mission.
  *
  * REPORTS:
  *   Reports are historical notes attached to a mission. They can be
@@ -368,6 +389,52 @@
         var recalculated = MissionRules.recalculateDerivedFields(candidate);
         recalculated.completedAt = candidate.completedAt;
         return recalculated;
+    }
+
+    // ============================================================
+    // PARTICIPANT PRUNE ON TEAM REMOVAL
+    // ============================================================
+    //
+    // When assignedTeamIds shrinks, any participant whose teamId
+    // points at a removed team becomes an orphan. Prune it from
+    // the candidate in the same transaction.
+    //
+    // Rookie participants (teamId === null) are not affected.
+    //
+    // The prune is silent and unconditional. It does not depend on
+    // whether the caller knew about the participants; removing a
+    // team from a mission is, by definition, removing that team's
+    // participants from the mission.
+
+    function pruneOrphanedParticipants(candidate) {
+        if (!Array.isArray(candidate.participants)) {
+            return;
+        }
+        if (!Array.isArray(candidate.assignedTeamIds)) {
+            return;
+        }
+
+        var assignedSet = Object.create(null);
+        for (var i = 0; i < candidate.assignedTeamIds.length; i++) {
+            var norm = normaliseId(candidate.assignedTeamIds[i]);
+            if (norm !== null) {
+                assignedSet[norm] = true;
+            }
+        }
+
+        candidate.participants = candidate.participants.filter(
+            function(p) {
+                if (!isPlainObject(p)) { return true; }
+
+                // Rookie participants are not attached to a team.
+                if (p.teamId === null || p.teamId === undefined) {
+                    return true;
+                }
+
+                var tid = normaliseId(p.teamId);
+                return tid !== null && assignedSet[tid] === true;
+            }
+        );
     }
 
     // ============================================================
@@ -724,6 +791,11 @@
      * MissionSchema.validateMission, because the caller supplies
      * structural fields (title, difficulty, subtype, ...).
      *
+     * When `assignedTeamIds` is provided, participants whose teamId
+     * points at a team that is no longer in the new array are
+     * pruned from the candidate in the same transaction. See
+     * pruneOrphanedParticipants above for the reasoning.
+     *
      * @returns {Promise<{success, data?, message?}>}
      */
     function updateMission(missionId, updates) {
@@ -843,6 +915,18 @@
                     }
                     candidate.assignedTeamIds =
                         updates.assignedTeamIds.slice();
+
+                    // Removing a team from a mission must also
+                    // remove that team's participants. Otherwise
+                    // the participant list carries orphans whose
+                    // teamId no longer resolves to an assigned
+                    // team, and any consumer that groups
+                    // participants by team produces a group with
+                    // no `members` array. See the file header.
+                    //
+                    // Rookie participants (teamId === null) are
+                    // not affected.
+                    pruneOrphanedParticipants(candidate);
                 }
 
                 copyIfProvided(
