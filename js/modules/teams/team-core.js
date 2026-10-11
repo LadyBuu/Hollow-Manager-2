@@ -23,6 +23,11 @@
  *     fires a post-commit hook so the name stays in sync with the
  *     distinct-member count; the naming logic itself lives in
  *     team-naming.js.
+ *   - The specialisation vocabulary. MissionConstants owns the
+ *     mission type taxonomy. This module validates that a
+ *     specialisation id is a known mission type via
+ *     MissionConstants.isValidMissionType; it does not own the
+ *     list of valid ids.
  *
  * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
@@ -41,6 +46,29 @@
  *   Intervals within one member must not overlap.
  *   joinPeriod is IMMUTABLE once set: to move a stint start, purge
  *   and add a new interval.
+ *
+ * DESCRIPTIVE FIELDS:
+ *   A team carries two descriptive fields that are neither derived
+ *   nor cross-domain:
+ *
+ *     style            free text, trimmed. How the team works
+ *                      together — fighting style, doctrine, tone.
+ *                      Single string. Defaults to ''.
+ *
+ *     specialisations  array of MissionConstants mission-type ids.
+ *                      Deduped, order-preserved. Validated against
+ *                      MissionConstants.isValidMissionType.
+ *                      Defaults to [].
+ *
+ *   Neither is required. Neither is derived. Neither is loaded
+ *   from any other store. Both are user-authored and both survive
+ *   a round-trip through updateTeam.
+ *
+ *   The vocabulary for specialisations comes from the mission
+ *   domain's type taxonomy. The mission domain does NOT know about
+ *   team specialisations; a mission's primaryType and a team's
+ *   specialisations are independent concepts that share a list of
+ *   ids.
  *
  * PERIOD SEMANTICS:
  *   Periods are positive integers. Blank ('', null, undefined) is
@@ -81,10 +109,11 @@
  *   - characterProvider (injected via configure)
  *
  * DEPENDENCIES (LAZY, at call time):
- *   - window.TournamentCore (deleteTeam cascade; mandatory at that
- *     call, throws if unavailable)
- *   - window.TeamNaming (post-member-add rename; optional, skipped
- *     if absent)
+ *   - window.MissionConstants    (specialisation id validation)
+ *   - window.TournamentCore      (deleteTeam cascade; mandatory at
+ *                                 that call, throws if unavailable)
+ *   - window.TeamNaming          (post-member-add rename; optional,
+ *                                 skipped if absent)
  */
 
 (function() {
@@ -103,6 +132,14 @@
     var IdUtils = window.IdUtils;
     var MutationPipeline = window.MutationPipeline;
     var ObjectUtils = window.ObjectUtils;
+
+    // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getMissionConstants() {
+        return window.MissionConstants || null;
+    }
 
     // ============================================================
     // INJECTED DEPENDENCIES
@@ -213,6 +250,113 @@
 
     function success(data) {
         return { success: true, data: data };
+    }
+
+    // ============================================================
+    // DESCRIPTIVE FIELD CANONICALISATION
+    // ============================================================
+    //
+    // style and specialisations are user-authored. Neither is
+    // required. The canonicalisers below are lenient: they accept
+    // missing, null, or undefined inputs and produce the empty
+    // value. They only reject a value that is present and
+    // structurally wrong (a number, an object where a string is
+    // expected; a non-array where an array is expected).
+    //
+    // The point is to keep a fresh create with no style and no
+    // specialisations cheap, and to keep the round-trip through
+    // updateTeam forgiving of a caller that omits either field
+    // entirely.
+
+    /**
+     * Canonicalise the style field.
+     *
+     *   missing / null / undefined  -> { valid: true, value: '' }
+     *   string                      -> { valid: true, value: trimmed }
+     *   anything else               -> { valid: false }
+     */
+    function canonicaliseStyle(raw) {
+        if (raw === undefined || raw === null) {
+            return { valid: true, value: '' };
+        }
+        if (typeof raw !== 'string') {
+            return {
+                valid: false,
+                message: 'Style must be a string.'
+            };
+        }
+        return { valid: true, value: raw.trim() };
+    }
+
+    /**
+     * Canonicalise the specialisations array.
+     *
+     *   missing / null / undefined  -> { valid: true, value: [] }
+     *   array                       -> { valid: true, value: [...deduped] }
+     *   anything else               -> { valid: false }
+     *
+     * Each entry must be a known mission type id. Duplicates are
+     * dropped, order is preserved. Blank entries (null, undefined,
+     * '') are dropped without error: the picker never produces
+     * them, and a hand-authored record that has one is being
+     * forgiven, not repaired.
+     *
+     * When MissionConstants is not loaded, the isValidMissionType
+     * check is skipped and every non-empty id passes. This is
+     * deliberate: the mission constants are loaded early in
+     * index.html and will be present in every real run, but a
+     * caller that drives TeamCore in isolation (a test, a script)
+     * should not be blocked by the absence of a module it does not
+     * otherwise need.
+     */
+    function canonicaliseSpecialisations(raw) {
+        if (raw === undefined || raw === null) {
+            return { valid: true, value: [] };
+        }
+        if (!Array.isArray(raw)) {
+            return {
+                valid: false,
+                message: 'Specialisations must be an array.'
+            };
+        }
+
+        var MC = getMissionConstants();
+        var canValidate = MC &&
+            typeof MC.isValidMissionType === 'function';
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var entry = raw[i];
+            if (entry === undefined || entry === null) { continue; }
+
+            if (typeof entry !== 'string') {
+                return {
+                    valid: false,
+                    message:
+                        'Specialisation at index ' + i +
+                        ' must be a string.'
+                };
+            }
+
+            var id = entry.trim();
+            if (id === '') { continue; }
+
+            if (canValidate && !MC.isValidMissionType(id)) {
+                return {
+                    valid: false,
+                    message:
+                        'Unknown specialisation: "' + id + '".'
+                };
+            }
+
+            if (seen[id] === true) { continue; }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return { valid: true, value: result };
     }
 
     // ============================================================
@@ -686,6 +830,20 @@
         return { valid: true };
     }
 
+    /**
+     * Validate a fully-built team record.
+     *
+     * Checks structure only. The descriptive fields (style,
+     * specialisations) are validated for shape:
+     *
+     *   style             must be a string
+     *   specialisations   must be an array of strings, each a
+     *                     known mission type id
+     *
+     * The specialisation check is skipped when MissionConstants
+     * is not loaded, matching the lenient behaviour of the
+     * canonicaliser above.
+     */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
             return {
@@ -760,6 +918,68 @@
         var nameCheck = validateNameHistory(team.nameHistory);
         if (!nameCheck.valid) { return nameCheck; }
 
+        // ---- style ----
+        if (team.style !== undefined &&
+            team.style !== null &&
+            typeof team.style !== 'string') {
+            return {
+                valid: false,
+                message: 'Style must be a string.'
+            };
+        }
+
+        // ---- specialisations ----
+        if (team.specialisations !== undefined &&
+            team.specialisations !== null) {
+            if (!Array.isArray(team.specialisations)) {
+                return {
+                    valid: false,
+                    message: 'Specialisations must be an array.'
+                };
+            }
+
+            var MC = getMissionConstants();
+            var canValidate = MC &&
+                typeof MC.isValidMissionType === 'function';
+            var seenSpec = Object.create(null);
+
+            for (var s = 0; s < team.specialisations.length; s++) {
+                var spec = team.specialisations[s];
+                if (typeof spec !== 'string') {
+                    return {
+                        valid: false,
+                        message: 'Specialisation at index ' + s +
+                            ' must be a string.'
+                    };
+                }
+                var specId = spec.trim();
+                if (specId === '') {
+                    return {
+                        valid: false,
+                        message: 'Specialisation at index ' + s +
+                            ' cannot be empty.'
+                    };
+                }
+                if (canValidate &&
+                    !MC.isValidMissionType(specId)) {
+                    return {
+                        valid: false,
+                        message: 'Unknown specialisation: "' +
+                            specId + '".'
+                    };
+                }
+                if (seenSpec[specId]) {
+                    return {
+                        valid: false,
+                        message: 'Duplicate specialisation: "' +
+                            specId + '".'
+                    };
+                }
+                seenSpec[specId] = true;
+            }
+        }
+
+        // ---- members ----
         var seenMemberIds = Object.create(null);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
@@ -828,6 +1048,24 @@
         var startCanon = canonicalisePeriod(teamData.startPeriod);
         var endCanon = canonicalisePeriod(teamData.endPeriod);
 
+        // ---- Descriptive fields ----
+        //
+        // A caller that omits either field gets the empty value.
+        // A caller that supplies a malformed value gets it through
+        // canonicalisation; a failure here means the create is
+        // rejected before it reaches the pipeline.
+        var styleResult = canonicaliseStyle(teamData.style);
+        var styleValue = styleResult.valid
+            ? styleResult.value
+            : '';
+
+        var specResult = canonicaliseSpecialisations(
+            teamData.specialisations
+        );
+        var specValue = specResult.valid
+            ? specResult.value
+            : [];
+
         return {
             id: generateTeamId(),
             name: String(teamData.name).trim(),
@@ -838,6 +1076,8 @@
             nameHistory: normaliseNameHistory(teamData.nameHistory),
             members: [],
             rankingHistory: [],
+            style: styleValue,
+            specialisations: specValue,
             temporaryMission: teamData.temporaryMission !== undefined &&
                 teamData.temporaryMission !== null &&
                 teamData.temporaryMission !== ''
@@ -922,6 +1162,26 @@
             candidate.nameHistory = normaliseNameHistory(
                 updates.nameHistory
             );
+        }
+
+        // ---- style ----
+        if (updates.style !== undefined) {
+            var styleCheck = canonicaliseStyle(updates.style);
+            if (!styleCheck.valid) {
+                return styleCheck;
+            }
+            candidate.style = styleCheck.value;
+        }
+
+        // ---- specialisations ----
+        if (updates.specialisations !== undefined) {
+            var specCheck = canonicaliseSpecialisations(
+                updates.specialisations
+            );
+            if (!specCheck.valid) {
+                return specCheck;
+            }
+            candidate.specialisations = specCheck.value;
         }
 
         if (updates.temporaryMission !== undefined) {
@@ -1071,6 +1331,24 @@
             );
         }
 
+        // ---- Descriptive fields ----
+        //
+        // Pre-checked here so a malformed value is rejected before
+        // the pipeline runs. buildNewTeam re-canonicalises the
+        // same values; a value that fails here would have failed
+        // there too, so the double-check is cheap and the error
+        // message is clearer at this layer.
+        var styleCheck = canonicaliseStyle(teamData.style);
+        if (!styleCheck.valid) {
+            return Promise.resolve(failure(styleCheck.message));
+        }
+        var specCheck = canonicaliseSpecialisations(
+            teamData.specialisations
+        );
+        if (!specCheck.valid) {
+            return Promise.resolve(failure(specCheck.message));
+        }
+
         var candidate = buildNewTeam({
             name: teamData.name,
             type: normalizedType,
@@ -1078,6 +1356,8 @@
             endPeriod: teamData.endPeriod,
             status: status,
             nameHistory: nameHistory,
+            style: teamData.style,
+            specialisations: teamData.specialisations,
             temporaryMission: teamData.temporaryMission,
             classId: teamData.classId,
             teamNumber: teamData.teamNumber
@@ -1228,7 +1508,9 @@
                 var updateableProps = [
                     'name', 'type', 'startPeriod', 'endPeriod',
                     'status', 'classId', 'teamNumber',
-                    'temporaryMission', 'nameHistory', 'updatedAt'
+                    'temporaryMission', 'nameHistory',
+                    'style', 'specialisations',
+                    'updatedAt'
                 ];
                 for (var i = 0; i < updateableProps.length; i++) {
                     var key = updateableProps[i];
