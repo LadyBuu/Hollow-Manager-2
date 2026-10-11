@@ -2,7 +2,7 @@
  * modules/shared/queries/mission-queries.js - Mission Queries
  * Read-only facade for mission data.
  *
- * Path: js/modules/shared/queries/mission-queries.js
+ * Path: js/modules/missions/mission-queries.js
  *
  * RESPONSIBILITIES:
  *   - Reading missions from window.data.missions.
@@ -29,6 +29,24 @@
  *   getMission(id) does NOT filter — it returns the mission if it
  *   exists, archived or not. Callers who need to check archive
  *   state read `mission.archivedAt` or use `isArchived(mission)`.
+ *
+ * TEAM ASSIGNMENTS (this revision):
+ *   A mission may be assigned to any number of professional or
+ *   temporary teams, stored in `assignedTeamIds` (an array of
+ *   team UUIDs).
+ *
+ *   Legacy records carry a singular `assignedTeamId`. This module
+ *   transparently coerces that scalar into a single-element array
+ *   when reading, so a caller never has to know which shape the
+ *   stored record has.
+ *
+ *   The canonical accessor is `getTeamIdsForMission(mission)`. It
+ *   returns a fresh array of normalised team ids. Every read in
+ *   this module that consults team assignment goes through it.
+ *
+ *   The old singular field is never returned, exposed, or read by
+ *   callers. Reads produce arrays; writes go through MissionCore,
+ *   which the schema guarantees produces canonical records.
  *
  * RETURNS:
  *   Every mission-returning function returns a DEEP CLONE. The
@@ -185,6 +203,70 @@
     }
 
     // ============================================================
+    // TEAM ID RESOLUTION
+    // ============================================================
+    //
+    // A mission carries its assigned teams as `assignedTeamIds` (an
+    // array). A record saved by an older version of the app may
+    // carry a singular `assignedTeamId` instead.
+    //
+    // getTeamIdsForMission is the single point through which every
+    // read in this module consults team assignment. It normalises
+    // every id, deduplicates, and drops blanks. It returns a fresh
+    // array; the caller cannot mutate the mission by mutating the
+    // result.
+    //
+    // When both fields are present, the array wins. When neither is
+    // present, the result is an empty array.
+
+    function getTeamIdsForMission(mission) {
+        if (!isPlainObject(mission)) { return []; }
+
+        var raw = null;
+
+        if (Array.isArray(mission.assignedTeamIds)) {
+            raw = mission.assignedTeamIds;
+        } else if (mission.assignedTeamId !== undefined &&
+                   mission.assignedTeamId !== null &&
+                   mission.assignedTeamId !== '') {
+            // Legacy singular. Treat as a single-element array.
+            raw = [mission.assignedTeamId];
+        }
+
+        if (!Array.isArray(raw) || raw.length === 0) {
+            return [];
+        }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var id = normaliseId(raw[i]);
+            if (id === null) { continue; }
+            if (seen[id]) { continue; }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return result;
+    }
+
+    /**
+     * Convenience: does the mission have the given team assigned?
+     * Uses getTeamIdsForMission, so it works against both shapes.
+     */
+    function isMissionAssignedToTeam(mission, teamId) {
+        if (!isPlainObject(mission)) { return false; }
+        var target = normaliseId(teamId);
+        if (target === null) { return false; }
+        var ids = getTeamIdsForMission(mission);
+        for (var i = 0; i < ids.length; i++) {
+            if (ids[i] === target) { return true; }
+        }
+        return false;
+    }
+
+    // ============================================================
     // SINGLE MISSION READ
     // ============================================================
 
@@ -312,6 +394,11 @@
     /**
      * Get missions assigned to a specific team.
      *
+     * A mission may be assigned to more than one team. This reads
+     * `assignedTeamIds` and matches the given team anywhere in that
+     * array. Legacy records that still carry a singular
+     * `assignedTeamId` are handled transparently.
+     *
      * @param {string} teamId
      * @param {object} [options] - { filter, includeArchived }
      * @returns {array} Deep clones
@@ -336,7 +423,7 @@
 
         for (var i = 0; i < missions.length; i++) {
             var m = missions[i];
-            if (normaliseId(m.assignedTeamId) === target) {
+            if (isMissionAssignedToTeam(m, target)) {
                 result.push(m);
             }
         }
@@ -390,15 +477,15 @@
      * Get every mission a character is connected to, via the teams
      * they are or were members of.
      *
-     * A mission is assigned to a team (assignedTeamId). A character
-     * is connected to a mission when they are or were a member of
-     * that team. This is the participation model the mission domain
-     * actually has; there is no per-character participants array on
-     * the mission record.
+     * A mission is assigned to one or more teams (assignedTeamIds).
+     * A character is connected to a mission when they are or were a
+     * member of any of those teams. This is the participation model
+     * the mission domain actually has; there is no per-character
+     * participants array on the mission record.
      *
      * TWO-HOP DERIVATION:
      *   character → teams (via TeamQueries) → missions (via the
-     *   team's assignedTeamId).
+     *   teams' assignedTeamIds).
      *
      *   The derivation lives here, on the query surface, rather than
      *   inside a consumer, for the same reason getTeamsForCharacter
@@ -781,7 +868,11 @@
         getUniqueTags: getUniqueTags,
 
         // Archive-state helper
-        isArchived: isArchived
+        isArchived: isArchived,
+
+        // Team-assignment helpers
+        getTeamIdsForMission: getTeamIdsForMission,
+        isMissionAssignedToTeam: isMissionAssignedToTeam
     });
 
     // ============================================================
@@ -807,7 +898,9 @@
             'searchMissions',
             'getStatistics',
             'getUniqueTags',
-            'isArchived'
+            'isArchived',
+            'getTeamIdsForMission',
+            'isMissionAssignedToTeam'
         ];
 
         for (var i = 0; i < required.length; i++) {

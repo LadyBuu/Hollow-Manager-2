@@ -8,6 +8,8 @@
  *   - Mission list rows (.missions-list, .list-item.mission-item)
  *   - Detail modal (.mission-detail, .mission-detail-fields,
  *     .mission-detail-actions)
+ *   - Assigned teams (.assigned-teams-section, .assigned-teams-list,
+ *     .assigned-team-item)
  *   - Objectives (.objectives-section, .objectives-list,
  *     .objective-item)
  *   - Support personnel (.support-section, .support-list,
@@ -17,6 +19,10 @@
  *   - Activity log (.log-section, .log-list, .log-entry)
  *   - Form (.mission-form, .date-input-group, .objective-input-group,
  *     .support-input-group, .objective-row)
+ *   - Form team editor (.mission-team-editor,
+ *     .mission-team-input-group, .mission-team-chip)
+ *   - Export picker modal (.mission-export-format)
+ *   - Import modal (.mission-import-format, .mission-import-file-row)
  *   - Status / priority / type badges
  *   - Progress bars
  *
@@ -82,6 +88,29 @@
 .filter-section select:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+/* ============================================================
+   PAGE HEADER ACTIONS
+   ============================================================
+   The mission manager header carries two buttons: Import and
+   New Mission. Import uses .secondary, New uses .primary.
+   The generic .header-actions container is styled by shared.css;
+   the button spacing is set here so the two sit close together
+   without the tab-specific tailwind-ish margin collapse rules
+   from the shared sheet fighting it.
+ */
+
+.missions-list ~ * .header-actions,
+.page-header .header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.page-header .header-actions button {
+    white-space: nowrap;
 }
 
 /* ============================================================
@@ -211,6 +240,19 @@
     color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/*
+ * The +N suffix on a row whose mission is assigned to more than
+ * one team. Sits inline with the primary team name and reads as
+ * a count, not as a team name.
+ */
+.mission-team-extra {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.6rem;
+    margin-left: 2px;
     white-space: nowrap;
 }
 
@@ -443,7 +485,8 @@
 }
 
 /* ============================================================
-   SECTION HEADER (shared by objectives, support, reports, log)
+   SECTION HEADER (shared by objectives, support, teams,
+   reports, log)
    ============================================================ */
 
 .section-header {
@@ -631,6 +674,53 @@
     font-size: 0.6rem;
     padding: 1px 8px;
     flex: 0 0 auto;
+}
+
+/* ============================================================
+   ASSIGNED TEAMS (detail panel)
+   ============================================================ */
+
+.assigned-teams-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.assigned-teams-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.assigned-team-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    font-size: 0.72rem;
+    color: var(--text);
+}
+
+.assigned-team-item .assigned-team-name {
+    color: var(--text);
+}
+
+.assigned-team-item button.small {
+    font-size: 0.6rem;
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: var(--danger);
+}
+
+.assigned-team-item button.small:hover {
+    color: var(--text);
 }
 
 /* ============================================================
@@ -870,6 +960,106 @@
 }
 
 /* ============================================================
+   FORM TEAM EDITOR
+   ============================================================
+   The mission's "Assigned Teams" control. Three pieces:
+
+     .mission-team-input-group
+       The <select> and its "+ Add" button, side by side.
+
+     .mission-teams-list
+       The chip list below. One .mission-team-chip per
+       currently-assigned team.
+
+     .mission-team-chip
+       Team name + a small × button.
+
+   The select is disabled when the eligible list is empty;
+   the empty-state copy is set by the renderer.
+
+   The visual language matches the support-personnel editor:
+   the input group is horizontal on desktop, the chip list is a
+   stacked column. The chips are the same shape as the
+   detail panel's .assigned-team-item, deliberately, so the two
+   read as the same concept.
+ */
+
+.mission-team-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mission-team-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    margin-bottom: 6px;
+}
+
+.mission-team-input-group .mission-team-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.mission-team-input-group .mission-team-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.mission-team-input-group .mission-team-select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.mission-team-input-group button {
+    font-size: 0.65rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.mission-teams-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.mission-team-chip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--info);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.mission-team-chip .mission-team-chip-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mission-team-chip button.small {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
    DATE INPUT GROUP
    ============================================================
    The three date inputs (year, month, day) carry data-* markers
@@ -1061,6 +1251,242 @@
 }
 
 /* ============================================================
+   REPORT FORM MODAL
+   ============================================================
+   The report form uses the shared .modal-content shell. The
+   inner .mission-report-body is the modal body; the report
+   textarea is full-width and tall. The author select groups
+   team members and other characters via <optgroup>; there is
+   no per-optgroup styling, the browser handles the group
+   header.
+
+   The inline error region sits below the textarea. It carries
+   its own display:none in the markup; the controller toggles
+   the display when an error needs to be shown.
+ */
+
+.mission-report-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.mission-report-body .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.mission-report-body .form-group label {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.mission-report-body select,
+.mission-report-body textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.mission-report-body select {
+    padding: 6px 8px;
+}
+
+.mission-report-body textarea {
+    padding: 10px 12px;
+    line-height: 1.55;
+    resize: vertical;
+    min-height: 280px;
+}
+
+.mission-report-body select:focus,
+.mission-report-body textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.mission-report-body select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.mission-report-body .field-hint {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    line-height: 1.45;
+}
+
+.mission-report-redact-row {
+    padding: 4px 0;
+}
+
+.mission-report-error {
+    font-family: 'Inter', sans-serif;
+    white-space: pre-wrap;
+    line-height: 1.45;
+}
+
+/* ============================================================
+   EXPORT MODAL
+   ============================================================
+   Small format picker. Two radio rows, each carrying a title
+   and a short description. The selected row is highlighted.
+
+   The markup is emitted by mission-ui.js (buildExportModalHTML)
+   because the two templates fit in one screen and use no
+   cross-domain data. Keeping them in the controller means
+   MissionRender does not grow two public functions for two
+   trivial templates.
+ */
+
+.modal-export-content {
+    max-width: 460px;
+    width: 100%;
+}
+
+.mission-export-formats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mission-export-format {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.mission-export-format:hover {
+    background: var(--panel);
+}
+
+.mission-export-format.is-selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.mission-export-format input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.mission-export-format-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+}
+
+.mission-export-format-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.mission-export-format-desc {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    line-height: 1.45;
+}
+
+.mission-export-error {
+    font-family: 'Inter', sans-serif;
+    white-space: pre-wrap;
+    line-height: 1.45;
+}
+
+/* ============================================================
+   IMPORT MODAL
+   ============================================================
+   Same shell pattern as the export modal, but taller. The
+   textarea is the primary control.
+
+   .mission-import-format rows share the visual language of the
+   export format rows, but the description is longer, so the
+   body has more vertical room per row.
+ */
+
+.modal-import-content {
+    max-width: 680px;
+    width: 100%;
+}
+
+.modal-import-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.mission-import-formats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mission-import-format {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.72rem;
+    color: var(--text);
+    line-height: 1.5;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.mission-import-format:hover {
+    background: var(--panel);
+}
+
+.mission-import-format.is-selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.mission-import-format input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.modal-import-body textarea {
+    font-family: monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+}
+
+.mission-import-file-row {
+    /* Layout is set inline by the renderer; this rule exists to
+       give the row a place in the box model so future styling
+       has a hook. */
+}
+
+.mission-import-error {
+    font-family: 'Inter', sans-serif;
+    white-space: pre-wrap;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+/* ============================================================
    MOBILE
    ============================================================ */
 
@@ -1140,12 +1566,14 @@
     }
 
     .support-input-group,
-    .objective-input-group {
+    .objective-input-group,
+    .mission-team-input-group {
         flex-direction: column;
     }
 
     .support-input-group button,
-    .objective-input-group button {
+    .objective-input-group button,
+    .mission-team-input-group button {
         width: 100%;
     }
 
@@ -1159,5 +1587,33 @@
 
     .log-timestamp {
         font-size: 0.58rem;
+    }
+
+    /* ---- Export and import modals ---- */
+
+    .modal-export-content,
+    .modal-import-content {
+        max-width: 100%;
+    }
+
+    .mission-export-format,
+    .mission-import-format {
+        padding: 8px 10px;
+    }
+
+    .mission-report-body textarea {
+        min-height: 200px;
+    }
+
+    .modal-import-body textarea {
+        min-height: 200px;
+    }
+
+    /* ---- Assigned team chips ---- */
+
+    .assigned-team-item,
+    .mission-team-chip {
+        font-size: 0.68rem;
+        padding: 3px 8px;
     }
 }

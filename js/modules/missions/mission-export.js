@@ -3,11 +3,13 @@
  *
  * Path: js/modules/missions/mission-export.js
  *
- * Full textual dump of a single mission.
+ * Full textual dump of a single mission, plus a JSON dump of the
+ * same mission.
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one mission.
- *   - Handing the payload to ExportUtils.downloadBlob.
+ *   - Building a JSON blob for one mission.
+ *   - Handing either payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. MissionQueries, CharacterQueries, and TeamQueries
@@ -18,22 +20,32 @@
  *     dump.
  *   - UI. MissionEvents / MissionUI triggers the export; this module
  *     returns a result object.
- *   - Format selection. One format: plain text.
+ *   - Format selection. Two formats, but the caller picks one by
+ *     calling the appropriate function. This module does not decide.
  *   - Download mechanics. ExportUtils.downloadBlob owns the anchor,
  *     the blob URL, and the filename uniquification. This module
  *     supplies a base filename and hands over the payload.
  *
- * REPORT CONTENTS (in order):
- *   - Header: title, mission ID (derived), status, priority.
- *   - Classification: difficulty, type chain, escalation, billing.
- *   - Timing: date, created, completed, archived.
- *   - Assignment: team, location, duration, pay.
- *   - Description.
- *   - Objectives: checklist with progress.
- *   - Support personnel: resolved names.
- *   - Reports: full text of each, timestamped, author resolved.
- *   - Activity log: timestamped entries.
- *   - Notes and tags.
+ * FORMATS:
+ *   Text   - human-readable, plain text. The default. Built by
+ *            exportMissionText. A full report with sections:
+ *            header, classification, timing, assignment,
+ *            description, objectives, support personnel, reports,
+ *            activity log, notes and tags.
+ *
+ *   JSON   - the full mission record, verbatim. Built by
+ *            exportMissionJson. Not wrapped in an envelope, not
+ *            projected, not stripped. Every field the store
+ *            carries is present. The record is deep-cloned before
+ *            serialisation so the caller cannot mutate the store
+ *            through the exported object.
+ *
+ * MULTIPLE TEAMS (this revision):
+ *   The mission's assigned teams are read via
+ *   MissionQueries.getTeamIdsForMission, which handles the legacy
+ *   singular assignedTeamId transparently. The text report prints
+ *   one line per team. The JSON export is verbatim, so whatever
+ *   the record carries is what gets written.
  *
  * SECTIONS COLLAPSE when empty. A mission with no reports shows
  * "(none)" under REPORTS rather than an empty section. The reader
@@ -53,13 +65,12 @@
  *   returns { error } rather than an empty file.
  *
  * DOWNLOAD FILENAMES:
- *   This module produces a base filename of the form
- *   "mission_<slug>_<id>_<timestamp>.txt". ExportUtils.downloadBlob
- *   inserts its own local-time timestamp before the extension, so a
- *   second export of the same mission in the same session never
- *   collides with the first. The per-module timestamp remains
- *   because it makes the base name human-readable in logs; the
- *   central timestamp is what guarantees uniqueness.
+ *   Text export base filename: "mission_<slug>_<id>_<timestamp>.txt".
+ *   JSON export base filename: "mission_<slug>_<id>_<timestamp>.json".
+ *
+ *   ExportUtils.downloadBlob inserts its own local-time timestamp
+ *   before the extension, so a second export of the same mission
+ *   in the same session never collides with the first.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
@@ -101,6 +112,10 @@
     if (!MissionQueries ||
         typeof MissionQueries.getMission !== 'function') {
         _missing.push('MissionQueries.getMission');
+    }
+    if (!MissionQueries ||
+        typeof MissionQueries.getTeamIdsForMission !== 'function') {
+        _missing.push('MissionQueries.getTeamIdsForMission');
     }
     if (!MissionId ||
         typeof MissionId.derive !== 'function') {
@@ -230,11 +245,6 @@
     // ============================================================
     // LABEL COLUMN
     // ============================================================
-    //
-    // Fixed-width label column, matching the report style used by
-    // team-export.js. "Status:        Active" — the label is padded
-    // to LABEL_WIDTH, then the value follows. A line is emitted
-    // only when the value is non-empty.
 
     var LABEL_WIDTH = 15;
 
@@ -274,7 +284,7 @@
     }
 
     // ============================================================
-    // SECTION BUILDERS
+    // SECTION BUILDERS (text)
     // ============================================================
 
     function pushHeader(lines, mission) {
@@ -414,8 +424,34 @@
         lines.push(lineDash(heading));
         lines.push('');
 
-        var teamName = resolveTeamName(mission.assignedTeamId);
-        lines.push(labelled('Team', teamName || 'Unassigned'));
+        // ---- Teams ----
+        //
+        // One line per assigned team. When no teams are assigned,
+        // a single "Team:  Unassigned" line. The label is padded so
+        // the first line reads cleanly; subsequent lines align
+        // under the first team name.
+        var teamIds = MissionQueries.getTeamIdsForMission(mission);
+
+        if (teamIds.length === 0) {
+            lines.push(labelled('Team', 'Unassigned'));
+        } else if (teamIds.length === 1) {
+            lines.push(labelled('Team', resolveTeamName(teamIds[0])));
+        } else {
+            var firstLine = labelled(
+                'Team',
+                resolveTeamName(teamIds[0])
+            );
+            lines.push(firstLine);
+
+            // Continuation lines align under the first team name.
+            var indent = '';
+            while (indent.length < LABEL_WIDTH + 1) {
+                indent += ' ';
+            }
+            for (var i = 1; i < teamIds.length; i++) {
+                lines.push(indent + resolveTeamName(teamIds[i]));
+            }
+        }
 
         lines.push(labelled('Location', mission.location));
         lines.push(labelled('Duration', mission.duration));
@@ -554,7 +590,7 @@
                   MissionViews.formatTimestamp(report.updatedAt) + ')'
                 : '';
 
-            lines.push('  ' + authorName + ' — ' + created + edited);
+            lines.push('  ' + authorName + ' \u2014 ' + created + edited);
             lines.push('');
             lines.push(indentBlock(report.text || '', '    '));
             lines.push('');
@@ -628,10 +664,6 @@
     // ============================================================
     // INDENT HELPER
     // ============================================================
-    //
-    // Indent every line of a multi-line block by `prefix`. Empty
-    // lines are preserved without the prefix, so a paragraph that
-    // contains a blank line does not get trailing whitespace.
 
     function indentBlock(text, prefix) {
         if (!isNonEmptyString(text)) { return ''; }
@@ -648,10 +680,10 @@
     }
 
     // ============================================================
-    // REPORT BUILDER
+    // TEXT REPORT BUILDER
     // ============================================================
 
-    function buildReport(missionId) {
+    function buildTextReport(missionId) {
         var mission = null;
         try {
             mission = MissionQueries.getMission(missionId);
@@ -685,13 +717,12 @@
         lines.push(lineUnder(footer));
 
         return {
-            exported: true,
-            filename: buildFilename(mission),
-            text: lines.join('\n')
+            text: lines.join('\n'),
+            mission: mission
         };
     }
 
-    function buildFilename(mission) {
+    function buildTextFilename(mission) {
         var slug = slugify(mission.title);
         var idPart = isNonEmptyString(mission.id)
             ? String(mission.id)
@@ -700,38 +731,60 @@
             '_' + timestampSlug() + '.txt';
     }
 
-    // ============================================================
-    // PUBLIC API
-    // ============================================================
+    function buildJsonFilename(mission) {
+        var slug = slugify(mission.title);
+        var idPart = isNonEmptyString(mission.id)
+            ? String(mission.id)
+            : 'unknown';
+        return 'mission_' + slug + '_' + idPart +
+            '_' + timestampSlug() + '.json';
+    }
 
-    /**
-     * Export a single mission as a plain-text report.
-     *
-     * @param {string} missionId
-     * @returns {object}
-     *   { exported: true, filename, count } on success
-     *   { error: string } on failure
-     */
-    function exportMission(missionId) {
-        if (!isNonEmptyString(missionId)) {
-            return { error: 'Mission ID is required.' };
-        }
+    // ============================================================
+    // JSON REPORT BUILDER
+    // ============================================================
+    //
+    // The JSON export is the mission record verbatim. No envelope,
+    // no projection, no stripping. Every field the store carries is
+    // present.
+    //
+    // The record is deep-cloned before it is handed back. This is
+    // the same discipline the read layer follows: an export is a
+    // snapshot, not a live reference. A caller that mutates the
+    // returned object must not mutate the store.
 
-        var built;
+    function buildJsonPayload(missionId) {
+        var mission = null;
         try {
-            built = buildReport(String(missionId));
+            mission = MissionQueries.getMission(missionId);
         } catch (e) {
-            console.warn(
-                '[MissionExport] buildReport threw:', e
-            );
-            return { error: 'Failed to build report: ' + e.message };
+            mission = null;
         }
 
-        if (built.error) { return built; }
+        if (!mission) {
+            return { error: 'Mission not found.' };
+        }
 
+        var snapshot;
+        try {
+            snapshot = JSON.parse(JSON.stringify(mission));
+        } catch (e) {
+            return {
+                error: 'Failed to serialise mission: ' + e.message
+            };
+        }
+
+        return { data: snapshot, mission: mission };
+    }
+
+    // ============================================================
+    // DOWNLOAD
+    // ============================================================
+
+    function downloadText(baseFilename, text) {
         var blob;
         try {
-            blob = new Blob([built.text], {
+            blob = new Blob([text], {
                 type: 'text/plain;charset=utf-8'
             });
         } catch (e) {
@@ -739,38 +792,97 @@
         }
 
         try {
-            ExportUtils.downloadBlob(blob, built.filename);
+            ExportUtils.downloadBlob(blob, baseFilename);
         } catch (e) {
             return { error: 'Download failed: ' + e.message };
         }
 
-        // "count" mirrors team-export.js: it reports the number of
-        // primary entities written. A mission report is one
-        // mission, so the count is 1. The field exists for shape
-        // parity with the other exporters.
-        return {
-            exported: true,
-            filename: built.filename,
-            count: 1
-        };
+        return { error: null };
     }
 
+    function downloadJson(baseFilename, data) {
+        var jsonText;
+        try {
+            jsonText = JSON.stringify(data, null, 2);
+        } catch (e) {
+            return {
+                error: 'Failed to serialise JSON: ' + e.message
+            };
+        }
+
+        var blob;
+        try {
+            blob = new Blob([jsonText], {
+                type: 'application/json;charset=utf-8'
+            });
+        } catch (e) {
+            return { error: 'Failed to build file blob: ' + e.message };
+        }
+
+        try {
+            ExportUtils.downloadBlob(blob, baseFilename);
+        } catch (e) {
+            return { error: 'Download failed: ' + e.message };
+        }
+
+        return { error: null };
+    }
+
+    // ============================================================
+    // PUBLIC API - TEXT
+    // ============================================================
+
     /**
-     * Build the report without downloading. For tests and preview.
+     * Export a single mission as a plain-text report.
      *
      * @param {string} missionId
      * @returns {object}
-     *   { text, filename } on success
-     *   { error: string } on failure
+     *   { exported: true, filename, count, format: 'text' }
+     *   on success.
+     *   { error: string } on failure.
      */
-    function buildMissionReport(missionId) {
+    function exportMissionText(missionId) {
         if (!isNonEmptyString(missionId)) {
             return { error: 'Mission ID is required.' };
         }
 
         var built;
         try {
-            built = buildReport(String(missionId));
+            built = buildTextReport(String(missionId));
+        } catch (e) {
+            console.warn(
+                '[MissionExport] buildTextReport threw:', e
+            );
+            return { error: 'Failed to build report: ' + e.message };
+        }
+
+        if (built.error) { return built; }
+
+        var baseFilename = buildTextFilename(built.mission);
+
+        var dl = downloadText(baseFilename, built.text);
+        if (dl.error) { return dl; }
+
+        return {
+            exported: true,
+            filename: baseFilename,
+            count: 1,
+            format: 'text'
+        };
+    }
+
+    /**
+     * Build the text report without downloading. For tests and
+     * preview.
+     */
+    function buildMissionTextReport(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return { error: 'Mission ID is required.' };
+        }
+
+        var built;
+        try {
+            built = buildTextReport(String(missionId));
         } catch (e) {
             return { error: 'Failed to build report: ' + e.message };
         }
@@ -779,8 +891,95 @@
 
         return {
             text: built.text,
-            filename: built.filename
+            filename: buildTextFilename(built.mission)
         };
+    }
+
+    // ============================================================
+    // PUBLIC API - JSON
+    // ============================================================
+
+    /**
+     * Export a single mission as a JSON file.
+     *
+     * The file contains the mission record verbatim. No envelope,
+     * no projection. This is the payload the import path expects
+     * back, and it round-trips cleanly through MissionSchema.
+     *
+     * @param {string} missionId
+     * @returns {object}
+     *   { exported: true, filename, count, format: 'json' }
+     *   on success.
+     *   { error: string } on failure.
+     */
+    function exportMissionJson(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return { error: 'Mission ID is required.' };
+        }
+
+        var built;
+        try {
+            built = buildJsonPayload(String(missionId));
+        } catch (e) {
+            console.warn(
+                '[MissionExport] buildJsonPayload threw:', e
+            );
+            return { error: 'Failed to build JSON: ' + e.message };
+        }
+
+        if (built.error) { return built; }
+
+        var baseFilename = buildJsonFilename(built.mission);
+
+        var dl = downloadJson(baseFilename, built.data);
+        if (dl.error) { return dl; }
+
+        return {
+            exported: true,
+            filename: baseFilename,
+            count: 1,
+            format: 'json'
+        };
+    }
+
+    /**
+     * Build the JSON payload without downloading. For tests and
+     * preview.
+     */
+    function buildMissionJsonReport(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return { error: 'Mission ID is required.' };
+        }
+
+        var built;
+        try {
+            built = buildJsonPayload(String(missionId));
+        } catch (e) {
+            return { error: 'Failed to build JSON: ' + e.message };
+        }
+
+        if (built.error) { return built; }
+
+        return {
+            data: built.data,
+            filename: buildJsonFilename(built.mission)
+        };
+    }
+
+    // ============================================================
+    // LEGACY ALIAS
+    // ============================================================
+    //
+    // `exportMission` was the only export entry point before the
+    // format split. Callers that still invoke it get the text
+    // format, which is the default and the historical behaviour.
+
+    function exportMission(missionId) {
+        return exportMissionText(missionId);
+    }
+
+    function buildMissionReport(missionId) {
+        return buildMissionTextReport(missionId);
     }
 
     // ============================================================
@@ -788,6 +987,15 @@
     // ============================================================
 
     window.MissionExport = Object.freeze({
+        // Text format
+        exportMissionText: exportMissionText,
+        buildMissionTextReport: buildMissionTextReport,
+
+        // JSON format
+        exportMissionJson: exportMissionJson,
+        buildMissionJsonReport: buildMissionJsonReport,
+
+        // Legacy aliases. Text is the default.
         exportMission: exportMission,
         buildMissionReport: buildMissionReport
     });
@@ -800,11 +1008,19 @@
         var exports = window.MissionExport;
         var missing = [];
 
-        if (typeof exports.exportMission !== 'function') {
-            missing.push('exportMission');
-        }
-        if (typeof exports.buildMissionReport !== 'function') {
-            missing.push('buildMissionReport');
+        var required = [
+            'exportMissionText',
+            'buildMissionTextReport',
+            'exportMissionJson',
+            'buildMissionJsonReport',
+            'exportMission',
+            'buildMissionReport'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
         }
 
         if (missing.length > 0) {

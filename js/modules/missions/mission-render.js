@@ -11,6 +11,8 @@
  *   - Emitting data-* attributes for the UI controller to dispatch
  *     on.
  *   - The report form modal markup (renderReportFormModal).
+ *   - The mission form's team editor (a chip list, not a single
+ *     <select>).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Data. Every value comes off the VM. No queries, no domain
@@ -29,6 +31,55 @@
  *   VM field is absent, the renderer either omits that region of
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
+ *
+ * PAGE HEADER (this revision):
+ *   The header carries two actions:
+ *
+ *     + New Mission   data-action="mission-new"
+ *     ↑ Import        data-action="mission-import"
+ *
+ *   The import button opens the import modal, which is built and
+ *   managed by the UI controller (MissionUI). The renderer only
+ *   emits the button.
+ *
+ * MULTIPLE TEAMS:
+ *   The mission form's "Assign Team" control is a chip list, not
+ *   a single <select>. It carries:
+ *
+ *     <select id="mission-team-select">
+ *       <option value="">Add a team...</option>
+ *       <option value="team_x">Team X</option>
+ *       ...
+ *     </select>
+ *     <button data-action="mission-add-team">+ Add</button>
+ *
+ *     <div id="mission-teams-list">
+ *       <div class="mission-team-chip" data-team-id="team_x">
+ *         <span class="mission-team-chip-name">Team X</span>
+ *         <button data-action="mission-remove-team"
+ *                 data-team-id="team_x">×</button>
+ *       </div>
+ *       ...
+ *     </div>
+ *
+ *   The detail panel prints each team in `vm.assignedTeams` on
+ *   its own line under "Assigned Teams". When the array is empty,
+ *   the line reads "Unassigned".
+ *
+ *   The list rows still render one team. The row template reads
+ *   `item.teamName`, which the aggregator sets to the first team's
+ *   name (or "Unassigned"). When multiple teams are assigned, the
+ *   row shows the first name and a "+N" suffix.
+ *
+ * REPORT FORM MODAL:
+ *   The author select is built from two lists: `teamMembers`
+ *   (active members of the mission's assigned teams) and
+ *   `otherCharacters`. They render as two <optgroup> elements,
+ *   with "Team members" first. Each option label carries a
+ *   "(deceased)" suffix when the character is deceased.
+ *
+ *   In EDIT mode, the author select is disabled. The redaction
+ *   checkbox is also disabled. Both are frozen at creation.
  *
  * MISSION LABEL:
  *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value. The
@@ -52,30 +103,10 @@
  *
  * MODAL SHELL CONVENTION:
  *   renderContainer() emits the mission detail and mission form
- *   modal shells. The report form modal is emitted lazily by the
- *   controller on first use; renderReportFormModal() supplies its
- *   markup.
- *
- *   Shells have stable ids:
- *     #mission-detail-modal
- *     #mission-form-modal
- *     #mission-report-modal  (lazy)
- *
- * REPORT MODAL (this revision):
- *   The report form is a modal, not a browser prompt. It carries:
- *
- *     - An author <select>. Default is "Select author..." which
- *       is an empty value. The user must pick someone or check
- *       the redacted box.
- *     - A "Submit anonymously / redacted" checkbox. When ticked,
- *       the author select is disabled and the report is written
- *       with authorId = null and authorRedacted = true.
- *     - A large <textarea> for the report body.
- *     - An inline error region.
- *
- *   In EDIT mode, the author select is disabled. Changing a
- *   report's author after submission is a data-integrity problem,
- *   not a feature. Delete and re-add instead.
+ *   modal shells. The report modal, the export modal, and the
+ *   import modal are emitted lazily by the controller on first
+ *   use; the controller supplies their markup. This module does
+ *   not know about them.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -155,6 +186,11 @@
         html += '<div class="page-header">';
         html += '<h2>Mission Manager</h2>';
         html += '<div class="header-actions">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-import" ' +
+                    'title="Import missions from JSON or CSV">' +
+                    '\u2191 Import' +
+                '</button>';
         html += '<button type="button" class="primary" ' +
                     'data-action="mission-new">' +
                     '+ New Mission' +
@@ -239,21 +275,18 @@
     // REPORT FORM MODAL
     // ============================================================
     //
-    // The report form is a proper modal: a large textarea, an
-    // author select, and a redacted checkbox. The UI controller
-    // manages its state and dispatches the submission.
-    //
     // VM shape (built by MissionUI):
     //
     //   {
-    //     mode:        'create' | 'edit',
-    //     missionId:   string,
-    //     missionTitle: string,
-    //     reportId:    string | null,
-    //     authorId:    string | null,
-    //     authorRedacted: boolean,
-    //     text:        string,
-    //     characters:  [ { id, name } ]
+    //     mode:            'create' | 'edit',
+    //     missionId:       string,
+    //     missionTitle:    string,
+    //     reportId:        string | null,
+    //     authorId:        string | null,
+    //     authorRedacted:  boolean,
+    //     text:            string,
+    //     teamMembers:     [ { id, name, deceased } ],
+    //     otherCharacters: [ { id, name, deceased } ]
     //   }
 
     function renderReportFormModal(vm) {
@@ -271,8 +304,12 @@
         var missionTitle = isNonEmptyString(vm.missionTitle)
             ? vm.missionTitle
             : 'Mission';
-        var characters = isArray(vm.characters)
-            ? vm.characters
+
+        var teamMembers = isArray(vm.teamMembers)
+            ? vm.teamMembers
+            : [];
+        var otherCharacters = isArray(vm.otherCharacters)
+            ? vm.otherCharacters
             : [];
 
         var currentAuthorId = isNonEmptyString(vm.authorId)
@@ -324,16 +361,27 @@
         html += '<select id="mission-report-author"' +
                     (authorDisabled ? ' disabled' : '') + '>';
         html += '<option value="">Select author...</option>';
-        for (var i = 0; i < characters.length; i++) {
-            var c = characters[i];
-            if (!c || !c.id) { continue; }
-            var sel = String(c.id) === currentAuthorId
-                ? ' selected' : '';
-            html += '<option value="' +
-                        escapeAttribute(c.id) + '"' + sel + '>' +
-                        escapeHtml(c.name || 'Unknown') +
-                    '</option>';
+
+        if (teamMembers.length > 0) {
+            html += '<optgroup label="Team members">';
+            for (var i = 0; i < teamMembers.length; i++) {
+                html += renderAuthorOption(
+                    teamMembers[i], currentAuthorId
+                );
+            }
+            html += '</optgroup>';
         }
+
+        if (otherCharacters.length > 0) {
+            html += '<optgroup label="Other characters">';
+            for (var j = 0; j < otherCharacters.length; j++) {
+                html += renderAuthorOption(
+                    otherCharacters[j], currentAuthorId
+                );
+            }
+            html += '</optgroup>';
+        }
+
         html += '</select>';
 
         if (isEdit) {
@@ -431,6 +479,31 @@
         return html;
     }
 
+    /**
+     * One <option> for the author select. Appends " (deceased)"
+     * to the label when the flag is set.
+     */
+    function renderAuthorOption(option, selectedId) {
+        if (!option || !option.id) { return ''; }
+
+        var label = isNonEmptyString(option.name)
+            ? option.name
+            : 'Unknown';
+
+        if (option.deceased === true) {
+            label += ' (deceased)';
+        }
+
+        var selected = String(option.id) === String(selectedId)
+            ? ' selected'
+            : '';
+
+        return '<option value="' +
+                    escapeAttribute(option.id) + '"' + selected + '>' +
+                    escapeHtml(label) +
+                '</option>';
+    }
+
     // ============================================================
     // LIST
     // ============================================================
@@ -518,6 +591,7 @@
 
         html += '<span class="mission-team">' +
                     escapeHtml(item.teamName || 'Unassigned') +
+                    renderExtraTeamsCount(item) +
                 '</span>';
 
         html += '<span class="mission-progress">';
@@ -535,6 +609,19 @@
         html += '</div>';
 
         return html;
+    }
+
+    /**
+     * If more than one team is assigned, append " +N" to the
+     * primary team's name on the list row.
+     */
+    function renderExtraTeamsCount(item) {
+        var count = item.assignedTeamCount;
+        if (!isFiniteNumber(count) || count <= 1) { return ''; }
+        var extra = count - 1;
+        return ' <span class="mission-team-extra">+' +
+                    escapeHtml(String(extra)) +
+                '</span>';
     }
 
     // ============================================================
@@ -562,6 +649,7 @@
         html += renderDetailFields(vm);
         html += renderObjectives(vm);
         html += renderSupportPersonnel(vm);
+        html += renderAssignedTeams(vm);
         html += renderReports(vm);
         html += renderLog(vm);
         html += renderDetailActions(vm);
@@ -616,7 +704,6 @@
         html += renderDetailRow('Difficulty', vm.difficultyLabel);
         html += renderDetailRow('Type', vm.typeDisplay);
         html += renderDetailRow('Escalation', vm.escalationLabel);
-        html += renderDetailRow('Team', vm.teamName);
         html += renderDetailRow('Location', vm.location);
         html += renderDetailRow('Duration', vm.duration);
         html += renderDetailRow('Billing', vm.billingLabel);
@@ -809,6 +896,70 @@
     }
 
     // ============================================================
+    // ASSIGNED TEAMS (detail panel)
+    // ============================================================
+
+    function renderAssignedTeams(vm) {
+        var html = '';
+        html += '<div class="assigned-teams-section">';
+
+        html += '<div class="section-header">';
+        html += '<strong>Assigned Teams</strong>';
+        html += '<span class="count">' +
+                    escapeHtml(String(vm.assignedTeamCount || 0)) +
+                '</span>';
+        if (vm.capabilities && vm.capabilities.edit) {
+            html += '<button type="button" class="small secondary" ' +
+                        'data-action="mission-add-team" ' +
+                        'data-mission-id="' + escapeAttribute(vm.id) + '">' +
+                        '+ Team' +
+                    '</button>';
+        }
+        html += '</div>';
+
+        var teams = isArray(vm.assignedTeams)
+            ? vm.assignedTeams
+            : [];
+
+        if (teams.length === 0) {
+            html += '<p class="empty-state small">Unassigned</p>';
+            html += '</div>';
+            return html;
+        }
+
+        html += '<ul class="assigned-teams-list">';
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+
+            html += '<li class="assigned-team-item" ' +
+                        'data-team-id="' +
+                            escapeAttribute(team.id) + '">';
+            html += '<span class="assigned-team-name">' +
+                        escapeHtml(team.name || 'Unknown Team') +
+                    '</span>';
+
+            if (vm.capabilities && vm.capabilities.edit) {
+                html += '<button type="button" class="small danger" ' +
+                            'data-action="mission-remove-team" ' +
+                            'data-mission-id="' +
+                                escapeAttribute(vm.id) + '" ' +
+                            'data-team-id="' +
+                                escapeAttribute(team.id) + '">' +
+                            '×' +
+                        '</button>';
+            }
+
+            html += '</li>';
+        }
+
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
     // REPORTS
     // ============================================================
 
@@ -988,13 +1139,6 @@
                     '</button>';
         }
 
-        // ---- Export (available for every mission, any status) ----
-        //
-        // Export is a read-only projection. It is available
-        // regardless of edit / archive / completion capability.
-        // The exporter resolves every cross-domain reference; a
-        // missing team or character renders as "(missing ...)"
-        // inside the report rather than blocking the export.
         html += '<button type="button" class="secondary" ' +
                     'data-action="mission-export" ' +
                     'data-mission-id="' + escapeAttribute(vm.id) + '">' +
@@ -1023,22 +1167,6 @@
     // FORM
     // ============================================================
 
-    /**
-     * Render the mission form.
-     *
-     * The Mission ID is NOT an input. In edit mode it is displayed
-     * as read-only text derived from the stored year, sequence, and
-     * difficulty. In create mode a muted hint states that the label
-     * will be assigned on save.
-     *
-     * The date inputs carry data-mission-{year,month,day}-field
-     * markers. The UI controller uses these to track which fields
-     * the user has explicitly edited.
-     *
-     * @param {object} vm - Form VM from
-     *   MissionAggregator.getMissionFormViewModel
-     * @returns {string} HTML string
-     */
     function renderForm(vm) {
         if (!vm) {
             return '<p class="empty-state">Form data not available.</p>';
@@ -1168,15 +1296,6 @@
         html += '</div>';
 
         // ---- Subtype ----
-        //
-        // Subtype options are the subtypes of the currently-selected
-        // primary type. The UI controller refreshes this select when
-        // the primary type changes.
-        //
-        // Each entry in vm.missionTypes is expected to carry a
-        // `subtypes` array. If it does not, the select renders one
-        // disabled placeholder so the user sees that subtypes are
-        // unavailable rather than an apparently-empty dropdown.
         html += '<div class="form-group">';
         html += '<label for="mission-subtype">Subtype</label>';
         html += '<select id="mission-subtype">';
@@ -1302,28 +1421,8 @@
         html += '</select>';
         html += '</div>';
 
-        // ---- Assign Team ----
-        html += '<div class="form-group">';
-        html += '<label for="mission-team">Assign Team</label>';
-        html += '<p class="field-hint">' +
-                    'Missions may be assigned to Professional or ' +
-                    'Temporary teams.' +
-                '</p>';
-        html += '<select id="mission-team">';
-        html += '<option value="">Unassigned</option>';
-        var teams = vm.teams || [];
-        for (var tm = 0; tm < teams.length; tm++) {
-            var team = teams[tm];
-            var tSel = String(m.assignedTeamId || '') === String(team.id)
-                ? ' selected'
-                : '';
-            html += '<option value="' + escapeAttribute(team.id) + '"' +
-                        tSel + '>' +
-                        escapeHtml(team.name) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
+        // ---- Assign Teams (chip list) ----
+        html += renderTeamEditor(vm, m);
 
         // ---- Support Personnel ----
         html += '<div class="form-group full-width">';
@@ -1404,6 +1503,115 @@
         html += '</form>';
         return html;
     }
+
+    // ============================================================
+    // TEAM EDITOR (form)
+    // ============================================================
+
+    function renderTeamEditor(vm, m) {
+        var allTeams = isArray(vm.teams) ? vm.teams : [];
+        var assignedIds = isArray(m.assignedTeamIds)
+            ? m.assignedTeamIds.map(function(id) { return String(id); })
+            : [];
+
+        var assignedSet = Object.create(null);
+        for (var i = 0; i < assignedIds.length; i++) {
+            assignedSet[assignedIds[i]] = true;
+        }
+
+        var nameById = Object.create(null);
+        for (var n = 0; n < allTeams.length; n++) {
+            var t = allTeams[n];
+            if (t && t.id) {
+                nameById[String(t.id)] = t.name;
+            }
+        }
+
+        var available = [];
+        for (var a = 0; a < allTeams.length; a++) {
+            var candidate = allTeams[a];
+            if (!candidate || !candidate.id) { continue; }
+            if (assignedSet[String(candidate.id)]) { continue; }
+            available.push(candidate);
+        }
+
+        var html = '';
+        html += '<div class="form-group full-width mission-team-editor">';
+
+        html += '<label>Assigned Teams</label>';
+        html += '<p class="field-hint">' +
+                    'A mission may be assigned to any number of ' +
+                    'professional or temporary teams.' +
+                '</p>';
+
+        html += '<div class="mission-team-input-group">';
+        html += '<select id="mission-team-select" ' +
+                    'class="mission-team-select"' +
+                    (available.length === 0 ? ' disabled' : '') + '>';
+
+        if (available.length === 0) {
+            var placeholderText = allTeams.length === 0
+                ? 'No eligible teams'
+                : 'All eligible teams are already assigned';
+            html += '<option value="" disabled selected>' +
+                        escapeHtml(placeholderText) +
+                    '</option>';
+        } else {
+            html += '<option value="">Select team...</option>';
+            for (var av = 0; av < available.length; av++) {
+                var team = available[av];
+                html += '<option value="' +
+                            escapeAttribute(team.id) + '">' +
+                            escapeHtml(team.name) +
+                        '</option>';
+            }
+        }
+
+        html += '</select>';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="mission-add-team"' +
+                    (available.length === 0 ? ' disabled' : '') + '>' +
+                    '+ Add' +
+                '</button>';
+        html += '</div>';
+
+        html += '<div id="mission-teams-list" class="mission-teams-list">';
+
+        if (assignedIds.length === 0) {
+            html += '<p class="empty-state small">No teams assigned.</p>';
+        } else {
+            for (var ai = 0; ai < assignedIds.length; ai++) {
+                var assignedId = assignedIds[ai];
+                var assignedName = nameById[assignedId] || assignedId;
+                html += renderTeamChip(assignedId, assignedName);
+            }
+        }
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderTeamChip(teamId, teamName) {
+        var html = '';
+        html += '<div class="mission-team-chip" ' +
+                    'data-team-id="' + escapeAttribute(teamId) + '">';
+        html += '<span class="mission-team-chip-name">' +
+                    escapeHtml(teamName) +
+                '</span>';
+        html += '<button type="button" class="small danger" ' +
+                    'data-action="mission-remove-team" ' +
+                    'data-team-id="' + escapeAttribute(teamId) + '">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // FORM SUPPORT / OBJECTIVE LISTS
+    // ============================================================
 
     function renderFormSupportList(vm) {
         var m = vm.mission || {};

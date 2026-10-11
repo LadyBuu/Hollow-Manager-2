@@ -62,7 +62,7 @@
  *     pay:                string,       // derived by MissionRules
  *     billing:            string,       // VALID_BILLING_TYPES
  *
- *     assignedTeamId:     string|null,  // UUID, or null
+ *     assignedTeamIds:    [string],     // team UUIDs, unique
  *     supportPersonnel:   [string],     // character UUIDs, unique
  *
  *     status:             string,       // VALID_STATUSES
@@ -90,6 +90,25 @@
  *     graduatingClassId:  string|null,  // UUID, or null
  *     classFilterEnabled: boolean
  *   }
+ *
+ * MULTIPLE TEAMS (this revision):
+ *   The old singular `assignedTeamId` field is gone. A mission may
+ *   be assigned to any number of professional or temporary teams,
+ *   stored in `assignedTeamIds`.
+ *
+ *   The canonicaliser and the validator accept an input that still
+ *   carries the singular `assignedTeamId` and coerce it into a
+ *   single-element array. This is the legacy compatibility path,
+ *   and it exists so a record saved by an older version of the app
+ *   keeps loading.
+ *
+ *   When both fields are present, `assignedTeamIds` wins and the
+ *   singular form is dropped. This is the migration contract: a
+ *   caller that has already migrated passes only the array, and a
+ *   caller that has not yet migrated passes the scalar.
+ *
+ *   The validator's job is to check structure. Whether each id
+ *   resolves to a real team is CrossDomainValidator's job.
  *
  * DERIVED FIELDS:
  *
@@ -138,10 +157,11 @@
  *     - Trim strings.
  *     - Coerce numeric strings to numbers when the canonical type
  *       is number (e.g. `month: "9"` -> `month: 9`).
- *     - Normalise support personnel IDs via IdUtils.
- *     - Drop duplicate support personnel IDs after surfacing the
- *       error, so that the reported errors contain the specific
- *       duplicate.
+ *     - Normalise ID arrays (supportPersonnel, assignedTeamIds) via
+ *       IdUtils, dropping blanks and duplicates after surfacing
+ *       the specific error.
+ *     - Wrap a legacy scalar `assignedTeamId` into a single-element
+ *       `assignedTeamIds` array.
  *     - Drop empty tags after surfacing the error.
  *     - Preserve unknown top-level fields (deep-cloned) so future
  *       schema extensions and domain-specific metadata survive a
@@ -353,6 +373,60 @@
     }
 
     // ============================================================
+    // TEAM ID ARRAY RESOLUTION
+    // ============================================================
+    //
+    // The canonical field is `assignedTeamIds` (array). The legacy
+    // field is `assignedTeamId` (scalar). When a caller passes the
+    // legacy field and not the canonical one, wrap it into a
+    // single-element array. When both are present, the array wins.
+    //
+    // Returns:
+    //   { present: boolean, raw: array }
+    //
+    //   present is true when the input carried EITHER field, even
+    //   when the resulting raw array is empty.
+    //
+    //   raw is an array of raw values, not normalised. Normalisation
+    //   happens in the canonicaliser.
+
+    function resolveRawTeamIds(input) {
+        if (!input || typeof input !== 'object') {
+            return { present: false, raw: [] };
+        }
+
+        var hasArray = input.assignedTeamIds !== undefined &&
+                       input.assignedTeamIds !== null;
+        var hasScalar = input.assignedTeamId !== undefined &&
+                        input.assignedTeamId !== null;
+
+        if (hasArray) {
+            if (Array.isArray(input.assignedTeamIds)) {
+                return {
+                    present: true,
+                    raw: input.assignedTeamIds.slice()
+                };
+            }
+            // Malformed array. Return it as-is so the caller can
+            // report the malformed shape.
+            return {
+                present: true,
+                raw: [input.assignedTeamIds]
+            };
+        }
+
+        if (hasScalar) {
+            var scalar = input.assignedTeamId;
+            if (scalar === '') {
+                return { present: true, raw: [] };
+            }
+            return { present: true, raw: [scalar] };
+        }
+
+        return { present: false, raw: [] };
+    }
+
+    // ============================================================
     // NESTED VALIDATORS
     // ============================================================
     //
@@ -486,6 +560,33 @@
         }
     }
 
+    function validateAssignedTeamIds(ids, errors) {
+        for (var i = 0; i < ids.length; i++) {
+            if (normaliseId(ids[i]) === null) {
+                errors.push(
+                    'Assigned team entry ' + (i + 1) +
+                    ' must be a valid id.'
+                );
+            }
+        }
+    }
+
+    function validateAssignedTeamIdsUniqueness(ids, errors) {
+        var seen = Object.create(null);
+        for (var i = 0; i < ids.length; i++) {
+            var normalised = normaliseId(ids[i]);
+            if (normalised === null) {
+                continue;
+            }
+            if (seen[normalised] === true) {
+                errors.push(
+                    'Duplicate assigned team id: ' + normalised + '.'
+                );
+            }
+            seen[normalised] = true;
+        }
+    }
+
     // ============================================================
     // FULL MISSION VALIDATION
     // ============================================================
@@ -499,6 +600,12 @@
      *
      * Does NOT check derived values against their derivation.
      * MissionRules is responsible for that, when it matters.
+     *
+     * Legacy compatibility: when the record carries only the old
+     * scalar `assignedTeamId` and not the array, it is treated as a
+     * single-element array for validation. The validator does not
+     * complain about the absence of `assignedTeamIds` so long as
+     * the scalar form is present.
      *
      * Returns { valid: boolean, errors: [...] }.
      */
@@ -661,6 +768,19 @@
             );
         }
 
+        // ---- assigned teams ----
+        //
+        // A mission may carry either the array or the legacy scalar
+        // or neither. All three are structurally legal. When only
+        // the scalar is present, it must be a valid id.
+        var teamResolution = resolveRawTeamIds(mission);
+        if (teamResolution.present) {
+            validateAssignedTeamIds(teamResolution.raw, errors);
+            validateAssignedTeamIdsUniqueness(
+                teamResolution.raw, errors
+            );
+        }
+
         // ---- tags ----
         if (!Array.isArray(mission.tags)) {
             errors.push('Tags must be an array.');
@@ -735,14 +855,6 @@
                 errors.push(
                     'archivedAt must be an ISO 8601 string or null.'
                 );
-            }
-        }
-
-        // ---- assignedTeamId ----
-        if (mission.assignedTeamId !== undefined &&
-            mission.assignedTeamId !== null) {
-            if (normaliseId(mission.assignedTeamId) === null) {
-                errors.push('assignedTeamId must be a valid id or null.');
             }
         }
 
@@ -964,6 +1076,18 @@
         if (normalised === null) {
             errors.push(
                 'Support personnel entry ' + (index + 1) +
+                ' must be a valid id.'
+            );
+            return null;
+        }
+        return normalised;
+    }
+
+    function canonicaliseAssignedTeamEntry(id, index, errors) {
+        var normalised = normaliseId(id);
+        if (normalised === null) {
+            errors.push(
+                'Assigned team entry ' + (index + 1) +
                 ' must be a valid id.'
             );
             return null;
@@ -1225,14 +1349,40 @@
             }
         }
 
+        // ---- assigned teams ----
+        //
+        // Accepts either the canonical array or the legacy scalar.
+        // The array is preferred when both are present.
+        var assignedTeamIds = [];
+        var teamResolution = resolveRawTeamIds(input);
+        if (teamResolution.present) {
+            var teamSeen = Object.create(null);
+            for (var ti = 0; ti < teamResolution.raw.length; ti++) {
+                var tid = canonicaliseAssignedTeamEntry(
+                    teamResolution.raw[ti], ti, errors
+                );
+                if (tid === null) {
+                    continue;
+                }
+                if (teamSeen[tid] === true) {
+                    errors.push(
+                        'Duplicate assigned team id: ' + tid + '.'
+                    );
+                    continue;
+                }
+                teamSeen[tid] = true;
+                assignedTeamIds.push(tid);
+            }
+        }
+
         // ---- tags ----
         var tags = [];
         if (input.tags !== undefined && input.tags !== null) {
             if (!Array.isArray(input.tags)) {
                 errors.push('Tags must be an array.');
             } else {
-                for (var ti = 0; ti < input.tags.length; ti++) {
-                    var tag = canonicaliseTag(input.tags[ti], ti, errors);
+                for (var tgi = 0; tgi < input.tags.length; tgi++) {
+                    var tag = canonicaliseTag(input.tags[tgi], tgi, errors);
                     if (tag !== null) {
                         tags.push(tag);
                     }
@@ -1271,16 +1421,6 @@
                         reports.push(report);
                     }
                 }
-            }
-        }
-
-        // ---- assignedTeamId ----
-        var assignedTeamId = null;
-        if (input.assignedTeamId !== undefined &&
-            input.assignedTeamId !== null) {
-            assignedTeamId = normaliseId(input.assignedTeamId);
-            if (assignedTeamId === null) {
-                errors.push('assignedTeamId must be a valid id or null.');
             }
         }
 
@@ -1371,7 +1511,7 @@
             pay: pay,
             billing: billing,
 
-            assignedTeamId: assignedTeamId,
+            assignedTeamIds: assignedTeamIds,
             supportPersonnel: supportPersonnel,
 
             status: status,
@@ -1393,9 +1533,14 @@
         };
 
         // ---- Preserve unknown top-level fields ----
+        //
+        // The known-key list includes BOTH the canonical
+        // assignedTeamIds and the legacy assignedTeamId. The
+        // legacy field is deliberately excluded from the result,
+        // so a canonicalised record never carries it.
         var knownKeys = [
             'id',
-            'missionId',    // explicitly not part of the canonical shape
+            'missionId',        // explicitly not part of the canonical shape
             'title',
             'description',
             'year',
@@ -1416,7 +1561,8 @@
             'surchargePay',
             'pay',
             'billing',
-            'assignedTeamId',
+            'assignedTeamIds',
+            'assignedTeamId',   // consumed above, dropped from the result
             'supportPersonnel',
             'status',
             'objectives',
@@ -1511,7 +1657,7 @@
                 surchargePay: '',
                 pay: '',
                 billing: 'original',
-                assignedTeamId: null,
+                assignedTeamIds: [],
                 supportPersonnel: [],
                 status: 'active',
                 objectives: [],
@@ -1543,6 +1689,54 @@
                 );
             }
 
+            // Legacy scalar must coerce into a single-element array.
+            var legacy = JSON.parse(JSON.stringify(sample));
+            delete legacy.assignedTeamIds;
+            legacy.assignedTeamId = 'team_xyz';
+            var legacyCanonical = canonicaliseMissionShape(legacy);
+            if (!legacyCanonical.valid) {
+                missing.push(
+                    'smoke test: legacy scalar failed canonicalisation: ' +
+                    legacyCanonical.errors.join('; ')
+                );
+            } else if (!Array.isArray(
+                legacyCanonical.value.assignedTeamIds
+            ) || legacyCanonical.value.assignedTeamIds.length !== 1 ||
+                legacyCanonical.value.assignedTeamIds[0] !== 'team_xyz') {
+                missing.push(
+                    'smoke test: legacy scalar did not coerce to array'
+                );
+            } else if ('assignedTeamId' in legacyCanonical.value) {
+                missing.push(
+                    'smoke test: legacy scalar survived canonicalisation'
+                );
+            }
+
+            // Multi-team array must survive round-trip.
+            var multi = JSON.parse(JSON.stringify(sample));
+            multi.assignedTeamIds = ['team_a', 'team_b'];
+            var multiCanonical = canonicaliseMissionShape(multi);
+            if (!multiCanonical.valid) {
+                missing.push(
+                    'smoke test: multi-team array failed canonicalisation: ' +
+                    multiCanonical.errors.join('; ')
+                );
+            } else if (multiCanonical.value.assignedTeamIds.length !== 2) {
+                missing.push(
+                    'smoke test: multi-team array lost entries'
+                );
+            }
+
+            // Duplicate team ids must be rejected.
+            var dupTeams = JSON.parse(JSON.stringify(sample));
+            dupTeams.assignedTeamIds = ['team_a', 'team_a'];
+            var dupResult = validateMission(dupTeams);
+            if (dupResult.valid) {
+                missing.push(
+                    'smoke test: duplicate team ids were not rejected'
+                );
+            }
+
             // A mission with a stored missionId must be rejected.
             var badMission = JSON.parse(JSON.stringify(sample));
             badMission.missionId = '2026-001-M';
@@ -1556,8 +1750,8 @@
             // Duplicate support personnel must be rejected.
             var dupSupport = JSON.parse(JSON.stringify(sample));
             dupSupport.supportPersonnel = ['char_1', 'char_1'];
-            var dupResult = validateMission(dupSupport);
-            if (dupResult.valid) {
+            var dupResult2 = validateMission(dupSupport);
+            if (dupResult2.valid) {
                 missing.push(
                     'smoke test: mission with duplicate support personnel ' +
                     'was not rejected'

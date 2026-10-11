@@ -14,7 +14,7 @@
  *   - Returns structured validation results with errors and warnings
  * 
  * WHAT IT VALIDATES:
- *   - Missions → Teams (assignedTeamId)
+ *   - Missions → Teams (assignedTeamIds, and legacy assignedTeamId)
  *   - Missions → Characters (supportPersonnel)
  *   - Missions → Classes (graduatingClassId)
  *   - Teams → Characters (members.characterId)
@@ -39,6 +39,21 @@
  *     write path. This module only checks that headId and member
  *     characterIds resolve to characters that exist in the candidate.
  * 
+ * MISSION TEAM ASSIGNMENTS (this revision):
+ *   A mission may be assigned to any number of professional or
+ *   temporary teams, stored in `assignedTeamIds` (array). The
+ *   validator iterates every id in that array.
+ *
+ *   Legacy records that still carry the singular `assignedTeamId`
+ *   are also accepted. The validator coerces the scalar into a
+ *   single-element array before checking. This matches the same
+ *   coercion MissionQueries and MissionSchema perform on the read
+ *   path, so a candidate built from a legacy export validates
+ *   cleanly against the modern team set.
+ *
+ *   When both fields are present, `assignedTeamIds` wins and the
+ *   scalar is ignored. This is the migration contract.
+ *
  * DEPENDENCIES:
  *   - window.IdUtils (for ID normalisation) - MANDATORY
  *   - window.ExportSchema (for section definitions) - MANDATORY
@@ -128,6 +143,37 @@
         return ids;
     }
 
+    /**
+     * Resolve a mission's assigned team ids as an array of raw
+     * values (not yet normalised).
+     *
+     * Reads `assignedTeamIds` when it is an array. Falls back to
+     * coercing the legacy scalar `assignedTeamId` into a
+     * single-element array. When both are present, the array wins.
+     * When neither is present, returns an empty array.
+     *
+     * Blank entries within the array are preserved here so the
+     * caller can decide whether to surface them as errors. The
+     * canonicaliser will drop them; the validator reports them.
+     */
+    function resolveRawTeamIds(mission) {
+        if (!mission || typeof mission !== 'object') {
+            return [];
+        }
+
+        if (Array.isArray(mission.assignedTeamIds)) {
+            return mission.assignedTeamIds.slice();
+        }
+
+        if (mission.assignedTeamId !== undefined &&
+            mission.assignedTeamId !== null &&
+            mission.assignedTeamId !== '') {
+            return [mission.assignedTeamId];
+        }
+
+        return [];
+    }
+
     function createError(section, entityId, field, targetId, message) {
         return {
             section: section,
@@ -156,10 +202,16 @@
      * Validate mission references against candidate state.
      * 
      * Checks:
-     *   - assignedTeamId → teams
+     *   - assignedTeamIds / assignedTeamId → teams
      *   - supportPersonnel → characters
      *   - graduatingClassId → academy.graduatingClasses
-     * 
+     *
+     * Every team id in the mission's assignment list is validated.
+     * A mission assigned to three teams must have all three resolve,
+     * or the mission is rejected. A legacy record that carries only
+     * the singular scalar is coerced into a single-element array so
+     * it validates identically.
+     *
      * @param {object} candidate - Candidate application state
      * @returns {object} { errors: array, warnings: array }
      */
@@ -187,21 +239,44 @@
 
             var missionId = mission.id || 'unknown';
 
-            // Check assignedTeamId
-            if (mission.assignedTeamId) {
-                var teamId = normaliseId(mission.assignedTeamId);
-                if (teamId && !teamIds[teamId]) {
+            // ---- Check assigned teams ----
+            //
+            // Every id in the array (or the coerced single id from
+            // a legacy scalar) must resolve to a team in the
+            // candidate state.
+            var assignedTeamIds = resolveRawTeamIds(mission);
+            for (var t = 0; t < assignedTeamIds.length; t++) {
+                var rawTeamId = assignedTeamIds[t];
+                var teamId = normaliseId(rawTeamId);
+
+                if (teamId === '') {
+                    // Blank entry in the array. This is a structural
+                    // problem that MissionSchema would also catch;
+                    // the validator surfaces it here so an import
+                    // that slips past schema canonicalisation does
+                    // not silently drop a slot.
                     errors.push(createError(
                         'missions',
                         missionId,
-                        'assignedTeamId',
-                        mission.assignedTeamId,
-                        'Mission references non-existent team: ' + mission.assignedTeamId
+                        'assignedTeamIds',
+                        rawTeamId,
+                        'Mission team assignment contains a blank id.'
+                    ));
+                    continue;
+                }
+
+                if (!teamIds[teamId]) {
+                    errors.push(createError(
+                        'missions',
+                        missionId,
+                        'assignedTeamIds',
+                        rawTeamId,
+                        'Mission references non-existent team: ' + rawTeamId
                     ));
                 }
             }
 
-            // Check supportPersonnel
+            // ---- Check supportPersonnel ----
             if (Array.isArray(mission.supportPersonnel)) {
                 for (var j = 0; j < mission.supportPersonnel.length; j++) {
                     var charId = normaliseId(mission.supportPersonnel[j]);
@@ -217,7 +292,7 @@
                 }
             }
 
-            // Check graduatingClassId
+            // ---- Check graduatingClassId ----
             if (mission.graduatingClassId) {
                 var classId = normaliseId(mission.graduatingClassId);
                 if (classId && !classIds[classId]) {

@@ -7,7 +7,8 @@
  *
  * RESPONSIBILITIES:
  *   - Own transient UI state (current filter, current mission id,
- *     which modal is open, report-form scratch state).
+ *     which modal is open, report-form scratch state, export
+ *     picker state, import modal state).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -23,32 +24,64 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
- * REPORT FORM MODAL (this revision):
+ * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
  *   an author select, a redacted checkbox, and a large textarea.
- *   The controller:
- *     - builds the VM from the mission and the loaded characters;
- *     - lazily creates the modal shell on first use;
- *     - binds change/input/keydown handlers to read the fields as
- *       the user types;
- *     - dispatches submit and cancel via the delegated click
- *       handler on the container.
+ *   The author select is built from
+ *   MissionAggregator.getReportAuthorOptionsViewModel(missionId),
+ *   which returns two lists: team members of the mission's
+ *   assigned teams, and everyone else. Both exclude filler
+ *   characters and mark deceased ones.
  *
- *   State lives in a module-level `_reportForm` object. It is
- *   reset on every open and every close. Nothing about the report
- *   form outlives the modal.
+ * MULTIPLE TEAMS:
+ *   The mission form's "Assign Team" control is a chip list. The
+ *   controller reads the chips on submit and passes the array to
+ *   MissionCore. Chip add and remove are DOM-only operations
+ *   inside the form modal; only the submit writes to the store.
+ *
+ * MISSION EXPORT (this revision):
+ *   The detail panel's Export button opens a small format picker
+ *   modal with two options: Text and JSON. The picker carries the
+ *   mission id in its state; on submit the controller calls
+ *   MissionExport.exportMissionText or .exportMissionJson and
+ *   toasts the result. On success the picker closes; on failure
+ *   it stays open so the user can retry.
+ *
+ *   Text is the default. It is the human-readable report.
+ *   JSON is the full record, verbatim, and is what the mission
+ *   import accepts back for round-tripping.
+ *
+ * MISSION IMPORT (this revision):
+ *   A header button opens the import modal. The modal carries:
+ *
+ *     - A format radio (JSON / CSV).
+ *     - A large textarea. Paste the file contents here.
+ *     - A "Load from file..." link that reads a file into the
+ *       textarea.
+ *     - An inline error region.
+ *     - Import and Cancel buttons.
+ *
+ *   On submit the controller calls
+ *   MissionImport.importText(text, { format }) and toasts a
+ *   summary of the result. Partial imports (some records failed)
+ *   are reported as a warning with the failure count. A full
+ *   failure is reported as an error.
+ *
+ *   The import runs to completion on the modal; the modal stays
+ *   open on partial or full failure so the user can read the
+ *   summary and decide what to do. On full success the modal
+ *   closes and the list refreshes.
  *
  * LOG ENTRY:
  *   The mission log entry still uses window.prompt. It is a
- *   single-line note, not prose; a full modal would be
- *   over-engineered for it. This is a deliberate asymmetry, not an
- *   oversight.
+ *   single-line note; a full modal would be over-engineered for
+ *   it. This is a deliberate asymmetry.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
- *   input listener. One keydown listener for the modal. Every
- *   interactive element carries data-action, and the delegated
- *   handler reads it and dispatches.
+ *   input listener. One keydown listener. Every interactive
+ *   element carries data-action, and the delegated handler reads
+ *   it and dispatches.
  *
  * LISTENER LIFECYCLE:
  *   Every listener is registered through addSafeListener, which
@@ -60,24 +93,12 @@
  * CONTEXT DISCRIMINATION:
  *   Two classes of button share action names between the detail
  *   modal and the form modal: add/remove support, add/remove
- *   objective. The discriminator is the presence of a
- *   `data-mission-id` attribute on the button:
- *
- *     data-mission-id present -> the button belongs to the detail
- *                                modal; the action is a domain
- *                                mutation on an existing mission.
- *     data-mission-id absent  -> the button belongs to the form
- *                                modal; the action adds or removes
- *                                an unsaved DOM row.
+ *   objective, add/remove team. The discriminator is the presence
+ *   of a `data-mission-id` attribute on the button.
  *
  * DETACHED CONTAINER GUARD:
- *   openFormModal and openDetailModal check that state.container
- *   is still attached to the document before querying for modal
- *   shells. A detached container means the tab's DOM was rebuilt
- *   without re-running renderMissions, or the tab was torn down
- *   but state was not cleared. Querying a detached container
- *   silently returns null, and the click produces no visible
- *   feedback; the guard turns that into a toast.
+ *   Modal openers check that state.container is still attached
+ *   to the document before querying for modal shells.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.NotificationSystem
@@ -88,6 +109,7 @@
  *
  * DEPENDENCIES (LAZY, at click time):
  *   - window.MissionExport
+ *   - window.MissionImport
  *   - window.CharacterQueries
  */
 
@@ -153,7 +175,8 @@
             'getMissionListViewModel',
             'getMissionDetailViewModel',
             'getMissionFormViewModel',
-            'getMissionStatisticsViewModel'
+            'getMissionStatisticsViewModel',
+            'getReportAuthorOptionsViewModel'
         ];
         for (var a = 0; a < aggRequired.length; a++) {
             if (typeof MissionAggregator[aggRequired[a]] !== 'function') {
@@ -203,23 +226,38 @@
     var _listeners = [];
 
     // Report form scratch state. Reset on open and on close.
-    // Never outlives the modal.
     var _reportForm = {
-        mode: 'create',       // 'create' | 'edit'
+        mode: 'create',
         missionId: null,
         missionTitle: '',
-        reportId: null,       // null in create mode
+        reportId: null,
         authorId: '',
         authorRedacted: false,
         text: ''
+    };
+
+    // Export picker scratch state. Reset on open and on close.
+    var _exportPicker = {
+        missionId: null,
+        missionTitle: '',
+        format: 'text'
+    };
+
+    // Import modal scratch state. Reset on open and on close.
+    var _importModal = {
+        format: 'json'
     };
 
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
     // ============================================================
 
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
+    function getMissionExport() {
+        return window.MissionExport || null;
+    }
+
+    function getMissionImport() {
+        return window.MissionImport || null;
     }
 
     // ============================================================
@@ -279,62 +317,9 @@
     }
 
     // ============================================================
-    // CHARACTER OPTIONS FOR THE REPORT FORM
-    // ============================================================
-    //
-    // The report form's author select is populated from the loaded
-    // character store. When CharacterQueries is not available, the
-    // select is empty and the user can only submit a redacted
-    // report.
-
-    function buildCharacterOptions() {
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacters !== 'function') {
-            return [];
-        }
-
-        var chars = [];
-        try {
-            chars = CharacterQueries.getCharacters() || [];
-        } catch (e) {
-            chars = [];
-        }
-
-        var options = [];
-        for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (!c || !c.id) { continue; }
-            var name = c.id;
-            try {
-                if (typeof CharacterQueries.getDisplayName === 'function') {
-                    name = CharacterQueries.getDisplayName(c) || c.id;
-                }
-            } catch (e) {
-                name = c.id;
-            }
-            options.push({
-                id: String(c.id),
-                name: String(name)
-            });
-        }
-
-        options.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return options;
-    }
-
-    // ============================================================
     // RENDER
     // ============================================================
 
-    /**
-     * Render the missions tab.
-     *
-     * @param {HTMLElement} container
-     */
     function renderMissions(container) {
         if (!container) {
             container = document.getElementById('tab-missions');
@@ -347,10 +332,6 @@
 
         state.container = container;
 
-        // Guard the list VM build. A failure here must not prevent
-        // the container's modal shells and the delegated listeners
-        // from being installed; otherwise the tab renders a dead
-        // button with no listener attached.
         var listVM;
         try {
             listVM = MissionAggregator.getMissionListViewModel({
@@ -383,10 +364,6 @@
         bindContainerEvents(container);
     }
 
-    /**
-     * Re-render just the list. Called after mutations that affect
-     * the list but not the open detail panel.
-     */
     function renderListInto(container) {
         if (!container) {
             container = state.container;
@@ -426,11 +403,6 @@
     // ============================================================
     // REPORT MODAL SHELL
     // ============================================================
-    //
-    // The report modal is created once per render and reused. Its
-    // content is re-rendered every time it opens. Emitted lazily
-    // because MissionRender.renderContainer does not know about it;
-    // the controller owns its shell.
 
     function ensureReportModalShell(container) {
         if (!container) { return; }
@@ -471,7 +443,7 @@
             return;
         }
 
-        // Report form: author select, redacted checkbox.
+        // ---- Report form ----
         if (target.id === 'mission-report-author') {
             _reportForm.authorId = String(target.value || '');
             return;
@@ -489,9 +461,20 @@
             return;
         }
 
-        // The year / month / day inputs are handled on 'input' for
-        // live typing; 'change' covers paste-and-blur and
-        // programmatic set. Both handlers call the same logic.
+        // ---- Export picker ----
+        if (target.name === 'mission-export-format') {
+            _exportPicker.format = String(target.value || 'text');
+            return;
+        }
+
+        // ---- Import modal ----
+        if (target.name === 'mission-import-format') {
+            _importModal.format = String(target.value || 'json');
+            updateImportPlaceholder();
+            return;
+        }
+
+        // ---- Form date fields ----
         if (isDateField(target)) {
             handleDateFieldChange(target);
             return;
@@ -524,7 +507,16 @@
             return;
         }
 
-        // Escape closes the open modals.
+        // Ctrl / Cmd + Enter from the import textarea submits.
+        if (target.id === 'mission-import-text' &&
+            (event.ctrlKey || event.metaKey) &&
+            event.key === 'Enter') {
+            event.preventDefault();
+            handleImportSubmit();
+            return;
+        }
+
+        // Escape closes whichever modal is open.
         if (event.key === 'Escape') {
             var reportModal = state.container
                 ? state.container.querySelector(
@@ -537,6 +529,30 @@
                 closeReportModal();
                 return;
             }
+
+            var exportModal = state.container
+                ? state.container.querySelector(
+                    '#mission-export-modal'
+                )
+                : null;
+            if (exportModal &&
+                !exportModal.classList.contains('hidden')) {
+                event.preventDefault();
+                closeExportModal();
+                return;
+            }
+
+            var importModal = state.container
+                ? state.container.querySelector(
+                    '#mission-import-modal'
+                )
+                : null;
+            if (importModal &&
+                !importModal.classList.contains('hidden')) {
+                event.preventDefault();
+                closeImportModal();
+                return;
+            }
         }
     }
 
@@ -547,19 +563,6 @@
                el.dataset.missionDayField === 'true';
     }
 
-    /**
-     * Called on every input / change of a date field.
-     *
-     * Two jobs:
-     *   1. Mark month and day as touched the first time the user
-     *      edits them, so a later year change does not overwrite
-     *      their explicit value.
-     *   2. When the year field changes, reset untouched month and
-     *      day to 1.
-     *
-     * Year itself is not marked as touched; there is no scenario
-     * in which resetting year is desirable.
-     */
     function handleDateFieldChange(el) {
         if (el.dataset.missionMonthField === 'true' ||
             el.dataset.missionDayField === 'true') {
@@ -622,7 +625,37 @@
 
             case 'mission-export':
                 event.preventDefault();
-                handleExport(missionId);
+                openExportModal(missionId);
+                return;
+
+            case 'mission-export-cancel':
+                event.preventDefault();
+                closeExportModal();
+                return;
+
+            case 'mission-export-submit':
+                event.preventDefault();
+                handleExportSubmit();
+                return;
+
+            case 'mission-import':
+                event.preventDefault();
+                openImportModal();
+                return;
+
+            case 'mission-import-cancel':
+                event.preventDefault();
+                closeImportModal();
+                return;
+
+            case 'mission-import-submit':
+                event.preventDefault();
+                handleImportSubmit();
+                return;
+
+            case 'mission-import-file':
+                event.preventDefault();
+                openImportFilePicker();
                 return;
 
             case 'mission-archive':
@@ -683,6 +716,20 @@
                 handleRemoveSupport(
                     missionId,
                     actionEl.dataset.characterId,
+                    actionEl
+                );
+                return;
+
+            case 'mission-add-team':
+                event.preventDefault();
+                handleAddTeam(missionId, actionEl);
+                return;
+
+            case 'mission-remove-team':
+                event.preventDefault();
+                handleRemoveTeam(
+                    missionId,
+                    actionEl.dataset.teamId,
                     actionEl
                 );
                 return;
@@ -872,8 +919,6 @@
             });
         }
 
-        // Subtype select: when primary type changes, the options
-        // change. We rebuild the subtype select in place.
         var primarySelect = contentEl.querySelector('#mission-primary-type');
         var subtypeSelect = contentEl.querySelector('#mission-subtype');
         if (primarySelect && subtypeSelect) {
@@ -982,7 +1027,7 @@
             surchargePay: readValue(form, '#mission-surcharge-pay'),
             billing: readValue(form, '#mission-billing'),
             status: readValue(form, '#mission-status'),
-            assignedTeamId: readValue(form, '#mission-team') || null,
+            assignedTeamIds: readAssignedTeamIdsFromForm(form),
             notes: readValue(form, '#mission-notes')
         };
 
@@ -1025,6 +1070,18 @@
         return ids;
     }
 
+    function readAssignedTeamIdsFromForm(form) {
+        var host = form.querySelector('#mission-teams-list');
+        if (!host) { return []; }
+        var rows = host.querySelectorAll('.mission-team-chip');
+        var ids = [];
+        for (var i = 0; i < rows.length; i++) {
+            var id = rows[i].dataset.teamId;
+            if (id) { ids.push(id); }
+        }
+        return ids;
+    }
+
     function readObjectivesFromForm(form) {
         var host = form.querySelector('#mission-objectives-list');
         if (!host) { return []; }
@@ -1044,12 +1101,8 @@
     }
 
     // ============================================================
-    // FORM-SIDE SUPPORT / OBJECTIVE ROW MANAGEMENT
+    // FORM-SIDE SUPPORT / OBJECTIVE / TEAM ROW MANAGEMENT
     // ============================================================
-    //
-    // The + Support and + Objective buttons inside the form do not
-    // call the domain. They append DOM rows that collectFormData
-    // reads on submit. Form state lives in the DOM.
 
     function appendSupportRowToForm(form) {
         var select = form.querySelector('#mission-support-select');
@@ -1132,6 +1185,54 @@
         input.value = '';
     }
 
+    function appendTeamChipToForm(form) {
+        var select = form.querySelector('#mission-team-select');
+        var host = form.querySelector('#mission-teams-list');
+        if (!select || !host) { return; }
+
+        var teamId = select.value;
+        if (!teamId) {
+            notify('Select a team first.', 'warning');
+            return;
+        }
+
+        var existing = host.querySelectorAll('.mission-team-chip');
+        for (var i = 0; i < existing.length; i++) {
+            if (existing[i].dataset.teamId === teamId) {
+                notify('Team is already assigned.', 'warning');
+                return;
+            }
+        }
+
+        var label = '';
+        for (var o = 0; o < select.options.length; o++) {
+            if (select.options[o].value === teamId) {
+                label = select.options[o].textContent;
+                break;
+            }
+        }
+
+        var empty = host.querySelector('.empty-state');
+        if (empty) { empty.remove(); }
+
+        var chip = document.createElement('div');
+        chip.className = 'mission-team-chip';
+        chip.dataset.teamId = teamId;
+        chip.innerHTML =
+            '<span class="mission-team-chip-name">' +
+                escapeHtml(label || teamId) +
+            '</span>' +
+            '<button type="button" class="small danger" ' +
+                'data-action="mission-remove-team" ' +
+                'data-team-id="' +
+                    escapeAttribute(teamId) + '">' +
+                '×' +
+            '</button>';
+
+        host.appendChild(chip);
+        select.value = '';
+    }
+
     function removeSupportRowFromForm(button) {
         var row = button.closest('.support-row');
         if (!row) { return; }
@@ -1160,44 +1261,262 @@
         }
     }
 
-    // ============================================================
-    // DOMAIN MUTATIONS
-    // ============================================================
+    function removeTeamChipFromForm(button) {
+        var chip = button.closest('.mission-team-chip');
+        if (!chip) { return; }
+        var host = chip.parentNode;
+        chip.remove();
 
-    /**
-     * Export a single mission as a plain-text report.
-     *
-     * Synchronous through to the download. MissionExport builds
-     * the report from the mission record and triggers a Blob
-     * download in the same tick. No pipeline, no state change, no
-     * refresh — the modal stays open and the mission is untouched.
-     */
-    function handleExport(missionId) {
+        if (host &&
+            host.querySelectorAll('.mission-team-chip').length === 0) {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state small';
+            empty.textContent = 'No teams assigned.';
+            host.appendChild(empty);
+        }
+    }
+
+    // ============================================================
+    // EXPORT MODAL
+    // ============================================================
+    //
+    // Small format picker: Text or JSON. Text is the default.
+
+    function ensureExportModalShell(container) {
+        if (!container) { return; }
+
+        var existing = container.querySelector(
+            '#mission-export-modal'
+        );
+        if (existing) { return; }
+
+        var shell = document.createElement('div');
+        shell.id = 'mission-export-modal';
+        shell.className = 'modal hidden';
+
+        var content = document.createElement('div');
+        content.className = 'modal-content modal-export-content';
+        shell.appendChild(content);
+
+        container.appendChild(shell);
+    }
+
+    function openExportModal(missionId) {
         if (!missionId) { return; }
 
-        var Exporter = window.MissionExport;
-        if (!Exporter ||
-            typeof Exporter.exportMission !== 'function') {
-            notify(
-                'Mission export is not available. Check that ' +
-                'mission-export.js is loaded.',
-                'error'
+        if (!isContainerAttached()) {
+            console.warn(
+                '[MissionUI] openExportModal: container is missing ' +
+                'or detached.'
+            );
+            notifyContainerLost();
+            return;
+        }
+
+        var mission = null;
+        try {
+            mission = MissionQueries.getMission(missionId);
+        } catch (e) {
+            mission = null;
+        }
+        if (!mission) {
+            notify('Mission not found.', 'error');
+            return;
+        }
+
+        _exportPicker.missionId = String(missionId);
+        _exportPicker.missionTitle = mission.title || 'Mission';
+        _exportPicker.format = 'text';
+
+        ensureExportModalShell(state.container);
+
+        var modal = state.container.querySelector(
+            '#mission-export-modal'
+        );
+        if (!modal) {
+            notify('Could not open the export picker.', 'error');
+            return;
+        }
+
+        var contentEl = modal.querySelector('.modal-export-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content modal-export-content';
+            modal.appendChild(contentEl);
+        }
+
+        contentEl.innerHTML = buildExportModalHTML(
+            _exportPicker.missionTitle,
+            _exportPicker.format
+        );
+        showModal(modal);
+    }
+
+    function buildExportModalHTML(missionTitle, currentFormat) {
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Export Mission \u2014 ' +
+                    escapeHtml(missionTitle) +
+                '</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-action="mission-export-cancel" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+        html += '<p class="field-hint" ' +
+                    'style="font-size:0.75rem;color:var(--text-dim);' +
+                    'margin:0 0 12px 0;line-height:1.5;">' +
+                    'Pick a format. Text is a human-readable ' +
+                    'report. JSON is the full record, and is the ' +
+                    'format the import accepts back for ' +
+                    'round-tripping.' +
+                '</p>';
+
+        html += '<div class="mission-export-formats">';
+        html += buildExportFormatRow(
+            'text',
+            'Text report',
+            'A formatted plain-text document. Team and character ' +
+            'names are resolved. Not intended for import.',
+            currentFormat
+        );
+        html += buildExportFormatRow(
+            'json',
+            'JSON',
+            'The full mission record, verbatim. Round-trips ' +
+            'through the import path.',
+            currentFormat
+        );
+        html += '</div>';
+
+        html += '<div id="mission-export-error" ' +
+                    'class="mission-export-error" ' +
+                    'style="display:none;margin-top:10px;' +
+                    'padding:8px 12px;' +
+                    'background:var(--danger-soft);' +
+                    'border-left:3px solid var(--danger);' +
+                    'border-radius:4px;' +
+                    'font-size:0.75rem;' +
+                    'color:var(--danger);"></div>';
+
+        html += '</div>';
+
+        html += '<div class="form-actions" ' +
+                    'style="display:flex;gap:8px;' +
+                    'justify-content:flex-end;' +
+                    'margin-top:12px;padding-top:12px;' +
+                    'border-top:1px solid var(--border-soft);">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-export-cancel">Cancel</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="mission-export-submit">Export</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    function buildExportFormatRow(value, title, description, current) {
+        var checked = current === value ? ' checked' : '';
+
+        var html = '';
+        html += '<label class="mission-export-format' +
+                    (checked ? ' is-selected' : '') + '">';
+        html += '<input type="radio" name="mission-export-format" ' +
+                    'value="' + escapeAttribute(value) + '"' +
+                    checked + '>';
+        html += '<span class="mission-export-format-body">';
+        html += '<span class="mission-export-format-title">' +
+                    escapeHtml(title) +
+                '</span>';
+        html += '<span class="mission-export-format-desc">' +
+                    escapeHtml(description) +
+                '</span>';
+        html += '</span>';
+        html += '</label>';
+
+        return html;
+    }
+
+    function closeExportModal() {
+        if (!state.container) {
+            resetExportPicker();
+            return;
+        }
+
+        var modal = state.container.querySelector(
+            '#mission-export-modal'
+        );
+        var contentEl = modal
+            ? modal.querySelector('.modal-export-content')
+            : null;
+
+        if (modal) { hideModal(modal); }
+        if (contentEl) { contentEl.innerHTML = ''; }
+
+        resetExportPicker();
+    }
+
+    function resetExportPicker() {
+        _exportPicker.missionId = null;
+        _exportPicker.missionTitle = '';
+        _exportPicker.format = 'text';
+    }
+
+    function setExportError(message) {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-export-modal'
+        );
+        if (!modal) { return; }
+        var errEl = modal.querySelector('#mission-export-error');
+        if (!errEl) { return; }
+
+        if (!message) {
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            return;
+        }
+        errEl.textContent = message;
+        errEl.style.display = 'block';
+    }
+
+    function handleExportSubmit() {
+        if (!_exportPicker.missionId) { return; }
+
+        var Exporter = getMissionExport();
+        if (!Exporter) {
+            setExportError(
+                'Mission export module is not loaded. Check the ' +
+                'script order in index.html.'
+            );
+            return;
+        }
+
+        var isJson = _exportPicker.format === 'json';
+        var fn = isJson
+            ? Exporter.exportMissionJson
+            : Exporter.exportMissionText;
+
+        if (typeof fn !== 'function') {
+            setExportError(
+                'The ' + (isJson ? 'JSON' : 'text') +
+                ' export is not available.'
             );
             return;
         }
 
         var result;
         try {
-            result = Exporter.exportMission(missionId);
+            result = fn.call(Exporter, _exportPicker.missionId);
         } catch (err) {
             console.warn(
-                '[MissionUI] MissionExport.exportMission threw:',
-                err
+                '[MissionUI] MissionExport threw:', err
             );
-            notify(
-                'Mission export failed: ' +
-                (err && err.message ? err.message : String(err)),
-                'error'
+            setExportError(
+                'Export failed: ' +
+                (err && err.message ? err.message : String(err))
             );
             return;
         }
@@ -1207,15 +1526,537 @@
                 'Mission exported: ' + result.filename,
                 'success'
             );
+            closeExportModal();
             return;
         }
 
-        notify(
-            'Mission export failed: ' +
-                ((result && result.error) || 'Unknown error'),
-            'error'
+        setExportError(
+            (result && result.error) || 'Unknown error.'
         );
     }
+
+    // ============================================================
+    // IMPORT MODAL
+    // ============================================================
+
+    function ensureImportModalShell(container) {
+        if (!container) { return; }
+
+        var existing = container.querySelector(
+            '#mission-import-modal'
+        );
+        if (existing) { return; }
+
+        var shell = document.createElement('div');
+        shell.id = 'mission-import-modal';
+        shell.className = 'modal hidden';
+
+        var content = document.createElement('div');
+        content.className = 'modal-content modal-import-content';
+        shell.appendChild(content);
+
+        container.appendChild(shell);
+    }
+
+    function openImportModal() {
+        if (!isContainerAttached()) {
+            console.warn(
+                '[MissionUI] openImportModal: container is missing ' +
+                'or detached.'
+            );
+            notifyContainerLost();
+            return;
+        }
+
+        _importModal.format = 'json';
+
+        ensureImportModalShell(state.container);
+
+        var modal = state.container.querySelector(
+            '#mission-import-modal'
+        );
+        if (!modal) {
+            notify('Could not open the import modal.', 'error');
+            return;
+        }
+
+        var contentEl = modal.querySelector('.modal-import-content');
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content modal-import-content';
+            modal.appendChild(contentEl);
+        }
+
+        contentEl.innerHTML = buildImportModalHTML(
+            _importModal.format
+        );
+        showModal(modal);
+
+        setTimeout(function() {
+            var textEl = contentEl.querySelector(
+                '#mission-import-text'
+            );
+            if (textEl && typeof textEl.focus === 'function') {
+                try { textEl.focus(); } catch (e) {}
+            }
+        }, 50);
+    }
+
+    function buildImportModalHTML(currentFormat) {
+        var isJson = currentFormat === 'json';
+
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Import Missions</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-action="mission-import-cancel" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body modal-import-body">';
+
+        html += '<p class="field-hint" ' +
+                    'style="font-size:0.75rem;color:var(--text-dim);' +
+                    'margin:0 0 12px 0;line-height:1.5;">' +
+                    'Paste a JSON object, a JSON array, or a CSV ' +
+                    'file\u2019s contents below. Every mission is ' +
+                    'imported sequentially; a failure on one record ' +
+                    'does not stop the rest.' +
+                '</p>';
+
+        // ---- Format radio ----
+        html += '<div class="form-group">';
+        html += '<label>Format</label>';
+        html += '<div class="mission-import-formats">';
+
+        html += '<label class="mission-import-format' +
+                    (isJson ? ' is-selected' : '') + '">';
+        html += '<input type="radio" name="mission-import-format" ' +
+                    'value="json"' + (isJson ? ' checked' : '') + '>';
+        html += '<span>JSON \u2014 single object or array of ' +
+                    'missions. Existing missions (matched by id) ' +
+                    'are updated; new missions are created.</span>';
+        html += '</label>';
+
+        html += '<label class="mission-import-format' +
+                    (isJson ? '' : ' is-selected') + '">';
+        html += '<input type="radio" name="mission-import-format" ' +
+                    'value="csv"' + (isJson ? '' : ' checked') + '>';
+        html += '<span>CSV \u2014 one row per mission. Every row ' +
+                    'creates a new mission. Use JSON if you need ' +
+                    'to update existing missions.</span>';
+        html += '</label>';
+
+        html += '</div>';
+        html += '</div>';
+
+        // ---- Textarea ----
+        html += '<div class="form-group">';
+        html += '<label for="mission-import-text">Import data</label>';
+        html += '<textarea id="mission-import-text" ' +
+                    'rows="14" ' +
+                    'spellcheck="false" ' +
+                    'autocomplete="off" ' +
+                    'placeholder="' +
+                        (isJson
+                            ? '{ &quot;title&quot;: ... } or [ ... ]'
+                            : 'MissionId,Title,Status,...') +
+                    '" ' +
+                    'style="width:100%;min-height:260px;' +
+                    'padding:8px 10px;' +
+                    'background:var(--bg);' +
+                    'border:1px solid var(--border);' +
+                    'color:var(--text);' +
+                    'border-radius:6px;' +
+                    'font-family:monospace;' +
+                    'font-size:0.72rem;' +
+                    'line-height:1.5;' +
+                    'resize:vertical;' +
+                    'white-space:pre;' +
+                    'overflow:auto;"></textarea>';
+        html += '<span class="field-hint" ' +
+                    'style="font-size:0.65rem;">' +
+                    'Ctrl / Cmd + Enter to import.' +
+                '</span>';
+        html += '</div>';
+
+        // ---- File loader ----
+        html += '<div class="mission-import-file-row" ' +
+                    'style="display:flex;justify-content:space-between;' +
+                    'align-items:center;gap:8px;margin-top:10px;' +
+                    'flex-wrap:wrap;">';
+        html += '<button type="button" ' +
+                    'class="secondary small" ' +
+                    'data-action="mission-import-file" ' +
+                    'style="font-size:0.7rem;padding:4px 10px;">' +
+                    'Load from file...' +
+                '</button>';
+        html += '<span style="font-size:0.65rem;color:var(--text-dim);">' +
+                    'Or paste directly.' +
+                '</span>';
+        html += '</div>';
+
+        // ---- Error region ----
+        html += '<div id="mission-import-error" ' +
+                    'class="mission-import-error" ' +
+                    'style="display:none;margin-top:10px;' +
+                    'padding:8px 12px;' +
+                    'background:var(--danger-soft);' +
+                    'border-left:3px solid var(--danger);' +
+                    'border-radius:4px;' +
+                    'font-size:0.75rem;' +
+                    'color:var(--danger);' +
+                    'max-height:120px;overflow-y:auto;' +
+                    'white-space:pre-wrap;"></div>';
+
+        html += '</div>';
+
+        html += '<div class="form-actions" ' +
+                    'style="display:flex;gap:8px;' +
+                    'justify-content:flex-end;' +
+                    'margin-top:12px;padding-top:12px;' +
+                    'border-top:1px solid var(--border-soft);">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-import-cancel">Cancel</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="mission-import-submit">Import</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    /**
+     * Update the textarea placeholder when the format radio changes.
+     * The textarea itself is left intact so the user does not lose
+     * their paste.
+     */
+    function updateImportPlaceholder() {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-import-modal'
+        );
+        if (!modal) { return; }
+        var textEl = modal.querySelector('#mission-import-text');
+        if (!textEl) { return; }
+
+        textEl.placeholder = _importModal.format === 'json'
+            ? '{ "title": ... } or [ ... ]'
+            : 'MissionId,Title,Status,...';
+
+        // Toggle the is-selected class on the radio labels so the
+        // chosen one reads as active.
+        var labels = modal.querySelectorAll(
+            '.mission-import-format'
+        );
+        for (var i = 0; i < labels.length; i++) {
+            var input = labels[i].querySelector('input');
+            if (!input) { continue; }
+            if (input.value === _importModal.format) {
+                labels[i].classList.add('is-selected');
+            } else {
+                labels[i].classList.remove('is-selected');
+            }
+        }
+    }
+
+    function closeImportModal() {
+        if (!state.container) {
+            resetImportModal();
+            return;
+        }
+
+        var modal = state.container.querySelector(
+            '#mission-import-modal'
+        );
+        var contentEl = modal
+            ? modal.querySelector('.modal-import-content')
+            : null;
+
+        if (modal) { hideModal(modal); }
+        if (contentEl) { contentEl.innerHTML = ''; }
+
+        resetImportModal();
+    }
+
+    function resetImportModal() {
+        _importModal.format = 'json';
+    }
+
+    function setImportError(message) {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-import-modal'
+        );
+        if (!modal) { return; }
+        var errEl = modal.querySelector('#mission-import-error');
+        if (!errEl) { return; }
+
+        if (!message) {
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            return;
+        }
+        errEl.textContent = message;
+        errEl.style.display = 'block';
+    }
+
+    function openImportFilePicker() {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,.csv,application/json,text/csv';
+        input.style.display = 'none';
+
+        input.addEventListener('change', function() {
+            var file = input.files && input.files[0];
+            if (!file) {
+                cleanup();
+                return;
+            }
+
+            var reader = new FileReader();
+            reader.onerror = function() {
+                setImportError('Failed to read the file.');
+                cleanup();
+            };
+            reader.onload = function() {
+                var text = String(reader.result || '');
+
+                // Auto-detect the format from the file extension
+                // so the user does not have to tick the radio after
+                // picking a file.
+                if (/\.csv$/i.test(file.name)) {
+                    _importModal.format = 'csv';
+                } else if (/\.json$/i.test(file.name)) {
+                    _importModal.format = 'json';
+                }
+
+                // Repaint the format radios and update the
+                // placeholder, then drop the text in.
+                var modal = state.container
+                    ? state.container.querySelector(
+                        '#mission-import-modal'
+                    )
+                    : null;
+                if (modal) {
+                    var radios = modal.querySelectorAll(
+                        'input[name="mission-import-format"]'
+                    );
+                    for (var r = 0; r < radios.length; r++) {
+                        radios[r].checked =
+                            radios[r].value === _importModal.format;
+                    }
+                }
+                updateImportPlaceholder();
+
+                var textEl = modal
+                    ? modal.querySelector('#mission-import-text')
+                    : null;
+                if (textEl) {
+                    textEl.value = text;
+                    textEl.focus();
+                    setImportError('');
+                }
+
+                cleanup();
+            };
+            reader.readAsText(file);
+        });
+
+        function cleanup() {
+            try {
+                if (input.parentNode) {
+                    input.parentNode.removeChild(input);
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        document.body.appendChild(input);
+        input.click();
+    }
+
+    function handleImportSubmit() {
+        if (!state.container) { return; }
+
+        var modal = state.container.querySelector(
+            '#mission-import-modal'
+        );
+        if (!modal) { return; }
+
+        var textEl = modal.querySelector('#mission-import-text');
+        if (!textEl) { return; }
+
+        var text = String(textEl.value || '');
+        if (text.trim() === '') {
+            setImportError('Paste or load some data first.');
+            return;
+        }
+
+        var Importer = getMissionImport();
+        if (!Importer ||
+            typeof Importer.importText !== 'function') {
+            setImportError(
+                'Mission import module is not loaded. Check the ' +
+                'script order in index.html.'
+            );
+            return;
+        }
+
+        setImportError('');
+
+        var promise;
+        try {
+            promise = Importer.importText(text, {
+                format: _importModal.format
+            });
+        } catch (err) {
+            console.warn(
+                '[MissionUI] MissionImport.importText threw:', err
+            );
+            setImportError(
+                'Import failed: ' +
+                (err && err.message ? err.message : String(err))
+            );
+            return;
+        }
+
+        promise.then(function(result) {
+            reportImportResult(result);
+        }).catch(function(err) {
+            console.warn(
+                '[MissionUI] MissionImport rejected:', err
+            );
+            setImportError(
+                'Import failed: ' +
+                (err && err.message ? err.message : String(err))
+            );
+        });
+    }
+
+    /**
+     * Report an import result.
+     *
+     *   Full success  - toast, close modal, refresh the list.
+     *   Partial       - summary in the modal's error region, toast
+     *                   a warning, keep the modal open so the user
+     *                   can read the per-record errors.
+     *   Full failure  - error region, toast an error, keep the
+     *                   modal open.
+     */
+    function reportImportResult(result) {
+        if (!result) {
+            setImportError('Import returned no result.');
+            notify('Import failed.', 'error');
+            return;
+        }
+
+        var imported = result.imported || 0;
+        var created = result.created || 0;
+        var updated = result.updated || 0;
+        var failed = result.failed || 0;
+        var errors = Array.isArray(result.errors) ? result.errors : [];
+        var warnings = Array.isArray(result.warnings)
+            ? result.warnings
+            : [];
+
+        // ---- Full success ----
+        if (result.success && failed === 0) {
+            var parts = [];
+            if (created > 0) {
+                parts.push(created + ' created');
+            }
+            if (updated > 0) {
+                parts.push(updated + ' updated');
+            }
+            notify(
+                'Imported ' + imported + ' mission' +
+                (imported === 1 ? '' : 's') +
+                (parts.length > 0 ? ' (' + parts.join(', ') + ')' : '') +
+                '.',
+                'success'
+            );
+            closeImportModal();
+            refreshAfterMutation();
+            return;
+        }
+
+        // ---- Partial or full failure ----
+        var lines = [];
+
+        if (imported > 0) {
+            lines.push(
+                'Imported ' + imported + ' mission' +
+                (imported === 1 ? '' : 's') + ' ' +
+                '(' + created + ' created, ' + updated +
+                ' updated).'
+            );
+        } else {
+            lines.push('No missions imported.');
+        }
+
+        if (failed > 0) {
+            lines.push(failed + ' record' +
+                (failed === 1 ? '' : 's') + ' failed:');
+        }
+
+        // Cap the displayed errors so the modal does not blow up
+        // on a large failure count.
+        var MAX_SHOWN = 20;
+        for (var i = 0;
+             i < errors.length && i < MAX_SHOWN;
+             i++) {
+            var e = errors[i];
+            var where = '';
+            if (e.row !== undefined && e.row !== null) {
+                where = 'Row ' + e.row + ': ';
+            }
+            lines.push('  ' + where +
+                (e.message || 'Unknown error.'));
+        }
+        if (errors.length > MAX_SHOWN) {
+            lines.push('  \u2026 and ' +
+                (errors.length - MAX_SHOWN) +
+                ' more errors.');
+        }
+
+        // Warnings are informational. Show the count, not the
+        // contents, unless there are no errors and no failures.
+        if (warnings.length > 0 && failed === 0) {
+            for (var w = 0;
+                 w < warnings.length && w < MAX_SHOWN;
+                 w++) {
+                lines.push('  ' + warnings[w]);
+            }
+            if (warnings.length > MAX_SHOWN) {
+                lines.push('  \u2026 and ' +
+                    (warnings.length - MAX_SHOWN) +
+                    ' more warnings.');
+            }
+        }
+
+        setImportError(lines.join('\n'));
+
+        // Toast summary. Warning when partial, error when nothing
+        // imported.
+        if (imported > 0) {
+            notify(
+                'Import completed with ' + failed +
+                ' failure' + (failed === 1 ? '' : 's') +
+                '. See the modal for details.',
+                'warning'
+            );
+            refreshAfterMutation();
+        } else {
+            notify(
+                'Import failed. See the modal for details.',
+                'error'
+            );
+        }
+    }
+
+    // ============================================================
+    // DOMAIN MUTATIONS
+    // ============================================================
 
     function handleArchive(missionId) {
         if (!missionId) { return; }
@@ -1290,14 +2131,6 @@
         });
     }
 
-    /**
-     * Handle the remove-objective action.
-     *
-     * The button carries data-mission-id when it belongs to the
-     * detail panel (removes a persisted objective) and omits it
-     * when it belongs to the form's objective list (removes an
-     * unsaved DOM row).
-     */
     function handleRemoveObjective(missionId, indexStr, actionEl) {
         if (missionId) {
             var index = parseInt(indexStr, 10);
@@ -1321,15 +2154,6 @@
         }
     }
 
-    /**
-     * Handle the add-objective action.
-     *
-     * With a mission-id: opens the form in edit mode, where the
-     * user can add an objective and save.
-     *
-     * Without a mission-id: appends a DOM row to the form's
-     * objective list.
-     */
     function handleAddObjective(missionId, actionEl) {
         if (!missionId) {
             var form = actionEl && actionEl.closest
@@ -1344,13 +2168,6 @@
         openFormModal(missionId);
     }
 
-    /**
-     * Handle the add-support action.
-     *
-     * With a mission-id: opens the form in edit mode.
-     * Without a mission-id: appends a DOM row to the form's
-     * support list.
-     */
     function handleAddSupport(missionId, actionEl) {
         if (!missionId) {
             var form = actionEl && actionEl.closest
@@ -1365,14 +2182,6 @@
         openFormModal(missionId);
     }
 
-    /**
-     * Handle the remove-support action.
-     *
-     * The button carries data-mission-id in the detail panel and
-     * omits it in the form. That presence is the discriminator:
-     * detail-panel removals go through the domain; form-panel
-     * removals drop the DOM row.
-     */
     function handleRemoveSupport(missionId, characterId, actionEl) {
         if (!characterId) { return; }
 
@@ -1396,13 +2205,61 @@
         );
     }
 
+    function handleAddTeam(missionId, actionEl) {
+        if (!missionId) {
+            var form = actionEl && actionEl.closest
+                ? actionEl.closest('form')
+                : null;
+            if (form) {
+                appendTeamChipToForm(form);
+            }
+            return;
+        }
+
+        openFormModal(missionId);
+    }
+
+    function handleRemoveTeam(missionId, teamId, actionEl) {
+        if (!teamId) { return; }
+
+        if (!missionId) {
+            if (actionEl) {
+                removeTeamChipFromForm(actionEl);
+            }
+            return;
+        }
+
+        if (!window.confirm('Remove this team from the mission?')) {
+            return;
+        }
+
+        var mission = MissionQueries.getMission(missionId);
+        if (!mission) {
+            notify('Mission not found.', 'error');
+            return;
+        }
+
+        var currentIds = MissionQueries.getTeamIdsForMission(mission);
+        var nextIds = currentIds.filter(function(id) {
+            return String(id) !== String(teamId);
+        });
+
+        handleMutation(
+            MissionCore.updateMission(missionId, {
+                assignedTeamIds: nextIds
+            }),
+            {
+                onSuccess: function() {
+                    openDetailModal(missionId);
+                    refreshAfterMutation();
+                }
+            }
+        );
+    }
+
     // ============================================================
     // LOG MODAL
     // ============================================================
-    //
-    // Log entries are single-line notes. A window.prompt is
-    // adequate for them. The report form is the module that needed
-    // a real modal; a log entry does not.
 
     function openLogModal(missionId) {
         if (!missionId) { return; }
@@ -1422,10 +2279,6 @@
     // ============================================================
     // REPORT FORM MODAL
     // ============================================================
-    //
-    // The report form is a proper modal: author select, redacted
-    // checkbox, large textarea. See the file header for the
-    // rationale.
 
     function openReportFormModal(missionId, reportId) {
         if (!missionId) { return; }
@@ -1450,7 +2303,6 @@
             return;
         }
 
-        // ---- Reset scratch state ----
         _reportForm.mode = reportId ? 'edit' : 'create';
         _reportForm.missionId = String(missionId);
         _reportForm.missionTitle = mission.title || 'Mission';
@@ -1459,7 +2311,6 @@
         _reportForm.authorRedacted = false;
         _reportForm.text = '';
 
-        // ---- Edit mode: load the existing report ----
         if (reportId) {
             var existing = findReport(mission, reportId);
             if (!existing) {
@@ -1474,7 +2325,6 @@
             _reportForm.text = existing.text || '';
         }
 
-        // ---- Render into the shell ----
         var modal = state.container.querySelector(
             '#mission-report-modal'
         );
@@ -1496,6 +2346,27 @@
             modal.appendChild(contentEl);
         }
 
+        var authorOptions = null;
+        try {
+            authorOptions = MissionAggregator
+                .getReportAuthorOptionsViewModel(missionId);
+        } catch (e) {
+            console.warn(
+                '[MissionUI] getReportAuthorOptionsViewModel threw:',
+                e
+            );
+            authorOptions = null;
+        }
+
+        if (!authorOptions) {
+            authorOptions = {
+                missionId: String(missionId),
+                missionTitle: mission.title || 'Mission',
+                teamMembers: [],
+                otherCharacters: []
+            };
+        }
+
         var vm = {
             mode: _reportForm.mode,
             missionId: _reportForm.missionId,
@@ -1504,15 +2375,14 @@
             authorId: _reportForm.authorId,
             authorRedacted: _reportForm.authorRedacted,
             text: _reportForm.text,
-            characters: buildCharacterOptions()
+            teamMembers: authorOptions.teamMembers,
+            otherCharacters: authorOptions.otherCharacters
         };
 
         contentEl.innerHTML =
             MissionRender.renderReportFormModal(vm);
         showModal(modal);
 
-        // Focus the textarea on next tick. The select is not the
-        // primary field; the text is.
         setTimeout(function() {
             var textEl = contentEl.querySelector(
                 '#mission-report-text'
@@ -1609,8 +2479,6 @@
 
         var promise;
         if (_reportForm.mode === 'edit' && _reportForm.reportId) {
-            // updateReport only takes the text. The author and
-            // redaction state are frozen at creation.
             promise = MissionCore.updateReport(
                 _reportForm.missionId,
                 _reportForm.reportId,
@@ -1721,14 +2589,13 @@
         state.currentMissionId = null;
         state.currentFilter = 'all';
         resetReportForm();
+        resetExportPicker();
+        resetImportModal();
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
-    //
-    // This module does NOT register with TabManager. Registration
-    // is owned by modules/missions/index.js.
 
     window.MissionUI = Object.freeze({
         render: renderMissions,

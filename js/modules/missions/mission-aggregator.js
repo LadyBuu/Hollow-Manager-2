@@ -14,6 +14,10 @@
  *     attaching it to VMs as a read-only field.
  *   - Exposing capability flags (canEdit, canComplete, ...) by
  *     delegating to MissionRules.
+ *   - Building the report-author options list, with team members
+ *     first, then the rest of the character store alphabetically.
+ *     Filler characters are excluded; deceased characters are
+ *     marked.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Reads, mutations, structural validation, domain rules, or
@@ -23,6 +27,9 @@
  *     them and composes their results.
  *   - The mission label's grammar. MissionId owns the grammar and
  *     the derivation.
+ *   - Team-assignment shape. MissionQueries.getTeamIdsForMission
+ *     owns the read-side coercion of the legacy singular
+ *     assignedTeamId into the canonical array.
  *
  * VM SHAPE PRINCIPLES:
  *   - Every VM is a plain data structure. No functions, no live
@@ -32,10 +39,43 @@
  *   - Derived values (missionId, progress, pay, capability flags)
  *     are present on VMs so renderers never compute them.
  *
- * LABEL SEMANTICS:
- *   The mission label (YEAR-SEQ-DIFFICULTY) is a DERIVED value.
- *   The form does not preview it as an input. On an edit VM, the
- *   current label is exposed as `currentLabel` for display only.
+ * MULTIPLE TEAMS (this revision):
+ *   The detail and list VMs now carry `assignedTeamIds` (array of
+ *   ids) and `assignedTeams` (array of resolved { id, name }
+ *   refs). The singular `teamId` / `teamName` fields are kept for
+ *   backward compatibility: they carry the FIRST team in the array,
+ *   or null / 'Unassigned' when the array is empty.
+ *
+ *   Renderers that only care about "the team" (list rows) read the
+ *   scalar. Renderers that render every team (detail panel,
+ *   export) read the array.
+ *
+ * REPORT AUTHOR OPTIONS (this revision):
+ *   getReportAuthorOptionsViewModel(missionId) builds the option
+ *   list for the report form's author <select>. The shape is:
+ *
+ *     {
+ *       missionId,
+ *       missionTitle,
+ *       teamMembers: [ { id, name, deceased } ],   // may be empty
+ *       otherCharacters: [ { id, name, deceased } ]
+ *     }
+ *
+ *   Ordering within each list is alphabetical by display name.
+ *   Filler characters (char.isFiller === true) are excluded from
+ *   BOTH lists.
+ *
+ *   "Team members" means characters who are active members of ANY
+ *   of the mission's assigned teams, at the current application
+ *   year. A character who is a member of two assigned teams
+ *   appears once, in the teamMembers list. A character who is not
+ *   on any of the assigned teams appears once, in
+ *   otherCharacters.
+ *
+ *   The current application year is read from window.data
+ *   .currentYear; when unavailable, team membership is not
+ *   filtered by year and every historical member of the assigned
+ *   teams counts as a team member.
  *
  * DATE DEFAULTS:
  *   The form VM's date defaults are (applicationYear, 1, 1).
@@ -53,6 +93,12 @@
  *   - window.MissionViews
  *   - window.CharacterQueries
  *   - window.TeamQueries
+ *
+ * DEPENDENCIES (LAZY, at call time):
+ *   - window.AcademyEliminations  (optional; used only when the
+ *     report-author options need to know who is eliminated. When
+ *     absent, eliminated characters are not filtered out of the
+ *     otherCharacters list.)
  */
 
 (function() {
@@ -87,6 +133,9 @@
         }
         if (typeof MissionQueries.getStatistics !== 'function') {
             _missing.push('MissionQueries.getStatistics');
+        }
+        if (typeof MissionQueries.getTeamIdsForMission !== 'function') {
+            _missing.push('MissionQueries.getTeamIdsForMission');
         }
     }
 
@@ -124,9 +173,17 @@
         typeof CharacterQueries.getDisplayName !== 'function') {
         _missing.push('CharacterQueries.getDisplayName');
     }
+    if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacters !== 'function') {
+        _missing.push('CharacterQueries.getCharacters');
+    }
     if (!TeamQueries ||
         typeof TeamQueries.getTeamById !== 'function') {
         _missing.push('TeamQueries.getTeamById');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getActiveTeamMembers !== 'function') {
+        _missing.push('TeamQueries.getActiveTeamMembers');
     }
 
     if (_missing.length > 0) {
@@ -137,6 +194,14 @@
     }
 
     window.__missionAggregatorLoaded = true;
+
+    // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getAcademyEliminations() {
+        return window.AcademyEliminations || null;
+    }
 
     // ============================================================
     // HELPERS
@@ -174,6 +239,23 @@
             return Math.floor(data.currentYear);
         }
         return new Date().getFullYear();
+    }
+
+    /**
+     * The application year, or null when it cannot be determined.
+     * Distinct from getApplicationYear: this returns null rather
+     * than falling back to the calendar year, which is what the
+     * report-author team-membership filter needs. When the answer
+     * is null, the filter is skipped and every member counts.
+     */
+    function getApplicationYearOrNull() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+        return null;
     }
 
     // ============================================================
@@ -221,6 +303,25 @@
         }
         var ref = resolveTeamRef(teamId);
         return ref ? ref.name : 'Unknown Team';
+    }
+
+    /**
+     * Resolve every team id on a mission into an array of
+     * { id, name } refs. Uses MissionQueries.getTeamIdsForMission
+     * so the read-side coercion of the legacy scalar is applied.
+     */
+    function resolveAssignedTeams(mission) {
+        var ids = MissionQueries.getTeamIdsForMission(mission);
+        if (!Array.isArray(ids) || ids.length === 0) { return []; }
+
+        var refs = [];
+        for (var i = 0; i < ids.length; i++) {
+            var ref = resolveTeamRef(ids[i]);
+            if (ref) {
+                refs.push(ref);
+            }
+        }
+        return refs;
     }
 
     // ============================================================
@@ -476,9 +577,9 @@
         if (teamId !== null) {
             var teamTarget = String(teamId);
             filtered = filtered.filter(function(m) {
-                return m.assignedTeamId !== undefined &&
-                       m.assignedTeamId !== null &&
-                       String(m.assignedTeamId) === teamTarget;
+                return MissionQueries.isMissionAssignedToTeam(
+                    m, teamTarget
+                );
             });
         }
 
@@ -538,6 +639,14 @@
             ? mission.supportPersonnel.length
             : 0;
 
+        // Resolve the assignment list. The scalar fields below are
+        // derived from the first entry of the array so list rows
+        // that only render one team keep working.
+        var assignedTeams = resolveAssignedTeams(mission);
+        var primaryTeam = assignedTeams.length > 0
+            ? assignedTeams[0]
+            : null;
+
         return {
             id: mission.id,
             missionId: MissionId.derive(mission) || '',
@@ -558,10 +667,20 @@
 
             progress: progress,
 
-            teamId: mission.assignedTeamId || null,
-            teamName: resolveTeamNameOrUnassigned(
-                mission.assignedTeamId
-            ),
+            // Multiple teams (new shape).
+            assignedTeamIds: assignedTeams.map(function(t) {
+                return t.id;
+            }),
+            assignedTeams: assignedTeams,
+            assignedTeamCount: assignedTeams.length,
+
+            // Singular compatibility (old shape). The FIRST team,
+            // or null. Renderers that display every team read the
+            // array above.
+            teamId: primaryTeam ? primaryTeam.id : null,
+            teamName: primaryTeam
+                ? primaryTeam.name
+                : 'Unassigned',
 
             supportCount: supportCount,
 
@@ -707,7 +826,10 @@
         var objectives = buildObjectivesVM(mission);
         var capabilities = buildCapabilitiesVM(mission);
 
-        var teamRef = resolveTeamRef(mission.assignedTeamId);
+        var assignedTeams = resolveAssignedTeams(mission);
+        var primaryTeam = assignedTeams.length > 0
+            ? assignedTeams[0]
+            : null;
 
         return {
             id: mission.id,
@@ -769,8 +891,21 @@
             surchargePay: mission.surchargePay || '',
             pay: mission.pay || '',
 
-            teamId: mission.assignedTeamId || null,
-            teamName: teamRef ? teamRef.name : 'Unassigned',
+            // Multiple teams (new shape).
+            assignedTeamIds: assignedTeams.map(function(t) {
+                return t.id;
+            }),
+            assignedTeams: assignedTeams,
+            assignedTeamCount: assignedTeams.length,
+
+            // Singular compatibility (old shape). The FIRST team,
+            // or null. The detail panel renders every team from
+            // the array above; the scalar is kept for callers that
+            // have not migrated.
+            teamId: primaryTeam ? primaryTeam.id : null,
+            teamName: primaryTeam
+                ? primaryTeam.name
+                : 'Unassigned',
 
             supportPersonnel: supportPersonnel,
             supportCount: supportPersonnel.length,
@@ -829,6 +964,16 @@
      * (year, sequence, difficulty). On edit VMs, `currentLabel`
      * carries the current derived label for display only. On create
      * VMs, `currentLabel` is null.
+     *
+     * MULTIPLE TEAMS:
+     *   `mission.assignedTeamIds` (array) is carried on the VM. The
+     *   singular `mission.assignedTeamId` field is not present on
+     *   the VM. Form renderers read the array.
+     *
+     *   `teamOptions` is the flat list of eligible teams the form
+     *   can add. It does NOT include the currently-assigned teams;
+     *   the renderer is expected to filter the current assignment
+     *   out of the addable list.
      *
      * DATE DEFAULTS:
      *   `defaults.year` is the APPLICATION year (window.data
@@ -985,7 +1130,8 @@
             basePay: mission.basePay || '',
             surchargePay: mission.surchargePay || '',
             billing: mission.billing || '',
-            assignedTeamId: mission.assignedTeamId || null,
+            assignedTeamIds:
+                MissionQueries.getTeamIdsForMission(mission),
             supportPersonnel: Array.isArray(
                 mission.supportPersonnel
             )
@@ -999,6 +1145,156 @@
                 : [],
             classFilterEnabled:
                 mission.classFilterEnabled === true
+        };
+    }
+
+    // ============================================================
+    // REPORT AUTHOR OPTIONS VM
+    // ============================================================
+    //
+    // The report form's author <select> reads this VM. Shape:
+    //
+    //   {
+    //     missionId,
+    //     missionTitle,
+    //     teamMembers:     [ { id, name, deceased } ],   // may be []
+    //     otherCharacters: [ { id, name, deceased } ]
+    //   }
+    //
+    // Ordering:
+    //   teamMembers     — alphabetical by display name
+    //   otherCharacters — alphabetical by display name
+    //
+    // Filler exclusion:
+    //   A character with char.isFiller === true is omitted from
+    //   BOTH lists. A filler placeholder is not a report author.
+    //
+    // Team membership:
+    //   "Team member" means an active member of ANY of the
+    //   mission's assigned teams at the current application year.
+    //   A character on two assigned teams appears once, in
+    //   teamMembers.
+    //
+    //   When the application year is unavailable (window.data
+    //   .currentYear missing or invalid), membership is not
+    //   filtered by year: every member of every assigned team,
+    //   active or former, counts as a team member. The report
+    //   author list is still readable, and the alternative
+    //   (returning every character in otherCharacters) is worse.
+    //
+    // Deceased marker:
+    //   Each option carries `deceased: boolean`. The renderer
+    //   decides how to render it (the current convention is
+    //   "(deceased)" appended to the option label).
+
+    function getReportAuthorOptionsViewModel(missionId) {
+        if (!isNonEmptyString(missionId)) {
+            return null;
+        }
+
+        var mission = MissionQueries.getMission(missionId);
+        if (!mission) {
+            return null;
+        }
+
+        var assignedTeamIds =
+            MissionQueries.getTeamIdsForMission(mission);
+
+        var teamMemberIdSet = Object.create(null);
+        var applicationYear = getApplicationYearOrNull();
+
+        for (var t = 0; t < assignedTeamIds.length; t++) {
+            var teamId = assignedTeamIds[t];
+            var team = null;
+            try {
+                team = TeamQueries.getTeamById(teamId);
+            } catch (e) {
+                team = null;
+            }
+            if (!team) { continue; }
+
+            var members = [];
+
+            if (applicationYear !== null) {
+                try {
+                    members = TeamQueries.getActiveTeamMembers(
+                        team, applicationYear
+                    ) || [];
+                } catch (e) {
+                    members = [];
+                }
+            } else {
+                // No application year available. Fall back to the
+                // full member list on the team record. Active and
+                // former members both count.
+                members = Array.isArray(team.members)
+                    ? team.members
+                    : [];
+            }
+
+            for (var m = 0; m < members.length; m++) {
+                var member = members[m];
+                if (!member || !member.characterId) { continue; }
+                var memberId = String(member.characterId);
+                teamMemberIdSet[memberId] = true;
+            }
+        }
+
+        var allChars = [];
+        try {
+            allChars = CharacterQueries.getCharacters() || [];
+        } catch (e) {
+            allChars = [];
+        }
+
+        var teamMembers = [];
+        var otherCharacters = [];
+
+        for (var c = 0; c < allChars.length; c++) {
+            var char = allChars[c];
+            if (!char || !char.id) { continue; }
+
+            // Filler placeholders are never report authors.
+            if (char.isFiller === true) { continue; }
+
+            var charId = String(char.id);
+            var name = '';
+            try {
+                name = CharacterQueries.getDisplayName(char) || '';
+            } catch (e) {
+                name = '';
+            }
+            if (name === '') { name = charId; }
+
+            var deceased = char.deceased === true;
+
+            var option = {
+                id: charId,
+                name: name,
+                deceased: deceased
+            };
+
+            if (teamMemberIdSet[charId]) {
+                teamMembers.push(option);
+            } else {
+                otherCharacters.push(option);
+            }
+        }
+
+        teamMembers.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+        otherCharacters.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return {
+            missionId: String(mission.id),
+            missionTitle: isNonEmptyString(mission.title)
+                ? mission.title
+                : 'Mission',
+            teamMembers: teamMembers,
+            otherCharacters: otherCharacters
         };
     }
 
@@ -1037,7 +1333,9 @@
         getMissionListViewModel: getMissionListViewModel,
         getMissionDetailViewModel: getMissionDetailViewModel,
         getMissionFormViewModel: getMissionFormViewModel,
-        getMissionStatisticsViewModel: getMissionStatisticsViewModel
+        getMissionStatisticsViewModel: getMissionStatisticsViewModel,
+        getReportAuthorOptionsViewModel:
+            getReportAuthorOptionsViewModel
     });
 
     // ============================================================
@@ -1052,7 +1350,8 @@
             'getMissionListViewModel',
             'getMissionDetailViewModel',
             'getMissionFormViewModel',
-            'getMissionStatisticsViewModel'
+            'getMissionStatisticsViewModel',
+            'getReportAuthorOptionsViewModel'
         ];
 
         for (var i = 0; i < required.length; i++) {

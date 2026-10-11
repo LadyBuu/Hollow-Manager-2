@@ -1,5 +1,5 @@
 /**
- * js/import-export/csv/mission-csv.js - Mission CSV
+ * js/modules/missions/mission-csv.js - Mission CSV
  * Canonical source for all mission CSV operations
  * 
  * This module consolidates:
