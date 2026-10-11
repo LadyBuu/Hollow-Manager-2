@@ -38,104 +38,52 @@
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
  *
+ * TEAM EDITOR — SPECIALISATION-AWARE PICKER:
+ *   The team <select> on the mission form carries richer labels
+ *   and a smarter sort order:
+ *
+ *     - Each option's label is the team name, followed by
+ *       " [Recovery, Investigation]" when the team has any
+ *       specialisations. Teams with no specialisations show the
+ *       bare name.
+ *
+ *     - Options are sorted with teams whose specialisations
+ *       include the mission's `primaryType` first, then the rest
+ *       alphabetically. When the mission has no primaryType, no
+ *       preference is applied and every team sorts
+ *       alphabetically.
+ *
+ *   Both come from the team form VM. `teamOptions` is the same
+ *   flat list as before, and each entry gained two fields:
+ *
+ *     specialisations    [ { id, label } ] — the resolved list
+ *     specialisationIds  [ id ]            — convenience
+ *
+ *   The mission's primaryType is read from `m.primaryType` on the
+ *   mission VM (same source the primary-type select already
+ *   reads).
+ *
+ *   Already-assigned teams are still filtered out of the
+ *   pickable list. The sort applies only to the pickable
+ *   remainder.
+ *
  * ACTIVITY LOG HAS BEEN REMOVED:
  *   The mission detail panel used to render an ACTIVITY LOG
  *   section from `vm.log` / `vm.logCount`. The log field on the
  *   mission record has been retired; there is no such section any
  *   more. The detail panel now renders: header, fields,
  *   objectives, assigned teams, participants, support personnel,
- *   reports, and actions. If a future revision reintroduces a
- *   per-mission audit trail, this is the module where the section
- *   would be re-added.
+ *   reports, and actions.
  *
  * PARTICIPANTS PANEL (form):
  *   The mission form carries a participant editor between the
- *   team chips and the support personnel block. Shape:
- *
- *     <div id="mission-participants-panel">
- *       <section per assigned team>
- *         header: team name + member count
- *         rows: one checkbox per active member at the mission's year
- *       </section>
- *       <section class="rookie-section">
- *         header: "Rookies" + count + "+ Add Rookies" button
- *         chip list of current rookie participants with ✕ buttons
- *       </section>
- *     </div>
- *
- *   Team-member checkboxes carry:
- *     data-action="mission-toggle-participant"
- *     data-character-id="..."
- *     data-team-id="..."
- *     data-source="team"
- *
- *   The controller reads those attributes, calls
- *   MissionCore.addParticipant or MissionCore.removeParticipant,
- *   and re-renders the panel. The checkbox state is derived from
- *   the participant's `isParticipant` flag on the VM, not from
- *   DOM state.
- *
- *   Rookie rows are NOT rendered here. The rookie section is a
- *   summary strip: a count, an "+ Add Rookies" button that opens
- *   the MissionRookiePicker modal, and a chip list of currently-
- *   selected rookies with a per-chip ✕ that calls
- *   MissionCore.removeParticipant directly. The picker owns the
- *   search box, the alphabetical list, and the bulk actions.
- *
- * ROOKIE PICKER LAUNCH POINTS:
- *   Two buttons emit data-action="mission-open-rookie-picker":
- *
- *     - The "+ Add Rookies" button in the form's participants
- *       panel, scoped to the currently-edited mission.
- *     - The "Add Rookies" button in the detail panel's
- *       Participants section header, scoped to the mission shown
- *       in the detail panel.
- *
- *   Both carry data-mission-id. The controller routes both to
- *   MissionRookiePicker.openModal(missionId, { onClose }).
- *
- * PARTICIPANTS SECTION (detail):
- *   The detail panel carries a participants block, grouped by
- *   team, with rookies at the bottom. Each row carries the
- *   character name, the team name, the source label, a deceased
- *   marker when set, and a remove button.
- *
- * REPORT FORM MODAL:
- *   The author select is built from two lists: `teamMembers`
- *   (active members of the mission's assigned teams) and
- *   `otherCharacters`. They render as two <optgroup> elements,
- *   with "Team members" first. Each option label carries a
- *   "(deceased)" suffix when the character is deceased.
- *
- *   In EDIT mode, the author select is disabled. The redaction
- *   checkbox is also disabled. Both are frozen at creation.
- *
- * MISSION LABEL:
- *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value.
- *   The form does not preview it. On the edit form,
- *   `vm.currentLabel` is displayed as static text; it is not an
- *   input and is not submitted. On the create form, a muted hint
- *   states that the label will be assigned on save.
- *
- * DATE FIELDS:
- *   The year / month / day inputs carry `data-mission-year-field`,
- *   `data-mission-month-field`, and `data-mission-day-field`
- *   respectively. The UI controller uses these to track whether
- *   the user has explicitly edited month/day, so that a year
- *   change can reset untouched values to Jan 1 without clobbering
- *   explicit ones.
+ *   team chips and the support personnel block. See the inline
+ *   documentation on renderParticipantsPanel.
  *
  * DATA-ACTION CONVENTION:
  *   Every interactive element that the controller should respond
  *   to carries data-action="<verb>". The controller's delegated
  *   listener reads the attribute and dispatches.
- *
- * MODAL SHELL CONVENTION:
- *   renderContainer() emits the mission detail and mission form
- *   modal shells. The report modal, the export modal, the import
- *   modal, and the rookie picker are emitted lazily by the
- *   controller (or by their own module) on first use. This module
- *   does not know about the rookie picker's internal markup.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -303,20 +251,6 @@
     // ============================================================
     // REPORT FORM MODAL
     // ============================================================
-    //
-    // VM shape (built by MissionUI):
-    //
-    //   {
-    //     mode:            'create' | 'edit',
-    //     missionId:       string,
-    //     missionTitle:    string,
-    //     reportId:        string | null,
-    //     authorId:        string | null,
-    //     authorRedacted:  boolean,
-    //     text:            string,
-    //     teamMembers:     [ { id, name, deceased } ],
-    //     otherCharacters: [ { id, name, deceased } ]
-    //   }
 
     function renderReportFormModal(vm) {
         if (!vm) {
@@ -635,19 +569,6 @@
     // ============================================================
     // DETAIL
     // ============================================================
-    //
-    // The detail panel renders these sections, in order:
-    //
-    //   header
-    //   fields
-    //   objectives
-    //   assigned teams
-    //   participants
-    //   support personnel
-    //   reports
-    //   actions
-    //
-    // The ACTIVITY LOG section is gone. See the file header.
 
     function renderDetail(vm) {
         if (!vm || !vm.id) {
@@ -976,21 +897,6 @@
     // ============================================================
     // PARTICIPANTS (detail panel)
     // ============================================================
-    //
-    // VM shape (from MissionAggregator.buildParticipantsVM):
-    //   [ { characterId, displayName, deceased, teamId, teamName,
-    //       source, sourceLabel } ]
-    //
-    // Rows are grouped: team participants first, then rookies.
-    //
-    // The header carries TWO buttons:
-    //   - "Add Rookies" opens the rookie picker modal.
-    //   - "Edit Participants" opens the full mission form.
-    //
-    // The Add Rookies button is always present on the header so a
-    // user who only wants to add rookies does not have to open the
-    // whole form. The Edit Participants button is present only
-    // when the mission is editable (capabilities.edit).
 
     function renderParticipants(vm) {
         var html = '';
@@ -1601,8 +1507,28 @@
     }
 
     // ============================================================
-    // TEAM EDITOR (form)
+    // TEAM EDITOR (form) — specialisation-aware
     // ============================================================
+    //
+    // The pickable team list is built in three steps:
+    //
+    //   1. Assigned teams are removed (they are already chips).
+    //   2. Each remaining team gets a display label:
+    //        "<Name> [Recovery, Investigation]"
+    //      or, when the team has no specialisations, the bare
+    //      name.
+    //   3. The list is sorted:
+    //        - Teams whose specialisations include the mission's
+    //          primaryType first.
+    //        - Then the rest, both alphabetically by name.
+    //
+    // When the mission has no primaryType, no preference is
+    // applied: the sort is a plain alphabetical sort.
+    //
+    // The VM's team entries carry `specialisations` (resolved
+    // [ { id, label } ] refs) and `specialisationIds` (the raw
+    // ids). The renderer only needs the labels; it reads both
+    // defensively.
 
     function renderTeamEditor(vm, m) {
         var allTeams = isArray(vm.teams) ? vm.teams : [];
@@ -1623,21 +1549,64 @@
             }
         }
 
+        var missionPrimaryType = isNonEmptyString(m.primaryType)
+            ? String(m.primaryType)
+            : '';
+
+        // ---- Build the pickable list ----
         var available = [];
         for (var a = 0; a < allTeams.length; a++) {
             var candidate = allTeams[a];
             if (!candidate || !candidate.id) { continue; }
             if (assignedSet[String(candidate.id)]) { continue; }
-            available.push(candidate);
+
+            var specLabels = readTeamSpecialisationLabels(candidate);
+            var specIds = readTeamSpecialisationIds(candidate);
+
+            var matchesMission = false;
+            if (missionPrimaryType !== '') {
+                for (var si = 0; si < specIds.length; si++) {
+                    if (specIds[si] === missionPrimaryType) {
+                        matchesMission = true;
+                        break;
+                    }
+                }
+            }
+
+            var baseName = isNonEmptyString(candidate.name)
+                ? String(candidate.name)
+                : 'Unnamed Team';
+
+            var label = baseName;
+            if (specLabels.length > 0) {
+                label += ' [' + specLabels.join(', ') + ']';
+            }
+
+            available.push({
+                id: String(candidate.id),
+                name: baseName,
+                label: label,
+                matchesMission: matchesMission
+            });
         }
 
+        // ---- Sort: matches first, then alphabetical ----
+        available.sort(function(x, y) {
+            if (x.matchesMission !== y.matchesMission) {
+                return x.matchesMission ? -1 : 1;
+            }
+            return x.name.localeCompare(y.name);
+        });
+
+        // ---- Emit the editor markup ----
         var html = '';
         html += '<div class="form-group full-width mission-team-editor">';
 
         html += '<label>Assigned Teams</label>';
         html += '<p class="field-hint">' +
                     'A mission may be assigned to any number of ' +
-                    'professional teams.' +
+                    'professional teams. Teams matching the ' +
+                    'mission\u2019s primary category appear first.' +
                 '</p>';
 
         html += '<div class="mission-team-input-group">';
@@ -1658,7 +1627,7 @@
                 var team = available[av];
                 html += '<option value="' +
                             escapeAttribute(team.id) + '">' +
-                            escapeHtml(team.name) +
+                            escapeHtml(team.label) +
                         '</option>';
             }
         }
@@ -1689,6 +1658,77 @@
         return html;
     }
 
+    /**
+     * Read the resolved specialisation labels off a team VM entry.
+     * Prefers `specialisations` (which the team form VM exposes
+     * as [ { id, label } ]); falls back to `specialisationIds`
+     * if only the raw ids are present, using the ids as labels.
+     *
+     * Used to build the picker option label. The label list is
+     * joined with ", " by the caller.
+     */
+    function readTeamSpecialisationLabels(team) {
+        if (!team) { return []; }
+
+        if (isArray(team.specialisations) &&
+            team.specialisations.length > 0) {
+            var first = team.specialisations[0];
+            if (first && typeof first === 'object' &&
+                !Array.isArray(first)) {
+                var out = [];
+                for (var i = 0; i < team.specialisations.length; i++) {
+                    var entry = team.specialisations[i];
+                    if (!entry) { continue; }
+                    if (isNonEmptyString(entry.label)) {
+                        out.push(entry.label);
+                    } else if (isNonEmptyString(entry.id)) {
+                        out.push(entry.id);
+                    }
+                }
+                return out;
+            }
+        }
+
+        // Bare id array fallback.
+        var ids = readTeamSpecialisationIds(team);
+        return ids;
+    }
+
+    /**
+     * Read the raw specialisation ids off a team VM entry.
+     * Prefers `specialisationIds`; falls back to extracting ids
+     * from `specialisations` when that array holds refs.
+     */
+    function readTeamSpecialisationIds(team) {
+        if (!team) { return []; }
+
+        if (isArray(team.specialisationIds)) {
+            return team.specialisationIds
+                .filter(function(id) {
+                    return isNonEmptyString(id);
+                })
+                .map(function(id) { return String(id); });
+        }
+
+        if (isArray(team.specialisations)) {
+            var out = [];
+            for (var i = 0; i < team.specialisations.length; i++) {
+                var entry = team.specialisations[i];
+                if (!entry) { continue; }
+                if (typeof entry === 'string') {
+                    if (isNonEmptyString(entry)) {
+                        out.push(entry);
+                    }
+                } else if (isNonEmptyString(entry.id)) {
+                    out.push(entry.id);
+                }
+            }
+            return out;
+        }
+
+        return [];
+    }
+
     function renderTeamChip(teamId, teamName) {
         var html = '';
         html += '<div class="mission-team-chip" ' +
@@ -1708,34 +1748,6 @@
     // ============================================================
     // PARTICIPANTS PANEL (form)
     // ============================================================
-    //
-    // vm.participantsVM is the shape returned by
-    // MissionAggregator.getParticipantsViewModel:
-    //
-    //   {
-    //     missionId, missionTitle, missionYear,
-    //     assignedTeams: [
-    //       { teamId, teamName, members: [
-    //           { characterId, displayName, role, deceased,
-    //             isParticipant }
-    //       ] }
-    //     ],
-    //     currentParticipants: [...]
-    //   }
-    //
-    // The panel renders one section per assigned team with a
-    // checkbox per member, plus a rookie section that is a summary
-    // strip: a count of currently-selected rookies, an
-    // "+ Add Rookies" button that opens the picker modal, and a
-    // chip list of the current rookie participants with per-chip
-    // ✕ buttons.
-    //
-    // The roster of ROOKIE CANDIDATES is not rendered here. It is
-    // the rookie picker's concern.
-    //
-    // When the aggregator did not supply a participants VM — for
-    // instance a fresh create form where no mission exists yet —
-    // the panel renders a muted hint instead of a broken editor.
 
     function renderParticipantsPanel(vm) {
         var participantsVM = vm.participantsVM || null;
@@ -1757,7 +1769,6 @@
                     '. Rookies are added with the button below.' +
                 '</p>';
 
-        // ---- One section per assigned team ----
         var teams = isArray(participantsVM.assignedTeams)
             ? participantsVM.assignedTeams
             : [];
@@ -1775,7 +1786,6 @@
             }
         }
 
-        // ---- Rookie summary strip ----
         html += renderRookieSummarySection(vm, participantsVM);
 
         html += '</div>';
@@ -1889,18 +1899,6 @@
     // ============================================================
     // ROOKIE SUMMARY SECTION (form)
     // ============================================================
-    //
-    // The rookie summary strip. It is a count, an "+ Add Rookies"
-    // button that opens the picker modal, and a chip list of the
-    // currently-selected rookies with per-chip ✕ buttons that call
-    // MissionCore.removeParticipant directly.
-    //
-    // The chip's ✕ is a small convenience so the user does not
-    // have to open the picker just to remove one rookie. Every ✕
-    // carries the same data-* contract as a participant row on the
-    // detail panel: data-action="mission-remove-participant",
-    // data-mission-id, data-character-id, and a blank data-team-id
-    // (the rookie case).
 
     function renderRookieSummarySection(vm, participantsVM) {
         var currentParticipants =
