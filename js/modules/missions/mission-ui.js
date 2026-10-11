@@ -84,9 +84,13 @@
  * MISSION IMPORT:
  *   A header button opens the import modal.
  *
- * LOG ENTRY:
- *   The mission log entry uses window.prompt. It is a single-line
- *   note; a full modal would be over-engineered for it.
+ * ACTIVITY LOG HAS BEEN REMOVED:
+ *   The mission detail panel used to carry a "+ Log Entry" button
+ *   and the controller used to route it to a window.prompt that
+ *   appended a free-text entry to the mission's `log` array. The
+ *   mission log field has been retired. There is no log modal, no
+ *   prompt, no `mission-add-log` action. The relevant handler and
+ *   branch are gone.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
@@ -171,7 +175,6 @@
             'removeSupportPersonnel',
             'addParticipant',
             'removeParticipant',
-            'addLog',
             'addReport',
             'updateReport',
             'removeReport',
@@ -803,11 +806,6 @@
                     actionEl.dataset.teamId || '',
                     actionEl
                 );
-                return;
-
-            case 'mission-add-log':
-                event.preventDefault();
-                openLogModal(missionId);
                 return;
 
             case 'mission-report-add':
@@ -2589,25 +2587,6 @@
                 }
             }
         );
-    }
-
-    // ============================================================
-    // LOG MODAL
-    // ============================================================
-
-    function openLogModal(missionId) {
-        if (!missionId) { return; }
-        var message = window.prompt('Log entry:');
-        if (message === null) { return; }
-        message = message.trim();
-        if (!message) { return; }
-
-        handleMutation(MissionCore.addLog(missionId, message), {
-            onSuccess: function() {
-                openDetailModal(missionId);
-                refreshAfterMutation();
-            }
-        });
     }
 
     // ============================================================
