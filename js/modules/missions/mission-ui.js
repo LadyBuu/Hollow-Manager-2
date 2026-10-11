@@ -7,7 +7,7 @@
  *
  * RESPONSIBILITIES:
  *   - Own transient UI state (current filter, current mission id,
- *     which modal is open).
+ *     which modal is open, report-form scratch state).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -23,11 +23,32 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
+ * REPORT FORM MODAL (this revision):
+ *   The report form is a modal, not a browser prompt. It carries
+ *   an author select, a redacted checkbox, and a large textarea.
+ *   The controller:
+ *     - builds the VM from the mission and the loaded characters;
+ *     - lazily creates the modal shell on first use;
+ *     - binds change/input/keydown handlers to read the fields as
+ *       the user types;
+ *     - dispatches submit and cancel via the delegated click
+ *       handler on the container.
+ *
+ *   State lives in a module-level `_reportForm` object. It is
+ *   reset on every open and every close. Nothing about the report
+ *   form outlives the modal.
+ *
+ * LOG ENTRY:
+ *   The mission log entry still uses window.prompt. It is a
+ *   single-line note, not prose; a full modal would be
+ *   over-engineered for it. This is a deliberate asymmetry, not an
+ *   oversight.
+ *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
- *   submit listener. Every interactive element carries
- *   data-action, and the delegated handler reads it and dispatches.
- *   No per-element addEventListener for the mission UI itself.
+ *   input listener. One keydown listener for the modal. Every
+ *   interactive element carries data-action, and the delegated
+ *   handler reads it and dispatches.
  *
  * LISTENER LIFECYCLE:
  *   Every listener is registered through addSafeListener, which
@@ -49,13 +70,6 @@
  *                                modal; the action adds or removes
  *                                an unsaved DOM row.
  *
- *   The renderer guarantees this: detail-panel buttons always emit
- *   data-mission-id; form-panel buttons never do. Using the
- *   attribute rather than `document.activeElement` or
- *   `.closest('#mission-form-inner')` makes the discriminator
- *   stable against focus changes and against the form being
- *   rendered outside its current host id.
- *
  * DETACHED CONTAINER GUARD:
  *   openFormModal and openDetailModal check that state.container
  *   is still attached to the document before querying for modal
@@ -65,42 +79,6 @@
  *   silently returns null, and the click produces no visible
  *   feedback; the guard turns that into a toast.
  *
- * MODAL LIFECYCLE:
- *   The shells are rendered once by MissionRender.renderContainer.
- *   The controller shows/hides them by toggling the `hidden`
- *   class and writes content into the content host. Content is
- *   cleared on close so no stale DOM hangs around. The mission
- *   container is replaced on each renderMissions() call, so the
- *   modal DOM is rebuilt from scratch and any per-modal listeners
- *   registered through addSafeListener are cleaned up
- *   automatically by removeAllListeners at the top of
- *   renderMissions.
- *
- * MISSION LABEL:
- *   The form does not preview the mission label. On create, the
- *   form shows "Assigned on save"; on edit, it shows the current
- *   derived label. Neither is a form field. The controller has no
- *   label-preview listener.
- *
- * DATE FIELDS:
- *   The year / month / day inputs carry data-mission-*-field
- *   markers. When the user edits year, the controller resets
- *   month and day to 1 unless the user has already explicitly
- *   edited them. "Explicitly edited" is tracked per-field by a
- *   data-touched="true" attribute that the controller sets on the
- *   first input or change event on that field.
- *
- * EXPORT ACTION (this revision):
- *   The mission detail panel exposes an Export action that
- *   downloads a plain-text report for the current mission. The
- *   action is dispatched through the same delegated click handler
- *   as every other action, routed through handleExport, which
- *   defers to window.MissionExport. MissionExport is resolved
- *   lazily; when the module is unavailable, the toast explains
- *   that and the mission view is left untouched. Export does not
- *   mutate anything, does not refresh the view, and does not
- *   close the detail modal.
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.NotificationSystem
  *   - window.MissionCore
@@ -108,8 +86,9 @@
  *   - window.MissionAggregator
  *   - window.MissionRender
  *
- * DEPENDENCIES (LAZY, resolved at click time):
+ * DEPENDENCIES (LAZY, at click time):
  *   - window.MissionExport
+ *   - window.CharacterQueries
  */
 
 (function() {
@@ -191,6 +170,7 @@
             'renderList',
             'renderDetail',
             'renderForm',
+            'renderReportFormModal',
             'renderEmpty',
             'renderLoading'
         ];
@@ -221,6 +201,26 @@
     };
 
     var _listeners = [];
+
+    // Report form scratch state. Reset on open and on close.
+    // Never outlives the modal.
+    var _reportForm = {
+        mode: 'create',       // 'create' | 'edit'
+        missionId: null,
+        missionTitle: '',
+        reportId: null,       // null in create mode
+        authorId: '',
+        authorRedacted: false,
+        text: ''
+    };
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
 
     // ============================================================
     // LISTENER LIFECYCLE
@@ -279,6 +279,54 @@
     }
 
     // ============================================================
+    // CHARACTER OPTIONS FOR THE REPORT FORM
+    // ============================================================
+    //
+    // The report form's author select is populated from the loaded
+    // character store. When CharacterQueries is not available, the
+    // select is empty and the user can only submit a redacted
+    // report.
+
+    function buildCharacterOptions() {
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries ||
+            typeof CharacterQueries.getCharacters !== 'function') {
+            return [];
+        }
+
+        var chars = [];
+        try {
+            chars = CharacterQueries.getCharacters() || [];
+        } catch (e) {
+            chars = [];
+        }
+
+        var options = [];
+        for (var i = 0; i < chars.length; i++) {
+            var c = chars[i];
+            if (!c || !c.id) { continue; }
+            var name = c.id;
+            try {
+                if (typeof CharacterQueries.getDisplayName === 'function') {
+                    name = CharacterQueries.getDisplayName(c) || c.id;
+                }
+            } catch (e) {
+                name = c.id;
+            }
+            options.push({
+                id: String(c.id),
+                name: String(name)
+            });
+        }
+
+        options.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return options;
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -330,6 +378,8 @@
             );
         }
 
+        ensureReportModalShell(container);
+
         bindContainerEvents(container);
     }
 
@@ -374,6 +424,34 @@
     }
 
     // ============================================================
+    // REPORT MODAL SHELL
+    // ============================================================
+    //
+    // The report modal is created once per render and reused. Its
+    // content is re-rendered every time it opens. Emitted lazily
+    // because MissionRender.renderContainer does not know about it;
+    // the controller owns its shell.
+
+    function ensureReportModalShell(container) {
+        if (!container) { return; }
+
+        var existing = container.querySelector(
+            '#mission-report-modal'
+        );
+        if (existing) { return; }
+
+        var shell = document.createElement('div');
+        shell.id = 'mission-report-modal';
+        shell.className = 'modal hidden';
+
+        var content = document.createElement('div');
+        content.className = 'modal-content modal-report-content';
+        shell.appendChild(content);
+
+        container.appendChild(shell);
+    }
+
+    // ============================================================
     // CONTAINER EVENTS
     // ============================================================
 
@@ -381,6 +459,7 @@
         addSafeListener(container, 'click', handleContainerClick);
         addSafeListener(container, 'change', handleContainerChange);
         addSafeListener(container, 'input', handleContainerInput);
+        addSafeListener(container, 'keydown', handleContainerKeydown);
     }
 
     function handleContainerChange(event) {
@@ -389,6 +468,24 @@
         if (target.id === 'mission-filter') {
             state.currentFilter = target.value || 'all';
             renderMissions(state.container);
+            return;
+        }
+
+        // Report form: author select, redacted checkbox.
+        if (target.id === 'mission-report-author') {
+            _reportForm.authorId = String(target.value || '');
+            return;
+        }
+        if (target.id === 'mission-report-redacted') {
+            _reportForm.authorRedacted = target.checked === true;
+            var authorEl = state.container
+                ? state.container.querySelector(
+                    '#mission-report-author'
+                )
+                : null;
+            if (authorEl) {
+                authorEl.disabled = _reportForm.authorRedacted;
+            }
             return;
         }
 
@@ -403,8 +500,43 @@
 
     function handleContainerInput(event) {
         var target = event.target;
+
+        if (target.id === 'mission-report-text') {
+            _reportForm.text = String(target.value || '');
+            return;
+        }
+
         if (isDateField(target)) {
             handleDateFieldChange(target);
+        }
+    }
+
+    function handleContainerKeydown(event) {
+        var target = event.target;
+        if (!target) { return; }
+
+        // Ctrl / Cmd + Enter from the report textarea submits.
+        if (target.id === 'mission-report-text' &&
+            (event.ctrlKey || event.metaKey) &&
+            event.key === 'Enter') {
+            event.preventDefault();
+            handleReportSubmit();
+            return;
+        }
+
+        // Escape closes the open modals.
+        if (event.key === 'Escape') {
+            var reportModal = state.container
+                ? state.container.querySelector(
+                    '#mission-report-modal'
+                )
+                : null;
+            if (reportModal &&
+                !reportModal.classList.contains('hidden')) {
+                event.preventDefault();
+                closeReportModal();
+                return;
+            }
         }
     }
 
@@ -579,6 +711,16 @@
                     missionId,
                     actionEl.dataset.reportId
                 );
+                return;
+
+            case 'mission-report-submit':
+                event.preventDefault();
+                handleReportSubmit();
+                return;
+
+            case 'mission-report-cancel':
+                event.preventDefault();
+                closeReportModal();
                 return;
 
             default:
@@ -1029,12 +1171,6 @@
      * the report from the mission record and triggers a Blob
      * download in the same tick. No pipeline, no state change, no
      * refresh — the modal stays open and the mission is untouched.
-     *
-     * Failure modes surfaced as an error toast:
-     *   - MissionExport module not loaded (script tag missing).
-     *   - Mission no longer exists (deleted between render and
-     *     click).
-     *   - Download blocked (rare; Blob or URL API unavailable).
      */
     function handleExport(missionId) {
         if (!missionId) { return; }
@@ -1263,6 +1399,10 @@
     // ============================================================
     // LOG MODAL
     // ============================================================
+    //
+    // Log entries are single-line notes. A window.prompt is
+    // adequate for them. The report form is the module that needed
+    // a real modal; a log entry does not.
 
     function openLogModal(missionId) {
         if (!missionId) { return; }
@@ -1280,57 +1420,219 @@
     }
 
     // ============================================================
-    // REPORT MODAL
+    // REPORT FORM MODAL
     // ============================================================
+    //
+    // The report form is a proper modal: author select, redacted
+    // checkbox, large textarea. See the file header for the
+    // rationale.
 
     function openReportFormModal(missionId, reportId) {
         if (!missionId) { return; }
 
-        var existing = null;
-        if (reportId) {
-            var detailVM = MissionAggregator.getMissionDetailViewModel(
-                missionId
+        if (!isContainerAttached()) {
+            console.warn(
+                '[MissionUI] openReportFormModal: container is ' +
+                'missing or detached.'
             );
-            if (!detailVM) { return; }
-            for (var i = 0; i < detailVM.reports.length; i++) {
-                if (detailVM.reports[i].id === reportId) {
-                    existing = detailVM.reports[i];
-                    break;
-                }
-            }
+            notifyContainerLost();
+            return;
+        }
+
+        var mission = null;
+        try {
+            mission = MissionQueries.getMission(missionId);
+        } catch (e) {
+            mission = null;
+        }
+        if (!mission) {
+            notify('Mission not found.', 'error');
+            return;
+        }
+
+        // ---- Reset scratch state ----
+        _reportForm.mode = reportId ? 'edit' : 'create';
+        _reportForm.missionId = String(missionId);
+        _reportForm.missionTitle = mission.title || 'Mission';
+        _reportForm.reportId = reportId ? String(reportId) : null;
+        _reportForm.authorId = '';
+        _reportForm.authorRedacted = false;
+        _reportForm.text = '';
+
+        // ---- Edit mode: load the existing report ----
+        if (reportId) {
+            var existing = findReport(mission, reportId);
             if (!existing) {
                 notify('Report not found.', 'error');
                 return;
             }
+            _reportForm.authorId = existing.authorId
+                ? String(existing.authorId)
+                : '';
+            _reportForm.authorRedacted =
+                existing.authorRedacted === true;
+            _reportForm.text = existing.text || '';
         }
 
-        var prompt = existing
-            ? 'Edit report:'
-            : 'New report:';
-        var text = window.prompt(prompt, existing ? existing.text : '');
-        if (text === null) { return; }
-        text = text.trim();
-        if (!text) {
-            notify('Report text is required.', 'warning');
+        // ---- Render into the shell ----
+        var modal = state.container.querySelector(
+            '#mission-report-modal'
+        );
+        if (!modal) {
+            console.warn(
+                '[MissionUI] openReportFormModal: report modal ' +
+                'shell not found in container.'
+            );
+            notify('Could not open the report form.', 'error');
             return;
         }
 
+        var contentEl = modal.querySelector(
+            '.modal-report-content'
+        );
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className = 'modal-content modal-report-content';
+            modal.appendChild(contentEl);
+        }
+
+        var vm = {
+            mode: _reportForm.mode,
+            missionId: _reportForm.missionId,
+            missionTitle: _reportForm.missionTitle,
+            reportId: _reportForm.reportId,
+            authorId: _reportForm.authorId,
+            authorRedacted: _reportForm.authorRedacted,
+            text: _reportForm.text,
+            characters: buildCharacterOptions()
+        };
+
+        contentEl.innerHTML =
+            MissionRender.renderReportFormModal(vm);
+        showModal(modal);
+
+        // Focus the textarea on next tick. The select is not the
+        // primary field; the text is.
+        setTimeout(function() {
+            var textEl = contentEl.querySelector(
+                '#mission-report-text'
+            );
+            if (textEl && typeof textEl.focus === 'function') {
+                try { textEl.focus(); } catch (e) {}
+            }
+        }, 50);
+    }
+
+    function findReport(mission, reportId) {
+        if (!mission || !Array.isArray(mission.reports)) {
+            return null;
+        }
+        var target = String(reportId);
+        for (var i = 0; i < mission.reports.length; i++) {
+            var r = mission.reports[i];
+            if (r && String(r.id) === target) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    function closeReportModal() {
+        if (!state.container) {
+            resetReportForm();
+            return;
+        }
+
+        var modal = state.container.querySelector(
+            '#mission-report-modal'
+        );
+        var contentEl = modal
+            ? modal.querySelector('.modal-report-content')
+            : null;
+
+        if (modal) { hideModal(modal); }
+        if (contentEl) { contentEl.innerHTML = ''; }
+
+        resetReportForm();
+    }
+
+    function resetReportForm() {
+        _reportForm.mode = 'create';
+        _reportForm.missionId = null;
+        _reportForm.missionTitle = '';
+        _reportForm.reportId = null;
+        _reportForm.authorId = '';
+        _reportForm.authorRedacted = false;
+        _reportForm.text = '';
+    }
+
+    function setReportError(message) {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-report-modal'
+        );
+        if (!modal) { return; }
+        var errEl = modal.querySelector('#mission-report-error');
+        if (!errEl) { return; }
+
+        if (!message) {
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            return;
+        }
+        errEl.textContent = message;
+        errEl.style.display = 'block';
+    }
+
+    function handleReportSubmit() {
+        if (!_reportForm.missionId) { return; }
+
+        var text = String(_reportForm.text || '').trim();
+        if (text === '') {
+            setReportError('Report text is required.');
+            return;
+        }
+
+        var authorId = _reportForm.authorRedacted
+            ? null
+            : (_reportForm.authorId || null);
+
+        if (!_reportForm.authorRedacted && !authorId) {
+            setReportError(
+                'Select an author, or tick the redacted box to ' +
+                'submit without attribution.'
+            );
+            return;
+        }
+
+        setReportError('');
+
         var promise;
-        if (existing) {
+        if (_reportForm.mode === 'edit' && _reportForm.reportId) {
+            // updateReport only takes the text. The author and
+            // redaction state are frozen at creation.
             promise = MissionCore.updateReport(
-                missionId,
-                existing.id,
+                _reportForm.missionId,
+                _reportForm.reportId,
                 text
             );
         } else {
-            promise = MissionCore.addReport(missionId, null, text);
+            promise = MissionCore.addReport(
+                _reportForm.missionId,
+                authorId,
+                text
+            );
         }
+
+        var missionId = _reportForm.missionId;
 
         handleMutation(promise, {
             onSuccess: function() {
+                closeReportModal();
                 openDetailModal(missionId);
                 refreshAfterMutation();
-            }
+            },
+            errorMessage: 'Failed to save report.'
         });
     }
 
@@ -1418,6 +1720,7 @@
         state.container = null;
         state.currentMissionId = null;
         state.currentFilter = 'all';
+        resetReportForm();
     }
 
     // ============================================================
