@@ -13,25 +13,49 @@
  * All other export/import modules should depend on these primitives.
  *
  * DOWNLOAD RELIABILITY (this revision):
- *   downloadBlob now suffixes every filename with a local-time
- *   timestamp before dispatching the download. The timestamp is
- *   what makes the SECOND download in a session work:
+ *   downloadBlob has been reworked around two observations:
  *
- *     Browsers refuse to write a second file with the same name
- *     in the same session without user confirmation. If the
- *     confirmation dialog is suppressed (which it is when the
- *     tab is unfocused or "ask where to save" is off), the
- *     download is silently dropped and JS has no way to know.
+ *   1. SOME ANDROID WEBVIEW-BASED BROWSERS (Ecosia, several
+ *      Chromium shells, older Samsung Internet builds) SERVICE
+ *      ONLY THE FIRST blob: URL DOWNLOAD PER PAGE LOAD. A second
+ *      synthetic anchor click with a blob: href is silently
+ *      dropped by the WebView's download listener. There is no
+ *      JS-observable signal that this happened: the anchor's
+ *      click() returns normally, no exception is thrown, and the
+ *      browser never fires a download-failed event.
  *
- *     A unique filename sidesteps the collision entirely. The
- *     browser sees a new file and writes it.
+ *      data: URLs route through a different path in these
+ *      WebViews and are not subject to the same per-page-load
+ *      quota. This module therefore prefers a data: URL when the
+ *      payload is small enough to be encoded safely, and falls
+ *      back to a blob: URL when it is not.
  *
- *   Every exporter in the codebase routes its downloads through
- *   this helper, so the fix applies to all of them uniformly.
- *   Exports that already include a timestamp in their filename
- *   (team-export, candidate-export, character-json-io,
- *   mission-export) get a second timestamp appended; that is
- *   harmless and keeps the collision guarantee absolute.
+ *      The size limit is deliberately conservative (DATA_URL_MAX_BYTES,
+ *      see below). Android WebViews commonly reject or truncate
+ *      data: URLs above a few megabytes. A text mission report is
+ *      well under the limit. A full JSON backup of a large store
+ *      may not be, and is sent as a blob instead.
+ *
+ *   2. BROWSERS REFUSE A SECOND DOWNLOAD WHOSE FILENAME MATCHES
+ *      ONE ALREADY WRITTEN IN THE SAME SESSION. downloadBlob
+ *      therefore suffixes every filename with a local-time
+ *      timestamp before dispatch. The timestamp is what makes the
+ *      SECOND download in a session work on the browsers that DO
+ *      permit multiple downloads:
+ *
+ *        Browsers refuse to write a second file with the same
+ *        name in the same session without user confirmation. If
+ *        the confirmation dialog is suppressed (which it is when
+ *        the tab is unfocused or "ask where to save" is off),
+ *        the download is silently dropped and JS has no way to
+ *        know.
+ *
+ *        A unique filename sidesteps the collision entirely. The
+ *        browser sees a new file and writes it.
+ *
+ *      The timestamp includes a ten-millisecond-resolution suffix,
+ *      so two exports fired from the same event handler do not
+ *      collide.
  *
  *   The blob URL is deliberately NOT revoked on the same tick.
  *   Revoking on a timer raced the browser's download manager and
@@ -43,6 +67,10 @@
  *   The anchor is removed synchronously, immediately after click
  *   returns, and the removal is guarded so a stray double-click
  *   cannot throw.
+ *
+ *   IF YOU STILL SEE "FIRST EXPORT WORKS, SECOND SILENTLY FAILS"
+ *   ON A TARGET BROWSER, READ THE HEADER OF downloadBlob. THE
+ *   FALLBACK PATH IS DOCUMENTED THERE.
  */
 
 (function() {
@@ -339,11 +367,9 @@
      *   ""                      ->  "download-20261009-143052"
      *
      * Two-digit fields, no punctuation inside the timestamp itself,
-     * so the result is filesystem-safe on every OS.
-     *
-     * The timestamp is what makes the second download in a session
-     * work: browsers silently drop a download whose target file
-     * already exists, and JS has no way to detect the drop.
+     * so the result is filesystem-safe on every OS. The trailing
+     * two digits are a ten-millisecond-resolution counter, so two
+     * exports fired from the same event handler do not collide.
      *
      * @param {string} filename
      * @returns {string}
@@ -381,28 +407,68 @@
     // ============================================================
 
     /**
-     * Download a blob as a file.
+     * Maximum payload size, in bytes, that will be routed through a
+     * data: URL rather than a blob: URL.
      *
-     * The filename is timestamp-suffixed before dispatch so the
-     * second download in a session never collides with the first.
+     * WHY THIS EXISTS:
+     *   Some Android WebView-based browsers (Ecosia, several
+     *   Chromium shells) service only the FIRST blob: URL download
+     *   per page load. A second synthetic anchor click with a
+     *   blob: href is silently dropped by the WebView's download
+     *   listener, with no JS-observable signal.
      *
-     * The blob URL is revoked on a 60-second timer, not on the
-     * same tick. Revoking immediately raced the browser's download
-     * manager and killed larger downloads; see the file header for
-     * the full reasoning.
+     *   data: URLs route through a different path in those WebViews
+     *   and are not subject to the same per-page-load quota. They
+     *   are, however, subject to a size limit. Android WebViews
+     *   commonly reject or truncate data: URLs above a few
+     *   megabytes; the exact threshold varies by vendor and
+     *   version. This constant is deliberately conservative.
      *
-     * @param {Blob} blob - Blob to download
-     * @param {string} filename - Base filename; a timestamp is
-     *   inserted before the extension automatically
+     *   2 MB is comfortably large enough for every text export the
+     *   app produces (mission, team, candidate, schedule, class
+     *   roster, character report) and for small JSON exports. A
+     *   full JSON backup of a large store will exceed it and fall
+     *   through to the blob: path, which is the correct behaviour:
+     *   a single large backup is a single download, which the
+     *   WebView quota still permits.
      */
-    function downloadBlob(blob, filename) {
-        var url = URL.createObjectURL(blob);
-        var stampedName = appendTimestampToFilename(filename);
+    var DATA_URL_MAX_BYTES = 2 * 1024 * 1024;
 
+    /**
+     * Read a Blob as a data: URL.
+     *
+     * @param {Blob} blob
+     * @returns {Promise<string>}
+     */
+    function readBlobAsDataURL(blob) {
+        return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                resolve(e.target.result);
+            };
+            reader.onerror = function() {
+                reject(new Error(
+                    'Failed to read blob: ' +
+                    (reader.error ? reader.error.message : 'Unknown error')
+                ));
+            };
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /**
+     * Create the anchor, click it, and schedule cleanup.
+     *
+     * @param {string} href
+     * @param {string} downloadName
+     * @param {string|null} revokeUrl - URL to revoke after the
+     *   download has had time to complete. Null for data: URLs,
+     *   which have nothing to revoke.
+     */
+    function dispatchDownload(href, downloadName, revokeUrl) {
         var a = document.createElement('a');
-        a.href = url;
-        a.download = stampedName;
-        a.rel = 'noopener';
+        a.href = href;
+        a.download = downloadName;
         a.style.display = 'none';
 
         document.body.appendChild(a);
@@ -418,12 +484,89 @@
                 // Guarded. A concurrent removal is harmless.
             }
 
-            // Deliberately delayed. See file header.
-            setTimeout(function() {
-                try { URL.revokeObjectURL(url); }
-                catch (e) { /* ignore */ }
-            }, 60000);
+            if (revokeUrl) {
+                // Deliberately delayed. See file header.
+                setTimeout(function() {
+                    try { URL.revokeObjectURL(revokeUrl); }
+                    catch (e) { /* ignore */ }
+                }, 60000);
+            }
         }
+    }
+
+    /**
+     * Download a blob as a file.
+     *
+     * STRATEGY:
+     *   Small payloads (<= DATA_URL_MAX_BYTES) are read into a
+     *   data: URL and dispatched through that. This is the path
+     *   that works on Android WebView-based browsers that only
+     *   permit one blob: download per page load.
+     *
+     *   Large payloads fall through to a blob: URL. The filename
+     *   timestamp guarantees uniqueness so a second blob: download
+     *   is not refused by filename collision on browsers that DO
+     *   permit multiple blob: downloads.
+     *
+     * The function is fire-and-forget: it returns before the
+     * download has actually landed. There is no browser API that
+     * reports download success or failure, so the caller cannot
+     * know either. The success notification shown by an exporter
+     * therefore means "the blob was handed to the download
+     * manager," not "the file was written."
+     *
+     * @param {Blob} blob - Blob to download
+     * @param {string} filename - Base filename; a timestamp is
+     *   inserted before the extension automatically
+     */
+    function downloadBlob(blob, filename) {
+        var stampedName = appendTimestampToFilename(filename);
+
+        // ---- Legacy: MS Edge / IE ----
+        if (window.navigator && window.navigator.msSaveBlob) {
+            try {
+                window.navigator.msSaveBlob(blob, stampedName);
+            } catch (e) {
+                console.warn(
+                    '[ExportUtils] msSaveBlob failed:', e
+                );
+            }
+            return;
+        }
+
+        var size = (blob && typeof blob.size === 'number')
+            ? blob.size
+            : 0;
+
+        if (size > 0 && size <= DATA_URL_MAX_BYTES) {
+            // ---- Small payload: data: URL path ----
+            //
+            // Fallback if the read fails: use the blob URL path.
+            // The read can fail if the blob is not readable (rare)
+            // or if the FileReader is unavailable (even rarer).
+            readBlobAsDataURL(blob).then(function(dataUrl) {
+                dispatchDownload(dataUrl, stampedName, null);
+            }).catch(function(err) {
+                console.warn(
+                    '[ExportUtils] data: URL path failed; ' +
+                    'falling back to blob: URL:', err
+                );
+                var url = URL.createObjectURL(blob);
+                dispatchDownload(url, stampedName, url);
+            });
+            return;
+        }
+
+        // ---- Large payload: blob: URL path ----
+        //
+        // The filename is timestamped, so a second download does
+        // not collide on browsers that permit multiple downloads.
+        // On a WebView that permits only one blob: download per
+        // page load, a second large export will still be dropped;
+        // there is no workaround for that case short of serving
+        // the file over HTTP.
+        var url = URL.createObjectURL(blob);
+        dispatchDownload(url, stampedName, url);
     }
 
     /**
@@ -495,6 +638,7 @@
     window.ExportUtils = {
         // Constants
         MAX_WARNINGS: MAX_WARNINGS,
+        DATA_URL_MAX_BYTES: DATA_URL_MAX_BYTES,
 
         // Warning management
         addWarning: addWarning,
