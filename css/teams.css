@@ -11,17 +11,14 @@
  *   - Team selection column (.team-select-cell,
  *     .team-select-checkbox, .team-item-selected)
  *   - Descriptive fields (.team-descriptive-*)
- *   - Specialisation editor (.team-specialisation-*)
+ *   - Periods editor (.team-period-*)
  *   - Team members expanded section (.team-members-expanded)
  *   - Team cards (.team-card)
- *   - Team form modal contents (.name-history-entry)
  *   - Team tab nav (.tab-nav, .tab-btn)
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
  *     including the professional tab's three-way mode toggle
  *     (.mode-toggle, .mode-btn)
  *   - Professional Pool view (.pool-*)
- *     including row expansion, selection checkboxes, and the
- *     create-team-from-selection bar
  *   - Timeline view (.timeline-*)
  *   - Stats row (.stats-grid, .stat-card)
  *   - Shared member manager (.member-*)
@@ -157,21 +154,17 @@
 }
 
 /* ============================================================
-   DESCRIPTIVE FIELDS (style + specialisations)
+   DESCRIPTIVE FIELDS (tactical style + specialisations + periods)
    ============================================================
-   Rendered read-only in three places:
+   Read-only display of the current period's descriptive fields,
+   plus a Periods line when the team has more than one period.
+
+   Rendered in two places:
      - inside .team-members-expanded when a row is expanded
      - inside .team-card (a card-layout caller)
-     - (a future team detail view, if one is added)
 
-   When both fields are empty, the whole block is omitted by
-   the renderer. When either is present, its row is shown. The
-   layout matches the mission detail panel's convention: label
-   on the left, value on the right, one line per field.
-
-   Specialisation labels are comma-joined into a single value
-   string by the renderer; there is no chip styling on the
-   read-only side.
+   When every field is empty AND there is only one period, the
+   whole block is omitted by the renderer.
    ============================================================ */
 
 .team-descriptive-fields {
@@ -185,21 +178,17 @@
 }
 
 .team-members-expanded .team-descriptive-fields {
-    /* Inside an expanded row, the block sits above the member
-       list. The dashed bottom border separates it. */
     margin-bottom: 8px;
 }
 
 .team-card .team-descriptive-fields {
-    /* Inside a card, the block sits between the mission line
-       and the action strip. */
     margin-top: 6px;
     margin-bottom: 6px;
 }
 
 .team-descriptive-row {
     display: grid;
-    grid-template-columns: 110px 1fr;
+    grid-template-columns: 130px 1fr;
     gap: 8px;
     align-items: baseline;
     padding: 2px 0;
@@ -222,9 +211,29 @@
     min-width: 0;
 }
 
+/* ---------- Periods row ---------- */
+
+.team-descriptive-periods-row {
+    /* The Periods row can wrap to multiple visual lines; the
+       label stays at the top rather than centring against a
+       multi-line value. */
+    align-items: start;
+}
+
+.team-descriptive-periods {
+    color: var(--text-dim);
+    font-size: 0.68rem;
+    line-height: 1.5;
+}
+
+.team-descriptive-periods em {
+    font-style: normal;
+    color: var(--text);
+}
+
 @media (max-width: 600px) {
     .team-descriptive-row {
-        grid-template-columns: 90px 1fr;
+        grid-template-columns: 110px 1fr;
         gap: 6px;
     }
 
@@ -238,76 +247,228 @@
 }
 
 /* ============================================================
-   SPECIALISATION EDITOR (team form)
+   PERIODS EDITOR (team form)
    ============================================================
-   The team form's Specialisations control. Three pieces:
+   The team form's Periods editor. One .team-period-row per
+   period, stacked vertically. Each row carries:
 
-     .team-specialisation-input-group
-       The <select> and its "+ Add" button, side by side.
+     .team-period-row-header
+       "Period N" or "Period N (current)" + optional remove
+       button.
 
-     .team-specialisations-list
-       The chip list below. One .team-specialisation-chip per
-       currently-selected specialisation.
+     .team-period-row-fields
+       Three-column grid: Name, Start, End. End on the last row
+       is a disabled text input showing "present" as its
+       placeholder.
 
-     .team-specialisation-chip
-       Label + a small × button.
+     .team-period-tactical-style-row
+       A textarea for the tactical style.
 
-   The select is disabled when every option is already selected
-   (or when there are no options at all); the empty-state copy
-   is set by the renderer.
+     .team-period-specialisations-row
+       The chip editor for this period's specialisations.
 
-   The visual language matches the mission form's team editor
-   and the support-personnel editor: the input group is
-   horizontal on desktop, the chip list is a stacked column.
+   The row carries data-period-index and data-is-last. The
+   last row is the open-ended current period; its end input is
+   read-only and disabled.
    ============================================================ */
 
-.team-specialisation-editor {
+.team-periods-editor {
     display: flex;
     flex-direction: column;
     gap: 6px;
 }
 
-.team-specialisation-input-group {
+.team-periods-list {
     display: flex;
-    gap: 6px;
-    align-items: stretch;
-    margin-bottom: 6px;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.team-specialisation-input-group .team-specialisation-select {
+.team-period-row {
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.team-period-row[data-is-last="true"] {
+    border-left-color: var(--accent);
+    background: var(--panel);
+}
+
+/* ---------- Header ---------- */
+
+.team-period-row-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.team-period-row-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     flex: 1;
     min-width: 0;
-    padding: 6px 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.72rem;
-    font-family: 'Inter', sans-serif;
 }
 
-.team-specialisation-input-group .team-specialisation-select:focus {
+.team-period-remove {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+/* ---------- Name / Start / End ---------- */
+
+.team-period-row-fields {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 8px;
+    align-items: start;
+}
+
+.team-period-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.team-period-field-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.team-period-name,
+.team-period-start,
+.team-period-end {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.team-period-name:focus,
+.team-period-start:focus,
+.team-period-end:focus {
     outline: none;
     border-color: var(--accent);
 }
 
-.team-specialisation-input-group .team-specialisation-select:disabled {
+.team-period-end:disabled,
+.team-period-end[readonly] {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background: var(--bg);
+    font-style: italic;
+}
+
+.team-period-field-hint {
+    font-size: 0.58rem;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-top: 1px;
+}
+
+/* ---------- Tactical style ---------- */
+
+.team-period-tactical-style-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.team-period-style {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    line-height: 1.5;
+    min-height: 60px;
+    resize: vertical;
+}
+
+.team-period-style:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Specialisations ---------- */
+
+.team-period-specialisations-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.team-period-specialisation-input-group {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.team-period-specialisation-select {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.team-period-specialisation-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.team-period-specialisation-select:disabled {
     opacity: 0.55;
     cursor: not-allowed;
 }
 
-.team-specialisation-input-group button {
+.team-period-specialisation-input-group button {
     font-size: 0.65rem;
     padding: 4px 12px;
     white-space: nowrap;
     flex: 0 0 auto;
 }
 
-.team-specialisations-list {
+.team-period-specialisation-chips {
     display: flex;
     flex-direction: column;
     gap: 3px;
 }
+
+.team-period-specialisation-chips .empty-state {
+    padding: 2px 0;
+    font-size: 0.68rem;
+}
+
+/* ---------- Shared chip styling (used by the period row and any
+     other place a specialisation chip is rendered) ---------- */
 
 .team-specialisation-chip {
     display: flex;
@@ -336,12 +497,32 @@
     flex: 0 0 auto;
 }
 
+/* ---------- Add period button ---------- */
+
+.add-team-period-btn {
+    align-self: flex-start;
+    font-size: 0.7rem;
+    padding: 5px 14px;
+    margin-top: 4px;
+}
+
+/* ---------- Mobile ---------- */
+
 @media (max-width: 600px) {
-    .team-specialisation-input-group {
+    .team-period-row-fields {
+        grid-template-columns: 1fr;
+    }
+
+    .team-period-specialisation-input-group {
         flex-direction: column;
     }
 
-    .team-specialisation-input-group button {
+    .team-period-specialisation-input-group button {
+        width: 100%;
+    }
+
+    .add-team-period-btn {
+        align-self: stretch;
         width: 100%;
     }
 }
@@ -509,29 +690,6 @@
 }
 
 /* ============================================================
-   NAME HISTORY ROWS (team form)
-   ============================================================ */
-
-.name-history-entry {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 4px;
-    flex-wrap: wrap;
-    align-items: center;
-}
-
-.name-history-entry input {
-    flex: 1;
-    min-width: 60px;
-    padding: 4px 6px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 4px;
-    font-size: 0.7rem;
-}
-
-/* ============================================================
    TAB NAV (Professional / Civilian)
    ============================================================ */
 
@@ -630,12 +788,8 @@
     padding: 4px 14px;
 }
 
-.filter-row-professional {
-    /* intentionally empty; see the mode-toggle block below */
-}
-
 /* ============================================================
-   MODE TOGGLE (Professional tab: Teams | Professional Pool | Timeline)
+   MODE TOGGLE
    ============================================================ */
 
 .mode-toggle {
@@ -686,18 +840,7 @@
 
 /* ============================================================
    PROFESSIONAL POOL
-   ============================================================
-   The pool supports three interactions:
-     - a selection checkbox per row (create-team flow)
-     - a click-to-expand row (compact stats panel)
-     - a header bar with the selected count and Create Team
-
-   The section header column layout gains a leading checkbox
-   column compared to the old pool layout. The data rows use the
-   same grid.
    ============================================================ */
-
-/* ---------- Selection bar ---------- */
 
 .pool-selection-bar {
     display: flex;
@@ -750,8 +893,6 @@
     cursor: not-allowed;
 }
 
-/* ---------- Summary line ---------- */
-
 .pool-summary {
     padding: 6px 12px;
     margin-bottom: 10px;
@@ -766,8 +907,6 @@
     color: var(--text);
     font-weight: 600;
 }
-
-/* ---------- Sections ---------- */
 
 .pool-section {
     margin-bottom: 16px;
@@ -790,8 +929,6 @@
     letter-spacing: 0.04em;
 }
 
-/* ---------- Header column layout (adds checkbox column) ---------- */
-
 .list-header.pool-header {
     display: grid;
     grid-template-columns: 28px 1.6fr 0.8fr 0.9fr 1.4fr 0.9fr;
@@ -811,8 +948,6 @@
 .pool-header-check {
     /* Empty header cell above the checkbox column. */
 }
-
-/* ---------- Row ---------- */
 
 .list-item.professional-pool-item {
     display: grid;
@@ -850,8 +985,6 @@
     padding-left: 10px;
 }
 
-/* ---------- Checkbox cell ---------- */
-
 .pool-select-cell {
     display: flex;
     align-items: center;
@@ -865,8 +998,6 @@
     accent-color: var(--accent);
     cursor: pointer;
 }
-
-/* ---------- Pool columns ---------- */
 
 .pool-character {
     display: flex;
@@ -961,8 +1092,6 @@
     min-width: 0;
 }
 
-/* ---------- Block headers (Personality / Combat) ---------- */
-
 .pool-expand-block {
     display: flex;
     flex-direction: column;
@@ -990,8 +1119,6 @@
 .pool-expand-block-combat .pool-expand-block-header {
     color: var(--info);
 }
-
-/* ---------- Stat chips ---------- */
 
 .pool-expand-stats .pool-expand-value {
     display: flex;
@@ -1021,8 +1148,6 @@
     color: var(--text);
     font-weight: 700;
 }
-
-/* ---------- Magic chips ---------- */
 
 .pool-expand-magic .pool-expand-value {
     display: flex;
@@ -1102,8 +1227,6 @@
     gap: 12px;
 }
 
-/* ---------- Header ---------- */
-
 .timeline-header {
     display: flex;
     align-items: center;
@@ -1158,8 +1281,6 @@
     margin-right: 8px;
 }
 
-/* ---------- Empty state ---------- */
-
 .timeline-empty {
     padding: 24px 12px;
     text-align: center;
@@ -1170,8 +1291,6 @@
     color: var(--text-dim);
     margin-top: 4px;
 }
-
-/* ---------- Rows container + spine ---------- */
 
 .timeline-rows {
     position: relative;
@@ -1193,8 +1312,6 @@
     pointer-events: none;
 }
 
-/* ---------- One year row ---------- */
-
 .timeline-year {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
@@ -1204,10 +1321,6 @@
     padding: 6px 12px;
     position: relative;
     z-index: 1;
-}
-
-.timeline-year.collapsed {
-    /* Collapsed rows are shorter. */
 }
 
 .timeline-year.expanded {
@@ -1242,8 +1355,6 @@
     min-width: 0;
 }
 
-/* ---------- Year circle ---------- */
-
 .timeline-circle {
     width: 56px;
     height: 56px;
@@ -1272,8 +1383,6 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-
-/* ---------- Event rows ---------- */
 
 .timeline-event {
     font-size: 0.72rem;
@@ -1320,8 +1429,6 @@
     font-style: italic;
 }
 
-/* ---------- Team group ---------- */
-
 .timeline-team-group {
     display: flex;
     flex-direction: column;
@@ -1364,16 +1471,12 @@
     color: var(--text);
 }
 
-/* ---------- Empty side placeholder ---------- */
-
 .timeline-empty-side {
     font-size: 0.7rem;
     color: var(--text-dim);
     opacity: 0.5;
     padding: 2px 8px;
 }
-
-/* ---------- Timeline mobile ---------- */
 
 @media (max-width: 600px) {
     .timeline-header {
@@ -1480,10 +1583,6 @@
 /* ============================================================
    TEAM MATCHMAKING MODAL
    ============================================================ */
-
-.matchmaking-content {
-    /* wide modal is 800px */
-}
 
 .matchmaking-body {
     max-height: 60vh;
@@ -1736,8 +1835,6 @@
     font-weight: 600;
 }
 
-/* ---------- Panels ---------- */
-
 .planner-panel {
     display: flex;
     flex-direction: column;
@@ -1767,8 +1864,6 @@
     min-height: 0;
     padding: 6px;
 }
-
-/* ---------- Teams panel rows ---------- */
 
 .planner-team {
     padding: 8px 10px;
@@ -1861,8 +1956,6 @@
     white-space: nowrap;
 }
 
-/* ---------- Candidates panel rows ---------- */
-
 .planner-candidate-row {
     padding: 8px 10px;
     margin-bottom: 6px;
@@ -1926,8 +2019,6 @@
 .planner-candidate-assignment {
     color: var(--info);
 }
-
-/* ---------- Per-team cells ---------- */
 
 .planner-candidate-teams {
     display: flex;
@@ -2008,8 +2099,6 @@
     cursor: not-allowed;
 }
 
-/* ---------- Planner footer ---------- */
-
 .planner-actions {
     grid-column: 1 / -1;
     margin-top: 8px;
@@ -2017,14 +2106,10 @@
     border-top: 1px solid var(--border-soft);
 }
 
-/* ---------- Empty state ---------- */
-
 .planner-body > .empty-state {
     grid-column: 1 / -1;
     margin: 0;
 }
-
-/* ---------- Narrow viewports ---------- */
 
 @media (max-width: 700px) {
     .planner-body {
@@ -2062,7 +2147,6 @@
    ============================================================ */
 
 .verifier-content {
-    /* wide modal is 900px */
     max-width: 860px;
 }
 
@@ -2074,8 +2158,6 @@
     overflow-y: auto;
     padding-right: 2px;
 }
-
-/* ---------- Summary ---------- */
 
 .verifier-summary {
     display: flex;
@@ -2140,13 +2222,9 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* ---------- Empty state ---------- */
-
 .verifier-empty {
     padding: 8px 0;
 }
-
-/* ---------- Groups ---------- */
 
 .verifier-groups {
     display: flex;
@@ -2200,8 +2278,6 @@
     padding: 3px 10px;
     white-space: nowrap;
 }
-
-/* ---------- Findings ---------- */
 
 .verifier-findings {
     display: flex;
@@ -2287,8 +2363,6 @@
     line-height: 1.4;
     word-wrap: break-word;
 }
-
-/* ---------- Mobile ---------- */
 
 @media (max-width: 600px) {
     .verifier-content {
