@@ -2,7 +2,7 @@
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
  *
- * DATA_VERSION: 32
+ * DATA_VERSION: 33
  *
  * Version history (one line per version; the full narrative for each
  * lives on its migration function, or has been dropped once stable):
@@ -18,6 +18,10 @@
  *   31 — Enrolment role tagging (student / instructor per interval);
  *        character.mode becomes a legacy tombstone.
  *   32 — Departments store (window.data.departments: []).
+ *   33 — Team periods model. nameHistory + scalar style /
+ *        specialisations collapse into a `periods` array; the
+ *        scalar name / startPeriod / endPeriod become denormalised
+ *        mirrors of the periods array's first and last entries.
  *
  * RETIRED FIELDS (one line each):
  *   v23  tournament.winner, tournament.currentRound, tournament.teams,
@@ -33,6 +37,8 @@
  *   v29  class.instructorId
  *   v31  character.mode   (kept as a tombstone field; see the v31
  *                          migration's SEMANTIC NOTES below)
+ *   v33  team.nameHistory, team.style, team.specialisations
+ *        (superseded by team.periods; see the v33 migration)
  */
 
 (function() {
@@ -40,7 +46,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 32;
+    var DATA_VERSION = 33;
     var STORE_NAME = 'appData';
 
     var _indexedDB = null;
@@ -109,11 +115,6 @@
         };
     }
 
-    /**
-     * Default stats configuration. Icons are monochrome Unicode
-     * glyphs (v28); the legacy emoji set is rewritten by the v28
-     * migration.
-     */
     function getDefaultStatsConfig() {
         return {
             classes: [
@@ -496,6 +497,7 @@
                 case 29: migrateToVersion30(data); break;
                 case 30: migrateToVersion31(data); break;
                 case 31: migrateToVersion32(data); break;
+                case 32: migrateToVersion33(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -2098,9 +2100,6 @@
             disciplineId: discKey,
             startWeek: startWeek,
             endWeek: (endWeek === null || endWeek === undefined) ? null : endWeek,
-            // v27 conversion of a legacy instructor assignment.
-            // Tagged instructor so the v31 role-tagging pass does
-            // not have to re-derive the role from character mode.
             role: 'instructor'
         });
 
@@ -2227,10 +2226,6 @@
         data._dataVersion = 29;
     }
 
-    /**
-     * v30 — Add `restDays: []` to every class. See v30 migration
-     * narrative (now trimmed).
-     */
     function migrateToVersion30(data) {
         var academy = data.academy;
 
@@ -2321,18 +2316,6 @@
         data._dataVersion = 30;
     }
 
-    /**
-     * v31 — Enrolment role tagging.
-     *
-     * A role (student or instructor) is CLASS-SCOPED. It lives on
-     * the enrolment interval, not on the character. This migration
-     * tags any untagged interval based on the character's legacy
-     * `mode` field, and warns for every character who was marked
-     * instructor across multiple classes so the user can review.
-     *
-     * `character.mode` is left in place as a tombstone; nothing
-     * reads it after this pass.
-     */
     function migrateToVersion31(data) {
         var ROLE_STUDENT = 'student';
         var ROLE_INSTRUCTOR = 'instructor';
@@ -2447,21 +2430,303 @@
         data._dataVersion = 31;
     }
 
-    /**
-     * v32 — Departments store.
-     *
-     * A new top-level array. Each department owns its own member
-     * list, the same shape as a team's members: characterId plus
-     * an intervals array. Existing data has no departments, so
-     * this migration adds the empty array and moves on. Future
-     * department writes go through DepartmentCore, which routes
-     * through MutationPipeline like every other domain.
-     */
     function migrateToVersion32(data) {
         if (!Array.isArray(data.departments)) {
             data.departments = [];
         }
         data._dataVersion = 32;
+    }
+
+    /**
+     * v33 — Team periods model.
+     *
+     * A team used to carry `nameHistory` (an array of period-scoped
+     * names) plus two scalar fields, `style` and `specialisations`,
+     * that described the team "for its entire lifetime." The three
+     * were allowed to drift, and the scalars could not be period-
+     * scoped.
+     *
+     * The new model replaces all three with `periods`: an array of
+     * self-contained entries, each carrying a name, a tactical
+     * style, and a specialisation list scoped to a period range.
+     *
+     * MIGRATION RULE:
+     *
+     *   - If `nameHistory` is present and non-empty, one period is
+     *     produced per name-history entry. The scalars (style and
+     *     specialisations) are applied to EVERY produced period,
+     *     because the old model had no way to scope them per
+     *     entry. The user can edit individual periods afterwards.
+     *
+     *   - If `nameHistory` is missing or empty, one period is
+     *     produced from the team's current scalars (name, style,
+     *     specialisations) and top-level startPeriod / endPeriod.
+     *
+     *   - A record that already has `periods` is left alone; this
+     *     migration is idempotent.
+     *
+     * AFTER MIGRATION:
+     *
+     *   - `periods` is the source of truth.
+     *   - `name` is a denormalised cache of `periods[last].name`.
+     *   - `startPeriod` / `endPeriod` mirror `periods[0].start` and
+     *     `periods[last].end`.
+     *   - `nameHistory`, `style`, and `specialisations` are deleted
+     *     from the record.
+     *
+     * The migration does NOT canonicalise the periods array itself.
+     * That happens on the next write through TeamCore, which runs
+     * the full canonicaliser. This pass produces a shape that the
+     * canonicaliser accepts; it does not run the canonicaliser.
+     */
+    function migrateToVersion33(data) {
+        if (!Array.isArray(data.teams)) {
+            data._dataVersion = 33;
+            return;
+        }
+
+        var teamsSeen = 0;
+        var alreadyPerioded = 0;
+        var migratedFromHistory = 0;
+        var migratedFromScalars = 0;
+        var skippedNoName = 0;
+
+        function readString(value) {
+            if (value === undefined || value === null) { return ''; }
+            return String(value);
+        }
+
+        function readNonEmptyString(value) {
+            var s = readString(value).trim();
+            return s === '' ? '' : s;
+        }
+
+        function readTacticalStyle(team) {
+            // Prefer the canonical `tacticalStyle` if a record
+            // somehow already carries it; fall back to the legacy
+            // `style` alias.
+            if (team.tacticalStyle !== undefined) {
+                return readString(team.tacticalStyle);
+            }
+            if (team.style !== undefined) {
+                return readString(team.style);
+            }
+            return '';
+        }
+
+        function readSpecialisations(team) {
+            if (!Array.isArray(team.specialisations)) {
+                return [];
+            }
+            var seen = Object.create(null);
+            var out = [];
+            for (var i = 0; i < team.specialisations.length; i++) {
+                var id = readNonEmptyString(team.specialisations[i]);
+                if (id === '') { continue; }
+                if (seen[id] === true) { continue; }
+                seen[id] = true;
+                out.push(id);
+            }
+            return out;
+        }
+
+        function normalisePeriodForStorage(value) {
+            if (value === undefined || value === null || value === '') {
+                return '';
+            }
+            var str = String(value).trim();
+            if (!/^\d+$/.test(str)) { return ''; }
+            var n = parseInt(str, 10);
+            if (!isFinite(n) || n < 1) { return ''; }
+            return String(n);
+        }
+
+        for (var i = 0; i < data.teams.length; i++) {
+            var team = data.teams[i];
+            if (!team || typeof team !== 'object' || Array.isArray(team)) {
+                continue;
+            }
+            teamsSeen++;
+
+            // Idempotence: a record that already carries a periods
+            // array is untouched. (This handles a store that was
+            // partially migrated by an interrupted run.)
+            if (Array.isArray(team.periods) && team.periods.length > 0) {
+                alreadyPerioded++;
+                // Still strip legacy fields if they somehow
+                // survived.
+                if (team.nameHistory !== undefined) {
+                    delete team.nameHistory;
+                }
+                if (team.style !== undefined) {
+                    delete team.style;
+                }
+                if (team.specialisations !== undefined) {
+                    delete team.specialisations;
+                }
+                continue;
+            }
+
+            var name = readNonEmptyString(team.name);
+            if (name === '') {
+                // A team with no name cannot be given a well-formed
+                // period. Preserve the record, mark it as "empty
+                // periods" so a later pass (TeamCore's canonicaliser)
+                // can reject it if it is ever edited. Nothing is
+                // dropped; the data stays exactly as it was.
+                team.periods = Array.isArray(team.periods)
+                    ? team.periods
+                    : [];
+                skippedNoName++;
+                continue;
+            }
+
+            var style = readTacticalStyle(team);
+            var specs = readSpecialisations(team);
+            var topStart = normalisePeriodForStorage(team.startPeriod);
+            var topEnd = normalisePeriodForStorage(team.endPeriod);
+
+            var periods = [];
+
+            var history = Array.isArray(team.nameHistory)
+                ? team.nameHistory
+                : [];
+
+            if (history.length > 0) {
+                // One period per name-history entry. Every period
+                // inherits the team's current tactical style and
+                // specialisations.
+                for (var h = 0; h < history.length; h++) {
+                    var entry = history[h];
+                    if (!entry || typeof entry !== 'object') {
+                        continue;
+                    }
+
+                    var histName = readNonEmptyString(entry.name);
+                    if (histName === '') {
+                        // A nameless history entry cannot become a
+                        // period. Skip it; the surrounding entries
+                        // still migrate.
+                        continue;
+                    }
+
+                    var histStart = normalisePeriodForStorage(
+                        entry.startPeriod
+                    );
+                    var histEnd = normalisePeriodForStorage(
+                        entry.endPeriod
+                    );
+
+                    // A history entry with no start is not usable.
+                    // Skip it rather than fabricate a start.
+                    if (histStart === '') {
+                        continue;
+                    }
+
+                    periods.push({
+                        startPeriod: histStart,
+                        endPeriod: histEnd,
+                        name: histName,
+                        tacticalStyle: style,
+                        specialisations: specs.slice()
+                    });
+                }
+            }
+
+            if (periods.length === 0) {
+                // No usable history. Build one period from the
+                // top-level scalars. A missing startPeriod is
+                // normalised to the current calendar year so the
+                // record has a well-formed period.
+                var start = topStart;
+                if (start === '') {
+                    start = String(new Date().getFullYear());
+                }
+
+                periods.push({
+                    startPeriod: start,
+                    endPeriod: topEnd,
+                    name: name,
+                    tacticalStyle: style,
+                    specialisations: specs.slice()
+                });
+
+                migratedFromScalars++;
+            } else {
+                migratedFromHistory++;
+
+                // Sort the produced periods by startPeriod.
+                periods.sort(function(a, b) {
+                    return parseInt(a.startPeriod, 10) -
+                           parseInt(b.startPeriod, 10);
+                });
+
+                // Only the last may be open-ended. A history entry
+                // that was open-ended but ended up not-last after
+                // sorting is closed at the next entry's start - 1.
+                for (var p = 0; p < periods.length; p++) {
+                    var isLast = (p === periods.length - 1);
+                    if (isLast) {
+                        continue;
+                    }
+                    if (periods[p].endPeriod === '') {
+                        var nextStart = parseInt(
+                            periods[p + 1].startPeriod, 10
+                        );
+                        if (isFinite(nextStart) && nextStart > 1) {
+                            periods[p].endPeriod =
+                                String(nextStart - 1);
+                        }
+                        // If nextStart is 1, leave the endPeriod
+                        // blank. The canonicaliser will reject
+                        // this record on next write, and the user
+                        // will be told to fix it. That is
+                        // preferable to fabricating a negative
+                        // year.
+                    }
+                }
+            }
+
+            team.periods = periods;
+
+            // Denormalise the scalar mirrors.
+            var firstPeriod = periods[0];
+            var lastPeriod = periods[periods.length - 1];
+            team.name = lastPeriod.name;
+            team.startPeriod = firstPeriod.startPeriod;
+            team.endPeriod = lastPeriod.endPeriod;
+
+            // Drop the legacy fields.
+            if (team.nameHistory !== undefined) {
+                delete team.nameHistory;
+            }
+            if (team.style !== undefined) {
+                delete team.style;
+            }
+            if (team.specialisations !== undefined) {
+                delete team.specialisations;
+            }
+        }
+
+        console.log(
+            '[Database] v33: team periods model. ' +
+            'Teams seen: ' + teamsSeen + '. ' +
+            'Already perioded (untouched): ' + alreadyPerioded + '. ' +
+            'Migrated from name history: ' + migratedFromHistory + '. ' +
+            'Migrated from scalars: ' + migratedFromScalars + '. ' +
+            'Skipped (no name): ' + skippedNoName + '.'
+        );
+
+        if (skippedNoName > 0) {
+            console.warn(
+                '[Database] v33: ' + skippedNoName +
+                ' team(s) had no name and could not be given a ' +
+                'well-formed period. Their records were preserved ' +
+                'as-is. Open each team to fix its name, or delete it.'
+            );
+        }
+
+        data._dataVersion = 33;
     }
 
     // ============================================================
@@ -2574,14 +2839,6 @@
         });
 
         // ---- Departments shape guard ----
-        //
-        // Every department must have an id, a name, and a members
-        // array. DepartmentSchema owns structural validation on
-        // write; this guard exists so a malformed imported record
-        // does not crash the Departments tab on first paint. A
-        // department missing a members array gets one; a
-        // department missing an id is dropped (nothing can address
-        // it).
         (function ensureDepartmentShape() {
             if (!Array.isArray(data.departments)) { return; }
             var kept = [];
@@ -2679,7 +2936,6 @@
             repaired = true;
         }
 
-        // ---- v31 shape guard: every enrolment interval has a role ----
         (function ensureEnrolmentRoleTags() {
             var ROLE_STUDENT = 'student';
             var ROLE_INSTRUCTOR = 'instructor';
