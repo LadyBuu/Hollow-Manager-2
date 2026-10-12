@@ -83,6 +83,21 @@
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
  *
+ * MATCHMAKING PLANNER COMMIT:
+ *   The planner renders a radio group per candidate:
+ *
+ *     <input type="radio"
+ *            class="planner-assoc-radio"
+ *            name="planner-cand-<candidateId>"
+ *            data-team-id="..."
+ *            data-character-id="..." />
+ *
+ *   Because the group name is scoped per candidate, at most one
+ *   radio per candidate is checked. handlePlannerCommit reads
+ *   every checked radio and builds one assignment per checked
+ *   radio, which naturally produces at most one assignment per
+ *   candidate.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
  *   - window.TeamQueries
@@ -2241,15 +2256,21 @@
         var state = modal.__plannerState;
         if (!state) { return; }
 
-        var checkboxes = contentEl.querySelectorAll(
-            '.planner-assoc-checkbox'
+        // The planner emits one radio per (candidate, team) cell.
+        // The radio group's name is scoped per candidate
+        // ("planner-cand-<candidateId>"), so at most one radio is
+        // checked per candidate. Reading every checked radio
+        // therefore produces at most one assignment per
+        // candidate.
+        var boxes = contentEl.querySelectorAll(
+            '.planner-assoc-radio'
         );
 
         var assignments = [];
         var invalidRows = [];
 
-        for (var i = 0; i < checkboxes.length; i++) {
-            var box = checkboxes[i];
+        for (var i = 0; i < boxes.length; i++) {
+            var box = boxes[i];
             if (!box.checked) { continue; }
 
             var teamId = box.dataset.teamId;
