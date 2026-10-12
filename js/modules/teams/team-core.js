@@ -14,6 +14,8 @@
  *   - Cross-domain cascades:
  *       stripCharacterRefs      (character deletion)
  *       endStintsForCharacter   (character death, career transition)
+ *       deleteTeam's mutate     (fires TournamentCore.stripTeamRefs
+ *                                and MissionCascade.stripTeamRefs)
  *
  * WHAT THIS DOES NOT OWN:
  *   - Public read APIs. Team reads go through TeamQueries.
@@ -28,6 +30,10 @@
  *     specialisation id is a known mission type via
  *     MissionConstants.isValidMissionType; it does not own the
  *     list of valid ids.
+ *   - The mission cleanup details. MissionCascade.stripTeamRefs
+ *     owns the reference model for team → mission. This module
+ *     calls it as part of deleteTeam's transaction; it does not
+ *     walk missions itself.
  *
  * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
@@ -64,11 +70,15 @@
  *   from any other store. Both are user-authored and both survive
  *   a round-trip through updateTeam.
  *
- *   The vocabulary for specialisations comes from the mission
- *   domain's type taxonomy. The mission domain does NOT know about
- *   team specialisations; a mission's primaryType and a team's
- *   specialisations are independent concepts that share a list of
- *   ids.
+ *   Both fields are TIMELESS by design: they describe the team
+ *   for its entire lifetime, not per-period. A team that changes
+ *   doctrine is a single record with a rewritten field, not a
+ *   record with a history array. If per-period doctrine is ever
+ *   needed, the pattern to follow is nameHistory's: an array of
+ *   { value, startPeriod, endPeriod } entries, with a resolver
+ *   that reads the entry for a given period. That change is
+ *   deliberately deferred until the use case appears; building
+ *   for it now would be a schema for a hypothetical.
  *
  * PERIOD SEMANTICS:
  *   Periods are positive integers. Blank ('', null, undefined) is
@@ -101,6 +111,38 @@
  *   mutation. If TeamNaming is not loaded, the hook is skipped
  *   and a warning is logged once.
  *
+ * DELETE CASCADE:
+ *   deleteTeam removes the team from the snapshot and cleans up
+ *   every cross-domain reference to it inside the same transaction:
+ *
+ *     TournamentCore.stripTeamRefs     — tournament participants
+ *                                        and winners that pointed
+ *                                        at this team
+ *     MissionCascade.stripTeamRefs     — mission.assignedTeamIds
+ *                                        entries and participant
+ *                                        rows whose teamId was
+ *                                        this team
+ *
+ *   Before this revision, missions were not cleaned. A deleted
+ *   team left dangling ids in every mission that had referenced
+ *   it, and the next export produced a JSON file that the next
+ *   import rejected with one "Mission references non-existent
+ *   team" error per dangling reference. The mission cleanup
+ *   closes that hole.
+ *
+ *   Both cleanups are called from inside deleteTeam's mutate,
+ *   against the SAME snapshot that will be committed. No
+ *   intermediate state is ever visible.
+ *
+ *   MissionCascade is resolved lazily. When it is absent (a
+ *   caller that drives TeamCore in isolation, or a load order
+ *   problem), the mission cleanup is skipped and a warning is
+ *   logged once. That leaves a dangling mission reference behind
+ *   rather than crashing the delete — but the warning makes the
+ *   cause visible, and the correct fix is to make sure the
+ *   MissionCascade script tag is loaded before TeamCore, which
+ *   index.html already does.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
  *   - window.IdUtils
@@ -110,6 +152,7 @@
  *
  * DEPENDENCIES (LAZY, at call time):
  *   - window.MissionConstants    (specialisation id validation)
+ *   - window.MissionCascade      (deleteTeam mission cleanup)
  *   - window.TournamentCore      (deleteTeam cascade; mandatory at
  *                                 that call, throws if unavailable)
  *   - window.TeamNaming          (post-member-add rename; optional,
@@ -139,6 +182,10 @@
 
     function getMissionConstants() {
         return window.MissionConstants || null;
+    }
+
+    function getMissionCascade() {
+        return window.MissionCascade || null;
     }
 
     // ============================================================
@@ -297,17 +344,10 @@
      *
      * Each entry must be a known mission type id. Duplicates are
      * dropped, order is preserved. Blank entries (null, undefined,
-     * '') are dropped without error: the picker never produces
-     * them, and a hand-authored record that has one is being
-     * forgiven, not repaired.
+     * '') are dropped without error.
      *
      * When MissionConstants is not loaded, the isValidMissionType
-     * check is skipped and every non-empty id passes. This is
-     * deliberate: the mission constants are loaded early in
-     * index.html and will be present in every real run, but a
-     * caller that drives TeamCore in isolation (a test, a script)
-     * should not be blocked by the absence of a module it does not
-     * otherwise need.
+     * check is skipped and every non-empty id passes.
      */
     function canonicaliseSpecialisations(raw) {
         if (raw === undefined || raw === null) {
@@ -369,9 +409,7 @@
      * Fire the naming recomputation for one team.
      *
      * Called after any successful member add. Fire-and-forget:
-     * returns nothing, never throws, never blocks. The naming
-     * module runs its own updateTeam when the display name or
-     * name history needs to change.
+     * returns nothing, never throws, never blocks.
      */
     function fireNamingHook(teamId) {
         var Naming = window.TeamNaming || null;
@@ -390,8 +428,6 @@
         }
 
         try {
-            // applyTeamName returns a Promise; we do not chain it
-            // into the caller. Any rejection is handled here.
             var p = Naming.applyTeamName(teamId);
             if (p && typeof p.then === 'function') {
                 p.catch(function(err) {
@@ -408,6 +444,62 @@
                 'team ' + teamId + ':',
                 err
             );
+        }
+    }
+
+    // ============================================================
+    // MISSION CASCADE HOOK
+    // ============================================================
+    //
+    // Called from deleteTeam's mutate to strip every mission
+    // reference to the deleted team in the same transaction.
+    //
+    // When MissionCascade is absent, the hook is skipped and a
+    // warning is logged once. The delete still completes — but it
+    // leaves dangling mission references behind. That outcome is
+    // strictly worse than the cascade running, which is why the
+    // warning fires. In practice the script tag is loaded before
+    // TeamCore in index.html, so the module is always present at
+    // call time.
+
+    var _missionCascadeUnavailableWarned = false;
+
+    function fireMissionCascade(snapshot, teamId) {
+        var Cascade = getMissionCascade();
+
+        if (!Cascade ||
+            typeof Cascade.stripTeamRefs !== 'function') {
+            if (!_missionCascadeUnavailableWarned) {
+                _missionCascadeUnavailableWarned = true;
+                console.warn(
+                    '[TeamCore] MissionCascade module is not ' +
+                    'loaded. Deleting a team will leave dangling ' +
+                    'team references in every mission that had ' +
+                    'assigned it. Load mission-cascade.js before ' +
+                    'team-core.js to enable the cleanup.'
+                );
+            }
+            return {
+                assignedTeamEntriesRemoved: 0,
+                participantEntriesRemoved: 0
+            };
+        }
+
+        try {
+            return Cascade.stripTeamRefs(snapshot, teamId) || {
+                assignedTeamEntriesRemoved: 0,
+                participantEntriesRemoved: 0
+            };
+        } catch (err) {
+            console.warn(
+                '[TeamCore] MissionCascade.stripTeamRefs threw ' +
+                'for team ' + teamId + ':',
+                err
+            );
+            return {
+                assignedTeamEntriesRemoved: 0,
+                participantEntriesRemoved: 0
+            };
         }
     }
 
@@ -1048,12 +1140,6 @@
         var startCanon = canonicalisePeriod(teamData.startPeriod);
         var endCanon = canonicalisePeriod(teamData.endPeriod);
 
-        // ---- Descriptive fields ----
-        //
-        // A caller that omits either field gets the empty value.
-        // A caller that supplies a malformed value gets it through
-        // canonicalisation; a failure here means the create is
-        // rejected before it reaches the pipeline.
         var styleResult = canonicaliseStyle(teamData.style);
         var styleValue = styleResult.valid
             ? styleResult.value
@@ -1164,7 +1250,6 @@
             );
         }
 
-        // ---- style ----
         if (updates.style !== undefined) {
             var styleCheck = canonicaliseStyle(updates.style);
             if (!styleCheck.valid) {
@@ -1173,7 +1258,6 @@
             candidate.style = styleCheck.value;
         }
 
-        // ---- specialisations ----
         if (updates.specialisations !== undefined) {
             var specCheck = canonicaliseSpecialisations(
                 updates.specialisations
@@ -1331,13 +1415,6 @@
             );
         }
 
-        // ---- Descriptive fields ----
-        //
-        // Pre-checked here so a malformed value is rejected before
-        // the pipeline runs. buildNewTeam re-canonicalises the
-        // same values; a value that fails here would have failed
-        // there too, so the double-check is cheap and the error
-        // message is clearer at this layer.
         var styleCheck = canonicaliseStyle(teamData.style);
         if (!styleCheck.valid) {
             return Promise.resolve(failure(styleCheck.message));
@@ -1589,7 +1666,21 @@
                     );
                 }
 
+                // ---- Cross-domain cascades ----
+                //
+                // Both run against the snapshot that will be
+                // committed. Order does not matter between them:
+                // they touch disjoint domains (tournaments and
+                // missions respectively).
+                //
+                // Tournament refs must be stripped before the team
+                // is spliced out, because the strip function reads
+                // tournaments, not teams. Mission refs likewise.
+                // Both are safe to run before the splice.
                 TournamentCore.stripTeamRefs(snapshot, targetId);
+
+                fireMissionCascade(snapshot, targetId);
+
                 snapshot.teams.splice(idx, 1);
                 return { id: targetId };
             },
