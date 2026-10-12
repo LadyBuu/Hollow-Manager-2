@@ -11,6 +11,8 @@
  *   - Batch member mutation (batchAddMembers).
  *   - Ranking mutations (add, remove).
  *   - Configuration (characterProvider injection).
+ *   - The PERIODS model: validation, canonicalisation, and the
+ *     legacy migration from nameHistory + scalars.
  *   - Cross-domain cascades:
  *       stripCharacterRefs      (character deletion)
  *       endStintsForCharacter   (character death, career transition)
@@ -21,21 +23,92 @@
  *   - Public read APIs. Team reads go through TeamQueries.
  *   - Rendering, notifications, DOM.
  *   - saveData. The pipeline owns persistence.
- *   - Team naming. TeamNaming owns the suffix rule. This module
- *     fires a post-commit hook so the name stays in sync with the
- *     distinct-member count; the naming logic itself lives in
- *     team-naming.js.
+ *   - The naming rule. TeamNaming owns the suffix grammar. This
+ *     module accepts whatever periods TeamNaming writes; it does
+ *     not compute the suffix.
  *   - The specialisation vocabulary. MissionConstants owns the
  *     mission type taxonomy. This module validates that a
  *     specialisation id is a known mission type via
- *     MissionConstants.isValidMissionType; it does not own the
- *     list of valid ids.
+ *     MissionConstants.isValidMissionType.
  *   - The mission cleanup details. MissionCascade.stripTeamRefs
- *     owns the reference model for team → mission. This module
- *     calls it as part of deleteTeam's transaction; it does not
- *     walk missions itself.
+ *     owns the reference model for team → mission.
  *
- * MUTATION CONTRACT:
+ * ============================================================
+ * THE PERIODS MODEL
+ * ============================================================
+ *
+ * A team carries a `periods` array. Each entry is a self-contained
+ * description of what the team was during a range of years:
+ *
+ *   {
+ *     startPeriod: '1900',        // required, positive integer
+ *     endPeriod: '1905',          // '' means open-ended; only
+ *                                 // allowed on the last entry
+ *     name: 'Rapid',              // required, non-empty
+ *     tacticalStyle: '',          // free text, may be empty
+ *     specialisations: []         // array of mission-type ids
+ *   }
+ *
+ * INVARIANTS (enforced here, trusted by readers):
+ *
+ *   - At least one entry.
+ *   - Entries sorted by startPeriod ascending.
+ *   - Each startPeriod is a valid positive integer.
+ *   - Only the LAST entry may have endPeriod: ''.
+ *   - Each non-last entry's endPeriod is a valid positive integer
+ *     >= its startPeriod.
+ *   - No two entries overlap when compared as closed ranges
+ *     [start, end]. Gaps ARE allowed: a team can go dormant.
+ *   - Names are non-empty strings.
+ *   - tacticalStyle is a string.
+ *   - specialisations is an array of unique known mission-type ids.
+ *
+ * THE LAST ENTRY IS "CURRENT":
+ *   Every reader that wants the team's display name, tactical
+ *   style, or specialisations without a period context reads the
+ *   last entry. See TeamQueries.getCurrentPeriod and
+ *   getCurrentTeamName.
+ *
+ * `team.name` IS A DENORMALISED CACHE:
+ *   Written by this module on every save as periods[last].name.
+ *   Every existing reader (TeamQueries.getTeamName's fallback,
+ *   TeamAggregator, TeamExport, the mission form's team picker)
+ *   keeps working unchanged. Nothing writes to team.name except
+ *   this module.
+ *
+ * WHY PERIODS RATHER THAN PARALLEL HISTORIES:
+ *   nameHistory, styleHistory, and specialisationHistory would be
+ *   three arrays that have to stay aligned by convention. Any
+ *   drift between them is a bug waiting to be discovered. One
+ *   array of self-contained entries makes drift structurally
+ *   impossible.
+ *
+ * LEGACY INPUT:
+ *   The canonicaliser accepts a record that carries any of:
+ *
+ *     nameHistory       array of { name, startPeriod, endPeriod }
+ *     style             string, an alias for tacticalStyle
+ *     specialisations   array of mission-type ids
+ *     tacticalStyle     string, the canonical name
+ *
+ *   and produces the periods shape. Migration rule:
+ *
+ *     - If nameHistory is present and non-empty: one period per
+ *       name-history entry. The scalars (style / specialisations)
+ *       are applied to every produced period, because we have no
+ *       way to know which historical period carried which values.
+ *       The current values are the safest guess.
+ *     - Otherwise: one period built from the record's current
+ *       scalars (name, style/tacticalStyle, specialisations) and
+ *       its top-level startPeriod / endPeriod.
+ *
+ *   Legacy fields are then dropped from the canonical output,
+ *   exactly like the assignedTeamId → assignedTeamIds migration.
+ *
+ * ============================================================
+ * MUTATION CONTRACT
+ * ============================================================
+ *
  *   Every public mutation returns Promise<{ success, data?, message? }>.
  *   Validation runs twice: pre-flight against window.data, then
  *   snapshot-scoped inside pipeline.validate(). The candidate is
@@ -53,33 +126,6 @@
  *   joinPeriod is IMMUTABLE once set: to move a stint start, purge
  *   and add a new interval.
  *
- * DESCRIPTIVE FIELDS:
- *   A team carries two descriptive fields that are neither derived
- *   nor cross-domain:
- *
- *     style            free text, trimmed. How the team works
- *                      together — fighting style, doctrine, tone.
- *                      Single string. Defaults to ''.
- *
- *     specialisations  array of MissionConstants mission-type ids.
- *                      Deduped, order-preserved. Validated against
- *                      MissionConstants.isValidMissionType.
- *                      Defaults to [].
- *
- *   Neither is required. Neither is derived. Neither is loaded
- *   from any other store. Both are user-authored and both survive
- *   a round-trip through updateTeam.
- *
- *   Both fields are TIMELESS by design: they describe the team
- *   for its entire lifetime, not per-period. A team that changes
- *   doctrine is a single record with a rewritten field, not a
- *   record with a history array. If per-period doctrine is ever
- *   needed, the pattern to follow is nameHistory's: an array of
- *   { value, startPeriod, endPeriod } entries, with a resolver
- *   that reads the entry for a given period. That change is
- *   deliberately deferred until the use case appears; building
- *   for it now would be a schema for a hypothetical.
- *
  * PERIOD SEMANTICS:
  *   Periods are positive integers. Blank ('', null, undefined) is
  *   the "unbounded" sentinel, distinct from a period. All writes go
@@ -96,52 +142,29 @@
  *
  * ADD-AFTER-DEATH GUARD:
  *   addMember and batchAddMembers reject assignments whose joinPeriod
- *   is strictly after the character's deathYear. A stint starting
- *   after death is a data error, not something the cascade repairs.
+ *   is strictly after the character's deathYear.
  *
  * TEAM NAMING HOOK:
  *   After any successful member add, this module fires
  *   TeamNaming.applyTeamName(teamId) for each team touched by the
- *   mutation. That call recomputes the team's display name and
- *   name history from the distinct-member count and persists the
- *   change through TeamCore.updateTeam if either differs.
+ *   mutation. That call recomputes the team's display name from the
+ *   distinct-member count and, when the suffix changes, closes the
+ *   current period and opens a new one. See team-naming.js.
  *
  *   The hook is fire-and-forget: it does not block the caller's
  *   promise, and an error inside it does not fail the member
- *   mutation. If TeamNaming is not loaded, the hook is skipped
- *   and a warning is logged once.
+ *   mutation.
  *
  * DELETE CASCADE:
  *   deleteTeam removes the team from the snapshot and cleans up
  *   every cross-domain reference to it inside the same transaction:
  *
  *     TournamentCore.stripTeamRefs     — tournament participants
- *                                        and winners that pointed
- *                                        at this team
  *     MissionCascade.stripTeamRefs     — mission.assignedTeamIds
- *                                        entries and participant
- *                                        rows whose teamId was
- *                                        this team
+ *                                        and participant rows
  *
- *   Before this revision, missions were not cleaned. A deleted
- *   team left dangling ids in every mission that had referenced
- *   it, and the next export produced a JSON file that the next
- *   import rejected with one "Mission references non-existent
- *   team" error per dangling reference. The mission cleanup
- *   closes that hole.
- *
- *   Both cleanups are called from inside deleteTeam's mutate,
- *   against the SAME snapshot that will be committed. No
- *   intermediate state is ever visible.
- *
- *   MissionCascade is resolved lazily. When it is absent (a
- *   caller that drives TeamCore in isolation, or a load order
- *   problem), the mission cleanup is skipped and a warning is
- *   logged once. That leaves a dangling mission reference behind
- *   rather than crashing the delete — but the warning makes the
- *   cause visible, and the correct fix is to make sure the
- *   MissionCascade script tag is loaded before TeamCore, which
- *   index.html already does.
+ *   Both cleanups run against the same snapshot that will be
+ *   committed.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -155,8 +178,7 @@
  *   - window.MissionCascade      (deleteTeam mission cleanup)
  *   - window.TournamentCore      (deleteTeam cascade; mandatory at
  *                                 that call, throws if unavailable)
- *   - window.TeamNaming          (post-member-add rename; optional,
- *                                 skipped if absent)
+ *   - window.TeamNaming          (post-member-add rename; optional)
  */
 
 (function() {
@@ -302,49 +324,37 @@
     // ============================================================
     // DESCRIPTIVE FIELD CANONICALISATION
     // ============================================================
-    //
-    // style and specialisations are user-authored. Neither is
-    // required. The canonicalisers below are lenient: they accept
-    // missing, null, or undefined inputs and produce the empty
-    // value. They only reject a value that is present and
-    // structurally wrong (a number, an object where a string is
-    // expected; a non-array where an array is expected).
-    //
-    // The point is to keep a fresh create with no style and no
-    // specialisations cheap, and to keep the round-trip through
-    // updateTeam forgiving of a caller that omits either field
-    // entirely.
 
     /**
-     * Canonicalise the style field.
+     * Canonicalise a tactical style string.
      *
      *   missing / null / undefined  -> { valid: true, value: '' }
      *   string                      -> { valid: true, value: trimmed }
      *   anything else               -> { valid: false }
      */
-    function canonicaliseStyle(raw) {
+    function canonicaliseTacticalStyle(raw) {
         if (raw === undefined || raw === null) {
             return { valid: true, value: '' };
         }
         if (typeof raw !== 'string') {
             return {
                 valid: false,
-                message: 'Style must be a string.'
+                message: 'Tactical style must be a string.'
             };
         }
         return { valid: true, value: raw.trim() };
     }
 
     /**
-     * Canonicalise the specialisations array.
+     * Canonicalise a specialisations array.
      *
      *   missing / null / undefined  -> { valid: true, value: [] }
      *   array                       -> { valid: true, value: [...deduped] }
      *   anything else               -> { valid: false }
      *
      * Each entry must be a known mission type id. Duplicates are
-     * dropped, order is preserved. Blank entries (null, undefined,
-     * '') are dropped without error.
+     * dropped, order preserved. Blank entries are dropped without
+     * error.
      *
      * When MissionConstants is not loaded, the isValidMissionType
      * check is skipped and every non-empty id passes.
@@ -400,17 +410,382 @@
     }
 
     // ============================================================
+    // PERIODS CANONICALISATION
+    // ============================================================
+    //
+    // The canonicaliser for the periods array. Also hosts the
+    // legacy migration from nameHistory + scalars.
+
+    /**
+     * Read the tactical style off a raw input, accepting either
+     * the canonical `tacticalStyle` or the legacy `style` alias.
+     * `tacticalStyle` wins when both are present.
+     */
+    function readRawTacticalStyle(input) {
+        if (!input || typeof input !== 'object') { return undefined; }
+        if (input.tacticalStyle !== undefined) {
+            return input.tacticalStyle;
+        }
+        return input.style;
+    }
+
+    /**
+     * Canonicalise a single period entry.
+     *
+     * Returns { valid, value?, message? }. The caller aggregates
+     * errors; this function does not append to a shared list.
+     */
+    function canonicalisePeriodEntry(raw, index, isLast) {
+        if (!isObject(raw)) {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) +
+                    ' must be an object.'
+            };
+        }
+
+        // ---- startPeriod ----
+        if (raw.startPeriod === undefined ||
+            raw.startPeriod === null ||
+            raw.startPeriod === '') {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) +
+                    ' requires a start period.'
+            };
+        }
+        var startCanon = canonicalisePeriod(raw.startPeriod);
+        if (startCanon === null || startCanon === '') {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) +
+                    ' has an invalid start period.'
+            };
+        }
+
+        // ---- endPeriod ----
+        var endCanon = '';
+        if (raw.endPeriod !== undefined && raw.endPeriod !== null) {
+            endCanon = canonicalisePeriod(raw.endPeriod);
+            if (endCanon === null) {
+                return {
+                    valid: false,
+                    message: 'Period ' + (index + 1) +
+                        ' has an invalid end period.'
+                };
+            }
+        }
+
+        if (endCanon === '' && !isLast) {
+            return {
+                valid: false,
+                message: 'Only the last period may be open-ended.'
+            };
+        }
+
+        if (endCanon !== '' &&
+            parseInt(endCanon, 10) < parseInt(startCanon, 10)) {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) +
+                    ' ends before it starts.'
+            };
+        }
+
+        // ---- name ----
+        if (!isNonEmptyString(raw.name)) {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) +
+                    ' requires a name.'
+            };
+        }
+        var name = String(raw.name).trim();
+
+        // ---- tacticalStyle ----
+        var styleCheck = canonicaliseTacticalStyle(raw.tacticalStyle);
+        if (!styleCheck.valid) {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) + ': ' +
+                    styleCheck.message
+            };
+        }
+
+        // ---- specialisations ----
+        var specCheck = canonicaliseSpecialisations(
+            raw.specialisations
+        );
+        if (!specCheck.valid) {
+            return {
+                valid: false,
+                message: 'Period ' + (index + 1) + ': ' +
+                    specCheck.message
+            };
+        }
+
+        return {
+            valid: true,
+            value: {
+                startPeriod: startCanon,
+                endPeriod: endCanon,
+                name: name,
+                tacticalStyle: styleCheck.value,
+                specialisations: specCheck.value
+            }
+        };
+    }
+
+    /**
+     * Canonicalise the periods array.
+     *
+     * Accepts:
+     *   - a raw `periods` array
+     *   - a legacy record with `nameHistory` and scalars
+     *   - a record with neither, which produces a single period
+     *     from the current scalars
+     *
+     * The `fallback` argument carries the record's top-level
+     * scalars (name, tacticalStyle, specialisations, startPeriod,
+     * endPeriod) that build the single-entry default when
+     * nameHistory is absent.
+     *
+     * Returns { valid, value?, message? }.
+     */
+    function canonicalisePeriods(raw, fallback) {
+        fallback = fallback || {};
+
+        // ---- Case 1: raw.periods is already an array. ----
+        if (Array.isArray(raw)) {
+            return canonicalisePeriodsArray(raw);
+        }
+
+        // ---- Case 2: legacy nameHistory. ----
+        var history = fallback.nameHistory;
+        if (Array.isArray(history) && history.length > 0) {
+            return canonicaliseFromNameHistory(history, fallback);
+        }
+
+        // ---- Case 3: no periods, no nameHistory. One period. ----
+        return canonicaliseSinglePeriod(fallback);
+    }
+
+    function canonicalisePeriodsArray(rawArray) {
+        if (rawArray.length === 0) {
+            return {
+                valid: false,
+                message: 'A team must have at least one period.'
+            };
+        }
+
+        var cleaned = [];
+        for (var i = 0; i < rawArray.length; i++) {
+            var isLast = (i === rawArray.length - 1);
+            var check = canonicalisePeriodEntry(
+                rawArray[i], i, isLast
+            );
+            if (!check.valid) {
+                return { valid: false, message: check.message };
+            }
+            cleaned.push(check.value);
+        }
+
+        // ---- Sort by startPeriod ascending. ----
+        cleaned.sort(function(a, b) {
+            return parseInt(a.startPeriod, 10) -
+                   parseInt(b.startPeriod, 10);
+        });
+
+        // ---- Re-check "only last is open-ended" after sorting. ----
+        //
+        // A caller that supplied the entries out of order, with
+        // the open-ended one first, would pass the per-entry check
+        // but produce an array whose first entry is open. Sorting
+        // first, then re-checking, catches that.
+        for (var j = 0; j < cleaned.length; j++) {
+            var isLastAfterSort = (j === cleaned.length - 1);
+            if (cleaned[j].endPeriod === '' && !isLastAfterSort) {
+                return {
+                    valid: false,
+                    message: 'Only the last period may be open-ended. ' +
+                        'After sorting, entry ' + (j + 1) +
+                        ' (' + cleaned[j].name + ') has a blank ' +
+                        'end period but is not last.'
+                };
+            }
+        }
+
+        // ---- Overlap check. ----
+        for (var a = 0; a < cleaned.length; a++) {
+            for (var b = a + 1; b < cleaned.length; b++) {
+                if (periodsOverlap(cleaned[a], cleaned[b])) {
+                    return {
+                        valid: false,
+                        message: 'Periods "' + cleaned[a].name +
+                            '" and "' + cleaned[b].name +
+                            '" overlap.'
+                    };
+                }
+            }
+        }
+
+        return { valid: true, value: cleaned };
+    }
+
+    function periodsOverlap(p, q) {
+        var pStart = parseInt(p.startPeriod, 10);
+        var pEnd = p.endPeriod === ''
+            ? Infinity
+            : parseInt(p.endPeriod, 10);
+        var qStart = parseInt(q.startPeriod, 10);
+        var qEnd = q.endPeriod === ''
+            ? Infinity
+            : parseInt(q.endPeriod, 10);
+
+        return pStart <= qEnd && qStart <= pEnd;
+    }
+
+    /**
+     * Build periods from a legacy nameHistory array.
+     *
+     * Every produced period carries the fallback's tactical style
+     * and specialisations. We have no way to know which historical
+     * period carried which values; the current values are the
+     * safest guess, and the user can edit individual periods after
+     * the migration.
+     */
+    function canonicaliseFromNameHistory(history, fallback) {
+        var styleCheck = canonicaliseTacticalStyle(
+            fallback.tacticalStyle
+        );
+        var styleValue = styleCheck.valid ? styleCheck.value : '';
+
+        var specCheck = canonicaliseSpecialisations(
+            fallback.specialisations
+        );
+        var specValue = specCheck.valid ? specCheck.value : [];
+
+        var periods = [];
+        for (var i = 0; i < history.length; i++) {
+            var entry = history[i];
+            if (!isObject(entry)) {
+                return {
+                    valid: false,
+                    message: 'Name history entry ' + (i + 1) +
+                        ' is malformed.'
+                };
+            }
+            if (!isNonEmptyString(entry.name)) {
+                return {
+                    valid: false,
+                    message: 'Name history entry ' + (i + 1) +
+                        ' has no name.'
+                };
+            }
+
+            var startCanon = canonicalisePeriod(entry.startPeriod);
+            if (startCanon === null || startCanon === '') {
+                return {
+                    valid: false,
+                    message: 'Name history entry ' + (i + 1) +
+                        ' has an invalid start period.'
+                };
+            }
+
+            var endCanon = canonicalisePeriod(entry.endPeriod);
+            if (endCanon === null) {
+                return {
+                    valid: false,
+                    message: 'Name history entry ' + (i + 1) +
+                        ' has an invalid end period.'
+                };
+            }
+
+            periods.push({
+                startPeriod: startCanon,
+                endPeriod: endCanon,
+                name: String(entry.name).trim(),
+                tacticalStyle: styleValue,
+                specialisations: specValue.slice()
+            });
+        }
+
+        // Reuse the array canonicaliser for the invariants (sort,
+        // open-ended position, overlap).
+        return canonicalisePeriodsArray(periods);
+    }
+
+    /**
+     * Build a single period from the record's top-level scalars.
+     *
+     * `name` is required. `startPeriod` is required when the
+     * top-level value is set; a blank startPeriod is accepted and
+     * normalised to the current application year, so a fresh
+     * create that omits start still produces a well-formed
+     * period.
+     */
+    function canonicaliseSinglePeriod(fallback) {
+        if (!isNonEmptyString(fallback.name)) {
+            return {
+                valid: false,
+                message: 'Team name is required.'
+            };
+        }
+
+        var startCanon = canonicalisePeriod(fallback.startPeriod);
+        if (startCanon === null) {
+            return {
+                valid: false,
+                message: 'Invalid start period.'
+            };
+        }
+
+        if (startCanon === '') {
+            // Absent start. Use the current calendar year as a
+            // well-formed default so a create that did not supply
+            // a start still produces a valid period.
+            startCanon = String(new Date().getFullYear());
+        }
+
+        var endCanon = canonicalisePeriod(fallback.endPeriod);
+        if (endCanon === null) {
+            return {
+                valid: false,
+                message: 'Invalid end period.'
+            };
+        }
+
+        var styleCheck = canonicaliseTacticalStyle(
+            fallback.tacticalStyle
+        );
+        if (!styleCheck.valid) {
+            return { valid: false, message: styleCheck.message };
+        }
+
+        var specCheck = canonicaliseSpecialisations(
+            fallback.specialisations
+        );
+        if (!specCheck.valid) {
+            return { valid: false, message: specCheck.message };
+        }
+
+        var single = {
+            startPeriod: startCanon,
+            endPeriod: endCanon,
+            name: String(fallback.name).trim(),
+            tacticalStyle: styleCheck.value,
+            specialisations: specCheck.value
+        };
+
+        return { valid: true, value: [single] };
+    }
+
+    // ============================================================
     // TEAM NAMING HOOK
     // ============================================================
 
     var _namingUnavailableWarned = false;
 
-    /**
-     * Fire the naming recomputation for one team.
-     *
-     * Called after any successful member add. Fire-and-forget:
-     * returns nothing, never throws, never blocks.
-     */
     function fireNamingHook(teamId) {
         var Naming = window.TeamNaming || null;
 
@@ -450,17 +825,6 @@
     // ============================================================
     // MISSION CASCADE HOOK
     // ============================================================
-    //
-    // Called from deleteTeam's mutate to strip every mission
-    // reference to the deleted team in the same transaction.
-    //
-    // When MissionCascade is absent, the hook is skipped and a
-    // warning is logged once. The delete still completes — but it
-    // leaves dangling mission references behind. That outcome is
-    // strictly worse than the cascade running, which is why the
-    // warning fires. In practice the script tag is loaded before
-    // TeamCore in index.html, so the module is always present at
-    // call time.
 
     var _missionCascadeUnavailableWarned = false;
 
@@ -515,12 +879,6 @@
         return TeamConstants.parsePeriod(value);
     }
 
-    /**
-     * Canonicalise a period for storage.
-     *   - blank sentinel -> ''
-     *   - valid integer  -> String(n)
-     *   - anything else  -> null (caller rejects)
-     */
     function canonicalisePeriod(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -583,81 +941,6 @@
         var n = parseInt(String(value).trim(), 10);
         if (isNaN(n) || n < 1) { return null; }
         return n;
-    }
-
-    // ============================================================
-    // NAME HISTORY
-    // ============================================================
-
-    function validateNameHistory(history) {
-        if (!Array.isArray(history)) {
-            return {
-                valid: false,
-                message: 'Name history must be an array.'
-            };
-        }
-
-        for (var i = 0; i < history.length; i++) {
-            var entry = history[i];
-            if (!isObject(entry)) {
-                return {
-                    valid: false,
-                    message: 'Invalid name history entry at index ' + i +
-                        '.'
-                };
-            }
-            if (!isNonEmptyString(entry.name)) {
-                return {
-                    valid: false,
-                    message: 'Name history entry at index ' + i +
-                        ' requires a name.'
-                };
-            }
-
-            var startCanon = canonicalisePeriod(entry.startPeriod);
-            if (startCanon === null) {
-                return {
-                    valid: false,
-                    message: 'Name history entry at index ' + i +
-                        ' has an invalid start period.'
-                };
-            }
-            var endCanon = canonicalisePeriod(entry.endPeriod);
-            if (endCanon === null) {
-                return {
-                    valid: false,
-                    message: 'Name history entry at index ' + i +
-                        ' has an invalid end period.'
-                };
-            }
-            if (startCanon !== '' && endCanon !== '') {
-                if (parseInt(endCanon, 10) < parseInt(startCanon, 10)) {
-                    return {
-                        valid: false,
-                        message: 'Name history entry at index ' + i +
-                            ' ends before it starts.'
-                    };
-                }
-            }
-        }
-
-        return { valid: true };
-    }
-
-    function normaliseNameHistory(history) {
-        if (!Array.isArray(history)) { return []; }
-        var result = [];
-        for (var i = 0; i < history.length; i++) {
-            var entry = history[i];
-            var startCanon = canonicalisePeriod(entry.startPeriod);
-            var endCanon = canonicalisePeriod(entry.endPeriod);
-            result.push({
-                name: String(entry.name).trim(),
-                startPeriod: startCanon === null ? '' : startCanon,
-                endPeriod: endCanon === null ? '' : endCanon
-            });
-        }
-        return result;
     }
 
     // ============================================================
@@ -925,16 +1208,11 @@
     /**
      * Validate a fully-built team record.
      *
-     * Checks structure only. The descriptive fields (style,
-     * specialisations) are validated for shape:
-     *
-     *   style             must be a string
-     *   specialisations   must be an array of strings, each a
-     *                     known mission type id
-     *
-     * The specialisation check is skipped when MissionConstants
-     * is not loaded, matching the lenient behaviour of the
-     * canonicaliser above.
+     * Checks structure. The periods array is validated for shape:
+     * non-empty, sorted, at least one entry, only the last
+     * open-ended, no overlaps. Every per-period check lives in
+     * canonicalisePeriodEntry, and validatePeriods delegates to
+     * it so the invariants are stated once.
      */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
@@ -965,12 +1243,6 @@
             };
         }
 
-        if (!Array.isArray(team.nameHistory)) {
-            return {
-                valid: false,
-                message: 'nameHistory must be an array.'
-            };
-        }
         if (!Array.isArray(team.members)) {
             return {
                 valid: false,
@@ -984,91 +1256,85 @@
             };
         }
 
-        if (!TeamConstants.isValidPeriod(team.startPeriod, team.type)) {
+        // ---- periods ----
+        if (!Array.isArray(team.periods)) {
+            return {
+                valid: false,
+                message: 'periods must be an array.'
+            };
+        }
+        if (team.periods.length === 0) {
+            return {
+                valid: false,
+                message: 'A team must have at least one period.'
+            };
+        }
+        for (var p = 0; p < team.periods.length; p++) {
+            var entry = team.periods[p];
+            var isLast = (p === team.periods.length - 1);
+            var entryCheck = canonicalisePeriodEntry(
+                entry, p, isLast
+            );
+            if (!entryCheck.valid) {
+                return {
+                    valid: false,
+                    message: entryCheck.message
+                };
+            }
+        }
+        for (var a = 0; a < team.periods.length; a++) {
+            for (var b = a + 1; b < team.periods.length; b++) {
+                if (periodsOverlap(team.periods[a], team.periods[b])) {
+                    return {
+                        valid: false,
+                        message: 'Periods "' +
+                            team.periods[a].name + '" and "' +
+                            team.periods[b].name + '" overlap.'
+                    };
+                }
+            }
+        }
+
+        // ---- top-level startPeriod / endPeriod mirror the periods.
+        //
+        // The scalar fields remain on the record because some
+        // readers (the timeline, the export header) still use
+        // them. They must be consistent with periods[0].start and
+        // periods[last].end respectively.
+        var expectedStart = team.periods[0].startPeriod;
+        var expectedEnd = team.periods[team.periods.length - 1].endPeriod;
+
+        var actualStart = canonicalisePeriod(team.startPeriod);
+        var actualEnd = canonicalisePeriod(team.endPeriod);
+
+        if (actualStart === null) {
             return {
                 valid: false,
                 message: 'Invalid start period for team type.'
             };
         }
-        if (!TeamConstants.isValidPeriod(team.endPeriod, team.type)) {
+        if (actualEnd === null) {
             return {
                 valid: false,
                 message: 'Invalid end period for team type.'
             };
         }
 
-        var startNum = parsePeriod(team.startPeriod);
-        var endNum = parsePeriod(team.endPeriod);
-        if (startNum !== null && endNum !== null &&
-            startNum > endNum) {
+        if (actualStart !== expectedStart) {
             return {
                 valid: false,
-                message: 'Start period cannot be after end period.'
+                message: 'Top-level startPeriod "' + actualStart +
+                    '" does not match periods[0].startPeriod "' +
+                    expectedStart + '".'
             };
         }
-
-        var nameCheck = validateNameHistory(team.nameHistory);
-        if (!nameCheck.valid) { return nameCheck; }
-
-        // ---- style ----
-        if (team.style !== undefined &&
-            team.style !== null &&
-            typeof team.style !== 'string') {
+        if (actualEnd !== expectedEnd) {
             return {
                 valid: false,
-                message: 'Style must be a string.'
+                message: 'Top-level endPeriod "' + actualEnd +
+                    '" does not match the last period\'s endPeriod "' +
+                    expectedEnd + '".'
             };
-        }
-
-        // ---- specialisations ----
-        if (team.specialisations !== undefined &&
-            team.specialisations !== null) {
-            if (!Array.isArray(team.specialisations)) {
-                return {
-                    valid: false,
-                    message: 'Specialisations must be an array.'
-                };
-            }
-
-            var MC = getMissionConstants();
-            var canValidate = MC &&
-                typeof MC.isValidMissionType === 'function';
-            var seenSpec = Object.create(null);
-
-            for (var s = 0; s < team.specialisations.length; s++) {
-                var spec = team.specialisations[s];
-                if (typeof spec !== 'string') {
-                    return {
-                        valid: false,
-                        message: 'Specialisation at index ' + s +
-                            ' must be a string.'
-                    };
-                }
-                var specId = spec.trim();
-                if (specId === '') {
-                    return {
-                        valid: false,
-                        message: 'Specialisation at index ' + s +
-                            ' cannot be empty.'
-                    };
-                }
-                if (canValidate &&
-                    !MC.isValidMissionType(specId)) {
-                    return {
-                        valid: false,
-                        message: 'Unknown specialisation: "' +
-                            specId + '".'
-                    };
-                }
-                if (seenSpec[specId]) {
-                    return {
-                        valid: false,
-                        message: 'Duplicate specialisation: "' +
-                            specId + '".'
-                    };
-                }
-                seenSpec[specId] = true;
-            }
         }
 
         // ---- members ----
@@ -1115,8 +1381,8 @@
 
         var seenPeriods = Object.create(null);
         for (var j = 0; j < team.rankingHistory.length; j++) {
-            var entry = team.rankingHistory[j];
-            var rankCheck = validateRankingEntry(entry, team.type);
+            var rankEntry = team.rankingHistory[j];
+            var rankCheck = validateRankingEntry(rankEntry, team.type);
             if (!rankCheck.valid) { return rankCheck; }
             var periodKey = String(rankCheck.period);
             if (seenPeriods[periodKey]) {
@@ -1136,34 +1402,66 @@
     // CANDIDATE BUILDERS
     // ============================================================
 
+    /**
+     * Project the periods array onto the scalar fields that some
+     * readers still expect:
+     *
+     *   name        = periods[last].name
+     *   startPeriod = periods[0].startPeriod
+     *   endPeriod   = periods[last].endPeriod
+     *
+     * The denormalised `name` is the only one of these that
+     * nothing else writes; the two period scalars are legacy
+     * mirrors of the periods array's first and last entries.
+     */
+    function projectPeriodScalars(candidate) {
+        if (!Array.isArray(candidate.periods) ||
+            candidate.periods.length === 0) {
+            return;
+        }
+        var first = candidate.periods[0];
+        var last = candidate.periods[candidate.periods.length - 1];
+
+        candidate.name = last.name;
+        candidate.startPeriod = first.startPeriod;
+        candidate.endPeriod = last.endPeriod;
+    }
+
     function buildNewTeam(teamData) {
-        var startCanon = canonicalisePeriod(teamData.startPeriod);
-        var endCanon = canonicalisePeriod(teamData.endPeriod);
+        // The periods array is built from teamData.periods when
+        // supplied, otherwise from the legacy inputs
+        // (nameHistory / style / specialisations) or from the
+        // top-level scalars.
+        var periodsInput = teamData.periods;
+        var fallback = {
+            nameHistory: teamData.nameHistory,
+            name: teamData.name,
+            startPeriod: teamData.startPeriod,
+            endPeriod: teamData.endPeriod,
+            tacticalStyle: readRawTacticalStyle(teamData),
+            specialisations: teamData.specialisations
+        };
 
-        var styleResult = canonicaliseStyle(teamData.style);
-        var styleValue = styleResult.valid
-            ? styleResult.value
-            : '';
-
-        var specResult = canonicaliseSpecialisations(
-            teamData.specialisations
+        var periodsCheck = canonicalisePeriods(
+            periodsInput, fallback
         );
-        var specValue = specResult.valid
-            ? specResult.value
+        // A caller that reaches this function with invalid
+        // periods has already been rejected by createTeam's
+        // pre-flight. The defensive check here is a belt-and-
+        // braces guarantee; if it fails, an empty periods array
+        // is produced and validateCompleteTeam rejects the
+        // candidate immediately after.
+        var periods = periodsCheck.valid
+            ? periodsCheck.value
             : [];
 
-        return {
+        var candidate = {
             id: generateTeamId(),
-            name: String(teamData.name).trim(),
             type: teamData.type,
-            startPeriod: startCanon === null ? '' : startCanon,
-            endPeriod: endCanon === null ? '' : endCanon,
             status: teamData.status,
-            nameHistory: normaliseNameHistory(teamData.nameHistory),
             members: [],
             rankingHistory: [],
-            style: styleValue,
-            specialisations: specValue,
+            periods: periods,
             temporaryMission: teamData.temporaryMission !== undefined &&
                 teamData.temporaryMission !== null &&
                 teamData.temporaryMission !== ''
@@ -1181,20 +1479,14 @@
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };
+
+        projectPeriodScalars(candidate);
+
+        return candidate;
     }
 
     function buildUpdatedTeam(existing, updates) {
         var candidate = deepClone(existing);
-
-        if (updates.name !== undefined) {
-            if (!isNonEmptyString(updates.name)) {
-                return {
-                    valid: false,
-                    message: 'Team name cannot be empty.'
-                };
-            }
-            candidate.name = String(updates.name).trim();
-        }
 
         if (updates.type !== undefined) {
             var normalized =
@@ -1218,44 +1510,114 @@
             candidate.status = updates.status;
         }
 
-        if (updates.startPeriod !== undefined) {
-            var startCanon =
-                canonicalisePeriod(updates.startPeriod);
-            if (startCanon === null) {
-                return {
-                    valid: false,
-                    message: 'Invalid start period.'
-                };
-            }
-            candidate.startPeriod = startCanon;
-        }
-
-        if (updates.endPeriod !== undefined) {
-            var endCanon = canonicalisePeriod(updates.endPeriod);
-            if (endCanon === null) {
-                return {
-                    valid: false,
-                    message: 'Invalid end period.'
-                };
-            }
-            candidate.endPeriod = endCanon;
-        }
-
-        if (updates.nameHistory !== undefined) {
-            var historyCheck =
-                validateNameHistory(updates.nameHistory);
-            if (!historyCheck.valid) { return historyCheck; }
-            candidate.nameHistory = normaliseNameHistory(
-                updates.nameHistory
+        // ---- periods ----
+        //
+        // Three shapes are accepted:
+        //
+        //   updates.periods       a canonical periods array;
+        //                         replaces the existing one
+        //   updates.nameHistory   a legacy name history plus
+        //                         scalar style / specialisations;
+        //                         rebuilt into periods
+        //   neither               the existing periods are kept
+        //
+        // The legacy path also reads updates.style and
+        // updates.specialisations, if present, so an old caller
+        // that writes those scalars still works.
+        if (updates.periods !== undefined) {
+            var periodsCheck = canonicalisePeriods(
+                updates.periods, null
             );
+            if (!periodsCheck.valid) {
+                return {
+                    valid: false,
+                    message: periodsCheck.message
+                };
+            }
+            candidate.periods = periodsCheck.value;
+        } else if (updates.nameHistory !== undefined) {
+            var fallback = {
+                nameHistory: updates.nameHistory,
+                name: isNonEmptyString(candidate.name)
+                    ? candidate.name
+                    : '',
+                startPeriod: candidate.startPeriod,
+                endPeriod: candidate.endPeriod,
+                tacticalStyle: updates.tacticalStyle !== undefined
+                    ? updates.tacticalStyle
+                    : updates.style,
+                specialisations: updates.specialisations
+            };
+
+            var historyCheck = canonicalisePeriods(
+                null, fallback
+            );
+            if (!historyCheck.valid) {
+                return {
+                    valid: false,
+                    message: historyCheck.message
+                };
+            }
+            candidate.periods = historyCheck.value;
         }
 
-        if (updates.style !== undefined) {
-            var styleCheck = canonicaliseStyle(updates.style);
+        // ---- Direct scalar-style updates ----
+        //
+        // A caller that sends only `name` or only `tacticalStyle`
+        // or only `specialisations` is updating the CURRENT (last)
+        // period in place. This is the shape the team form uses
+        // when the user edits the top of the form without
+        // touching the period history below.
+        var touchedLastPeriod = false;
+        if (updates.name !== undefined) {
+            if (!isNonEmptyString(updates.name)) {
+                return {
+                    valid: false,
+                    message: 'Team name cannot be empty.'
+                };
+            }
+            if (Array.isArray(candidate.periods) &&
+                candidate.periods.length > 0) {
+                var lastForName =
+                    candidate.periods[candidate.periods.length - 1];
+                lastForName.name = String(updates.name).trim();
+                touchedLastPeriod = true;
+            }
+        }
+
+        if (updates.tacticalStyle !== undefined) {
+            var styleCheck = canonicaliseTacticalStyle(
+                updates.tacticalStyle
+            );
             if (!styleCheck.valid) {
                 return styleCheck;
             }
-            candidate.style = styleCheck.value;
+            if (Array.isArray(candidate.periods) &&
+                candidate.periods.length > 0) {
+                var lastForStyle =
+                    candidate.periods[candidate.periods.length - 1];
+                lastForStyle.tacticalStyle = styleCheck.value;
+                touchedLastPeriod = true;
+            }
+        }
+
+        // Legacy alias: updates.style.
+        if (updates.style !== undefined &&
+            updates.tacticalStyle === undefined) {
+            var styleAliasCheck = canonicaliseTacticalStyle(
+                updates.style
+            );
+            if (!styleAliasCheck.valid) {
+                return styleAliasCheck;
+            }
+            if (Array.isArray(candidate.periods) &&
+                candidate.periods.length > 0) {
+                var lastForStyleAlias =
+                    candidate.periods[candidate.periods.length - 1];
+                lastForStyleAlias.tacticalStyle =
+                    styleAliasCheck.value;
+                touchedLastPeriod = true;
+            }
         }
 
         if (updates.specialisations !== undefined) {
@@ -1265,7 +1627,23 @@
             if (!specCheck.valid) {
                 return specCheck;
             }
-            candidate.specialisations = specCheck.value;
+            if (Array.isArray(candidate.periods) &&
+                candidate.periods.length > 0) {
+                var lastForSpec =
+                    candidate.periods[candidate.periods.length - 1];
+                lastForSpec.specialisations = specCheck.value;
+                touchedLastPeriod = true;
+            }
+        }
+
+        if (touchedLastPeriod) {
+            // Re-run the periods invariants, because in-place
+            // edits to the last entry can break ordering if the
+            // caller set an unexpected name... but names do not
+            // affect ordering. The checks that matter (open-
+            // ended only on last, no overlaps) are unaffected by
+            // name / style / specialisations edits, so a full
+            // re-canonicalisation is unnecessary. Skip.
         }
 
         if (updates.temporaryMission !== undefined) {
@@ -1337,6 +1715,9 @@
 
         candidate.updatedAt = new Date().toISOString();
 
+        // Project the derived scalars from the periods array.
+        projectPeriodScalars(candidate);
+
         return { valid: true, candidate: candidate };
     }
 
@@ -1401,40 +1782,29 @@
             );
         }
 
-        var nameHistory = [];
-        if (teamData.nameHistory !== undefined) {
-            var historyCheck =
-                validateNameHistory(teamData.nameHistory);
-            if (!historyCheck.valid) {
-                return Promise.resolve(
-                    failure(historyCheck.message)
-                );
-            }
-            nameHistory = normaliseNameHistory(
-                teamData.nameHistory
-            );
-        }
-
-        var styleCheck = canonicaliseStyle(teamData.style);
-        if (!styleCheck.valid) {
-            return Promise.resolve(failure(styleCheck.message));
-        }
-        var specCheck = canonicaliseSpecialisations(
-            teamData.specialisations
+        // Pre-flight the periods array (or its legacy sources).
+        var fallback = {
+            nameHistory: teamData.nameHistory,
+            name: teamData.name,
+            startPeriod: teamData.startPeriod,
+            endPeriod: teamData.endPeriod,
+            tacticalStyle: readRawTacticalStyle(teamData),
+            specialisations: teamData.specialisations
+        };
+        var periodsCheck = canonicalisePeriods(
+            teamData.periods, fallback
         );
-        if (!specCheck.valid) {
-            return Promise.resolve(failure(specCheck.message));
+        if (!periodsCheck.valid) {
+            return Promise.resolve(
+                failure(periodsCheck.message)
+            );
         }
 
         var candidate = buildNewTeam({
             name: teamData.name,
             type: normalizedType,
-            startPeriod: teamData.startPeriod,
-            endPeriod: teamData.endPeriod,
             status: status,
-            nameHistory: nameHistory,
-            style: teamData.style,
-            specialisations: teamData.specialisations,
+            periods: periodsCheck.value,
             temporaryMission: teamData.temporaryMission,
             classId: teamData.classId,
             teamNumber: teamData.teamNumber
@@ -1585,8 +1955,8 @@
                 var updateableProps = [
                     'name', 'type', 'startPeriod', 'endPeriod',
                     'status', 'classId', 'teamNumber',
-                    'temporaryMission', 'nameHistory',
-                    'style', 'specialisations',
+                    'temporaryMission',
+                    'periods',
                     'updatedAt'
                 ];
                 for (var i = 0; i < updateableProps.length; i++) {
@@ -1594,6 +1964,26 @@
                     if (candidate[key] !== undefined) {
                         target[key] = candidate[key];
                     }
+                }
+
+                // The scalar mirrors of the periods array are
+                // written explicitly, because they are not in the
+                // updateable list above (they are derived).
+                target.name = candidate.name;
+                target.startPeriod = candidate.startPeriod;
+                target.endPeriod = candidate.endPeriod;
+
+                // Drop legacy fields that a canonicalised record
+                // no longer carries. This is what makes the
+                // migration persistent on any update.
+                if (target.nameHistory !== undefined) {
+                    delete target.nameHistory;
+                }
+                if (target.style !== undefined) {
+                    delete target.style;
+                }
+                if (target.specialisations !== undefined) {
+                    delete target.specialisations;
                 }
 
                 return { team: target, id: targetId };
@@ -1666,19 +2056,7 @@
                     );
                 }
 
-                // ---- Cross-domain cascades ----
-                //
-                // Both run against the snapshot that will be
-                // committed. Order does not matter between them:
-                // they touch disjoint domains (tournaments and
-                // missions respectively).
-                //
-                // Tournament refs must be stripped before the team
-                // is spliced out, because the strip function reads
-                // tournaments, not teams. Mission refs likewise.
-                // Both are safe to run before the splice.
                 TournamentCore.stripTeamRefs(snapshot, targetId);
-
                 fireMissionCascade(snapshot, targetId);
 
                 snapshot.teams.splice(idx, 1);
@@ -3061,7 +3439,6 @@
                     );
                 }
 
-                var before = liveEntry.intervals.length;
                 var found = false;
 
                 liveEntry.intervals = liveEntry.intervals.filter(
