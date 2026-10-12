@@ -8,14 +8,17 @@
  * WHAT THIS MODULE OWNS:
  *   - Removing a deleted character's references from mission records
  *     inside a caller's pipeline transaction.
+ *   - Removing a deleted team's references from mission records
+ *     inside a caller's pipeline transaction.
  *   - Reporting exactly what was cleaned up, so the caller can log
  *     a summary.
  *
  * WHAT THIS MODULE DOES NOT OWN:
- *   - The transaction. The caller (CharacterCRUD.deleteCharacter or
- *     a higher-level cascade coordinator) owns the pipeline entry.
- *     This module never calls MutationPipeline.performMutation.
- *   - Deletion policy. It reacts to a character that has already
+ *   - The transaction. The caller (CharacterCRUD.deleteCharacter,
+ *     TeamCore.deleteTeam, or a higher-level cascade coordinator)
+ *     owns the pipeline entry. This module never calls
+ *     MutationPipeline.performMutation.
+ *   - Deletion policy. It reacts to an entity that has already
  *     been removed from the snapshot.
  *   - Any other domain's cleanup. It touches only
  *     appData.missions.
@@ -29,7 +32,7 @@
  *   Mixing the two shapes in one file is how MissionCore would
  *   quietly grow a pipeline dependency it should not have.
  *
- * REFERENCE MODEL:
+ * CHARACTER REFERENCE MODEL (stripCharacterRefs):
  *   A character can be referenced by a mission in exactly three
  *   places:
  *
@@ -70,39 +73,100 @@
  *       it survives; a participant row is a pointer, and it does
  *       not.
  *
- *   This is the same historical-record principle applied
- *   elsewhere: what is worth preserving is preserved (the report
- *   body and timestamp), what is a bare reference is dropped (the
- *   participant row).
+ * TEAM REFERENCE MODEL (stripTeamRefs):
+ *   A team can be referenced by a mission in exactly two places:
+ *
+ *     mission.assignedTeamIds[]         array of team UUIDs
+ *     mission.participants[].teamId     team UUID (null for rookies)
+ *
+ *   Both are cleaned when the team is deleted. The cleanup is
+ *   asymmetric, and the asymmetry is deliberate:
+ *
+ *     assignedTeamIds
+ *       The team id is REMOVED from the array. Assigned teams are
+ *       a forward-looking assignment: "this team is running this
+ *       mission." A deleted team cannot run anything. Removal is
+ *       correct.
+ *
+ *     participants[]
+ *       A participant whose teamId matches the deleted team is
+ *       REMOVED from the participants list. The participant entry
+ *       is a pointer to (character, team) — the team half no
+ *       longer resolves, so the entry has nothing to point at.
+ *       Rookie participants (teamId === null) are unaffected:
+ *       they are not attached to a team.
+ *
+ *       Contrast with the character cascade, where reports survive
+ *       because they carry content. A participant row carries no
+ *       content beyond the reference itself. Removal is the
+ *       correct policy in both directions.
+ *
+ *   The team cascade does NOT touch reports, support personnel,
+ *   or any other field. A mission's reports are written by
+ *   characters, not teams; a mission's support personnel is a
+ *   list of characters, not teams. Only the two team-referencing
+ *   fields are cleaned.
+ *
+ *   NOTE: this is the same cleanup that runs when a team is
+ *   removed from a mission via updateMission's assignedTeamIds
+ *   update. The difference is the trigger: updateMission handles
+ *   "the user removed this team from THIS mission"; the cascade
+ *   handles "this team has been deleted and every mission that
+ *   referenced it must be cleaned in the same transaction."
+ *
+ * WHY THE TEAM CASCADE EXISTS:
+ *   Before this revision, TeamCore.deleteTeam removed the team
+ *   from the store and stripped its tournament references, but
+ *   did not touch missions. Every mission that had the deleted
+ *   team in assignedTeamIds kept a dead reference. On the next
+ *   export, the file carried dangling team ids; on the next
+ *   import, CrossDomainValidator rejected the file with one
+ *   "Mission references non-existent team" error per dangling
+ *   reference.
+ *
+ *   With stripTeamRefs called from TeamCore.deleteTeam, that
+ *   state is impossible to produce. A mission's assignedTeamIds
+ *   is guaranteed to only contain ids that resolve to live teams
+ *   at every point a transaction commits.
  *
  * IDEMPOTENCE:
- *   Running the cascade twice for the same character is safe.
- *   After the first run, no supportPersonnel entry matches, no
- *   report has that authorId, and no participant row has that
- *   characterId. The second run reports zero changes.
+ *   Running either cascade twice for the same entity is safe.
+ *   After the first run:
+ *     - no supportPersonnel entry matches (character case);
+ *     - no report has that authorId (character case);
+ *     - no participant row has that characterId (character case);
+ *     - no assignedTeamIds entry matches (team case);
+ *     - no participant row has that teamId (team case).
+ *   The second run reports zero changes.
  *
- * RETURN SHAPE:
- *   {
- *     supportEntriesRemoved: N,
- *     reportsRedacted: N,
- *     participantEntriesRemoved: N
- *   }
+ * RETURN SHAPES:
+ *
+ *   stripCharacterRefs:
+ *     {
+ *       supportEntriesRemoved: N,
+ *       reportsRedacted: N,
+ *       participantEntriesRemoved: N
+ *     }
+ *
+ *   stripTeamRefs:
+ *     {
+ *       assignedTeamEntriesRemoved: N,
+ *       participantEntriesRemoved: N
+ *     }
  *
  *   Each count is the number of RECORDS changed, not the number of
  *   missions touched. A mission with three support entries for the
  *   same character (impossible given schema uniqueness, but
- *   defensive) would count 3. A mission with five reports by the
- *   same author would count 5. A mission with four participant
- *   rows for the same character (across four teams) would count 4.
+ *   defensive) would count 3.
  *
  * THROWING:
- *   This is a transaction-local helper. A caller that violates the
- *   contract has a bug that will corrupt the transaction if it
+ *   These are transaction-local helpers. A caller that violates
+ *   the contract has a bug that will corrupt the transaction if it
  *   proceeds. So invalid arguments THROW.
  *
  *   Specifically:
  *     - appData missing or not an object: throw.
- *     - characterId missing or invalid: throw.
+ *     - characterId / teamId missing or invalid: throw.
  *
  *   A malformed mission record inside appData.missions is NOT an
  *   error. The cascade is a cleanup pass; it skips malformed
@@ -325,11 +389,181 @@
     }
 
     // ============================================================
+    // STRIP TEAM REFS
+    // ============================================================
+
+    /**
+     * Remove a team's references from every mission in the
+     * snapshot.
+     *
+     * Mutates appData.missions in place. Never touches window.data.
+     * Never enters the pipeline. Never throws on malformed mission
+     * records.
+     *
+     * Two passes per mission, each visiting only the field it
+     * owns:
+     *
+     *   stripTeamFromAssignedTeamIds   drops matching entries
+     *   stripTeamFromParticipants      drops participant rows
+     *                                  whose teamId matches
+     *
+     * Rookie participants (teamId === null) are unaffected: they
+     * are not attached to a team. Only team participants whose
+     * specific team was deleted are removed.
+     *
+     * The team cascade does NOT touch reports, support personnel,
+     * or the mission log (which no longer exists). Only the two
+     * team-referencing fields are cleaned.
+     *
+     * @param {object} appData - Pipeline snapshot
+     * @param {string} teamId
+     * @returns {object} {
+     *   assignedTeamEntriesRemoved: number,
+     *   participantEntriesRemoved: number
+     * }
+     */
+    function stripTeamRefs(appData, teamId) {
+        if (!appData || typeof appData !== 'object') {
+            throw new Error(
+                '[MissionCascade] appData is required.'
+            );
+        }
+
+        var target = normaliseId(teamId);
+        if (target === null) {
+            throw new Error(
+                '[MissionCascade] A valid teamId is required.'
+            );
+        }
+
+        var result = {
+            assignedTeamEntriesRemoved: 0,
+            participantEntriesRemoved: 0
+        };
+
+        if (!Array.isArray(appData.missions)) {
+            return result;
+        }
+
+        var missions = appData.missions;
+
+        for (var i = 0; i < missions.length; i++) {
+            var mission = missions[i];
+            if (!isPlainObject(mission)) { continue; }
+
+            stripTeamFromAssignedTeamIds(mission, target, result);
+            stripTeamFromParticipants(mission, target, result);
+        }
+
+        return result;
+    }
+
+    /**
+     * Remove a team id from mission.assignedTeamIds.
+     *
+     * The legacy scalar `assignedTeamId` is not touched here:
+     * MissionSchema.canonicaliseMissionShape handles the legacy
+     * shape on write, and MissionQueries.getTeamIdsForMission
+     * handles it on read. The cascade runs on the snapshot, which
+     * has already been canonicalised by the time any mission has
+     * been stored. So only the array form appears here in
+     * practice.
+     *
+     * A defensive check: if the legacy scalar is present and
+     * matches the target, it is nulled. This costs nothing and
+     * covers a snapshot that somehow slipped past
+     * canonicalisation.
+     */
+    function stripTeamFromAssignedTeamIds(mission, target, result) {
+        if (Array.isArray(mission.assignedTeamIds)) {
+            var original = mission.assignedTeamIds;
+            var kept = [];
+
+            for (var i = 0; i < original.length; i++) {
+                var id = normaliseId(original[i]);
+                if (id !== null && id === target) {
+                    result.assignedTeamEntriesRemoved++;
+                    continue;
+                }
+                kept.push(original[i]);
+            }
+
+            if (kept.length !== original.length) {
+                mission.assignedTeamIds = kept;
+            }
+        }
+
+        // Defensive: legacy scalar. Only nulled if it matches the
+        // target, and only if the array form is absent. When both
+        // are present, the array wins and the scalar is already
+        // ignored by every reader.
+        if (mission.assignedTeamId !== undefined &&
+            mission.assignedTeamId !== null &&
+            !Array.isArray(mission.assignedTeamIds)) {
+            var scalarId = normaliseId(mission.assignedTeamId);
+            if (scalarId !== null && scalarId === target) {
+                mission.assignedTeamId = null;
+                result.assignedTeamEntriesRemoved++;
+            }
+        }
+    }
+
+    /**
+     * Remove participant rows that reference the deleted team.
+     *
+     * A participant row is removed when its normalised teamId
+     * matches the target. Rookie participants (teamId === null)
+     * are unaffected. The (characterId, teamId) uniqueness
+     * invariant is preserved by the removal: if a character was a
+     * participant under two teams, only the row for the deleted
+     * team is removed; the row for the surviving team stays.
+     *
+     * The whole list is rebuilt when anything is removed, so a
+     * mission with no matching rows is left byte-identical.
+     */
+    function stripTeamFromParticipants(mission, target, result) {
+        if (!Array.isArray(mission.participants)) {
+            return;
+        }
+
+        var original = mission.participants;
+        var kept = [];
+
+        for (var i = 0; i < original.length; i++) {
+            var p = original[i];
+            if (!isPlainObject(p)) {
+                // Malformed entries are left alone. See the same
+                // note on stripFromParticipants.
+                kept.push(p);
+                continue;
+            }
+
+            // Rookie participants are not attached to a team.
+            if (p.teamId === null || p.teamId === undefined) {
+                kept.push(p);
+                continue;
+            }
+
+            var tid = normaliseId(p.teamId);
+            if (tid !== null && tid === target) {
+                result.participantEntriesRemoved++;
+                continue;
+            }
+            kept.push(p);
+        }
+
+        if (kept.length !== original.length) {
+            mission.participants = kept;
+        }
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.MissionCascade = Object.freeze({
-        stripCharacterRefs: stripCharacterRefs
+        stripCharacterRefs: stripCharacterRefs,
+        stripTeamRefs: stripTeamRefs
     });
 
     // ============================================================
@@ -343,13 +577,13 @@
         if (typeof exports.stripCharacterRefs !== 'function') {
             missing.push('stripCharacterRefs');
         }
+        if (typeof exports.stripTeamRefs !== 'function') {
+            missing.push('stripTeamRefs');
+        }
 
         try {
-            // ---- Smoke test 1: the original three-way cleanup ----
-            //
-            // One mission carrying one support entry and one report
-            // by the target character. Both should be cleaned, and
-            // the report body must survive.
+            // ---- Character cascade smoke tests (unchanged) ----
+
             var snapshot = {
                 missions: [
                     {
@@ -423,7 +657,6 @@
                 missing.push('smoke: reportB was altered incorrectly');
             }
 
-            // Idempotence: running again must be a no-op.
             var second = stripCharacterRefs(snapshot, 'char_1');
             if (second.supportEntriesRemoved !== 0 ||
                 second.reportsRedacted !== 0 ||
@@ -433,128 +666,149 @@
                 );
             }
 
-            // ---- Smoke test 2: participant stripping ----
-            //
-            // A character who was a participant under two teams
-            // and as a rookie on a second mission. All three
-            // participant rows should be removed; the other
-            // characters' rows must survive.
-            var participantSnapshot = {
+            // ---- Team cascade smoke tests ----
+
+            // A mission assigned to two teams, one of which is
+            // deleted. The other must survive.
+            var teamSnapshot = {
                 missions: [
                     {
-                        id: 'mission_x',
-                        supportPersonnel: [],
-                        reports: [],
+                        id: 'mission_t',
+                        assignedTeamIds: ['team_a', 'team_b'],
                         participants: [
-                            { characterId: 'char_1', teamId: 'team_a', source: 'team' },
-                            { characterId: 'char_1', teamId: 'team_b', source: 'team' },
-                            { characterId: 'char_2', teamId: 'team_a', source: 'team' },
-                            { characterId: 'char_1', teamId: null,     source: 'rookie' }
-                        ]
-                    },
-                    {
-                        id: 'mission_y',
-                        supportPersonnel: [],
-                        reports: [],
-                        participants: [
-                            { characterId: 'char_2', teamId: 'team_a', source: 'team' }
+                            { characterId: 'c1', teamId: 'team_a', source: 'team' },
+                            { characterId: 'c2', teamId: 'team_b', source: 'team' },
+                            { characterId: 'c3', teamId: null,     source: 'rookie' }
                         ]
                     }
                 ]
             };
 
-            var pOutcome = stripCharacterRefs(
-                participantSnapshot, 'char_1'
-            );
+            var tOutcome = stripTeamRefs(teamSnapshot, 'team_a');
 
-            if (pOutcome.participantEntriesRemoved !== 3) {
+            if (tOutcome.assignedTeamEntriesRemoved !== 1) {
                 missing.push(
-                    'smoke: participantEntriesRemoved expected 3, got ' +
-                    pOutcome.participantEntriesRemoved
+                    'smoke: assignedTeamEntriesRemoved expected 1, got ' +
+                    tOutcome.assignedTeamEntriesRemoved
                 );
             }
-            if (pOutcome.supportEntriesRemoved !== 0) {
+            if (tOutcome.participantEntriesRemoved !== 1) {
                 missing.push(
-                    'smoke: supportEntriesRemoved expected 0, got ' +
-                    pOutcome.supportEntriesRemoved
-                );
-            }
-            if (pOutcome.reportsRedacted !== 0) {
-                missing.push(
-                    'smoke: reportsRedacted expected 0, got ' +
-                    pOutcome.reportsRedacted
+                    'smoke: participantEntriesRemoved expected 1, got ' +
+                    tOutcome.participantEntriesRemoved
                 );
             }
 
-            var missionX = participantSnapshot.missions[0];
-            if (missionX.participants.length !== 1) {
+            var tMission = teamSnapshot.missions[0];
+            if (tMission.assignedTeamIds.length !== 1 ||
+                tMission.assignedTeamIds[0] !== 'team_b') {
                 missing.push(
-                    'smoke: mission_x participants length expected 1, ' +
-                    'got ' + missionX.participants.length
-                );
-            } else if (
-                missionX.participants[0].characterId !== 'char_2' ||
-                missionX.participants[0].teamId !== 'team_a'
-            ) {
-                missing.push(
-                    'smoke: mission_x kept the wrong participant'
+                    'smoke: assignedTeamIds not filtered correctly'
                 );
             }
 
-            var missionY = participantSnapshot.missions[1];
-            if (missionY.participants.length !== 1 ||
-                missionY.participants[0].characterId !== 'char_2') {
+            if (tMission.participants.length !== 2) {
                 missing.push(
-                    'smoke: mission_y was altered incorrectly'
+                    'smoke: team participants length expected 2, ' +
+                    'got ' + tMission.participants.length
+                );
+            } else {
+                var p0 = tMission.participants[0];
+                var p1 = tMission.participants[1];
+                if (p0.characterId !== 'c2' || p0.teamId !== 'team_b') {
+                    missing.push(
+                        'smoke: survivor participant was altered'
+                    );
+                }
+                if (p1.characterId !== 'c3' || p1.teamId !== null ||
+                    p1.source !== 'rookie') {
+                    missing.push(
+                        'smoke: rookie participant was altered'
+                    );
+                }
+            }
+
+            // Idempotence for the team cascade.
+            var tSecond = stripTeamRefs(teamSnapshot, 'team_a');
+            if (tSecond.assignedTeamEntriesRemoved !== 0 ||
+                tSecond.participantEntriesRemoved !== 0) {
+                missing.push(
+                    'smoke: team cascade is not idempotent'
                 );
             }
 
-            // Idempotence for the participant path.
-            var pSecond = stripCharacterRefs(
-                participantSnapshot, 'char_1'
-            );
-            if (pSecond.participantEntriesRemoved !== 0) {
+            // A mission that does not reference the deleted team
+            // must be left byte-identical.
+            var untouchedSnapshot = {
+                missions: [
+                    {
+                        id: 'mission_u',
+                        assignedTeamIds: ['team_c'],
+                        participants: [
+                            { characterId: 'c4', teamId: 'team_c', source: 'team' }
+                        ]
+                    }
+                ]
+            };
+
+            var uOutcome = stripTeamRefs(untouchedSnapshot, 'team_a');
+            if (uOutcome.assignedTeamEntriesRemoved !== 0 ||
+                uOutcome.participantEntriesRemoved !== 0) {
                 missing.push(
-                    'smoke: participant cascade is not idempotent'
+                    'smoke: cascade touched an unrelated mission'
                 );
             }
 
-            // ---- Smoke test 3: malformed entries are left alone ----
+            var uMission = untouchedSnapshot.missions[0];
+            if (uMission.assignedTeamIds[0] !== 'team_c' ||
+                uMission.participants[0].teamId !== 'team_c') {
+                missing.push(
+                    'smoke: unrelated mission was altered'
+                );
+            }
+
+            // Malformed participant entries survive.
             var malformedSnapshot = {
                 missions: [
                     {
-                        id: 'mission_z',
+                        id: 'mission_m',
+                        assignedTeamIds: ['team_x'],
                         participants: [
                             null,
                             'not-an-object',
-                            { characterId: 'char_1', teamId: 'team_a', source: 'team' },
-                            { characterId: 'char_2', teamId: 'team_a', source: 'team' }
+                            { characterId: 'c9', teamId: 'team_x', source: 'team' },
+                            { characterId: 'c10', teamId: 'team_y', source: 'team' }
                         ]
                     }
                 ]
             };
-            var mOutcome = stripCharacterRefs(
-                malformedSnapshot, 'char_1'
-            );
-            if (mOutcome.participantEntriesRemoved !== 1) {
+
+            var mOutcome = stripTeamRefs(malformedSnapshot, 'team_x');
+            if (mOutcome.assignedTeamEntriesRemoved !== 1 ||
+                mOutcome.participantEntriesRemoved !== 1) {
                 missing.push(
-                    'smoke: malformed test expected 1 removal, got ' +
-                    mOutcome.participantEntriesRemoved
+                    'smoke: malformed test produced wrong counts: ' +
+                    'assigned=' + mOutcome.assignedTeamEntriesRemoved +
+                    ' participant=' + mOutcome.participantEntriesRemoved
                 );
             }
-            var mz = malformedSnapshot.missions[0].participants;
-            if (mz.length !== 3) {
+
+            var mMission = malformedSnapshot.missions[0];
+            if (mMission.participants.length !== 3) {
                 missing.push(
                     'smoke: malformed entries should survive, ' +
-                    'expected length 3, got ' + mz.length
+                    'expected length 3, got ' + mMission.participants.length
                 );
             }
-            if (mz[0] !== null ||
-                mz[1] !== 'not-an-object' ||
-                !isPlainObject(mz[2]) ||
-                mz[2].characterId !== 'char_2') {
+            if (mMission.participants[0] !== null ||
+                mMission.participants[1] !== 'not-an-object') {
                 missing.push(
-                    'smoke: malformed entries were altered or wrongly ordered'
+                    'smoke: malformed entries were altered'
+                );
+            }
+            if (mMission.assignedTeamIds.length !== 0) {
+                missing.push(
+                    'smoke: assignedTeamIds should be empty after strip'
                 );
             }
         } catch (e) {
