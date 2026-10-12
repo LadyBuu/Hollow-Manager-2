@@ -10,10 +10,10 @@
  *     target size, with their existing members and each member's
  *     interval (join + leave).
  *   - Render the right column: the same canonical pool candidates
- *     as the Professional Pool, with checkboxes and per-team
+ *     as the Professional Pool, with radio buttons and per-team
  *     year inputs.
- *   - Collect planner input (ticked candidates, their year
- *     inputs, and the team they are ticked against).
+ *   - Collect planner input (selected candidates, their year
+ *     inputs, and the team they are assigned to).
  *
  * WHAT THIS DOES NOT OWN:
  *   - Event binding. TeamEvents owns it.
@@ -68,28 +68,44 @@
  * PLANNER DOM CONTRACT:
  *   For each (candidate, team) association the UI renders:
  *
- *     <tr class="planner-candidate-row"
- *         data-character-id="...">
- *       ...
- *       <td class="planner-assoc-cell" data-team-id="...">
- *         <input type="checkbox"
- *                class="planner-assoc-checkbox"
+ *     <div class="planner-team-cell" data-team-id="...">
+ *       <label class="planner-team-cell-label">
+ *         <input type="radio"
+ *                name="planner-cand-<candidateId>"
+ *                class="planner-assoc-radio"
  *                data-team-id="..."
  *                data-character-id="..." />
+ *         <span class="planner-team-cell-name">Team Name</span>
+ *       </label>
+ *       <div class="planner-team-cell-years">
  *         <input type="text"
  *                class="planner-assoc-join"
  *                data-team-id="..."
  *                data-character-id="..." />
+ *         <span class="planner-team-cell-dash">–</span>
  *         <input type="text"
  *                class="planner-assoc-leave"
  *                data-team-id="..."
  *                data-character-id="..." />
- *       </td>
- *       ...
- *     </tr>
+ *       </div>
+ *     </div>
  *
- *   TeamEvents reads those inputs on commit. The view never reads
- *   them itself; it only emits the shape.
+ *   The radio group's name is scoped per candidate:
+ *
+ *     planner-cand-<candidateId>
+ *
+ *   This makes the radio group a single-choice control for that
+ *   candidate's team assignment. Selecting one team automatically
+ *   deselects every other team for the same candidate. A candidate
+ *   can be assigned to at most one team at a time.
+ *
+ *   TeamEvents reads the checked radios on commit and builds one
+ *   assignment per checked radio. Because the group permits at
+ *   most one checked radio per candidate, the commit path
+ *   naturally produces at most one assignment per candidate.
+ *
+ *   The view never reads the radios itself; it only emits the
+ *   shape.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -405,7 +421,12 @@
         }
         html += '</div>';
 
-        // ---- Per-team checkboxes + year inputs ----
+        // ---- Per-team radio cells + year inputs ----
+        //
+        // Each cell carries one radio in a group scoped to this
+        // candidate. Selecting one team for a candidate
+        // automatically deselects every other team for the same
+        // candidate.
         html += '<div class="planner-candidate-teams">';
 
         for (var t = 0; t < vm.teams.length; t++) {
@@ -420,6 +441,17 @@
         return html;
     }
 
+    /**
+     * Render one team cell for a candidate.
+     *
+     * The radio group name is scoped per candidate:
+     *
+     *   planner-cand-<candidateId>
+     *
+     * so a candidate can only have one team selected at a time.
+     * This matches the planner's semantics: a candidate is
+     * assigned to one team per commit.
+     */
     function renderPlannerTeamCell(candidate, team, vm) {
         // Default years: the intersection of the planning year
         // and the candidate's availability window, clamped to the
@@ -436,6 +468,13 @@
             defaultJoin = String(candidate.availability.to);
         }
 
+        // One radio group per candidate. The name scopes the
+        // group, so selecting a team for this candidate
+        // automatically deselects every other team for the same
+        // candidate.
+        var radioGroupName = 'planner-cand-' +
+            String(candidate.characterId);
+
         var html = '';
 
         html += '<div class="planner-team-cell" ' +
@@ -443,8 +482,9 @@
                         escapeAttribute(team.teamId) + '">';
 
         html += '<label class="planner-team-cell-label">';
-        html += '<input type="checkbox" ' +
-                    'class="planner-assoc-checkbox" ' +
+        html += '<input type="radio" ' +
+                    'name="' + escapeAttribute(radioGroupName) + '" ' +
+                    'class="planner-assoc-radio" ' +
                     'data-team-id="' +
                         escapeAttribute(team.teamId) + '" ' +
                     'data-character-id="' +
