@@ -57,11 +57,46 @@
  *   - Only the LAST entry may have endPeriod: ''.
  *   - Each non-last entry's endPeriod is a valid positive integer
  *     >= its startPeriod.
- *   - No two entries overlap when compared as closed ranges
- *     [start, end]. Gaps ARE allowed: a team can go dormant.
+ *   - No two entries OVERLAP when compared as half-open ranges
+ *     [start, end). See the OVERLAP SEMANTICS note below.
+ *     Shared-boundary periods ARE allowed.
  *   - Names are non-empty strings.
  *   - tacticalStyle is a string.
  *   - specialisations is an array of unique known mission-type ids.
+ *
+ * OVERLAP SEMANTICS — HALF-OPEN ON THE UPPER BOUND:
+ *
+ *   Two periods [s1, e1] and [s2, e2] overlap iff:
+ *
+ *     s1 < e2   AND   s2 < e1
+ *
+ *   with a blank endPeriod treated as Infinity (open-ended).
+ *
+ *   THE BOUNDARY YEAR BELONGS TO THE LATER PERIOD. A period that
+ *   ends in 1904 and another that starts in 1904 do NOT overlap;
+ *   1904 belongs to the second period.
+ *
+ *   WHY STRICT ON THE UPPER BOUND:
+ *
+ *     Periods are year-granular. A team can be renamed mid-year,
+ *     and both the pre-rename and post-rename period will name
+ *     that year as one of their own. With only years available,
+ *     the boundary year must belong to BOTH periods or to
+ *     NEITHER; it cannot be assigned unambiguously.
+ *
+ *     The half-open convention makes the boundary year belong to
+ *     the LATER period, exactly as
+ *     TeamQueries.intervalOverlapsPeriod does for stints vs.
+ *     periods, and as TeamQueries.rankingInPeriod does for
+ *     rankings.
+ *
+ *     This is what allows:
+ *
+ *       Aegis     1900–1900
+ *       Aegis II  1900–present
+ *
+ *     Both periods name 1900, and that is the correct semantic
+ *     for "renamed mid-year, only years recorded."
  *
  * THE LAST ENTRY IS "CURRENT":
  *   Every reader that wants the team's display name, tactical
@@ -616,6 +651,11 @@
         }
 
         // ---- Overlap check. ----
+        //
+        // Uses the half-open rule in periodsOverlap. Two periods
+        // that share only a boundary year do NOT overlap; the
+        // boundary year belongs to the later period. See the
+        // OVERLAP SEMANTICS note in the file header.
         for (var a = 0; a < cleaned.length; a++) {
             for (var b = a + 1; b < cleaned.length; b++) {
                 if (periodsOverlap(cleaned[a], cleaned[b])) {
@@ -632,6 +672,56 @@
         return { valid: true, value: cleaned };
     }
 
+    /**
+     * Do two periods overlap?
+     *
+     * SEMANTICS — HALF-OPEN ON THE UPPER BOUND:
+     *
+     *   Two periods [s1, e1] and [s2, e2] overlap iff:
+     *
+     *     s1 < e2   AND   s2 < e1
+     *
+     *   A blank endPeriod means Infinity (open-ended).
+     *
+     * WHY STRICT ON THE UPPER BOUND:
+     *
+     *   Periods are year-granular. A team can be renamed mid-year,
+     *   and both the pre-rename and post-rename period will name
+     *   that year as one of their own. With only years available,
+     *   the boundary year must belong to BOTH periods or to
+     *   NEITHER; it cannot be assigned unambiguously.
+     *
+     *   The half-open convention makes the boundary year belong to
+     *   the LATER period, exactly as
+     *   TeamQueries.intervalOverlapsPeriod does for stints vs.
+     *   periods, and as TeamQueries.rankingInPeriod does for
+     *   rankings.
+     *
+     *   This is what allows:
+     *
+     *     Aegis     1900–1900
+     *     Aegis II  1900–present
+     *
+     *   Both periods name 1900, and that is the correct semantic
+     *   for "renamed mid-year, only years recorded."
+     *
+     * WORKED TABLE:
+     *
+     *   [1900, 1900]   vs [1900, 1900]   → overlap (identical)
+     *   [1900, 1900]   vs [1900, '']     → no overlap (shared boundary)
+     *   [1900, 1904]   vs [1904, '']     → no overlap (shared boundary)
+     *   [1900, 1904]   vs [1905, '']     → no overlap (gap)
+     *   [1900, 1904]   vs [1903, '']     → OVERLAP (1903 is
+     *                                      genuinely inside A)
+     *   [1900, 1904]   vs [1905, 1909]   → no overlap
+     *   [1900, 1904]   vs [1902, 1903]   → OVERLAP (nested)
+     *   [1900, 1904]   vs [1898, 1900]   → no overlap (shared boundary
+     *                                      belongs to A)
+     *
+     * @param {object} p  A period entry.
+     * @param {object} q  A period entry.
+     * @returns {boolean}
+     */
     function periodsOverlap(p, q) {
         var pStart = parseInt(p.startPeriod, 10);
         var pEnd = p.endPeriod === ''
@@ -642,7 +732,7 @@
             ? Infinity
             : parseInt(q.endPeriod, 10);
 
-        return pStart <= qEnd && qStart <= pEnd;
+        return pStart < qEnd && qStart < pEnd;
     }
 
     /**
@@ -1210,9 +1300,9 @@
      *
      * Checks structure. The periods array is validated for shape:
      * non-empty, sorted, at least one entry, only the last
-     * open-ended, no overlaps. Every per-period check lives in
-     * canonicalisePeriodEntry, and validatePeriods delegates to
-     * it so the invariants are stated once.
+     * open-ended, no overlaps (half-open). Every per-period check
+     * lives in canonicalisePeriodEntry, and validatePeriods
+     * delegates to it so the invariants are stated once.
      */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
