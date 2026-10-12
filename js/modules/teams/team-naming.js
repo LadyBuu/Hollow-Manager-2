@@ -5,9 +5,10 @@
  *
  * WHAT THIS OWNS:
  *   - The "N-th generation" suffix rule for team names.
- *   - Regenerating a team's display name and name history
- *     whenever a member joins after the first three.
- *   - A one-shot migrator for already-existing teams.
+ *   - Regenerating a team's current period name when a member
+ *     joins that crosses a suffix threshold.
+ *   - Closing the current period and opening a new one on rollover.
+ *   - A one-shot migrator for teams still on the legacy shape.
  *
  * THE RULE:
  *   A team's name is <baseName> [<roman>], where:
@@ -23,16 +24,46 @@
  *   fifth bumps it to III. And so on. The nth distinct member
  *   yields suffix (n - 2), or no suffix when n <= 3.
  *
- *   The suffix is derived. It is NOT stored as a separate field.
- *   The stored artifacts are:
- *     team.name        — the current display name
- *     team.nameHistory — a list of every distinct display name
- *                        the team has carried, with start and
- *                        end periods
+ * THE PERIODS MODEL:
+ *   A team carries a `periods` array. Each entry describes what
+ *   the team was during a range of years. The LAST entry is the
+ *   current period.
  *
- *   The base name is recovered by scanning nameHistory for the
- *   earliest entry. When nameHistory is empty, the team's current
- *   name is used and treated as the base.
+ *   When the suffix changes (a new distinct member crosses a
+ *   threshold), the naming module performs a ROLLOVER:
+ *
+ *     1. Close the current period at (joinYear - 1).
+ *     2. Open a new period at joinYear, inheriting the previous
+ *        period's tacticalStyle and specialisations.
+ *     3. Set the new period's name to the recomputed suffix name.
+ *
+ *   The inheritance is a starting point, not a lock. The user can
+ *   edit the new period's tacticalStyle and specialisations
+ *   afterwards; the naming module does not re-run once the period
+ *   is user-edited. Its job is to keep the CURRENT period's name
+ *   in sync with the distinct-member count, and to close / open
+ *   periods when that count crosses a threshold.
+ *
+ * JOIN YEAR:
+ *   The year the new period opens is the EARLIEST joinPeriod
+ *   across the stints of the distinct member who triggered the
+ *   suffix change — the (suffixNumber + 1)-th distinct member in
+ *   the sorted-by-earliest-join order.
+ *
+ *   A member with no parseable join period does not participate
+ *   in suffix computation; they are still counted as a distinct
+ *   person, but their join cannot be used to date a boundary.
+ *
+ * WHY THE ROLLOVER IS ONE-WAY:
+ *   The distinct count is over "characters who have ever been a
+ *   member." A member leaving or dying does not decrement it. So
+ *   the suffix only ever moves forward. The naming module is
+ *   therefore only ever asked to close-and-open; it never
+ *   reopens a closed period.
+ *
+ *   If a member is removed by mistake and the user wants to
+ *   undo the rollover, that is an edit to the periods array, not
+ *   a naming operation. See the team form.
  *
  * DISTINCT CHARACTERS:
  *   A character who leaves and rejoins is ONE distinct member.
@@ -43,24 +74,12 @@
  *   joinPeriod across all their stints on the team. Ties are
  *   broken by characterId for stability.
  *
- * NAME HISTORY REGENERATION:
- *   Every time the suffix changes, nameHistory is rebuilt from
- *   scratch. The rebuild contains one entry per suffix the team
- *   has passed through, with:
- *     - name         the display name at that generation
- *     - startPeriod  the year of the join that produced it
- *     - endPeriod    the year of the next join that superseded
- *                    it, or '' for the current entry
- *
- *   This OVERRIDES whatever the user manually entered in the
- *   team form. The automatic naming and the manual naming would
- *   otherwise fight. If you want manual control, do not use
- *   member joins to drive the suffix.
- *
  * WHAT THIS DOES NOT OWN:
  *   - Team reads. TeamQueries owns them.
  *   - Team writes. TeamCore owns them.
- *   - The modal. TeamKillModal owns it.
+ *   - The periods shape. TeamCore owns the schema.
+ *   - The naming suffix grammar. This module owns it, and it is
+ *     the only place it appears.
  *
  * DEPENDENCIES:
  *   - window.TeamQueries
@@ -150,13 +169,11 @@
      *   "Rapid"        -> { base: "Rapid", suffix: null }
      *   "Rapid II"     -> { base: "Rapid", suffix: 2 }
      *   "Rapid III"    -> { base: "Rapid", suffix: 3 }
-     *   "Rapid IV"     -> { base: "Rapid", suffix: 4 }
      *   "Rapid XL"     -> { base: "Rapid", suffix: 40 }
      *
      * The suffix must be a valid Roman numeral preceded by a
      * single space, at the very end of the string. "Rapid I"
-     * (single I) is treated as a base name, because a suffix of
-     * I is never produced by the naming rule.
+     * (single I) is treated as a base name.
      */
     function splitTeamName(name) {
         var raw = String(name || '');
@@ -164,8 +181,9 @@
 
         var trimmed = raw.trim();
 
-        // Match " <roman>" at end.
-        var match = trimmed.match(/\s+(M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))$/);
+        var match = trimmed.match(
+            /\s+(M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))$/
+        );
         if (!match) {
             return { base: trimmed, suffix: null };
         }
@@ -175,8 +193,6 @@
             return { base: trimmed, suffix: null };
         }
 
-        // A single I is never a suffix. Treat it as part of the
-        // base name.
         if (roman === 'I') {
             return { base: trimmed, suffix: null };
         }
@@ -186,9 +202,10 @@
             return { base: trimmed, suffix: null };
         }
 
-        var base = trimmed.substring(0, trimmed.length - match[0].length).trim();
+        var base = trimmed.substring(
+            0, trimmed.length - match[0].length
+        ).trim();
         if (base === '') {
-            // "II" on its own is not a base name.
             return { base: trimmed, suffix: null };
         }
 
@@ -220,10 +237,8 @@
     // DISTINCT MEMBER SET
     // ============================================================
     //
-    // Returns an array of { characterId, earliestJoin }.
-    // Sorted by earliestJoin ascending; ties by characterId.
-    // A character who has multiple stints appears once, carrying
-    // their earliest joinPeriod.
+    // Returns an array of { characterId, earliestJoin }. Sorted
+    // by earliestJoin ascending; ties by characterId.
 
     function getDistinctMembers(team) {
         var seen = Object.create(null);
@@ -255,8 +270,6 @@
                 }
             }
 
-            // A member with no parseable joinPeriod still counts
-            // as a distinct person, but sorts to the end.
             if (!seen[charId]) {
                 seen[charId] = {
                     characterId: charId,
@@ -322,132 +335,24 @@
     // BASE NAME
     // ============================================================
     //
-    // The base name is:
-    //   1. The name field on the earliest nameHistory entry, if
-    //      nameHistory is populated.
-    //   2. Otherwise, the team's current name, with any trailing
-    //      roman suffix stripped.
-    //
-    // Step 2 handles a team that has never had its nameHistory
-    // managed. The current name may or may not carry a suffix;
-    // splitTeamName removes it if present.
+    // The base name is the name of the FIRST period, with any
+    // trailing Roman suffix stripped. It is the name the team was
+    // founded under, before any suffix generation existed.
 
     function getBaseName(team) {
         if (!team || typeof team !== 'object') { return ''; }
 
-        if (Array.isArray(team.nameHistory) &&
-            team.nameHistory.length > 0) {
-            // Find the entry with the earliest startPeriod, or
-            // fall back to the first entry.
-            var earliest = null;
-            var earliestNum = Infinity;
-
-            for (var i = 0; i < team.nameHistory.length; i++) {
-                var entry = team.nameHistory[i];
-                if (!entry || !isNonEmptyString(entry.name)) {
-                    continue;
-                }
-                var startNum = parsePeriodNum(entry.startPeriod);
-                var order = startNum === null ? i : startNum;
-                if (order < earliestNum) {
-                    earliestNum = order;
-                    earliest = entry;
-                }
-            }
-
-            if (earliest) {
-                var split = splitTeamName(earliest.name);
-                return split.base;
+        if (Array.isArray(team.periods) && team.periods.length > 0) {
+            var first = team.periods[0];
+            if (first && isNonEmptyString(first.name)) {
+                var split = splitTeamName(first.name);
+                if (split.base !== '') { return split.base; }
             }
         }
 
-        // No usable nameHistory. Derive from current name.
+        // Fallback: the denormalised top-level name.
         var currentSplit = splitTeamName(team.name || '');
         return currentSplit.base || String(team.name || 'Unnamed Team');
-    }
-
-    // ============================================================
-    // NAME HISTORY REGENERATION
-    // ============================================================
-    //
-    // Rebuild nameHistory from the distinct-member set.
-    //
-    // For each threshold crossing in chronological order, one
-    // entry is emitted:
-    //
-    //   entry[0] = { name: baseName,          startPeriod: Y0, endPeriod: Y3 }
-    //   entry[1] = { name: baseName + ' II',  startPeriod: Y4, endPeriod: Y5 }
-    //   entry[2] = { name: baseName + ' III', startPeriod: Y6, endPeriod: ''   }
-    //
-    // Y0  = team.startPeriod, or the earliest member join, or ''
-    // Y3  = the join year of the 4th distinct member
-    // Y4  = same as Y3
-    // Y5  = the join year of the 5th distinct member
-    // Y6  = same as Y5
-    // ...
-    //
-    // The current entry's endPeriod is always ''.
-
-    function rebuildNameHistory(team, baseName) {
-        var distinctMembers = getDistinctMembers(team);
-        var distinctCount = distinctMembers.length;
-
-        if (distinctCount === 0) {
-            // No members. The team carries only its base name.
-            var startOnly = parsePeriodNum(team.startPeriod);
-            return [{
-                name: baseName,
-                startPeriod: startOnly === null
-                    ? ''
-                    : String(startOnly),
-                endPeriod: ''
-            }];
-        }
-
-        // Determine the start of the first entry.
-        var teamStart = parsePeriodNum(team.startPeriod);
-        var firstJoin = distinctMembers[0].earliestJoin;
-        var firstStart = teamStart !== null
-            ? teamStart
-            : (firstJoin !== null ? firstJoin : null);
-
-        var history = [{
-            name: baseName,
-            startPeriod: firstStart === null
-                ? ''
-                : String(firstStart),
-            endPeriod: ''
-        }];
-
-        // For each index past 3 in the distinct array, the join
-        // year of that member is a threshold crossing.
-        //   distinct[3]  ->  suffix II starts
-        //   distinct[4]  ->  suffix III starts
-        //   distinct[i]  ->  suffix (i - 1) starts
-        for (var i = 3; i < distinctMembers.length; i++) {
-            var joinYear = distinctMembers[i].earliestJoin;
-            if (joinYear === null) { continue; }
-
-            var suffixNum = (i + 1) - 2;  // i=3 -> 2 (II); i=4 -> 3 (III)
-            var roman = toRoman(suffixNum);
-            var displayName = baseName + ' ' + roman;
-
-            // Close the previous entry at joinYear - 1.
-            var prev = history[history.length - 1];
-            if (joinYear > 1) {
-                prev.endPeriod = String(joinYear - 1);
-            } else {
-                prev.endPeriod = '';
-            }
-
-            history.push({
-                name: displayName,
-                startPeriod: String(joinYear),
-                endPeriod: ''
-            });
-        }
-
-        return history;
     }
 
     // ============================================================
@@ -455,22 +360,30 @@
     // ============================================================
 
     /**
-     * Compute what a team's name and history SHOULD be, given its
-     * current member set. Returns a plain object; it does not
-     * write anything.
+     * Compute what a team's current display name should be.
      *
-     * Returns:
+     * Returns a plain object; writes nothing.
+     *
      *   {
-     *     displayName: string,
-     *     baseName: string,
-     *     suffixNumber: number,   // 0 when no suffix
-     *     roman: string,          // '' when no suffix
-     *     nameHistory: array,
-     *     distinctCount: number,
-     *     changed: boolean        // true when displayName differs
-     *                             // from team.name OR nameHistory
-     *                             // differs from team.nameHistory
+     *     displayName,     // 'Rapid', 'Rapid II', ...
+     *     baseName,
+     *     suffixNumber,    // 0 when no suffix
+     *     roman,           // '' when no suffix
+     *     distinctCount,
+     *     changed,         // true when displayName differs from
+     *                      // periods[last].name
+     *     triggerJoinYear  // the earliest join of the distinct
+     *                      // member whose addition crossed the
+     *                      // current threshold, or null
      *   }
+     *
+     * `triggerJoinYear` is the year the new period should open
+     * at, when a rollover is due. It is the earliest join of the
+     * (suffixNumber + 1)-th distinct member — the member whose
+     * arrival produced the current suffix.
+     *
+     * For a team at suffix 0 (n <= 3), `triggerJoinYear` is null:
+     * there is no threshold crossing yet.
      */
     function computeTeamName(team) {
         if (!team || typeof team !== 'object') {
@@ -479,9 +392,9 @@
                 baseName: '',
                 suffixNumber: 0,
                 roman: '',
-                nameHistory: [],
                 distinctCount: 0,
-                changed: false
+                changed: false,
+                triggerJoinYear: null
             };
         }
 
@@ -494,52 +407,155 @@
             ? baseName
             : baseName + ' ' + suffix.roman;
 
-        var nameHistory = rebuildNameHistory(team, baseName);
-
-        // Compare with the current state to decide "changed".
-        var changed = (team.name !== displayName);
-
-        if (!changed) {
-            var currentHistory = Array.isArray(team.nameHistory)
-                ? team.nameHistory
-                : [];
-            if (currentHistory.length !== nameHistory.length) {
-                changed = true;
-            } else {
-                for (var i = 0; i < currentHistory.length; i++) {
-                    var a = currentHistory[i];
-                    var b = nameHistory[i];
-                    if (!a || !b) { changed = true; break; }
-                    if (a.name !== b.name ||
-                        String(a.startPeriod || '') !==
-                            String(b.startPeriod || '') ||
-                        String(a.endPeriod || '') !==
-                            String(b.endPeriod || '')) {
-                        changed = true;
-                        break;
-                    }
-                }
+        // ---- Trigger join year ----
+        //
+        // The member whose arrival pushed the team into the
+        // current suffix is at index (suffixNumber + 1) in the
+        // sorted-by-earliest-join list. For suffix 2 (II), that is
+        // index 3 (the 4th distinct member). For suffix 3 (III),
+        // index 4.
+        var triggerJoinYear = null;
+        if (suffix.suffixNumber >= 2 &&
+            distinctMembers.length > suffix.suffixNumber) {
+            var triggerIndex = suffix.suffixNumber + 1;
+            if (triggerIndex < distinctMembers.length) {
+                triggerJoinYear =
+                    distinctMembers[triggerIndex].earliestJoin;
             }
         }
+
+        // ---- Changed? ----
+        //
+        // A change is due when the current period's name does not
+        // match the recomputed name. That is the only condition
+        // the naming module acts on; if the name already matches,
+        // nothing needs to happen.
+        var currentName = '';
+        if (Array.isArray(team.periods) && team.periods.length > 0) {
+            var last = team.periods[team.periods.length - 1];
+            if (last && isNonEmptyString(last.name)) {
+                currentName = String(last.name);
+            }
+        }
+        if (currentName === '' && isNonEmptyString(team.name)) {
+            currentName = String(team.name);
+        }
+
+        var changed = (currentName !== displayName);
 
         return {
             displayName: displayName,
             baseName: baseName,
             suffixNumber: suffix.suffixNumber,
             roman: suffix.roman,
-            nameHistory: nameHistory,
             distinctCount: distinctCount,
-            changed: changed
+            changed: changed,
+            triggerJoinYear: triggerJoinYear
         };
     }
 
+    // ============================================================
+    // PERIOD ROLLOVER
+    // ============================================================
+    //
+    // Build the next periods array.
+    //
+    // The current (last) period closes at (triggerJoinYear - 1).
+    // A new period opens at triggerJoinYear, inheriting the
+    // previous period's tacticalStyle and specialisations and
+    // taking the recomputed name.
+    //
+    // If the current period's startPeriod is already equal to
+    // triggerJoinYear (the period opened the same year the new
+    // member joined), there is nothing to close and open; instead
+    // the current period's name is rewritten in place. That
+    // happens when a team is created mid-year and a member joins
+    // in the same year as the founding member.
+
+    function buildRolloverPeriods(team, computed) {
+        if (!Array.isArray(team.periods) ||
+            team.periods.length === 0) {
+            return null;
+        }
+        if (computed.triggerJoinYear === null) {
+            return null;
+        }
+
+        var periods = [];
+        for (var i = 0; i < team.periods.length; i++) {
+            periods.push({
+                startPeriod: team.periods[i].startPeriod,
+                endPeriod: team.periods[i].endPeriod,
+                name: team.periods[i].name,
+                tacticalStyle: team.periods[i].tacticalStyle,
+                specialisations: Array.isArray(
+                    team.periods[i].specialisations
+                )
+                    ? team.periods[i].specialisations.slice()
+                    : []
+            });
+        }
+
+        var last = periods[periods.length - 1];
+        var triggerYear = computed.triggerJoinYear;
+
+        var lastStartNum = parsePeriodNum(last.startPeriod);
+        var triggerStr = String(triggerYear);
+
+        if (lastStartNum !== null && lastStartNum === triggerYear) {
+            // The current period already starts at the trigger
+            // year. Nothing to close; rewrite the name in place.
+            last.name = computed.displayName;
+            return periods;
+        }
+
+        // ---- Close the current period. ----
+        //
+        // The end period is (triggerYear - 1). If the trigger year
+        // is 1, the period would close at 0, which is invalid;
+        // in that case the current period is dropped entirely and
+        // the new one takes its place. (This is a defensive path;
+        // a trigger year of 1 means the whole team history is one
+        // year, which the canonicaliser would have folded into a
+        // single period anyway.)
+        if (triggerYear <= 1) {
+            periods.pop();
+        } else {
+            last.endPeriod = String(triggerYear - 1);
+        }
+
+        // ---- Open the new period. ----
+        periods.push({
+            startPeriod: triggerStr,
+            endPeriod: '',
+            name: computed.displayName,
+            tacticalStyle: last.tacticalStyle || '',
+            specialisations: Array.isArray(last.specialisations)
+                ? last.specialisations.slice()
+                : []
+        });
+
+        return periods;
+    }
+
+    // ============================================================
+    // APPLY
+    // ============================================================
+
     /**
-     * Recompute a team's name and history and, if the result
-     * differs from the current state, persist it via
-     * TeamCore.updateTeam.
+     * Recompute a team's current name and, if a rollover is due,
+     * persist the new periods array through TeamCore.updateTeam.
      *
-     * Returns a promise resolving to { updated: boolean,
-     * previousName, newName, error? }.
+     * Returns a promise resolving to:
+     *
+     *   {
+     *     updated: boolean,
+     *     previousName,
+     *     newName,
+     *     rolledOver: boolean,   // true when a new period was
+     *                            // opened
+     *     error?: string
+     *   }
      */
     function applyTeamName(teamId) {
         if (!teamId) {
@@ -562,55 +578,108 @@
             return Promise.resolve({
                 updated: false,
                 previousName: team.name,
-                newName: computed.displayName
+                newName: computed.displayName,
+                rolledOver: false
             });
         }
 
-        return TeamCore.updateTeam(teamId, {
-            name: computed.displayName,
-            nameHistory: computed.nameHistory
-        }).then(function(result) {
-            if (!result || !result.success) {
+        // ---- Does the change require a rollover? ----
+        //
+        // A rollover happens when the current period's name is
+        // being replaced by a name whose suffix number is one
+        // higher than the current one, AND we have a trigger
+        // year to open the new period at. Otherwise, the change
+        // is a simple rename (the base name itself changed, or
+        // a manual edit is being normalised).
+        //
+        // In practice the simple-rename case is rare: naming is
+        // driven by member additions, and a member addition
+        // either does nothing to the name or crosses a
+        // threshold. A first-period rename without a member
+        // change would come from an explicit updateTeam call,
+        // not from here.
+        var currentSuffix = 0;
+        if (Array.isArray(team.periods) && team.periods.length > 0) {
+            var currentName = team.periods[team.periods.length - 1].name;
+            var split = splitTeamName(currentName || '');
+            if (split.suffix !== null) {
+                currentSuffix = split.suffix;
+            }
+        }
+        if (currentSuffix === 0 && isNonEmptyString(team.name)) {
+            var splitTop = splitTeamName(team.name);
+            if (splitTop.suffix !== null) {
+                currentSuffix = splitTop.suffix;
+            }
+        }
+
+        var requiresRollover =
+            computed.suffixNumber > currentSuffix &&
+            computed.triggerJoinYear !== null;
+
+        var newPeriods = null;
+        if (requiresRollover) {
+            newPeriods = buildRolloverPeriods(team, computed);
+        }
+
+        // ---- Build the update ----
+        var update = {};
+        if (newPeriods !== null) {
+            update.periods = newPeriods;
+        } else {
+            // No rollover; the current period's name is rewritten
+            // in place. This is what happens on the FIRST suffix
+            // change if the current period already starts at the
+            // trigger year, and on any simple rename.
+            update.name = computed.displayName;
+        }
+
+        return TeamCore.updateTeam(teamId, update)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    return {
+                        updated: false,
+                        previousName: team.name,
+                        newName: computed.displayName,
+                        rolledOver: false,
+                        error: (result && result.message) ||
+                            'Update failed.'
+                    };
+                }
+                return {
+                    updated: true,
+                    previousName: team.name,
+                    newName: computed.displayName,
+                    rolledOver: newPeriods !== null
+                };
+            })
+            .catch(function(err) {
                 return {
                     updated: false,
                     previousName: team.name,
                     newName: computed.displayName,
-                    error: (result && result.message) ||
-                        'Update failed.'
+                    rolledOver: false,
+                    error: err && err.message
+                        ? err.message
+                        : String(err)
                 };
-            }
-            return {
-                updated: true,
-                previousName: team.name,
-                newName: computed.displayName
-            };
-        }).catch(function(err) {
-            return {
-                updated: false,
-                previousName: team.name,
-                newName: computed.displayName,
-                error: err && err.message
-                    ? err.message
-                    : String(err)
-            };
-        });
+            });
     }
 
     // ============================================================
     // ONE-SHOT MIGRATOR
     // ============================================================
     //
-    // Walks every team, computes what its name and history should
-    // be, and applies the change through TeamCore.updateTeam.
+    // Walks every team and applies the naming rule. On the
+    // periods model, this is a no-op for a team already on the
+    // current shape (its last period's name is already correct,
+    // or its distinct count has not crossed a new threshold).
     //
-    // Runs sequentially so a single failure does not derail the
-    // whole migration and so the console log is readable.
-    //
-    // Usage from the console:
-    //   await TeamNaming.recomputeAllTeams();
-    //
-    // Or to just see what would change:
-    //   TeamNaming.previewAllTeams();
+    // The migrator is most useful for a store that was migrated
+    // from the legacy shape but whose teams accumulated
+    // members before the periods model existed. For those, the
+    // last period's name may not reflect the current distinct
+    // count, and the migrator closes-and-opens as needed.
 
     function previewAllTeams() {
         var teams = getTeamsArrayForMigration();
@@ -642,6 +711,7 @@
         var total = teams.length;
 
         var updated = 0;
+        var rolled = 0;
         var unchanged = 0;
         var failed = 0;
 
@@ -656,10 +726,17 @@
                     .then(function(result) {
                         if (result.updated) {
                             updated++;
+                            if (result.rolledOver) {
+                                rolled++;
+                            }
                             console.log(
                                 '[TeamNaming] Renamed "' +
                                 result.previousName + '" -> "' +
-                                result.newName + '"'
+                                result.newName +
+                                '"' +
+                                (result.rolledOver
+                                    ? ' (new period)'
+                                    : '') + ''
                             );
                         } else if (result.error) {
                             failed++;
@@ -678,6 +755,7 @@
             var summary = {
                 total: total,
                 updated: updated,
+                rolledOver: rolled,
                 unchanged: unchanged,
                 failed: failed
             };
@@ -690,7 +768,10 @@
             if (NS && typeof NS.notify === 'function') {
                 var parts = [];
                 if (updated > 0) {
-                    parts.push('updated ' + updated);
+                    parts.push('updated ' + updated +
+                        (rolled > 0
+                            ? ' (' + rolled + ' new periods)'
+                            : ''));
                 }
                 if (unchanged > 0) {
                     parts.push('unchanged ' + unchanged);
@@ -721,7 +802,7 @@
         getDistinctMembers: getDistinctMembers,
         getBaseName: getBaseName,
         computeSuffix: computeSuffix,
-        rebuildNameHistory: rebuildNameHistory,
+        buildRolloverPeriods: buildRolloverPeriods,
 
         // Mutation
         applyTeamName: applyTeamName,
