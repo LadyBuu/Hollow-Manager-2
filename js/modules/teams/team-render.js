@@ -11,9 +11,13 @@
  *     stats panel, per-row selection checkboxes, and a
  *     "Create Team from Selection" action.
  *   - Timeline delegation (via TimelineView).
- *   - Modals: team form, ranking form/list, name history row.
- *   - Style field and specialisation chip editor on the team
- *     form.
+ *   - Modals: team form, ranking form/list.
+ *   - The PERIODS editor: one row per period, each carrying its
+ *     own name, start / end, tactical style, and specialisations.
+ *   - The read-only descriptive block on the expanded row and the
+ *     team card: current period's tactical style and
+ *     specialisations, plus a period history list when there is
+ *     more than one period.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads, mutations, projections. Every input is a view model.
@@ -26,99 +30,75 @@
  *   A broken VM produces a visible failure, not a plausible empty
  *   list.
  *
+ * PERIODS MODEL:
+ *   The team form VM carries `periods`, an array of display-shaped
+ *   entries:
+ *
+ *     {
+ *       startPeriod, endPeriod, name, tacticalStyle,
+ *       specialisationIds: [],
+ *       specialisations:   [ { id, label } ]
+ *     }
+ *
+ *   Each entry renders as one row in the periods editor. The
+ *   renderer emits:
+ *
+ *     .team-period-row[data-period-index="N"]
+ *       .team-period-row-header       (label + remove button)
+ *       input.team-period-name        (name)
+ *       input.team-period-start       (start year)
+ *       input.team-period-end         (end year; disabled on the
+ *                                      last row, which is the
+ *                                      open-ended current period)
+ *       textarea.team-period-style    (tactical style)
+ *       .team-period-specialisations  (chip list, one per
+ *                                      specialisation)
+ *       .team-period-specialisation-add-row
+ *                                     (select + Add button for
+ *                                      the current row)
+ *
+ *   The remove button carries data-period-index. The remove
+ *   button is omitted on the first row when there is only one
+ *   period; a team must always have at least one.
+ *
+ *   The end year input on the last row is disabled AND read-only:
+ *   the open-ended sentinel is a fact about the model, not a
+ *   value the user picks. The renderer sets value="" on that
+ *   input. TeamEvents reads the empty value as '' when
+ *   collecting.
+ *
+ *   On a create form, the VM synthesises a single period seeded
+ *   with the current calendar year. The user sees one editable
+ *   row and no history. On edit, every stored period renders.
+ *
+ * LEGACY SHAPE:
+ *   The read-only descriptive block reads `team.tacticalStyle` and
+ *   `team.specialisations` off the detail / list VM. Those are
+ *   populated by TeamAggregator from the current period when
+ *   periods exist, and from the legacy scalars otherwise. This
+ *   module does not touch nameHistory or any legacy field.
+ *
  * TAB VOCABULARY:
  *   The Teams tab renders two top-level tabs:
  *     professional | civilian
  *
- *   The 'temporary' tab was retired. Temporary teams no longer
- *   exist as a type; records that carried the type are normalised
- *   to professional by TeamConstants.LEGACY_TYPE_MAP. There is no
- *   stat card, no tab button, no empty-state label for it, and no
- *   branch in the form's type dropdown.
- *
  * PAGE HEADER ACTIONS:
  *   Export / Matchmaking / Add Team appear on the Professional tab.
- *   Civilian shows Add Team and Export. Matchmaking is
- *   professional-scoped.
+ *   Civilian shows Add Team and Export.
  *
  *   The Export button is a BULK export: it exports every team the
  *   user has ticked in the list below, into a single file. It is
  *   disabled when nothing is selected. The per-row Export button
  *   on each team row remains a single-team export.
  *
- * VIEW MODES (professional only):
- *   'teams' | 'pool' | 'timeline'. The mode toggle renders all
- *   three for the professional tab; Civilian has no mode toggle.
- *
  * TEAM SELECTION:
- *   Each team row carries a checkbox at the leading edge of the
- *   row. The checkbox is the selection set for the bulk Export
- *   action. State is held by TeamEvents as a Set of teamIds and
- *   passed in as `selectedIds` on the render options.
- *
- *   The checkbox stops propagation in the events layer so
- *   ticking does not also trigger a row click.
- *
- *   The checkbox is rendered for every team row, in every tab
- *   (professional and civilian), because the bulk Export button
- *   is available on both tabs.
- *
- * DESCRIPTIVE FIELDS (this revision):
- *   A team carries two descriptive fields:
- *
- *     style            free text. Rendered as an input on the
- *                      form, and as a plain-text line on the
- *                      detail panel and expanded row.
- *
- *     specialisations  array of mission-type ids. On the form,
- *                      rendered as a chip list edited via a
- *                      select + Add button; each chip has a ✕
- *                      that removes it. On the detail panel and
- *                      expanded row, rendered as a plain-text
- *                      comma-separated list matching the mission
- *                      detail panel's convention.
- *
- *   The form reads from:
- *     vm.style                 current string
- *     vm.specialisations       array of currently-selected ids
- *     vm.specialisationOptions array of { id, label } to pick from
- *
- *   The detail / expanded row read from:
- *     team.style               string
- *     team.specialisations     array of { id, label } refs
- *
- *   When both fields are empty, both display lines are omitted.
- *
- * POOL ROWS:
- *   Each pool row is a .professional-pool-item. It carries:
- *     - a checkbox (.pool-select-checkbox) for the create-team
- *       selection.
- *     - a click target (the rest of the row) that toggles
- *       expansion.
- *     - an expand panel (.pool-expand-panel) rendered only when
- *       the row is in the expansion set.
- *
- *   Expansion state is a Set of characterIds held by TeamEvents
- *   and passed into renderProfessionalPool as `expandedIds`.
- *
- *   Selection state is a Set of characterIds held by TeamEvents
- *   and passed in as `selectedIds`.
- *
- * POOL DETAIL BLOCK:
- *   The detail sub-object is built by TeamAggregator. This
- *   renderer assumes its shape and renders:
- *     - physical line: height · weight · build
- *     - personality: traits, ideals, bonds, flaws, alignment,
- *       goals, socialStyle, conflictStyle, quirks
- *     - combat: STR/DEX/CON/INT/WIS/CHA · HP · MP
- *     - magic: only non-zero entries
+ *   Each team row carries a checkbox at the leading edge. State is
+ *   held by TeamEvents as a Set of teamIds and passed in as
+ *   `selectedIds` on the render options.
  *
  * TEAM ROW ACTIONS:
  *   The row action strip carries a Kill Team button between
- *   Export and Edit. It opens the Kill Team modal via the
- *   delegated .kill-team handler in team-events.js. The button is
- *   present on every row regardless of status; the modal itself
- *   decides whether there is anything to kill.
+ *   Export and Edit.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -208,14 +188,9 @@
     }
 
     /**
-     * The types offered in the team form.
-     *
-     * Academic teams are managed by the Academy module and never
-     * created through this form. The retired 'temporary' type is
-     * gone from TeamConstants entirely, so it cannot appear here
-     * even by accident.
-     *
-     * The remaining types are: professional, civilian.
+     * The types offered in the team form. Academic teams are
+     * managed by the Academy module. The retired 'temporary' type
+     * is gone from TeamConstants entirely.
      */
     function getFormTeamTypes() {
         var all = TeamConstants.getTeamTypes();
@@ -229,76 +204,6 @@
 
     function getFormTeamStatuses() {
         return TeamConstants.getTeamStatuses();
-    }
-
-    /**
-     * Read a normalised specialisation id array off a VM.
-     * Prefers the aggregator's `specialisationIds` (the raw ids);
-     * falls back to `specialisations` (which the aggregator
-     * resolved to { id, label } refs) by extracting the ids.
-     */
-    function readSpecialisationIds(vm) {
-        if (!vm) { return []; }
-        if (isArray(vm.specialisationIds)) {
-            return vm.specialisationIds;
-        }
-        if (isArray(vm.specialisations)) {
-            var out = [];
-            for (var i = 0; i < vm.specialisations.length; i++) {
-                var entry = vm.specialisations[i];
-                if (!entry) { continue; }
-                if (typeof entry === 'string') {
-                    out.push(entry);
-                } else if (isNonEmptyString(entry.id)) {
-                    out.push(entry.id);
-                }
-            }
-            return out;
-        }
-        return [];
-    }
-
-    /**
-     * Read a resolved [{ id, label }] list off a VM.
-     * Accepts either the resolved form (`specialisations`) or a
-     * bare id array (`specialisationIds`) and resolves the bare
-     * ids through an optional label lookup map.
-     */
-    function readSpecialisationRefs(vm, labelById) {
-        if (!vm) { return []; }
-        if (isArray(vm.specialisations) &&
-            vm.specialisations.length > 0 &&
-            typeof vm.specialisations[0] === 'object' &&
-            vm.specialisations[0] !== null) {
-            var out = [];
-            for (var i = 0; i < vm.specialisations.length; i++) {
-                var entry = vm.specialisations[i];
-                if (!entry || !isNonEmptyString(entry.id)) {
-                    continue;
-                }
-                out.push({
-                    id: entry.id,
-                    label: isNonEmptyString(entry.label)
-                        ? entry.label
-                        : entry.id
-                });
-            }
-            return out;
-        }
-
-        // Fall back to the id array, using labelById when
-        // available. Without a label map, the label is the id.
-        var ids = readSpecialisationIds(vm);
-        var result = [];
-        for (var j = 0; j < ids.length; j++) {
-            var id = ids[j];
-            var label = id;
-            if (labelById && labelById[id]) {
-                label = labelById[id];
-            }
-            result.push({ id: id, label: label });
-        }
-        return result;
     }
 
     // ============================================================
@@ -357,45 +262,84 @@
                 ')</span>';
     }
 
-    /**
-     * Read-only display block for the two descriptive fields.
-     *
-     * Renders:
-     *   <div class="team-descriptive-fields">
-     *     <div class="team-descriptive-row">
-     *       <span class="team-descriptive-label">Style:</span>
-     *       <span class="team-descriptive-value">...</span>
-     *     </div>
-     *     <div class="team-descriptive-row">
-     *       <span class="team-descriptive-label">
-     *         Specialisations:
-     *       </span>
-     *       <span class="team-descriptive-value">
-     *         Recovery, Investigation
-     *       </span>
-     *     </div>
-     *   </div>
-     *
-     * Either row is omitted when its field is empty. When both
-     * are empty, the whole block is omitted. The value reads as
-     * a single comma-separated line, matching the mission detail
-     * panel's typeDisplay convention.
-     */
+    // ============================================================
+    // DESCRIPTIVE FIELDS (read-only)
+    // ============================================================
+    //
+    // Rendered in two places:
+    //
+    //   .team-members-expanded      when a row is expanded
+    //   .team-card                  a card-layout caller
+    //
+    // Reads `team.tacticalStyle` and `team.specialisations` off
+    // the VM. Those fields are populated by TeamAggregator from
+    // the current period (or the legacy scalars, pre-migration).
+    //
+    // The block renders:
+    //
+    //   Tactical Style: <value>
+    //   Specialisations: <label>, <label>, ...
+    //   Periods: <list>            (only when > 1 period)
+    //
+    // Either row is omitted when its field is empty. When both
+    // are empty AND there is only one period, the whole block is
+    // omitted.
+
     function renderDescriptiveFields(team) {
         if (!team || typeof team !== 'object') { return ''; }
 
-        var style = isNonEmptyString(team.style)
-            ? String(team.style)
+        var style = isNonEmptyString(team.tacticalStyle)
+            ? String(team.tacticalStyle)
             : '';
 
-        var specs = readSpecialisationRefs(team, null);
-        var specLabels = [];
-        for (var i = 0; i < specs.length; i++) {
-            specLabels.push(specs[i].label);
+        var specs = [];
+        if (isArray(team.specialisations)) {
+            for (var i = 0; i < team.specialisations.length; i++) {
+                var entry = team.specialisations[i];
+                if (!entry) { continue; }
+                if (typeof entry === 'string') {
+                    specs.push(entry);
+                } else if (isNonEmptyString(entry.label)) {
+                    specs.push(String(entry.label));
+                } else if (isNonEmptyString(entry.id)) {
+                    specs.push(String(entry.id));
+                }
+            }
         }
-        var specText = specLabels.join(', ');
+        var specText = specs.join(', ');
 
-        if (style === '' && specText === '') { return ''; }
+        // Periods list: only shown when there is more than one.
+        var periodsList = '';
+        if (isArray(team.periods) && team.periods.length > 1) {
+            var periodLines = [];
+            for (var p = 0; p < team.periods.length; p++) {
+                var period = team.periods[p];
+                if (!period || typeof period !== 'object') {
+                    continue;
+                }
+                var start = isNonEmptyString(period.startPeriod)
+                    ? String(period.startPeriod)
+                    : '?';
+                var end = isNonEmptyString(period.endPeriod)
+                    ? String(period.endPeriod)
+                    : 'present';
+                var name = isNonEmptyString(period.name)
+                    ? String(period.name)
+                    : 'Unnamed';
+                periodLines.push(
+                    escapeHtml(name) + ' (' +
+                    escapeHtml(start) + '\u2013' +
+                    escapeHtml(end) + ')'
+                );
+            }
+            if (periodLines.length > 0) {
+                periodsList = periodLines.join(' &middot; ');
+            }
+        }
+
+        if (style === '' && specText === '' && periodsList === '') {
+            return '';
+        }
 
         var html = '';
         html += '<div class="team-descriptive-fields">';
@@ -403,7 +347,7 @@
         if (style !== '') {
             html += '<div class="team-descriptive-row">' +
                         '<span class="team-descriptive-label">' +
-                            'Style:' +
+                            'Tactical Style:' +
                         '</span>' +
                         '<span class="team-descriptive-value">' +
                             escapeHtml(style) +
@@ -418,6 +362,19 @@
                         '</span>' +
                         '<span class="team-descriptive-value">' +
                             escapeHtml(specText) +
+                        '</span>' +
+                    '</div>';
+        }
+
+        if (periodsList !== '') {
+            html += '<div class="team-descriptive-row ' +
+                        'team-descriptive-periods-row">' +
+                        '<span class="team-descriptive-label">' +
+                            'Periods:' +
+                        '</span>' +
+                        '<span class="team-descriptive-value ' +
+                            'team-descriptive-periods">' +
+                            periodsList +
                         '</span>' +
                     '</div>';
         }
@@ -480,7 +437,6 @@
                         'data-id="' +
                             escapeAttribute(team.id) + '">';
 
-            // ---- Selection checkbox ----
             html += '<span class="team-select-cell">';
             html += '<input type="checkbox" ' +
                         'class="team-select-checkbox" ' +
@@ -547,16 +503,6 @@
     // ============================================================
     // PROFESSIONAL POOL
     // ============================================================
-    //
-    // Renders the pool with three interactive affordances:
-    //   - per-row checkbox for the selection set
-    //   - per-row click to toggle expansion
-    //   - a header action row with the selected count and the
-    //     Create Team button (disabled when fewer than two are
-    //     selected)
-    //
-    // expandedIds and selectedIds are Sets (or plain objects with
-    // characterId keys). Both are optional.
 
     function renderProfessionalPool(vm, expandedIds, selectedIds) {
         if (!vm) {
@@ -584,7 +530,6 @@
 
         var html = '';
 
-        // ---- Header row with selection summary + Create Team ----
         html += '<div class="pool-selection-bar">';
         html += '<div class="pool-selection-info">';
         html += '<strong>' + selectedCount + '</strong> selected';
@@ -607,7 +552,6 @@
         html += '</div>';
         html += '</div>';
 
-        // ---- Summary line ----
         html += '<div class="pool-summary">';
         html += 'Pool as of year <strong>' +
                     escapeHtml(String(vm.period)) +
@@ -696,13 +640,10 @@
 
         var html = '';
 
-        // ---- Data row ----
         html += '<div class="' + rowClass + '" ' +
                     'data-id="' + idAttr + '" ' +
                     'data-action="pool-toggle-expand">';
 
-        // Selection checkbox. Stops propagation in the events
-        // layer so ticking does not also toggle expansion.
         html += '<span class="pool-select-cell">';
         html += '<input type="checkbox" ' +
                     'class="pool-select-checkbox" ' +
@@ -744,7 +685,6 @@
 
         html += '</div>';
 
-        // ---- Expand panel ----
         if (isExpanded) {
             html += renderPoolExpandPanel(row);
         }
@@ -856,7 +796,6 @@
         html += '<div class="pool-expand-block pool-expand-block-combat">';
         html += '<div class="pool-expand-block-header">Combat</div>';
 
-        // ---- Physical stats ----
         var order = Array.isArray(combat.statOrder)
             ? combat.statOrder
             : Object.keys(combat.stats || {});
@@ -888,7 +827,6 @@
                     '</div>';
         }
 
-        // ---- HP / MP ----
         html += '<div class="pool-expand-line pool-expand-hpmp">' +
                     '<span class="pool-expand-label">HP / MP</span>' +
                     '<span class="pool-expand-value">' +
@@ -898,7 +836,6 @@
                     '</span>' +
                 '</div>';
 
-        // ---- Magic (non-zero only) ----
         var magic = Array.isArray(combat.magic)
             ? combat.magic
             : [];
@@ -958,15 +895,6 @@
     // ============================================================
     // EXPANDED MEMBERS
     // ============================================================
-    //
-    // The member list under an expanded team row. The
-    // descriptive fields are rendered above the member list, so
-    // a user who expands a row sees style and specialisations
-    // before the roster.
-    //
-    // The descriptive block is built from `membersVM.team`,
-    // which the page VM supplies. When it is absent (older
-    // callers), the block is skipped.
 
     function renderExpandedMembers(membersVM) {
         if (!membersVM) { return ''; }
@@ -990,7 +918,6 @@
                     'data-team-id="' +
                         escapeAttribute(membersVM.teamId) + '">';
 
-        // ---- Descriptive fields, if the VM supplied the team ----
         if (membersVM.team) {
             html += renderDescriptiveFields(membersVM.team);
         }
@@ -1208,7 +1135,6 @@
 
         var html = '';
 
-        // ---- Professional tab: mode toggle + filters ----
         if (tab === 'professional') {
             var viewMode = filterVM.viewMode || 'teams';
             var isPool = viewMode === 'pool';
@@ -1272,11 +1198,6 @@
             return html;
         }
 
-        // ---- Civilian tab: only the inactive checkbox ----
-        //
-        // Civilian teams have no period filter: they are scoped to
-        // unbounded years and are not displayed against a specific
-        // year in the list. Only the status filter is exposed.
         html += '<div class="filter-row">';
         html += '<div class="filter-group">';
         html += '<label for="civilian-show-inactive">' +
@@ -1335,30 +1256,24 @@
     // TEAM FORM
     // ============================================================
     //
-    // The form gained two descriptive fields:
+    // The form carries the top-level team scalars (name, type,
+    // start, end, class, team number, status, associated mission)
+    // and the periods editor.
     //
-    //   #team-style               text input
-    //   #team-specialisations     chip editor
+    // The top-level name is the CURRENT period's name. It is
+    // rendered as an editable field for convenience — a user who
+    // only wants to rename the current period does not have to
+    // scroll to the editor. The team name input writes through to
+    // the last period on submit. See team-events.js for the read.
     //
-    // The chip editor is composed of:
+    // The top-level start / end inputs are NOT rendered: the
+    // team's start and end are derived from periods[0].start and
+    // periods[last].end. The periods editor owns them. Two
+    // separate places to edit the same value would be a bug
+    // factory.
     //
-    //   #team-specialisation-select    the <select> of pickable
-    //                                  types (from
-    //                                  vm.specialisationOptions)
-    //   .team-specialisation-add       the "+ Add" button
-    //   #team-specialisations-list     the chip list
-    //
-    // Each chip carries:
-    //
-    //   .team-specialisation-chip
-    //     data-specialisation-id="<id>"
-    //     .team-specialisation-chip-name     the label
-    //     .team-specialisation-remove        the ✕ button
-    //
-    // TeamEvents owns the add / remove handlers. This renderer
-    // emits the initial state from the VM; every subsequent
-    // mutation is a DOM-only edit inside the form modal, and the
-    // submit handler reads the chips back out.
+    // The periods editor is the sole owner of start and end for
+    // any period.
 
     function renderTeamForm(formVM) {
         if (!formVM) {
@@ -1371,7 +1286,6 @@
         var missionOptions = renderMissionOptions(formVM);
         var statusOptions = renderStatusOptions(formVM.status);
         var typeOptions = renderTypeOptions(formVM.type);
-        var nameHistory = renderNameHistory(formVM.nameHistory);
 
         var html = '';
 
@@ -1391,9 +1305,13 @@
         html += '<div class="form-grid">';
 
         html += '<div class="form-group full-width">';
-        html += '<label for="team-name">Team Name *</label>';
+        html += '<label for="team-name">Current Name *</label>';
         html += '<input type="text" id="team-name" value="' +
                     escapeAttribute(formVM.name) + '" required>';
+        html += '<span class="field-hint">' +
+                    'The current period\u2019s name. Editing here ' +
+                    'renames the current period.' +
+                '</span>';
         html += '</div>';
 
         html += '<div class="form-group">';
@@ -1401,20 +1319,6 @@
         html += '<select id="team-type" required>' +
                     typeOptions +
                 '</select>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="team-start">Start Period</label>';
-        html += '<input type="text" id="team-start" value="' +
-                    escapeAttribute(formVM.startPeriod) + '" ' +
-                    'placeholder="Year">';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="team-end">End Period (optional)</label>';
-        html += '<input type="text" id="team-end" value="' +
-                    escapeAttribute(formVM.endPeriod) + '" ' +
-                    'placeholder="Year">';
         html += '</div>';
 
         html += '<div class="form-group">';
@@ -1459,31 +1363,8 @@
         html += '</select>';
         html += '</div>';
 
-        // ---- Style (free text) ----
-        html += '<div class="form-group full-width">';
-        html += '<label for="team-style">Style</label>';
-        html += '<input type="text" id="team-style" value="' +
-                    escapeAttribute(formVM.style || '') + '" ' +
-                    'placeholder="e.g., Aggressive frontline, ' +
-                    'cautious recon, diplomatic-first">';
-        html += '<span class="field-hint">' +
-                    'How the team works together. Free text.' +
-                '</span>';
-        html += '</div>';
-
-        // ---- Specialisations (chip editor) ----
-        html += renderSpecialisationEditor(formVM);
-
-        html += '<div class="form-group full-width">';
-        html += '<label>Name History</label>';
-        html += '<div id="name-history-container">' +
-                    nameHistory +
-                '</div>';
-        html += '<button type="button" id="add-name-history-btn" ' +
-                    'class="small add-name-history-btn">' +
-                    '+ Add Name Period' +
-                '</button>';
-        html += '</div>';
+        // ---- Periods editor ----
+        html += renderPeriodsEditor(formVM);
 
         html += '</div>';
 
@@ -1501,49 +1382,210 @@
         return html;
     }
 
-    /**
-     * The specialisation chip editor.
-     *
-     * Reads:
-     *   formVM.specialisations         currently-selected ids
-     *   formVM.specialisationOptions   full pickable list
-     *
-     * Builds:
-     *   .team-specialisation-editor
-     *     .team-specialisation-input-group
-     *       #team-specialisation-select   <select>
-     *       .team-specialisation-add      "+ Add" button
-     *     #team-specialisations-list      chip list
-     *
-     * The <select> lists every option not currently selected.
-     * When every option is selected (or the options list is
-     * empty), the select is disabled and the empty-state copy
-     * says so.
-     *
-     * Every chip carries data-specialisation-id and a remove
-     * button. TeamEvents wires the add and remove handlers
-     * directly on the form modal, not through delegation from
-     * the container, because the form is its own modal shell.
-     */
-    function renderSpecialisationEditor(formVM) {
-        var selectedIds = isArray(formVM.specialisations)
-            ? formVM.specialisations.slice()
+    // ============================================================
+    // PERIODS EDITOR
+    // ============================================================
+    //
+    // One row per period. Each row carries:
+    //
+    //   name             text input
+    //   start            number input
+    //   end              number input (disabled on the last row)
+    //   tacticalStyle    textarea
+    //   specialisations  chip list, with a select + Add button
+    //
+    // The row is keyed by data-period-index. TeamEvents reads
+    // every row's fields on submit. Chip add / remove are
+    // DOM-only edits within the row; nothing hits the store until
+    // submit.
+
+    function renderPeriodsEditor(formVM) {
+        var periods = isArray(formVM.periods)
+            ? formVM.periods
             : [];
         var options = isArray(formVM.specialisationOptions)
             ? formVM.specialisationOptions
             : [];
 
-        var selectedSet = Object.create(null);
-        var labelById = Object.create(null);
-        for (var i = 0; i < selectedIds.length; i++) {
-            selectedSet[selectedIds[i]] = true;
+        var canRemove = periods.length > 1;
+
+        var html = '';
+        html += '<div class="form-group full-width team-periods-editor">';
+
+        html += '<label>Periods</label>';
+        html += '<p class="field-hint">' +
+                    'Each period describes the team for a range of ' +
+                    'years. The last period is the team\u2019s ' +
+                    'present; its end year is open.' +
+                '</p>';
+
+        html += '<div id="team-periods-list" class="team-periods-list">';
+
+        for (var i = 0; i < periods.length; i++) {
+            var isLast = (i === periods.length - 1);
+            html += renderPeriodRow(
+                periods[i], i, isLast, options, canRemove
+            );
         }
+
+        html += '</div>';
+
+        html += '<button type="button" id="add-team-period-btn" ' +
+                    'class="small add-team-period-btn">' +
+                    '+ New Period' +
+                '</button>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderPeriodRow(period, index, isLast, options, canRemove) {
+        var start = isNonEmptyString(period.startPeriod)
+            ? String(period.startPeriod)
+            : '';
+        var end = isNonEmptyString(period.endPeriod)
+            ? String(period.endPeriod)
+            : '';
+        var name = isNonEmptyString(period.name)
+            ? String(period.name)
+            : '';
+        var style = isNonEmptyString(period.tacticalStyle)
+            ? String(period.tacticalStyle)
+            : '';
+
+        var headerLabel;
+        if (isLast) {
+            headerLabel = 'Period ' + (index + 1) + ' (current)';
+        } else {
+            headerLabel = 'Period ' + (index + 1);
+        }
+
+        var html = '';
+        html += '<div class="team-period-row" ' +
+                    'data-period-index="' +
+                        escapeAttribute(String(index)) + '" ' +
+                    'data-is-last="' + (isLast ? 'true' : 'false') + '">';
+
+        // ---- Header ----
+        html += '<div class="team-period-row-header">';
+        html += '<span class="team-period-row-label">' +
+                    escapeHtml(headerLabel) +
+                '</span>';
+        if (canRemove) {
+            html += '<button type="button" ' +
+                        'class="small danger team-period-remove" ' +
+                        'data-period-index="' +
+                            escapeAttribute(String(index)) + '" ' +
+                        'title="Remove this period">' +
+                        '\u2715' +
+                    '</button>';
+        }
+        html += '</div>';
+
+        // ---- Name / Start / End ----
+        html += '<div class="team-period-row-fields">';
+
+        html += '<div class="team-period-field team-period-field-name">';
+        html += '<label class="team-period-field-label">Name</label>';
+        html += '<input type="text" ' +
+                    'class="team-period-name" ' +
+                    'value="' + escapeAttribute(name) + '" ' +
+                    'placeholder="e.g., Rapid">';
+        html += '</div>';
+
+        html += '<div class="team-period-field team-period-field-start">';
+        html += '<label class="team-period-field-label">Start</label>';
+        html += '<input type="number" ' +
+                    'class="team-period-start" ' +
+                    'min="1" ' +
+                    'value="' + escapeAttribute(start) + '" ' +
+                    'placeholder="Year">';
+        html += '</div>';
+
+        html += '<div class="team-period-field team-period-field-end">';
+        html += '<label class="team-period-field-label">End</label>';
+        if (isLast) {
+            html += '<input type="text" ' +
+                        'class="team-period-end" ' +
+                        'value="" ' +
+                        'placeholder="present" ' +
+                        'readonly disabled>';
+            html += '<span class="team-period-field-hint">' +
+                        '(open)' +
+                    '</span>';
+        } else {
+            html += '<input type="number" ' +
+                        'class="team-period-end" ' +
+                        'min="1" ' +
+                        'value="' + escapeAttribute(end) + '" ' +
+                        'placeholder="Year">';
+        }
+        html += '</div>';
+
+        html += '</div>'; // row-fields
+
+        // ---- Tactical style ----
+        html += '<div class="team-period-tactical-style-row">';
+        html += '<label class="team-period-field-label">' +
+                    'Tactical Style' +
+                '</label>';
+        html += '<textarea class="team-period-style" ' +
+                    'rows="3" ' +
+                    'placeholder="How the team works together. ' +
+                    'Fighting style, doctrine, tone.">' +
+                    escapeHtml(style) +
+                '</textarea>';
+        html += '</div>';
+
+        // ---- Specialisations ----
+        html += renderPeriodSpecialisationsRow(
+            period, index, options
+        );
+
+        html += '</div>'; // team-period-row
+
+        return html;
+    }
+
+    function renderPeriodSpecialisationsRow(period, index, options) {
+        var selectedIds = isArray(period.specialisations)
+            ? period.specialisations
+            : [];
+
+        // Normalise: entries may be strings or { id, label } refs.
+        var currentIds = [];
+        var currentLabels = Object.create(null);
+        var labelById = Object.create(null);
+
+        for (var i = 0; i < selectedIds.length; i++) {
+            var entry = selectedIds[i];
+            if (!entry) { continue; }
+            if (typeof entry === 'string') {
+                var idStr = entry.trim();
+                if (idStr === '') { continue; }
+                currentIds.push(idStr);
+                currentLabels[idStr] = idStr;
+            } else if (isNonEmptyString(entry.id)) {
+                var idObj = String(entry.id);
+                currentIds.push(idObj);
+                currentLabels[idObj] = isNonEmptyString(entry.label)
+                    ? String(entry.label)
+                    : idObj;
+            }
+        }
+
         for (var o = 0; o < options.length; o++) {
             var opt = options[o];
             if (!opt || !isNonEmptyString(opt.id)) { continue; }
             labelById[opt.id] = isNonEmptyString(opt.label)
-                ? opt.label
+                ? String(opt.label)
                 : opt.id;
+        }
+
+        // Options still selectable in this row.
+        var selectedSet = Object.create(null);
+        for (var s = 0; s < currentIds.length; s++) {
+            selectedSet[currentIds[s]] = true;
         }
 
         var available = [];
@@ -1557,24 +1599,19 @@
         }
 
         var html = '';
-        html += '<div class="form-group full-width ' +
-                    'team-specialisation-editor">';
+        html += '<div class="team-period-specialisations-row">';
+        html += '<label class="team-period-field-label">' +
+                    'Specialisations' +
+                '</label>';
 
-        html += '<label>Specialisations</label>';
-        html += '<p class="field-hint">' +
-                    'What this team is used for. Add as many as ' +
-                    'apply.' +
-                '</p>';
-
-        html += '<div class="team-specialisation-input-group">';
-        html += '<select id="team-specialisation-select" ' +
-                    'class="team-specialisation-select"' +
+        html += '<div class="team-period-specialisation-input-group">';
+        html += '<select class="team-period-specialisation-select"' +
                     (available.length === 0 ? ' disabled' : '') + '>';
 
         if (available.length === 0) {
             var placeholderText = options.length === 0
                 ? 'No specialisations available'
-                : 'All specialisations are already selected';
+                : 'All specialisations already selected';
             html += '<option value="" disabled selected>' +
                         escapeHtml(placeholderText) +
                     '</option>';
@@ -1591,33 +1628,30 @@
 
         html += '</select>';
         html += '<button type="button" ' +
-                    'class="small primary team-specialisation-add"' +
+                    'class="small primary ' +
+                    'team-period-specialisation-add"' +
                     (available.length === 0 ? ' disabled' : '') + '>' +
                     '+ Add' +
                 '</button>';
         html += '</div>';
 
-        html += '<div id="team-specialisations-list" ' +
-                    'class="team-specialisations-list">';
+        html += '<div class="team-period-specialisation-chips">';
 
-        if (selectedIds.length === 0) {
+        if (currentIds.length === 0) {
             html += '<p class="empty-state small">' +
                         'No specialisations selected.' +
                     '</p>';
         } else {
-            for (var s = 0; s < selectedIds.length; s++) {
-                var id = selectedIds[s];
-                var label = labelById[id];
-                if (!isNonEmptyString(label)) {
-                    label = id;
-                }
+            for (var c = 0; c < currentIds.length; c++) {
+                var id = currentIds[c];
+                var label = currentLabels[id] || labelById[id] || id;
                 html += renderSpecialisationChip(id, label);
             }
         }
 
         html += '</div>';
-
         html += '</div>';
+
         return html;
     }
 
@@ -1720,44 +1754,6 @@
         return html;
     }
 
-    function renderNameHistory(history) {
-        var list = Array.isArray(history) ? history : [];
-        if (list.length === 0) {
-            return renderNameHistoryRow(null);
-        }
-
-        var html = '';
-        for (var i = 0; i < list.length; i++) {
-            html += renderNameHistoryRow(list[i]);
-        }
-        return html;
-    }
-
-    function renderNameHistoryRow(entry) {
-        var e = entry || {};
-
-        var html = '';
-        html += '<div class="name-history-entry">';
-        html += '<input type="text" class="name-history-name" ' +
-                    'placeholder="Team Name" ' +
-                    'value="' +
-                        escapeAttribute(e.name || '') + '">';
-        html += '<input type="text" class="name-history-start" ' +
-                    'placeholder="Start" ' +
-                    'value="' +
-                        escapeAttribute(e.startPeriod || '') +
-                    '">';
-        html += '<input type="text" class="name-history-end" ' +
-                    'placeholder="End" ' +
-                    'value="' +
-                        escapeAttribute(e.endPeriod || '') +
-                    '">';
-        html += '<button type="button" ' +
-                    'class="small danger remove-name">x</button>';
-        html += '</div>';
-        return html;
-    }
-
     // ============================================================
     // RANKING FORM
     // ============================================================
@@ -1817,22 +1813,12 @@
                 periodLabel: expandedTeam.periodLabel || 'Period',
                 period: period,
                 members: expandedTeam.members,
-                // Pass the whole team VM through so the expanded
-                // block can render the descriptive fields. The
-                // renderer reads .style and .specialisations off
-                // it and ignores everything else.
                 team: expandedTeam
             };
         }
 
         var html = '';
 
-        // ---- Page header ----
-        //
-        // The Export button is a BULK export. It is disabled when
-        // nothing is selected. The selected count is shown next
-        // to it so the user can see the scope of what they are
-        // about to download.
         var selectedCount = countTrue(teamSelectedIds);
 
         html += '<div class="page-header">';
@@ -1853,8 +1839,6 @@
                         'id="team-matchmaking-btn" ' +
                         'class="secondary">Matchmaking</button>';
         } else {
-            // Civilian tab also gets a bulk Export button, since
-            // the checkbox column is present on every team row.
             html += '<button type="button" ' +
                         'id="team-export-btn" ' +
                         'class="secondary"' +
@@ -1881,7 +1865,6 @@
                     (isTimeline ? ' timeline-container' : '') +
                     '">';
 
-        // ---- Body ----
         if (isTimeline) {
             html += renderTimelineContent(pageVM);
         } else if (isPool) {
@@ -1971,8 +1954,7 @@
 
         renderRankingList: renderRankingList,
         renderTeamForm: renderTeamForm,
-        renderRankingForm: renderRankingForm,
-        renderNameHistoryRow: renderNameHistoryRow
+        renderRankingForm: renderRankingForm
     });
 
 })();
