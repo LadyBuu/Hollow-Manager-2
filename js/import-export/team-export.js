@@ -1,97 +1,109 @@
 /**
  * modules/teams/team-export.js - Team Export
- * Full textual dump of one or more teams.
+ * Full textual dump of one or more teams, optionally scoped to
+ * a single period.
  *
  * Path: js/modules/teams/team-export.js
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one team.
- *   - Building a single plain-text report for MANY teams.
- *   - Handing either payload to ExportUtils.downloadBlob.
+ *   - Building a plain-text report for many teams.
+ *   - Scoping the single-team report to a specific period.
+ *   - Handing the payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamQueries, CharacterQueries, and the other
  *     cross-domain readers supply the raw data. This module
  *     composes them.
- *   - UI. TeamEvents triggers the export; this module returns a
- *     result object.
+ *   - UI. TeamEvents / TeamExportPicker trigger the export; this
+ *     module returns a result object.
  *   - Format selection. One format: plain text.
  *   - Download mechanics. ExportUtils.downloadBlob owns the
  *     anchor, the blob URL, and the filename uniquification.
- *     This module supplies a base filename and hands over the
- *     payload.
+ *   - The periods shape. TeamCore owns the schema. This module
+ *     reads the periods via TeamQueries.
  *   - The specialisation vocabulary. MissionConstants owns the
- *     mission type taxonomy. This module reads it to resolve
- *     ids to labels; it does not own the list of valid ids.
+ *     mission type taxonomy.
  *
  * TWO ENTRY POINTS:
  *
- *   exportTeam(teamId)
- *     One team. The report is the team header, name history,
- *     ranking history, members with character snapshots.
+ *   exportTeam(teamId, options)
+ *     One team. When `options.period` is a period entry (or a
+ *     start year + end year pair), the report is scoped to that
+ *     period:
+ *       - the header shows the period's name, tactical style,
+ *         specialisations, start, end
+ *       - the member list includes only members whose stints
+ *         overlap the period, per the half-open predicate in
+ *         TeamQueries
+ *       - the ranking history includes only rankings within the
+ *         period
+ *       - the periods list is omitted (a slice export is not a
+ *         history export)
+ *     When `options.period` is absent, the report uses the
+ *     current (last) period with no member or ranking filtering.
  *
  *   exportTeamsText(teamIds)
- *     Many teams in one file. Each team's report is built by the
- *     same builder that exportTeam uses, and the parts are
- *     concatenated under a bulk banner. The order is the order
- *     the caller supplied the ids in; the caller is responsible
- *     for sorting if a particular order is wanted.
+ *     Many teams in one file. Each team's report is built with
+ *     its CURRENT period (the last one), with no filtering. The
+ *     bulk export does not offer a period selector; a user who
+ *     wants a period-specific file exports that team
+ *     individually.
  *
- *     Teams whose reports could not be built (missing team,
- *     build failure) are skipped silently and their count is
- *     reported in the result, so a caller with a stale selection
- *     still gets a usable file for the teams that do resolve.
+ * PERIOD OPTION SHAPE:
+ *   The `options.period` argument is a plain object:
  *
- *     When NO team could be built, the function returns an error
- *     and does not download.
+ *     {
+ *       startPeriod: '1900',
+ *       endPeriod: '1905',       // '' means open-ended
+ *       name: 'Rapid',
+ *       tacticalStyle: '',
+ *       specialisations: []
+ *     }
  *
- * BULK FILENAME:
- *   "teams-export-<count>.txt". ExportUtils.downloadBlob inserts
- *   its own timestamp before the extension, so two bulk exports
- *   in the same session do not collide.
+ *   The caller is expected to pass an entry from the team's
+ *   periods array, or a display-shaped equivalent. Both the
+ *   storage shape and the resolved display shape are accepted:
+ *   `specialisations` may be an array of ids or an array of
+ *   { id, label } refs.
+ *
+ *   When the option is omitted, the export runs without period
+ *   scoping and uses the current period's values for the header.
  *
  * REPORT CONTENTS (per team):
  *   - Team header: name, type, status, period, class, team number,
- *     associated mission, style, specialisations, created-at.
- *   - Name history.
- *   - Ranking history.
- *   - Members section: every member entry (active and former),
- *     with role, intervals, and an embedded character snapshot.
- *   - Character snapshot: name, status, age, physical stats
- *     (with modifiers), magic proficiencies (non-zero only),
- *     HP / MP, weapons, special moves, career status history,
- *     department memberships, and OTHER PROFESSIONAL team
- *     memberships.
+ *     associated mission, tactical style, specialisations,
+ *     created-at.
+ *   - Periods section: every period when the export is not
+ *     scoped to one. Omitted when a specific period is being
+ *     exported.
+ *   - Ranking history: filtered to the period when scoped.
+ *   - Members section: every member whose stints overlap the
+ *     period when scoped; every member otherwise.
+ *   - Character snapshot: name, status, age, physical stats,
+ *     magic proficiencies, HP / MP, weapons, special moves,
+ *     career status history, department memberships, and other
+ *     professional team memberships.
  *
- * DESCRIPTIVE FIELDS:
- *   Style and specialisations are rendered as two extra lines in
- *   the team header, matching the detail panel's convention:
+ * MEMBERSHIP FILTER:
+ *   When scoped to a period P, a member is included iff any of
+ *   their stints overlaps P, where "overlaps" is the half-open
+ *   predicate owned by TeamQueries.intervalOverlapsPeriod:
  *
- *     Style:           Aggressive frontline
- *     Specialisations: Recovery, Investigation
+ *     stint.join  <  period.end    (strict)
+ *     stint.leave >= period.start  (inclusive)
  *
- *   Either line is omitted when its field is empty. The
- *   specialisation labels are resolved from
- *   MissionConstants.getMissionTypeLabel, comma-joined into a
- *   single line. Unknown ids are dropped; the display is the
- *   normalised set, not the raw stored array.
- *
- * ACADEMIC TEAMS ARE EXCLUDED FROM THE SNAPSHOT:
- *   pushOtherTeamMemberships filters to professional teams only.
- *   The snapshot already carries every professional membership
- *   from the top-level TEAMS section; the OTHER TEAMS line is a
- *   cross-reference to teams the reader is not looking at.
- *   Academic teams are a different domain and are covered by the
- *   Academy view, not this report.
+ *   The 1905-joiner does not appear in a period ending in 1905;
+ *   they appear in the next period. A member who joined before
+ *   the period and stayed into it does appear.
  *
  * DOWNLOAD FILENAMES:
  *   Single team:  "team_<slug>_<timestamp>.txt"
+ *   Scoped:       "team_<slug>_<periodslug>_<timestamp>.txt"
  *   Bulk:         "teams-export-<count>.txt"
  *
  *   ExportUtils.downloadBlob inserts its own local-time timestamp
- *   before the extension, so a second export of the same team (or
- *   the same bulk selection) in the same session never collides
- *   with the first.
+ *   before the extension.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -101,13 +113,11 @@
  *
  * DEPENDENCIES (LAZY, at call time):
  *   - window.MissionConstants    (specialisation labels)
- *   - window.CharacterStats     (stats and magic; absent =
- *                                "(unavailable)")
- *   - window.MagicConstants     (magic type labels; absent = raw
- *                                keys)
- *   - window.MissionQueries     (mission title resolution)
- *   - window.DepartmentQueries  (department memberships)
- *   - window.AcademyClasses     (class name resolution)
+ *   - window.CharacterStats      (stats and magic)
+ *   - window.MagicConstants      (magic type labels)
+ *   - window.MissionQueries      (mission title resolution)
+ *   - window.DepartmentQueries   (department memberships)
+ *   - window.AcademyClasses      (class name resolution)
  */
 
 (function() {
@@ -141,6 +151,27 @@
         typeof TeamQueries.getRankingSummary !== 'function') {
         _missing.push('TeamQueries.getRankingSummary');
     }
+    if (!TeamQueries ||
+        typeof TeamQueries.getPeriods !== 'function') {
+        _missing.push('TeamQueries.getPeriods');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getCurrentPeriod !== 'function') {
+        _missing.push('TeamQueries.getCurrentPeriod');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getCurrentTeamName !== 'function') {
+        _missing.push('TeamQueries.getCurrentTeamName');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.intervalOverlapsPeriod !== 'function') {
+        _missing.push('TeamQueries.intervalOverlapsPeriod');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.rankingInPeriod !== 'function') {
+        _missing.push('TeamQueries.rankingInPeriod');
+    }
+
     if (!TeamConstants ||
         typeof TeamConstants.getTypeLabel !== 'function') {
         _missing.push('TeamConstants.getTypeLabel');
@@ -232,7 +263,7 @@
         if (hasStart && hasEnd) {
             return String(start) + '\u2013' + String(end);
         }
-        if (hasStart) { return String(start) + '\u2013'; }
+        if (hasStart) { return String(start) + '\u2013present'; }
         if (hasEnd) { return '\u2013' + String(end); }
         return 'unbounded';
     }
@@ -277,13 +308,8 @@
     // DESCRIPTIVE FIELDS
     // ============================================================
     //
-    // Style is a plain string. Specialisations are resolved to
-    // labels via MissionConstants and comma-joined into a single
-    // line.
-    //
-    // Normalisation mirrors TeamAggregator's read-side handling:
-    // non-strings dropped, blanks dropped, unknown ids dropped,
-    // duplicates dropped. Order preserved.
+    // Specialisations in a period entry may be an array of ids or
+    // an array of { id, label } refs. Both are accepted.
 
     function resolveSpecialisationLabels(raw) {
         if (!Array.isArray(raw) || raw.length === 0) { return []; }
@@ -299,8 +325,22 @@
 
         for (var i = 0; i < raw.length; i++) {
             var entry = raw[i];
-            if (typeof entry !== 'string') { continue; }
-            var id = entry.trim();
+            if (!entry) { continue; }
+
+            var id = '';
+            var providedLabel = '';
+
+            if (typeof entry === 'string') {
+                id = entry.trim();
+            } else if (isObject(entry)) {
+                if (isNonEmptyString(entry.id)) {
+                    id = String(entry.id).trim();
+                }
+                if (isNonEmptyString(entry.label)) {
+                    providedLabel = String(entry.label);
+                }
+            }
+
             if (id === '') { continue; }
             if (seen[id] === true) { continue; }
             if (canValidate && !MC.isValidMissionType(id)) {
@@ -308,13 +348,15 @@
             }
             seen[id] = true;
 
-            var label = id;
-            if (canLabel) {
+            var label = providedLabel;
+            if (label === '' && canLabel) {
                 var resolved = MC.getMissionTypeLabel(id);
                 if (isNonEmptyString(resolved)) {
                     label = resolved;
                 }
             }
+            if (label === '') { label = id; }
+
             labels.push(label);
         }
 
@@ -322,59 +364,225 @@
     }
 
     // ============================================================
+    // PERIOD RESOLUTION
+    // ============================================================
+    //
+    // The `options.period` argument, when present, is a period
+    // entry. This module does not check that the entry belongs to
+    // the team; the caller is trusted to have selected it from
+    // the team's own periods array.
+
+    function resolveEffectivePeriod(team, requestedPeriod) {
+        if (requestedPeriod && isObject(requestedPeriod)) {
+            return requestedPeriod;
+        }
+        return TeamQueries.getCurrentPeriod(team);
+    }
+
+    function isPeriodScoped(requestedPeriod) {
+        return !!(requestedPeriod && isObject(requestedPeriod));
+    }
+
+    // ============================================================
+    // MEMBER FILTER
+    // ============================================================
+    //
+    // When a period is in scope, a member is included iff any
+    // stint overlaps the period, using the half-open predicate
+    // owned by TeamQueries.
+    //
+    // When no period is in scope (a bulk export), every member is
+    // included.
+
+    function memberBelongsToPeriod(member, period) {
+        if (!member || typeof member !== 'object') { return false; }
+        if (!Array.isArray(member.intervals)) { return false; }
+
+        var start = period.startPeriod;
+        var end = period.endPeriod;
+
+        for (var i = 0; i < member.intervals.length; i++) {
+            var iv = member.intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+
+            if (TeamQueries.intervalOverlapsPeriod(
+                iv.joinPeriod,
+                iv.leavePeriod,
+                start,
+                end
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function filterMembersForPeriod(members, period) {
+        if (!Array.isArray(members)) { return []; }
+        if (!period) { return members.slice(); }
+
+        var result = [];
+        for (var i = 0; i < members.length; i++) {
+            if (memberBelongsToPeriod(members[i], period)) {
+                result.push(members[i]);
+            }
+        }
+        return result;
+    }
+
+    function filterRankingsForPeriod(rankings, period) {
+        if (!Array.isArray(rankings)) { return []; }
+        if (!period) { return rankings.slice(); }
+
+        var start = period.startPeriod;
+        var end = period.endPeriod;
+
+        var result = [];
+        for (var i = 0; i < rankings.length; i++) {
+            var entry = rankings[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+            if (TeamQueries.rankingInPeriod(
+                entry.period,
+                start,
+                end
+            )) {
+                result.push(entry);
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
     // REPORT BUILDER
     // ============================================================
 
-    function buildReport(teamId) {
+    /**
+     * Build a plain-text report for one team.
+     *
+     * When `options.period` is a period entry, the report is
+     * scoped to it. Otherwise the report is unscoped and uses the
+     * current period's header values with no member or ranking
+     * filtering.
+     */
+    function buildReport(teamId, options) {
+        options = options || {};
+
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return { error: 'Team not found.' };
         }
 
+        var scoped = isPeriodScoped(options.period);
+        var period = resolveEffectivePeriod(team, options.period);
+
+        // Period is required to render a header. A team with no
+        // periods array (an unmigrated record) is a hard failure
+        // for a scoped export and a soft failure for an unscoped
+        // one — the latter falls back to the top-level name.
+        if (!period && scoped) {
+            return {
+                error: 'The requested period was not found on the ' +
+                    'team.'
+            };
+        }
+
         var lines = [];
 
-        var title = 'TEAM REPORT: ' + (team.name || 'Unnamed Team');
+        var titleName = period && isNonEmptyString(period.name)
+            ? String(period.name)
+            : TeamQueries.getCurrentTeamName(team);
+
+        var title = 'TEAM REPORT: ' + titleName;
+        if (scoped) {
+            title += ' (' + formatPeriod(
+                period.startPeriod, period.endPeriod
+            ) + ')';
+        }
         lines.push(title);
         lines.push(lineUnder(title));
         lines.push('');
 
-        pushTeamHeader(lines, team);
-        pushNameHistory(lines, team);
-        pushRankingHistory(lines, team);
-        pushMembersSection(lines, team);
+        pushTeamHeader(lines, team, period, scoped);
+        if (!scoped) {
+            pushPeriodsSection(lines, team);
+        }
+        pushRankingHistory(lines, team, scoped ? period : null);
+        pushMembersSection(lines, team, scoped ? period : null);
 
         return {
             exported: true,
-            filename: buildFilename(team),
+            filename: buildFilename(team, scoped ? period : null),
             text: lines.join('\n')
         };
     }
 
-    function buildFilename(team) {
-        return 'team_' +
-            slugify(team.name) +
-            '_' + timestampSlug() +
-            '.txt';
+    function buildFilename(team, period) {
+        var currentName = TeamQueries.getCurrentTeamName(team);
+        var slug = slugify(currentName);
+
+        if (period && isObject(period)) {
+            var start = isNonEmptyString(period.startPeriod)
+                ? String(period.startPeriod)
+                : '';
+            var end = isNonEmptyString(period.endPeriod)
+                ? String(period.endPeriod)
+                : 'present';
+            var periodSlug = start === ''
+                ? slugify(end)
+                : slugify(start + '-' + end);
+            return 'team_' + slug + '_' + periodSlug +
+                '_' + timestampSlug() + '.txt';
+        }
+
+        return 'team_' + slug + '_' + timestampSlug() + '.txt';
     }
 
     // ============================================================
     // TEAM HEADER
     // ============================================================
 
-    function pushTeamHeader(lines, team) {
+    function pushTeamHeader(lines, team, period, scoped) {
         lines.push('SECTION 1: TEAM');
         lines.push(lineDash('SECTION 1: TEAM'));
         lines.push('');
 
-        lines.push('Name:        ' + (team.name || 'Unnamed Team'));
+        var displayName = period && isNonEmptyString(period.name)
+            ? String(period.name)
+            : TeamQueries.getCurrentTeamName(team);
+
+        lines.push('Name:        ' + displayName);
         lines.push('ID:          ' + safeString(team.id));
         lines.push('Type:        ' +
             (TeamConstants.getTypeLabel(team.type) || team.type || '') +
         '');
         lines.push('Status:      ' + safeString(team.status || 'active'));
-        lines.push('Period:      ' + formatPeriod(
-            team.startPeriod, team.endPeriod
-        ));
+
+        // ---- Period line ----
+        //
+        // When scoped, the period line is the period's own range.
+        // When unscoped, the period line is the team's overall
+        // span, derived from periods[0].start and
+        // periods[last].end.
+        var periodDisplay = '';
+        if (scoped && period) {
+            periodDisplay = formatPeriod(
+                period.startPeriod, period.endPeriod
+            );
+        } else {
+            var periods = TeamQueries.getPeriods(team);
+            if (periods.length > 0) {
+                var firstStart = periods[0].startPeriod;
+                var lastEnd = periods[periods.length - 1].endPeriod;
+                periodDisplay = formatPeriod(firstStart, lastEnd);
+            } else {
+                periodDisplay = formatPeriod(
+                    team.startPeriod, team.endPeriod
+                );
+            }
+        }
+        lines.push('Period:      ' + periodDisplay);
+
         lines.push('Team Number: ' +
             (isNonEmptyString(team.teamNumber)
                 ? team.teamNumber
@@ -395,22 +603,39 @@
         }
         lines.push('Mission:     ' + missionLabel);
 
-        // ---- Descriptive fields ----
+        // ---- Tactical style and specialisations ----
         //
-        // Either line is omitted when its field is empty. The
-        // padding keeps the label column aligned with the rest
-        // of the header.
-        if (isNonEmptyString(team.style)) {
-            lines.push('Style:       ' +
-                String(team.style).trim());
+        // Both come from the effective period when one is
+        // available. When no period is available (an unmigrated
+        // record), they fall back to the legacy scalars.
+        var style = '';
+        var specSource = [];
+
+        if (period) {
+            if (isNonEmptyString(period.tacticalStyle)) {
+                style = String(period.tacticalStyle).trim();
+            }
+            if (Array.isArray(period.specialisations)) {
+                specSource = period.specialisations;
+            }
+        } else {
+            if (isNonEmptyString(team.tacticalStyle)) {
+                style = String(team.tacticalStyle).trim();
+            } else if (isNonEmptyString(team.style)) {
+                style = String(team.style).trim();
+            }
+            if (Array.isArray(team.specialisations)) {
+                specSource = team.specialisations;
+            }
         }
 
-        var specLabels = resolveSpecialisationLabels(
-            team.specialisations
-        );
+        if (style !== '') {
+            lines.push('Tactical Style: ' + style);
+        }
+
+        var specLabels = resolveSpecialisationLabels(specSource);
         if (specLabels.length > 0) {
-            lines.push('Specialisations: ' +
-                specLabels.join(', '));
+            lines.push('Specialisations: ' + specLabels.join(', '));
         }
 
         if (isNonEmptyString(team.createdAt)) {
@@ -450,32 +675,50 @@
     }
 
     // ============================================================
-    // NAME HISTORY
+    // PERIODS SECTION
     // ============================================================
+    //
+    // Every period, in array order. Omitted when the export is
+    // scoped to a single period: a slice export is not a history
+    // export.
 
-    function pushNameHistory(lines, team) {
-        lines.push('SECTION 2: NAME HISTORY');
-        lines.push(lineDash('SECTION 2: NAME HISTORY'));
+    function pushPeriodsSection(lines, team) {
+        lines.push('SECTION 2: PERIODS');
+        lines.push(lineDash('SECTION 2: PERIODS'));
         lines.push('');
 
-        var history = Array.isArray(team.nameHistory)
-            ? team.nameHistory
-            : [];
-
-        if (history.length === 0) {
-            lines.push('  (no name history)');
+        var periods = TeamQueries.getPeriods(team);
+        if (periods.length === 0) {
+            lines.push('  (no periods recorded)');
             lines.push('');
             return;
         }
 
-        for (var i = 0; i < history.length; i++) {
-            var entry = history[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-            var name = safeString(entry.name);
-            var period = formatPeriod(
-                entry.startPeriod, entry.endPeriod
+        for (var i = 0; i < periods.length; i++) {
+            var period = periods[i];
+            if (!period || typeof period !== 'object') { continue; }
+
+            var name = isNonEmptyString(period.name)
+                ? String(period.name)
+                : 'Unnamed';
+            var range = formatPeriod(
+                period.startPeriod, period.endPeriod
             );
-            lines.push('  - ' + name + ' (' + period + ')');
+
+            lines.push('  - ' + name + ' (' + range + ')');
+
+            if (isNonEmptyString(period.tacticalStyle)) {
+                lines.push('      Tactical Style: ' +
+                    String(period.tacticalStyle).trim());
+            }
+
+            var specLabels = resolveSpecialisationLabels(
+                period.specialisations
+            );
+            if (specLabels.length > 0) {
+                lines.push('      Specialisations: ' +
+                    specLabels.join(', '));
+            }
         }
 
         lines.push('');
@@ -485,7 +728,7 @@
     // RANKING HISTORY
     // ============================================================
 
-    function pushRankingHistory(lines, team) {
+    function pushRankingHistory(lines, team, period) {
         lines.push('SECTION 3: RANKING HISTORY');
         lines.push(lineDash('SECTION 3: RANKING HISTORY'));
         lines.push('');
@@ -494,6 +737,10 @@
         var history = summary && Array.isArray(summary.history)
             ? summary.history
             : [];
+
+        if (period) {
+            history = filterRankingsForPeriod(history, period);
+        }
 
         if (history.length === 0) {
             lines.push('  (no ranking history)');
@@ -517,25 +764,37 @@
     // MEMBERS
     // ============================================================
 
-    function pushMembersSection(lines, team) {
+    function pushMembersSection(lines, team, period) {
         lines.push('SECTION 4: MEMBERS');
         lines.push(lineDash('SECTION 4: MEMBERS'));
         lines.push('');
 
-        var members = TeamQueries.getAllTeamMemberRecords(team);
+        var allMembers = TeamQueries.getAllTeamMemberRecords(team);
+
+        // When a period is in scope, restrict to members whose
+        // stints overlap the period. When unscoped, every member
+        // is included.
+        var members = period
+            ? filterMembersForPeriod(allMembers, period)
+            : allMembers;
 
         if (!Array.isArray(members) || members.length === 0) {
-            lines.push('  (no members)');
+            lines.push('  (no members' +
+                (period ? ' in this period' : '') + ')');
             lines.push('');
             return;
         }
 
         for (var i = 0; i < members.length; i++) {
-            pushMemberRecord(lines, members[i], i + 1, members.length);
+            pushMemberRecord(
+                lines, members[i], i + 1, members.length, period
+            );
         }
     }
 
-    function pushMemberRecord(lines, member, index, total) {
+    function pushMemberRecord(
+        lines, member, index, total, period
+    ) {
         if (!member || typeof member !== 'object') { return; }
 
         var charId = member.characterId;
@@ -560,16 +819,41 @@
                 : '(none)')
         );
 
-        pushMemberIntervals(lines, member);
+        pushMemberIntervals(lines, member, period);
         pushCharacterSnapshot(lines, char);
 
         lines.push('');
     }
 
-    function pushMemberIntervals(lines, member) {
+    /**
+     * Print the member's stints.
+     *
+     * When a period is in scope, only stints overlapping the
+     * period are printed; a stint that ends before the period
+     * or starts after it is not relevant to the reader. When no
+     * period is in scope, every stint is printed.
+     */
+    function pushMemberIntervals(lines, member, period) {
         var intervals = Array.isArray(member.intervals)
             ? member.intervals
             : [];
+
+        if (period) {
+            var filtered = [];
+            for (var f = 0; f < intervals.length; f++) {
+                var ivF = intervals[f];
+                if (!ivF || typeof ivF !== 'object') { continue; }
+                if (TeamQueries.intervalOverlapsPeriod(
+                    ivF.joinPeriod,
+                    ivF.leavePeriod,
+                    period.startPeriod,
+                    period.endPeriod
+                )) {
+                    filtered.push(ivF);
+                }
+            }
+            intervals = filtered;
+        }
 
         lines.push('    Stints:');
 
@@ -620,11 +904,6 @@
     }
 
     function pushStats(lines, char) {
-        // CharacterStats is a lazy dependency. When it is not
-        // loaded -- which can happen if the export is triggered
-        // before the character module hierarchy finishes loading
-        // -- the line reports "(unavailable)" and the report
-        // continues.
         var CharacterStats = getCharacterStats();
         if (!CharacterStats ||
             typeof CharacterStats.getCharacterStats !== 'function') {
@@ -651,16 +930,13 @@
             var v = stats[k];
             var display = (typeof v === 'number') ? v : '\u2014';
 
-            // Include the modifier when the module can compute
-            // one. The modifier is derived from the value; a
-            // missing helper falls back to the value alone.
             if (typeof CharacterStats.getModifierDisplay ===
                 'function' && typeof v === 'number') {
                 try {
                     display = v + ' (' +
                         CharacterStats.getModifierDisplay(v) + ')';
                 } catch (e) {
-                    // Fall through to the plain value.
+                    // Fall through.
                 }
             }
 
@@ -724,7 +1000,6 @@
     }
 
     function pushWeaponsAndMoves(lines, char) {
-        // ---- Weapons ----
         if (Array.isArray(char.weapons) && char.weapons.length > 0) {
             var weapons = [];
             for (var i = 0; i < char.weapons.length; i++) {
@@ -745,7 +1020,6 @@
             }
         }
 
-        // ---- Special moves ----
         var sm = isObject(char.specialMoves)
             ? char.specialMoves
             : null;
@@ -855,11 +1129,6 @@
             return;
         }
 
-        // Filter to professional only. Academic, temporary, and
-        // civilian memberships are out of scope for this report:
-        // academic teams belong to the Academy view, and
-        // temporary / civilian are separate domains. The top-level
-        // TEAMS section above is already professional-only.
         var professional = [];
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
@@ -877,7 +1146,9 @@
             var statusSuffix = status === 'deprecated'
                 ? ' [deprecated]'
                 : '';
-            lines.push('        - ' + p.name + statusSuffix);
+            lines.push('        - ' +
+                TeamQueries.getCurrentTeamName(p) +
+                statusSuffix);
         }
     }
 
@@ -889,18 +1160,23 @@
      * Export a single team as a plain-text report.
      *
      * @param {string} teamId
+     * @param {object} [options]
+     * @param {object} [options.period]  A period entry to scope
+     *   the export to. Omit for the current period.
      * @returns {object}
-     *   { exported: true, filename, count } on success
+     *   { exported: true, filename, count, period } on success
      *   { error: string } on failure
      */
-    function exportTeam(teamId) {
+    function exportTeam(teamId, options) {
+        options = options || {};
+
         if (!isNonEmptyString(teamId)) {
             return { error: 'Team ID is required.' };
         }
 
         var built;
         try {
-            built = buildReport(teamId);
+            built = buildReport(teamId, options);
         } catch (e) {
             console.warn(
                 '[TeamExport] buildReport threw:', e
@@ -926,34 +1202,40 @@
         }
 
         var team = TeamQueries.getTeamById(teamId);
-        var memberCount = team && Array.isArray(team.members)
-            ? team.members.length
-            : 0;
+
+        // Count only the members included in the export.
+        var memberCount = 0;
+        if (team) {
+            var members = TeamQueries.getAllTeamMemberRecords(team);
+            if (isPeriodScoped(options.period)) {
+                members = filterMembersForPeriod(
+                    members, options.period
+                );
+            }
+            memberCount = members.length;
+        }
 
         return {
             exported: true,
             filename: built.filename,
-            count: memberCount
+            count: memberCount,
+            period: options.period || null
         };
     }
 
     /**
-     * Build the report for one team without downloading. For
-     * tests and preview.
-     *
-     * @param {string} teamId
-     * @returns {object}
-     *   { text, filename, memberCount } on success
-     *   { error: string } on failure
+     * Build the report for one team without downloading.
      */
-    function buildTeamReport(teamId) {
+    function buildTeamReport(teamId, options) {
+        options = options || {};
+
         if (!isNonEmptyString(teamId)) {
             return { error: 'Team ID is required.' };
         }
 
         var built;
         try {
-            built = buildReport(teamId);
+            built = buildReport(teamId, options);
         } catch (e) {
             return { error: 'Failed to build report: ' + e.message };
         }
@@ -961,9 +1243,16 @@
         if (built.error) { return built; }
 
         var team = TeamQueries.getTeamById(teamId);
-        var memberCount = team && Array.isArray(team.members)
-            ? team.members.length
-            : 0;
+        var memberCount = 0;
+        if (team) {
+            var members = TeamQueries.getAllTeamMemberRecords(team);
+            if (isPeriodScoped(options.period)) {
+                members = filterMembersForPeriod(
+                    members, options.period
+                );
+            }
+            memberCount = members.length;
+        }
 
         return {
             text: built.text,
@@ -977,20 +1266,10 @@
     // ============================================================
     //
     // Concatenates the individual reports for a set of teams into
-    // one file, under a bulk banner.
-    //
-    // ORDER: the caller's order. If a specific order is wanted,
-    // the caller sorts teamIds before passing them in.
-    //
-    // SKIPPED TEAMS: teams whose reports could not be built
-    // (missing team, build threw) are dropped from the output.
-    // The result carries `count` (teams included) and `skipped`
-    // (teams dropped). A caller with a stale selection still gets
-    // a usable file for the teams that resolve.
-    //
-    // EMPTY RESULT: when no team could be built, the function
-    // returns { exported: false, error } and does not download.
-    // An empty bulk export is not a useful file.
+    // one file, under a bulk banner. Each team's report uses its
+    // CURRENT period (the last one), with no member or ranking
+    // filtering. The bulk export does not offer a period
+    // selector.
 
     function buildBulkBanner(count) {
         var bannerWidth = 64;
@@ -1010,14 +1289,6 @@
         return 'teams-export-' + count + '.txt';
     }
 
-    /**
-     * Export several teams into one plain-text file.
-     *
-     * @param {string[]} teamIds
-     * @returns {object}
-     *   { exported: true, filename, count, skipped } on success
-     *   { exported: false, error } on failure
-     */
     function exportTeamsText(teamIds) {
         if (!Array.isArray(teamIds)) {
             return {
@@ -1034,7 +1305,6 @@
         }
 
         var parts = [];
-        var includedIds = [];
         var skipped = 0;
 
         for (var i = 0; i < teamIds.length; i++) {
@@ -1046,7 +1316,7 @@
 
             var built;
             try {
-                built = buildReport(String(id));
+                built = buildReport(String(id), {});
             } catch (e) {
                 console.warn(
                     '[TeamExport] buildReport threw for team ' +
@@ -1062,7 +1332,6 @@
             }
 
             parts.push(built.text);
-            includedIds.push(String(id));
         }
 
         if (parts.length === 0) {
@@ -1108,15 +1377,6 @@
         };
     }
 
-    /**
-     * Build the bulk report without downloading. For tests and
-     * preview.
-     *
-     * @param {string[]} teamIds
-     * @returns {object}
-     *   { text, filename, count, skipped } on success
-     *   { error: string } on failure
-     */
     function buildTeamsTextReport(teamIds) {
         if (!Array.isArray(teamIds)) {
             return { error: 'teamIds must be an array.' };
@@ -1137,7 +1397,7 @@
 
             var built;
             try {
-                built = buildReport(String(id));
+                built = buildReport(String(id), {});
             } catch (e) {
                 skipped++;
                 continue;
@@ -1200,6 +1460,55 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // ---- Predicate smoke test ----
+        //
+        // The Rapid / Rapid II table, applied to the export's
+        // member filter. Uses the same predicate the filter uses.
+        try {
+            var rapid = { startPeriod: '1900', endPeriod: '1905' };
+            var rii = { startPeriod: '1905', endPeriod: '' };
+
+            function stintIn(stint, period) {
+                return TeamQueries.intervalOverlapsPeriod(
+                    stint[0], stint[1],
+                    period.startPeriod, period.endPeriod
+                );
+            }
+
+            if (!stintIn(['1898', ''], rapid)) {
+                missing.push('1898–present should be in Rapid');
+            }
+            if (!stintIn(['1898', ''], rii)) {
+                missing.push('1898–present should be in Rapid II');
+            }
+            if (!stintIn(['1900', '1904'], rapid)) {
+                missing.push('1900–1904 should be in Rapid');
+            }
+            if (stintIn(['1900', '1904'], rii)) {
+                missing.push('1900–1904 should NOT be in Rapid II');
+            }
+            if (!stintIn(['1904', '1908'], rapid)) {
+                missing.push('1904–1908 should be in Rapid');
+            }
+            if (!stintIn(['1904', '1908'], rii)) {
+                missing.push('1904–1908 should be in Rapid II');
+            }
+            if (stintIn(['1905', ''], rapid)) {
+                missing.push('1905–present should NOT be in Rapid');
+            }
+            if (!stintIn(['1905', ''], rii)) {
+                missing.push('1905–present should be in Rapid II');
+            }
+            if (stintIn(['1906', '1910'], rapid)) {
+                missing.push('1906–1910 should NOT be in Rapid');
+            }
+            if (!stintIn(['1906', '1910'], rii)) {
+                missing.push('1906–1910 should be in Rapid II');
+            }
+        } catch (e) {
+            missing.push('predicate smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
