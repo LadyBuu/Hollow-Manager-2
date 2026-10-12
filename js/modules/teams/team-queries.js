@@ -10,8 +10,21 @@
  *   - Team-scoped membership reads.
  *   - Character membership reads (all-time, current).
  *   - Ranking queries.
- *   - The professional personnel query: getProfessionalPersonnelAtPeriod.
+ *   - Period-scoped readers: getPeriods, getCurrentPeriod,
+ *     getPeriodForYear, getActiveTeamMembersForPeriod,
+ *     getRankingsForPeriod.
+ *   - The half-open period overlap predicate
+ *     (intervalOverlapsPeriod) used by every period-scoped read.
+ *   - The professional personnel query:
+ *     getProfessionalPersonnelAtPeriod.
  *   - Shortage history: getTeamShortagePeriods.
+ *
+ * WHAT THIS DOES NOT OWN:
+ *   - Mutations. TeamCore owns those.
+ *   - Domain rules. TeamRules (where applicable) owns those.
+ *   - Structural validation. TeamCore's schema block owns that.
+ *   - The periods array itself. TeamCore writes it; this module
+ *     reads it. The shape is documented in team-core.js.
  *
  * PERIOD PREDICATE OWNERSHIP:
  *   teamWindowContains(team, period)
@@ -22,7 +35,66 @@
  *   isMemberActive(member, period)
  *   isMemberFormer(member, period)
  *
- * SHORTAGE HISTORY (this revision):
+ * PERIODS MODEL (this revision):
+ *   A team carries a `periods` array. Each entry is a self-
+ *   contained description of what the team was during a range of
+ *   years:
+ *
+ *     {
+ *       startPeriod: '1900',
+ *       endPeriod: '1905',       // '' means open-ended
+ *       name: 'Rapid',
+ *       tacticalStyle: '',
+ *       specialisations: []
+ *     }
+ *
+ *   The LAST entry is "the current period." Every reader that
+ *   wants the team's display name, tactical style, or
+ *   specialisations without a period context reads the last entry.
+ *
+ *   Periods are ordered by startPeriod ascending. Only the last
+ *   entry may carry an empty endPeriod. The canonicaliser and
+ *   validator in team-core.js enforce both invariants; this
+ *   module trusts the array and does not re-check.
+ *
+ * PERIOD MEMBERSHIP RULE (the "half-open on the upper bound"
+ * contract):
+ *
+ *   A stint is included in a period iff:
+ *
+ *     stint.join  <  period.end    (strict)
+ *     stint.leave >= period.start  (inclusive)
+ *
+ *   Where a blank period.end means infinity, and a blank
+ *   stint.leave means infinity. A blank stint.join is never
+ *   legal in the data model — every stint has a join — but the
+ *   predicate treats it as -Infinity defensively.
+ *
+ *   WORKED EXAMPLE — Rapid (1900–1905) and Rapid II (1905–):
+ *
+ *     stint         Rapid        Rapid II
+ *     1898–present yes          yes
+ *     1900–1904    yes          no
+ *     1904–1908    yes          yes
+ *     1905–present no           yes
+ *     1906–1910    no           yes
+ *
+ *   The 1905-joiner appears only in Rapid II. The 1904–1908
+ *   stint appears in both because it spans the boundary. This is
+ *   the rule the split exists to enforce: a new joiner in the
+ *   year the identity changed belongs to the NEW period, not the
+ *   old one.
+ *
+ * RANKING RULE:
+ *
+ *   A ranking entry is included in a period iff:
+ *
+ *     period.start <= ranking.year < period.end
+ *
+ *   Same strict upper bound, same infinity for a blank
+ *   period.end. A 1905 ranking belongs to Rapid II, not Rapid.
+ *
+ * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
  *   interval on every member entry of a team, builds a year-by-year
  *   population curve, and returns the runs where the active member
@@ -36,12 +108,6 @@
  *   The upper bound is `toYear`. The returned periods are inclusive
  *   on both ends. A period that is still short at `toYear` carries
  *   `to: null`.
- *
- *   Returned array shape:
- *     [ { from: number, to: number | null }, ... ]
- *
- *   Both the array and the entries are freshly allocated; the
- *   caller owns lifetime.
  *
  * PROFESSIONAL PERSONNEL QUERY:
  *   getProfessionalPersonnelAtPeriod(period) returns domain facts
@@ -338,6 +404,307 @@
     }
 
     // ============================================================
+    // PERIOD OVERLAP PREDICATE
+    // ============================================================
+    //
+    // The canonical predicate for the periods model. Every
+    // period-scoped read in this module goes through it.
+    //
+    // SEMANTICS:
+    //
+    //   A stint is included in a period iff:
+    //
+    //     stint.join  <  period.end    (strict)
+    //     stint.leave >= period.start  (inclusive)
+    //
+    //   Where:
+    //     - a blank period.end means Infinity
+    //     - a blank stint.leave means Infinity
+    //     - a blank stint.join is defensive: never legal in the
+    //       data model, treated as -Infinity so the predicate
+    //       still resolves to a boolean rather than NaN.
+    //
+    // WHY STRICT ON JOIN:
+    //
+    //   The whole point of the period split is that a member who
+    //   joins in the year the identity changed belongs to the NEW
+    //   period, not the old one. Rapid runs 1900–1905; a member
+    //   joining in 1905 belongs to Rapid II, not Rapid. A loose
+    //   `join <= period.end` check would place them in both, which
+    //   is exactly the failure the split exists to prevent.
+    //
+    // WHY INCLUSIVE ON LEAVE:
+    //
+    //   A stint's leavePeriod is the member's LAST ACTIVE year
+    //   (inclusive). A member who leaves in 1904 was on the team
+    //   during 1904. A loose `leave < period.start` check would
+    //   wrongly exclude them from a period that starts in 1904.
+    //
+    // WORKED TABLE (Rapid 1900–1905, Rapid II 1905–):
+    //
+    //   stint         Rapid   Rapid II
+    //   1898–present yes     yes
+    //   1900–1904    yes     no
+    //   1904–1908    yes     yes
+    //   1905–present no      yes
+    //   1906–1910    no      yes
+    //
+    // @param {string|number} join  Stint join year. Never blank in
+    //   practice; blank is treated as -Infinity.
+    // @param {string|number} leave Stint leave year. Blank means
+    //   the stint is open-ended.
+    // @param {string|number} start Period start year.
+    // @param {string|number} end   Period end year. Blank means
+    //   the period is open-ended.
+    // @returns {boolean}
+    function intervalOverlapsPeriod(join, leave, start, end) {
+        var joinNum = parseYear(join);
+        var leaveNum = parseYear(leave);
+        var startNum = parseYear(start);
+        var endNum = parseYear(end);
+
+        // Blank join is defensive only. Never legal in the data
+        // model; if it appears, treat it as -Infinity so the
+        // predicate still returns a boolean.
+        var joinYear = joinNum === null ? -Infinity : joinNum;
+        var leaveYear = leaveNum === null ? Infinity : leaveNum;
+        var startYear = startNum === null ? -Infinity : startNum;
+        var endYear = endNum === null ? Infinity : endNum;
+
+        return joinYear < endYear && leaveYear >= startYear;
+    }
+
+    /**
+     * The ranking predicate. Same strict-upper-bound contract as
+     * intervalOverlapsPeriod, applied to a single year.
+     *
+     *   period.start <= year < period.end
+     *
+     * A blank period.end means infinity. A blank period.start
+     * (never legal — every period has a start) means -Infinity.
+     *
+     * @param {string|number} year  The ranking entry's year.
+     * @param {string|number} start Period start.
+     * @param {string|number} end   Period end; blank means open.
+     * @returns {boolean}
+     */
+    function rankingInPeriod(year, start, end) {
+        var yearNum = parseYear(year);
+        var startNum = parseYear(start);
+        var endNum = parseYear(end);
+
+        if (yearNum === null) { return false; }
+        if (startNum === null) { return false; }
+
+        var startYear = startNum;
+        var endYear = endNum === null ? Infinity : endNum;
+
+        return yearNum >= startYear && yearNum < endYear;
+    }
+
+    // ============================================================
+    // PERIODS MODEL READERS
+    // ============================================================
+    //
+    // These read the team's `periods` array. The array is written
+    // by TeamCore; its shape is documented in team-core.js.
+    //
+    // Every reader here is defensive: a malformed team (no
+    // periods, a period missing its name, etc.) returns a
+    // sensible default rather than throwing. The reads are pure
+    // projections; they do not validate.
+
+    /**
+     * Get every period on the team, in array order. Returns [] for
+     * a team with no periods array.
+     *
+     * The returned array is a shallow copy of the array itself
+     * (the entries are shared). A caller that wants to mutate
+     * should clone the entries first.
+     */
+    function getPeriods(team) {
+        if (!team || !Array.isArray(team.periods)) {
+            return [];
+        }
+        return team.periods.slice();
+    }
+
+    /**
+     * Get the current (last) period, or null.
+     *
+     * "Current" means "the last entry in the array." The periods
+     * array is guaranteed by the canonicaliser to be sorted by
+     * startPeriod ascending, and only the last entry may carry an
+     * empty endPeriod. So the last entry is the open-ended period,
+     * which is the team's present.
+     *
+     * Returns a clone. A caller cannot mutate the live period by
+     * mutating the returned object.
+     */
+    function getCurrentPeriod(team) {
+        if (!team || !Array.isArray(team.periods)) {
+            return null;
+        }
+        if (team.periods.length === 0) {
+            return null;
+        }
+        return clone(team.periods[team.periods.length - 1]);
+    }
+
+    /**
+     * Get the team's current display name.
+     *
+     * Prefers periods[last].name when the periods array is
+     * present and the last entry has a non-empty name. Falls back
+     * to team.name, which TeamCore keeps as a denormalised cache
+     * of exactly that value. The fallback exists for a team
+     * record that somehow reached a reader before canonicalisation
+     * ran (an old export mid-import, for example).
+     *
+     * Returns 'Unknown Team' when neither is available.
+     */
+    function getCurrentTeamName(team) {
+        var period = getCurrentPeriod(team);
+        if (period && isNonEmptyString(period.name)) {
+            return String(period.name);
+        }
+        if (team && isNonEmptyString(team.name)) {
+            return String(team.name);
+        }
+        return 'Unknown Team';
+    }
+
+    /**
+     * Find the period whose year range contains the given year.
+     *
+     * A year is "contained" by a period when:
+     *
+     *   period.start <= year < period.end    (or period.end is blank)
+     *
+     * Same half-open contract as intervalOverlapsPeriod and
+     * rankingInPeriod. The boundary year belongs to the period
+     * that STARTS there.
+     *
+     * Returns a clone, or null.
+     */
+    function getPeriodForYear(team, year) {
+        if (!team || !Array.isArray(team.periods)) {
+            return null;
+        }
+        var yearNum = parseYear(year);
+        if (yearNum === null) { return null; }
+
+        for (var i = 0; i < team.periods.length; i++) {
+            var period = team.periods[i];
+            if (!period || typeof period !== 'object') { continue; }
+
+            var startNum = parseYear(period.startPeriod);
+            if (startNum === null) { continue; }
+
+            var endNum = parseYear(period.endPeriod);
+            var endYear = endNum === null ? Infinity : endNum;
+
+            if (yearNum >= startNum && yearNum < endYear) {
+                return clone(period);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get every member entry whose stints overlap the given
+     * period.
+     *
+     * A member is included when ANY of their stints overlaps the
+     * period, per intervalOverlapsPeriod. The member is returned
+     * whole — every stint, not just the overlapping one. That is
+     * deliberate: the reader wants the member, not a filtered
+     * view of them. A caller that wants only the stints relevant
+     * to the period filters the returned records itself.
+     *
+     * The returned array is freshly allocated; the entries are
+     * clones.
+     *
+     * @param {object} team
+     * @param {object} period  A period entry (as returned by
+     *   getCurrentPeriod / getPeriodForYear, or read directly
+     *   off the team).
+     * @returns {array}
+     */
+    function getActiveTeamMembersForPeriod(team, period) {
+        if (!team || !Array.isArray(team.members)) { return []; }
+        if (!period || typeof period !== 'object') { return []; }
+
+        var start = period.startPeriod;
+        var end = period.endPeriod;
+
+        var result = [];
+        for (var i = 0; i < team.members.length; i++) {
+            var member = team.members[i];
+            if (!member || typeof member !== 'object') { continue; }
+            if (!Array.isArray(member.intervals)) { continue; }
+
+            var included = false;
+            for (var j = 0; j < member.intervals.length; j++) {
+                var iv = member.intervals[j];
+                if (!iv || typeof iv !== 'object') { continue; }
+
+                if (intervalOverlapsPeriod(
+                    iv.joinPeriod,
+                    iv.leavePeriod,
+                    start,
+                    end
+                )) {
+                    included = true;
+                    break;
+                }
+            }
+
+            if (included) {
+                result.push(clone(member));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get every ranking entry whose period falls within the given
+     * period.
+     *
+     * Uses rankingInPeriod, the same half-open contract. The
+     * returned array is freshly allocated; the entries are
+     * clones. Order is the same as the source array (which
+     * TeamCore keeps sorted by period).
+     *
+     * @param {object} team
+     * @param {object} period
+     * @returns {array}
+     */
+    function getRankingsForPeriod(team, period) {
+        if (!team || !Array.isArray(team.rankingHistory)) {
+            return [];
+        }
+        if (!period || typeof period !== 'object') { return []; }
+
+        var start = period.startPeriod;
+        var end = period.endPeriod;
+
+        var result = [];
+        for (var i = 0; i < team.rankingHistory.length; i++) {
+            var entry = team.rankingHistory[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            if (rankingInPeriod(entry.period, start, end)) {
+                result.push(clone(entry));
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // MEMBER PREDICATES
     // ============================================================
 
@@ -412,10 +779,17 @@
         return null;
     }
 
+    /**
+     * The team's current display name. Reads periods[last].name
+     * via getCurrentTeamName; falls back to team.name for a
+     * record that predates the periods model. The fallback path
+     * is a safety net, not a supported shape.
+     */
     function getTeamName(teamId) {
         if (!isNonEmptyString(teamId)) { return 'Unassigned'; }
         var team = getTeamByIdInternal(teamId);
-        return team ? (team.name || 'Unknown Team') : 'Unknown Team';
+        if (!team) { return 'Unknown Team'; }
+        return getCurrentTeamName(team);
     }
 
     // ============================================================
@@ -869,26 +1243,6 @@
     // ============================================================
     // SHORTAGE HISTORY
     // ============================================================
-    //
-    // Reconstructs the year-by-year active member count on a team
-    // and returns the runs where the count is strictly below
-    // targetSize.
-    //
-    // SCAN BOUNDS:
-    //   lower — team.startPeriod if set, otherwise the earliest
-    //           parseable member join period, otherwise the
-    //           function returns [].
-    //   upper — toYear (the query period).
-    //
-    // A returned period is inclusive on both ends. `to: null`
-    // means the shortage is still open at toYear.
-    //
-    // COUNTING RULE:
-    //   For a given year Y, a member is active when at least one
-    //   of their intervals contains Y. This matches
-    //   isMemberActive(member, Y) and does not depend on the
-    //   team's own active window; the caller is expected to have
-    //   filtered the team to those on screen.
 
     function getTeamShortagePeriods(team, targetSize, toYear) {
         var periods = [];
@@ -905,8 +1259,6 @@
         var lower = parsePeriod(team.startPeriod);
 
         if (lower === null) {
-            // Fall back to the earliest parseable member join
-            // period.
             var earliest = null;
             if (Array.isArray(team.members)) {
                 for (var m = 0; m < team.members.length; m++) {
@@ -1007,12 +1359,8 @@
         if (currentStart !== null) {
             periods.push({
                 from: currentStart,
-                to: upper < upper ? null : upper
+                to: upper
             });
-            // toYear is the last year we scanned, so an open run
-            // ends at toYear, not null. The caller can decide
-            // whether to render an inclusive end or "present" by
-            // comparing to the planning year.
         }
 
         // ---- Mark the last period as open when it reaches
@@ -1082,21 +1430,6 @@
         };
     }
 
-    // ============================================================
-    // STUDENT WINDOW
-    // ============================================================
-    //
-    // The student window is derived from the character's own
-    // careerStatus entries. It is the span from the earliest
-    // junior-or-senior start to the latest junior-or-senior end
-    // (or open when any junior-or-senior entry has a blank end).
-    //
-    // Returns { from, to, hasPhase }:
-    //   hasPhase false when the character has no junior or senior
-    //     entry at all. from and to are null.
-    //   hasPhase true with from = a year, to = a year or null
-    //     (null means still open).
-
     function computeStudentWindow(char) {
         var result = {
             hasPhase: false,
@@ -1150,26 +1483,14 @@
         return result;
     }
 
-    /**
-     * Does any professional-team stint for this character overlap
-     * the given student window?
-     *
-     * "Overlap" is inclusive: a stint 1890-1897 overlaps a window
-     * 1895-1897. A stint 1890-1894 does NOT overlap 1895-1897.
-     *
-     * A window with from=null (no parseable start) is treated as
-     * unbounded on the left. A window with to=null is unbounded on
-     * the right. In both cases, "overlap" is decided by the side
-     * that is bounded.
-     */
     function stintOverlapsStudentWindow(historyEntry, window) {
         if (!historyEntry ||
             !Array.isArray(historyEntry.teams)) {
             return false;
         }
 
-        var windowFrom = window.from;   // number or null
-        var windowTo = window.to;       // number or null (open)
+        var windowFrom = window.from;
+        var windowTo = window.to;
 
         for (var i = 0; i < historyEntry.teams.length; i++) {
             var member = historyEntry.teams[i].member;
@@ -1343,7 +1664,7 @@
                 var activeTeam = getTeamByIdInternal(currentTeamId);
                 if (activeTeam) {
                     currentTeamName =
-                        activeTeam.name || 'Unnamed Team';
+                        getCurrentTeamName(activeTeam);
                 }
             } else if (historyEntry.futureFrom !== null) {
                 assignmentStatus = 'future';
@@ -1352,7 +1673,7 @@
                 var futureTeam = getTeamByIdInternal(nextTeamId);
                 if (futureTeam) {
                     nextTeamName =
-                        futureTeam.name || 'Unnamed Team';
+                        getCurrentTeamName(futureTeam);
                 }
             }
         }
@@ -1706,6 +2027,16 @@
             hasCharacterBeenOnTeamAllTime,
         getCharacterTeamMembership: getCharacterTeamMembership,
 
+        // ---- Periods model ----
+        getPeriods: getPeriods,
+        getCurrentPeriod: getCurrentPeriod,
+        getCurrentTeamName: getCurrentTeamName,
+        getPeriodForYear: getPeriodForYear,
+        getActiveTeamMembersForPeriod: getActiveTeamMembersForPeriod,
+        getRankingsForPeriod: getRankingsForPeriod,
+        intervalOverlapsPeriod: intervalOverlapsPeriod,
+        rankingInPeriod: rankingInPeriod,
+
         getTeamShortagePeriods: getTeamShortagePeriods,
 
         getProfessionalPersonnelAtPeriod:
@@ -1745,6 +2076,10 @@
             'getTeamsForCharacterAllTimeIncludingDeprecated',
             'hasCharacterBeenOnTeamAllTime',
             'getCharacterTeamMembership',
+            'getPeriods', 'getCurrentPeriod', 'getCurrentTeamName',
+            'getPeriodForYear', 'getActiveTeamMembersForPeriod',
+            'getRankingsForPeriod',
+            'intervalOverlapsPeriod', 'rankingInPeriod',
             'getTeamShortagePeriods',
             'getProfessionalPersonnelAtPeriod',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
@@ -1759,10 +2094,134 @@
             }
         }
 
+        // ---- Period predicate smoke test ----
+        //
+        // The table from the file header. Rapid 1900–1905,
+        // Rapid II 1905–''.
+        try {
+            var RAPID_START = '1900';
+            var RAPID_END = '1905';
+            var RII_START = '1905';
+            var RII_END = '';
+
+            // 1898–present: in both.
+            if (!intervalOverlapsPeriod(
+                '1898', '', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1898–present should be in Rapid'
+                );
+            }
+            if (!intervalOverlapsPeriod(
+                '1898', '', RII_START, RII_END
+            )) {
+                missing.push(
+                    'predicate: 1898–present should be in Rapid II'
+                );
+            }
+
+            // 1900–1904: in Rapid only.
+            if (!intervalOverlapsPeriod(
+                '1900', '1904', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1900–1904 should be in Rapid'
+                );
+            }
+            if (intervalOverlapsPeriod(
+                '1900', '1904', RII_START, RII_END
+            )) {
+                missing.push(
+                    'predicate: 1900–1904 should NOT be in Rapid II'
+                );
+            }
+
+            // 1904–1908: in both.
+            if (!intervalOverlapsPeriod(
+                '1904', '1908', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1904–1908 should be in Rapid'
+                );
+            }
+            if (!intervalOverlapsPeriod(
+                '1904', '1908', RII_START, RII_END
+            )) {
+                missing.push(
+                    'predicate: 1904–1908 should be in Rapid II'
+                );
+            }
+
+            // 1905–present: in Rapid II only.
+            if (intervalOverlapsPeriod(
+                '1905', '', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1905–present should NOT be in Rapid'
+                );
+            }
+            if (!intervalOverlapsPeriod(
+                '1905', '', RII_START, RII_END
+            )) {
+                missing.push(
+                    'predicate: 1905–present should be in Rapid II'
+                );
+            }
+
+            // 1906–1910: in Rapid II only.
+            if (intervalOverlapsPeriod(
+                '1906', '1910', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1906–1910 should NOT be in Rapid'
+                );
+            }
+            if (!intervalOverlapsPeriod(
+                '1906', '1910', RII_START, RII_END
+            )) {
+                missing.push(
+                    'predicate: 1906–1910 should be in Rapid II'
+                );
+            }
+
+            // 1898–1899: in neither.
+            if (intervalOverlapsPeriod(
+                '1898', '1899', RAPID_START, RAPID_END
+            )) {
+                missing.push(
+                    'predicate: 1898–1899 should NOT be in Rapid'
+                );
+            }
+
+            // ---- Ranking predicate smoke test ----
+            if (rankingInPeriod('1904', RAPID_START, RAPID_END) !== true) {
+                missing.push(
+                    'ranking: 1904 should be in Rapid'
+                );
+            }
+            if (rankingInPeriod('1905', RAPID_START, RAPID_END) !== false) {
+                missing.push(
+                    'ranking: 1905 should NOT be in Rapid'
+                );
+            }
+            if (rankingInPeriod('1905', RII_START, RII_END) !== true) {
+                missing.push(
+                    'ranking: 1905 should be in Rapid II'
+                );
+            }
+            if (rankingInPeriod('1904', RII_START, RII_END) !== false) {
+                missing.push(
+                    'ranking: 1904 should NOT be in Rapid II'
+                );
+            }
+        } catch (e) {
+            missing.push('predicate smoke test threw: ' + e.message);
+        }
+
         if (missing.length > 0) {
             console.warn(
                 '[TeamQueries] Verification — some exports may be ' +
-                'missing:', missing.join(', ')
+                'missing or broken:', missing.join(', ')
             );
         }
     })();
