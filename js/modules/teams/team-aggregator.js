@@ -10,7 +10,7 @@
  *   - The Matchmaking Planner VM
  *     (getMatchmakingPlannerViewModel).
  *   - Team list, team detail, member modal, ranking modal VMs.
- *   - The specialisation options list for the team form.
+ *   - The periods array on the team detail and form VMs.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamQueries owns them.
@@ -18,96 +18,82 @@
  *   - Rendering. TeamRender owns it.
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it; this module projects the resulting records.
- *   - The specialisation vocabulary. MissionConstants owns the
- *     mission type taxonomy. This module reads it to build the
- *     form's option list and to resolve ids to labels; it does
- *     not own the list of valid ids.
+ *   - The periods shape. TeamCore owns the schema. This module
+ *     projects the stored periods into display-shaped VMs.
  *
  * TAB VOCABULARY:
  *   The page VM emits counts and type descriptors for two tabs:
  *     professional | civilian
  *
- *   The 'temporary' tab was retired. Temporary teams no longer
- *   exist as a type. There is no countTemporary, no
- *   counts.temporary, and no types.temporary. Any caller that
- *   still reaches for those keys gets undefined, which is the
- *   correct answer for a type that does not exist.
+ *   The 'temporary' tab was retired.
  *
  * MEMBER ORDERING:
  *   getTeamMembersViewModel sorts members within their
  *   active/former partition by:
  *     1. latest join period, ascending (oldest first)
  *     2. latest leave period, ascending (open stints last)
- *   Active/former partitioning is done by the adapter using
- *   TeamQueries.isMemberActive / isMemberFormer; this module
- *   does not decide the partition, only the order within it.
+ *
+ * PERIODS MODEL:
+ *   A team's identity is described by its `periods` array. Each
+ *   entry is a self-contained description of what the team was
+ *   during a range of years:
+ *
+ *     {
+ *       startPeriod, endPeriod, name,
+ *       tacticalStyle, specialisations
+ *     }
+ *
+ *   The LAST entry is the current period. Every VM in this module
+ *   that needs the team's display name, tactical style, or
+ *   specialisations without a period context reads the last entry
+ *   via TeamQueries.getCurrentPeriod / getCurrentTeamName.
+ *
+ *   The team detail VM carries:
+ *     periods           the full array, resolved for display
+ *     currentPeriod     the last entry, also resolved
+ *     name              = currentPeriod.name
+ *     tacticalStyle     = currentPeriod.tacticalStyle
+ *     specialisations   = currentPeriod.specialisations, resolved
+ *
+ *   The team form VM carries:
+ *     periods           the full array, for the editor
+ *     specialisationOptions   the pickable list for the chip editor
+ *
+ *   The team list VM carries the current period's values on each
+ *   item, so list renderers do not need to walk the array.
+ *
+ * LEGACY SHAPE:
+ *   A team loaded from an old export still carries `nameHistory`
+ *   and scalar `style` / `specialisations`. This module does not
+ *   touch those fields: the migration runs in TeamCore on the
+ *   first update. Until then, the readers fall back gracefully:
+ *
+ *     getCurrentTeamName reads periods[last].name, then team.name
+ *     getCurrentPeriod reads periods[last], then synthesises one
+ *     entry from the legacy scalars
+ *
+ *   The synthesised fallback is a read-time convenience, not a
+ *   supported storage shape. It exists so the team list, detail
+ *   panel, and export all display correctly for a team that has
+ *   not been re-saved since the migration.
  *
  * SHORTAGE HISTORY:
  *   Each planner team row carries a `shortagePeriods` array and a
- *   `shortageDisplay` string, both computed from
- *   TeamQueries.getTeamShortagePeriods. The display string is a
- *   compact run-length encoding:
+ *   `shortageDisplay` string. The display string is a compact
+ *   run-length encoding:
  *
  *     "1930–1931, 1935–present"
- *
- *   A period with `to: null` renders as "present". An empty array
- *   means the team has never been short between its startPeriod
- *   and the planning period.
- *
- * DESCRIPTIVE FIELDS (this revision):
- *   A team carries two descriptive fields:
- *
- *     style            free text. How the team works together.
- *     specialisations  array of mission-type ids.
- *
- *   Both appear on the team detail VM and the team form VM.
- *   On the detail VM, specialisations are resolved to
- *   { id, label } refs so the renderer never has to look up a
- *   label. On the form VM, the raw ids are exposed as
- *   `specialisations` (for the editor to see what is currently
- *   selected) and the full pickable list is exposed as
- *   `specialisationOptions` (for the picker's <select>).
- *
- *   A read-time normaliser (normaliseSpecialisations) drops
- *   unknown ids and dedupes, so a stored record that carries an
- *   id the current MissionConstants no longer knows about cannot
- *   produce a broken VM. The resolver returns 'Unknown' as the
- *   label for an id that has no entry — but the normaliser
- *   strips those before the VM is built, so in practice that
- *   path is unreachable on a read.
  *
  * PROFESSIONAL POOL:
  *   getProfessionalPoolViewModel({ period }) projects
  *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
  *   display-shaped rows. Each row carries a `detail` sub-object
  *   with a compact view of the character's physical, personality,
- *   and combat stats. That data is used by the pool's expandable
- *   row UI; nothing else reads it.
- *
- *   The query returns every character who has a junior-or-senior
- *   phase and was never on a professional team during it, minus
- *   the deceased / eliminated / retired. That set is INDEPENDENT
- *   of the query period: a character whose student phase was
- *   1895-1897 shows up at a 1920 query, with availability
- *   "1895-1897".
- *
- *   The aggregator's only job is to partition the returned set
- *   by where the query period sits relative to each character's
- *   availability window:
- *
- *     available    query period is inside [from, to]
- *     historical   query period is outside [from, to]
- *
- *   Both buckets carry the same row shape. Neither bucket drops
- *   a character.
+ *   and combat stats.
  *
  * MATCHMAKING PLANNER:
  *   getMatchmakingPlannerViewModel({ period, targetSize })
- *   returns the two-column planner VM. The planner does NOT
- *   re-rank, re-filter, or exclude. It projects the query and
- *   the team index. Every semantic decision is either in
- *   TeamQueries (who is eligible) or in TeamCore (what the
- *   mutation accepts).
+ *   returns the two-column planner VM.
  *
  * POOL DETAIL BLOCK:
  *   The `detail` sub-object on each pool row carries:
@@ -120,10 +106,6 @@
  *                      hp, mp,
  *                      magic: [ { key, label, value } ]
  *                    }
- *
- *   The magic array only includes non-zero entries. Stats that
- *   are missing fall back to CharacterConstants.STAT_DEFAULT.
- *   Everything is display-ready.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -205,6 +187,18 @@
         _missing.push(
             'TeamQueries.getTeamShortagePeriods'
         );
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getPeriods !== 'function') {
+        _missing.push('TeamQueries.getPeriods');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getCurrentPeriod !== 'function') {
+        _missing.push('TeamQueries.getCurrentPeriod');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getCurrentTeamName !== 'function') {
+        _missing.push('TeamQueries.getCurrentTeamName');
     }
 
     if (!TeamConstants ||
@@ -433,23 +427,13 @@
     //   that is not a string, drops blanks, drops duplicates,
     //   and (when MissionConstants is available) drops ids that
     //   are not known mission types. Returns a fresh array of
-    //   trimmed strings. Order is preserved.
-    //
-    //   A stored record that carries an id the current
-    //   MissionConstants no longer knows about therefore cannot
-    //   produce a VM with a broken entry.
+    //   trimmed strings. Order preserved.
     //
     // resolveSpecialisations:
     //   Turns a normalised id array into [{ id, label }] refs.
-    //   The label comes from MissionConstants.getMissionTypeLabel.
-    //   When MissionConstants is unavailable, the label falls
-    //   back to the id itself, which is a degraded display but
-    //   not a crash.
     //
     // getSpecialisationOptions:
-    //   The full pickable list for the team form. Same shape as
-    //   the mission form's `missionTypes`: [{ id, label }].
-    //   Sorted by label for stable presentation.
+    //   The full pickable list for the team form.
 
     function normaliseSpecialisations(raw) {
         if (!Array.isArray(raw)) { return []; }
@@ -532,6 +516,113 @@
         });
 
         return options;
+    }
+
+    // ============================================================
+    // PERIOD RESOLUTION
+    // ============================================================
+    //
+    // Team detail and form VMs carry the full periods array,
+    // resolved for display. The helper below turns a stored period
+    // into a display-shaped VM.
+
+    function buildPeriodVM(period) {
+        if (!period || typeof period !== 'object') {
+            return null;
+        }
+
+        var style = isNonEmptyString(period.tacticalStyle)
+            ? String(period.tacticalStyle)
+            : '';
+
+        var specIds = normaliseSpecialisations(
+            period.specialisations
+        );
+        var specialisations = resolveSpecialisations(specIds);
+
+        return {
+            startPeriod: isNonEmptyString(period.startPeriod)
+                ? String(period.startPeriod)
+                : '',
+            endPeriod: (period.endPeriod === undefined ||
+                        period.endPeriod === null)
+                ? ''
+                : String(period.endPeriod),
+            name: isNonEmptyString(period.name)
+                ? String(period.name)
+                : 'Unnamed Team',
+            tacticalStyle: style,
+            specialisationIds: specIds,
+            specialisations: specialisations
+        };
+    }
+
+    function buildPeriodsVM(team) {
+        var raw = TeamQueries.getPeriods(team);
+        var result = [];
+        for (var i = 0; i < raw.length; i++) {
+            var vm = buildPeriodVM(raw[i]);
+            if (vm) { result.push(vm); }
+        }
+        return result;
+    }
+
+    /**
+     * Read the current period's display name, tactical style, and
+     * specialisations off a team. Prefers the periods array; falls
+     * back to the legacy scalars for a team that has not been
+     * re-saved since the migration.
+     *
+     * Returns:
+     *   {
+     *     name:              string,
+     *     tacticalStyle:     string,
+     *     specialisationIds: array,
+     *     specialisations:   array
+     *   }
+     */
+    function readCurrentDescriptives(team) {
+        if (!team || typeof team !== 'object') {
+            return {
+                name: 'Unnamed Team',
+                tacticalStyle: '',
+                specialisationIds: [],
+                specialisations: []
+            };
+        }
+
+        var name = TeamQueries.getCurrentTeamName(team);
+
+        // Tactical style: prefer the last period. Fall back to the
+        // legacy scalar.
+        var style = '';
+        var current = TeamQueries.getCurrentPeriod(team);
+        if (current && isNonEmptyString(current.tacticalStyle)) {
+            style = String(current.tacticalStyle);
+        } else if (isNonEmptyString(team.tacticalStyle)) {
+            style = String(team.tacticalStyle);
+        } else if (isNonEmptyString(team.style)) {
+            style = String(team.style);
+        }
+
+        // Specialisations: prefer the last period. Fall back to
+        // the legacy scalar.
+        var rawSpecs = [];
+        if (current && Array.isArray(current.specialisations)) {
+            rawSpecs = current.specialisations;
+        } else if (Array.isArray(team.specialisations)) {
+            rawSpecs = team.specialisations;
+        }
+
+        var specIds = normaliseSpecialisations(rawSpecs);
+        var specialisations = resolveSpecialisations(specIds);
+
+        return {
+            name: name,
+            tacticalStyle: style,
+            specialisationIds: specIds,
+            specialisations: specialisations
+        };
     }
 
     // ============================================================
@@ -755,20 +846,16 @@
             ? resolveMissionName(temporaryMissionId)
             : null;
 
-        // ---- Descriptive fields ----
-        var style = isNonEmptyString(team.style)
-            ? String(team.style)
-            : '';
-        var specialisationIds = normaliseSpecialisations(
-            team.specialisations
-        );
-        var specialisations = resolveSpecialisations(
-            specialisationIds
-        );
+        // ---- Periods and current descriptives ----
+        var periods = buildPeriodsVM(team);
+        var currentDescriptives = readCurrentDescriptives(team);
+        var currentPeriodVM = periods.length > 0
+            ? periods[periods.length - 1]
+            : null;
 
         var viewModel = {
             id: team.id,
-            name: team.name,
+            name: currentDescriptives.name,
             type: team.type,
             typeLabel: typeLabel,
             periodLabel: periodLabel,
@@ -781,18 +868,20 @@
             teamNumber: team.teamNumber || '',
             temporaryMission: temporaryMissionId,
             temporaryMissionName: temporaryMissionName,
-            nameHistory: Array.isArray(team.nameHistory)
-                ? team.nameHistory.slice()
-                : [],
             memberCount: team.members ? team.members.length : 0,
             isActive: team.status === 'active',
             isOperational: TeamQueries.isTeamOperational(team),
             createdAt: team.createdAt || '',
 
-            // Descriptive fields.
-            style: style,
-            specialisationIds: specialisationIds,
-            specialisations: specialisations
+            // Periods model.
+            periods: periods,
+            currentPeriod: currentPeriodVM,
+
+            // Current period's values promoted to top level, so
+            // list-style readers do not have to walk the array.
+            tacticalStyle: currentDescriptives.tacticalStyle,
+            specialisationIds: currentDescriptives.specialisationIds,
+            specialisations: currentDescriptives.specialisations
         };
 
         if (includeMembers) {
@@ -851,8 +940,11 @@
         if (search) {
             var lowerSearch = search.toLowerCase();
             teams = teams.filter(function(team) {
-                return team.name &&
-                    team.name.toLowerCase().indexOf(lowerSearch) !== -1;
+                var currentName =
+                    TeamQueries.getCurrentTeamName(team) || '';
+                return currentName
+                    .toLowerCase()
+                    .indexOf(lowerSearch) !== -1;
             });
         }
 
@@ -876,16 +968,11 @@
                 ? resolveMissionName(temporaryMissionId)
                 : null;
 
-            var specialisationIds = normaliseSpecialisations(
-                team.specialisations
-            );
-            var specialisations = resolveSpecialisations(
-                specialisationIds
-            );
+            var descriptives = readCurrentDescriptives(team);
 
             return {
                 id: team.id,
-                name: team.name,
+                name: descriptives.name,
                 type: team.type,
                 typeLabel: typeLabel,
                 status: team.status || 'active',
@@ -902,11 +989,9 @@
                 temporaryMissionName: temporaryMissionName,
                 createdAt: team.createdAt || '',
 
-                style: isNonEmptyString(team.style)
-                    ? String(team.style)
-                    : '',
-                specialisationIds: specialisationIds,
-                specialisations: specialisations
+                tacticalStyle: descriptives.tacticalStyle,
+                specialisationIds: descriptives.specialisationIds,
+                specialisations: descriptives.specialisations
             };
         });
 
@@ -1004,7 +1089,7 @@
 
         return {
             teamId: team.id,
-            teamName: team.name,
+            teamName: TeamQueries.getCurrentTeamName(team),
             teamType: team.type,
             typeLabel: typeLabel,
             period: periodNum,
@@ -1119,14 +1204,35 @@
             }
         }
 
-        var specialisationIds = normaliseSpecialisations(
-            t.specialisations
-        );
+        var periodsVM = buildPeriodsVM(team);
+
+        // On a create form, no periods exist yet. Synthesise a
+        // single empty period so the editor has something to
+        // render, seeded with the current calendar year.
+        if (periodsVM.length === 0) {
+            periodsVM.push({
+                startPeriod: String(new Date().getFullYear()),
+                endPeriod: '',
+                name: '',
+                tacticalStyle: '',
+                specialisationIds: [],
+                specialisations: []
+            });
+        }
+
+        var currentDescriptives = team
+            ? readCurrentDescriptives(team)
+            : {
+                name: '',
+                tacticalStyle: '',
+                specialisationIds: [],
+                specialisations: []
+            };
 
         return {
             isEdit: isEdit,
             teamId: t.id || null,
-            name: t.name || '',
+            name: currentDescriptives.name,
             type: t.type || 'professional',
             startPeriod: t.startPeriod || '',
             endPeriod: t.endPeriod || '',
@@ -1135,15 +1241,9 @@
             teamNumber: t.teamNumber || '',
             temporaryMission: t.temporaryMission || '',
             currentRank: TeamQueries.getCurrentRank(team),
-            nameHistory: Array.isArray(t.nameHistory)
-                ? t.nameHistory.slice()
-                : [],
 
-            // Descriptive fields.
-            style: isNonEmptyString(t.style)
-                ? String(t.style)
-                : '',
-            specialisations: specialisationIds,
+            // Periods model.
+            periods: periodsVM,
             specialisationOptions: getSpecialisationOptions(),
 
             classOptions: classOptions,
@@ -1342,7 +1442,7 @@
 
         return {
             teamId: team.id,
-            teamName: team.name,
+            teamName: TeamQueries.getCurrentTeamName(team),
             teamClassId: teamClassId,
             period: membersVM ? membersVM.period : null,
             members: membersVM ? membersVM.members : [],
@@ -1367,7 +1467,7 @@
 
         return {
             teamId: team.id,
-            teamName: team.name,
+            teamName: TeamQueries.getCurrentTeamName(team),
             currentRank: summary.current || '',
             history: summary.history,
             historyCount: summary.total,
@@ -1396,10 +1496,6 @@
     // ============================================================
     // POOL DETAIL BLOCK
     // ============================================================
-    //
-    // Compact view of a character's physical, personality, and
-    // combat stats. Display-ready. Used by the pool's expandable
-    // row UI. Never persisted.
 
     function getCharacterConstantsSafe() {
         return getCharacterConstants();
@@ -1524,8 +1620,6 @@
             ? char.magic
             : {};
 
-        // Determine key order and labels. Prefer MagicConstants if
-        // loaded; fall back to the object's own keys.
         var keys = [];
         if (MC && typeof MC.getTypeKeys === 'function') {
             keys = MC.getTypeKeys();
@@ -1630,9 +1724,6 @@
                 record.assignment.currentTeamName;
         }
 
-        // Load the source character record for the detail block.
-        // The personnel record carries identity and eligibility
-        // but not the full profile.
         var char = CharacterQueries.getCharacterById(
             record.characterId
         );
@@ -1839,16 +1930,6 @@
             return a.displayName.localeCompare(b.displayName);
         });
 
-        // ---- Shortage history. ----
-        //
-        // Returns every run of years between the team's start and
-        // the planning period where the active member count was
-        // strictly below targetSize. An empty array means the
-        // team has never been short.
-        //
-        // The display string is a run-length encoding:
-        //   "1930–1931, 1935–present"
-        // A null `to` renders as "present".
         var shortagePeriods = [];
         try {
             shortagePeriods = TeamQueries.getTeamShortagePeriods(
@@ -1866,7 +1947,7 @@
 
         return {
             teamId: String(team.id),
-            teamName: team.name || 'Unnamed Team',
+            teamName: TeamQueries.getCurrentTeamName(team),
             memberCount: memberCount,
             targetSize: targetSize,
             remainingCapacity: targetSize - memberCount,
@@ -1878,14 +1959,6 @@
         };
     }
 
-    /**
-     * Render a shortage-periods array as a compact human string.
-     *
-     * Empty array             -> ''
-     * [{ from: 1930, to: 1931 }] -> '1930–1931'
-     * [{ from: 1935, to: null }] -> '1935–present'
-     * Multiple                -> joined with ', '
-     */
     function formatShortagePeriods(periods) {
         if (!Array.isArray(periods) || periods.length === 0) {
             return '';
