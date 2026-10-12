@@ -1866,6 +1866,17 @@
 
         promise.then(function(result) {
             if (!result || !result.success) {
+                // Surface the failure to the user. Previously this
+                // branch returned silently, which made every
+                // validation failure inside TeamCore.updateTeam
+                // invisible: the form stayed open, no toast
+                // appeared, and the console showed nothing. The
+                // message from TeamCore is the actionable detail.
+                notify(
+                    'Failed to save team: ' +
+                    ((result && result.message) || 'Unknown error'),
+                    'error'
+                );
                 return;
             }
 
