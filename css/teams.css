@@ -25,6 +25,7 @@
  *   - Team Matchmaking modal (.matchmaking-*)
  *   - Matchmaking Planner modal (.planner-*)
  *   - Team Verifier modal (.verifier-*)
+ *   - Team Export Picker modal (.team-export-*)
  *   - Pending-members strip on the team form (.team-form-pending-*)
  *   - Page header actions wrapper (.page-header-actions)
  *
@@ -2390,6 +2391,337 @@
 
     .verifier-finding-character {
         margin-left: 0;
+    }
+}
+
+/* ============================================================
+   TEAM EXPORT PICKER MODAL
+   ============================================================
+   Two modes:
+
+     PERIOD PICKER (primary)
+       Opened from a team row's Export button. Scoped to one
+       team. The modal shows only that team's periods and asks
+       which one to export. No team list.
+
+       - 1 period: a read-only confirmation card, then Export.
+       - >1 periods: a radio list of periods, current
+         preselected.
+
+     TEAM LIST (fallback)
+       Opened with no teamId. Shows every exportable team with
+       a per-row Export button. Academic teams are excluded.
+
+   HTML class surface:
+
+     .team-export-picker-body          modal body scroll wrapper
+     .team-export-picker-footer        footer actions wrapper
+     .team-export-picker-error         inline error region
+
+     .team-export-period-single        read-only single card
+     .team-export-period-selector      radio group wrapper
+     .team-export-period-header        "Period to export" label
+     .team-export-period-list          radio rows stack
+     .team-export-period-option        one radio row
+     .team-export-period-option
+       .is-selected                    the checked row
+     .team-export-period-body          label body wrapper
+     .team-export-period-name          period name
+     .team-export-period-current       "(current)" badge
+     .team-export-period-range         year range
+
+     .team-export-list                 team rows stack
+     .team-export-row                  one team row
+     .team-export-row-highlight        highlight variant
+     .team-export-row-selected         selection variant
+     .team-export-row-info             text column
+     .team-export-row-name             team name line
+     .team-export-row-meta             meta line
+
+   ============================================================ */
+
+/* ---------- Body ---------- */
+
+.team-export-picker-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 65vh;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+/* ---------- Footer ---------- */
+
+.team-export-picker-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.team-export-picker-footer button {
+    font-size: 0.75rem;
+    padding: 6px 16px;
+}
+
+/* ============================================================
+   SINGLE-PERIOD CONFIRMATION CARD
+   ============================================================
+   Shown when the team has exactly one period. No radio group
+   is rendered; the period is displayed read-only.
+   ============================================================ */
+
+.team-export-period-single {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+}
+
+.team-export-period-single .team-export-period-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.team-export-period-single .team-export-period-range {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
+   PERIOD SELECTOR (multi-period)
+   ============================================================
+   The radio group shown above the confirm row when the scoped
+   team has more than one period. One row per period; the
+   current (last) period is preselected and badged.
+   ============================================================ */
+
+.team-export-period-selector {
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.team-export-period-header {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+}
+
+.team-export-period-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.team-export-period-option {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 8px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+
+.team-export-period-option:hover {
+    background: var(--bg);
+    border-left-color: var(--text-dim);
+}
+
+.team-export-period-option.is-selected {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+}
+
+.team-export-period-option input[type="radio"] {
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    align-self: center;
+}
+
+.team-export-period-body {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.team-export-period-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-export-period-current {
+    font-size: 0.6rem;
+    font-weight: 500;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-left: 4px;
+}
+
+.team-export-period-range {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+/* ============================================================
+   TEAM LIST (list-mode fallback)
+   ============================================================ */
+
+.team-export-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.team-export-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--border);
+    border-radius: 6px;
+    transition: background 0.12s, border-color 0.12s;
+}
+
+.team-export-row:hover {
+    background: var(--panel-alt);
+}
+
+.team-export-row-highlight {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.team-export-row-selected {
+    border-left-color: var(--accent);
+}
+
+.team-export-row-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.team-export-row-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-export-row-meta {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-export-row button {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    padding: 4px 12px;
+    white-space: nowrap;
+}
+
+/* ============================================================
+   INLINE ERROR REGION
+   ============================================================
+   The element carries most of its styling inline from the
+   renderer so a failure can be shown without waiting for the
+   stylesheet. This rule exists so the class has a stable
+   selector for future restyling.
+   ============================================================ */
+
+.team-export-picker-error {
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+/* ============================================================
+   TEAM EXPORT PICKER — MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .team-export-picker-body {
+        max-height: none;
+    }
+
+    .team-export-picker-footer {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+
+    .team-export-picker-footer button {
+        width: 100%;
+    }
+
+    .team-export-period-single {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .team-export-period-single .team-export-period-range {
+        margin-left: 0;
+    }
+
+    .team-export-period-range {
+        margin-left: 0;
+    }
+
+    .team-export-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .team-export-row button {
+        width: 100%;
     }
 }
 
