@@ -16,8 +16,7 @@
  *   - Own the timeline's range and expanded-years state.
  *   - Own the professional pool's expansion and selection state.
  *   - Own the TEAM LIST's selection set (for bulk export).
- *   - Own the form's specialisation chip list (DOM-only until
- *     submit).
+ *   - Own the periods editor's DOM-only staging.
  *   - Open the team export picker and the candidate export.
  *   - Open the team verifier modal.
  *   - Open the kill-team modal.
@@ -34,6 +33,7 @@
  *     TeamKillModal owns them.
  *   - The single-file bulk export. TeamExport owns it.
  *   - The specialisation vocabulary. MissionConstants owns it.
+ *   - The periods shape. TeamCore owns the schema.
  *
  * VIEW MODES:
  *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
@@ -43,57 +43,45 @@
  *   _poolExpandedIds  { [characterId]: true }
  *   _poolSelectedIds  { [characterId]: true }
  *
- *   Both are reset when:
- *     - the view mode changes away from 'pool'
- *     - the tab changes away from 'professional'
- *     - init/destroy
- *
- *   Both are passed onto the page VM by refreshUI.
- *
  * TEAM SELECTION STATE:
  *   _teamSelectedIds  { [teamId]: true }
  *
- *   The set of teams ticked via the per-row checkbox. Feeds the
- *   bulk Export button on the page header. Reset when:
- *     - the tab changes
- *     - init/destroy
- *
- *   Selection SURVIVES view mode changes within a tab.
- *
- * EXPORT BUTTONS:
- *   There are two export surfaces:
- *
- *     Page header Export button (#team-export-btn)
- *       Bulk. Exports every ticked team into ONE file. Disabled
- *       when the selection is empty. Present on both professional
- *       and civilian tabs.
- *
- *     Per-row .export-team button
- *       Single team. Exports that team directly with no picker.
- *       The picker's direct mode is used, so the user does not
- *       see a list.
- *
- * FORM SPECIALISATIONS:
- *   The team form carries a chip-list editor for the team's
- *   specialisations. Unlike the mission form's team editor, the
- *   team's specialisation chips are DOM-only until submit: the
- *   form collects the current chip ids on submit and passes them
- *   to TeamCore. There is no incremental pipeline write per chip.
+ * PERIODS EDITOR:
+ *   The team form's periods editor is a DOM-only staging area.
+ *   Rows can be added, removed, reordered by the user; chip
+ *   lists within each row can be edited. Nothing hits the store
+ *   until submit, when collectPeriodsFromForm reads every row
+ *   back out.
  *
  *   Handlers:
  *
- *     .team-specialisation-add   click  — appends a chip for the
- *                                        current select value
- *     .team-specialisation-remove click — removes the chip it is
- *                                        inside
+ *     #add-team-period-btn         appends a new row
+ *     .team-period-remove          removes the row it is inside
+ *     .team-period-specialisation-add
+ *                                  adds a chip within its row
+ *     .team-specialisation-remove  removes the chip it is inside
  *
- *   Both are bound inside bindTeamFormEvents, on the modal, not
- *   through the container delegation chain. The form is its own
- *   modal shell and is not a descendant of the teams container.
+ *   The add-row handler inherits the previous row's tactical
+ *   style and specialisations, per the periods model. The new
+ *   row's start year defaults to the current application year;
+ *   the previous row's end year is auto-set to (start - 1) unless
+ *   the user has already given it an explicit end.
+ *
+ *   All four handlers bind on the modal, not through the
+ *   container delegation chain. The form is its own modal shell
+ *   and is not a descendant of the teams container.
+ *
+ * EXPORT BUTTONS:
+ *   Page header Export button (#team-export-btn)
+ *     Bulk. Exports every ticked team into ONE file.
+ *
+ *   Per-row .export-team button
+ *     Single team. Exports that team directly with no picker
+ *     when it has one period; opens the picker when it has more
+ *     than one, so the user chooses which period to export.
  *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
- *   Defaults are (currentYear - 20, currentYear + 5) on first use.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -167,6 +155,10 @@
         typeof TeamQueries.getRankingSummary !== 'function') {
         _missing.push('TeamQueries.getRankingSummary');
     }
+    if (!TeamQueries ||
+        typeof TeamQueries.getPeriods !== 'function') {
+        _missing.push('TeamQueries.getPeriods');
+    }
 
     if (!TeamAggregator ||
         typeof TeamAggregator.getTeamPageViewModel !== 'function') {
@@ -231,10 +223,6 @@
     if (!TeamRender ||
         typeof TeamRender.renderRankingList !== 'function') {
         _missing.push('TeamRender.renderRankingList');
-    }
-    if (!TeamRender ||
-        typeof TeamRender.renderNameHistoryRow !== 'function') {
-        _missing.push('TeamRender.renderNameHistoryRow');
     }
 
     if (!TeamMatchmakingView ||
@@ -343,6 +331,38 @@
         return out;
     }
 
+    function escapeHtml(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        if (window.DomUtils &&
+            typeof window.DomUtils.escapeAttribute === 'function') {
+            return window.DomUtils.escapeAttribute(value);
+        }
+        return escapeHtml(value);
+    }
+
+    function getApplicationYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' &&
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
+        }
+        return new Date().getFullYear();
+    }
+
     // ============================================================
     // STATE
     // ============================================================
@@ -363,9 +383,6 @@
     var _poolExpandedIds = Object.create(null);
     var _poolSelectedIds = Object.create(null);
 
-    // Team list selection, for the bulk export. Keyed by teamId,
-    // value true. Cleared on tab change and init/destroy; kept
-    // across view mode changes within the same tab.
     var _teamSelectedIds = Object.create(null);
 
     var _pendingTeamMemberIds = null;
@@ -436,16 +453,6 @@
         return null;
     }
 
-    function getApplicationYear() {
-        var data = window.data || {};
-        if (typeof data.currentYear === 'number' &&
-            isFinite(data.currentYear) &&
-            data.currentYear > 0) {
-            return Math.floor(data.currentYear);
-        }
-        return null;
-    }
-
     // ============================================================
     // RENDER
     // ============================================================
@@ -476,13 +483,6 @@
         }
 
         pageVM.viewMode = _viewMode;
-
-        // ---- Team list selection. ----
-        //
-        // Passed through unconditionally, not only when the
-        // current view is 'teams'. The header Export button is
-        // rendered on every view, and it needs the count from
-        // this set.
         pageVM.teamSelectedIds = _teamSelectedIds;
 
         if (currentTab === 'professional' && _viewMode === 'pool') {
@@ -638,9 +638,6 @@
 
             var previousTab = TeamUI.getCurrentTab();
             if (tab !== previousTab) {
-                // Selection is per-tab. Drop it when the tab
-                // changes so the bulk Export button's count
-                // reflects what is actually on screen.
                 _teamSelectedIds = Object.create(null);
             }
 
@@ -677,11 +674,6 @@
             if (mode === _viewMode) { return; }
 
             _viewMode = mode;
-
-            // NOTE: _teamSelectedIds is deliberately NOT cleared
-            // here. The selection is scoped to the tab, not to
-            // the view mode. Switching to the pool and back must
-            // preserve the ticks.
 
             if (_viewMode !== 'teams') {
                 TeamUI.setExpandedTeamId(null);
@@ -923,14 +915,6 @@
     // ============================================================
     // TEAM SELECTION (bulk export)
     // ============================================================
-    //
-    // The per-row checkbox toggles membership in the team
-    // selection set. The header Export button reads the set.
-    //
-    // The checkbox lives inside the row, so the change event has
-    // to stopPropagation to keep from also triggering any row
-    // click. The row does not currently have a click handler, but
-    // adding one later should not require touching this code.
 
     function bindTeamSelection() {
         delegate(
@@ -950,10 +934,6 @@
                     delete _teamSelectedIds[String(teamId)];
                 }
 
-                // Re-render. The header Export button's label
-                // and disabled state depend on the count, so
-                // it needs to update even though the checkbox
-                // state is already reflected in the DOM.
                 refreshUI();
             }
         );
@@ -1073,20 +1053,6 @@
         }
     }
 
-    function escapeHtml(value) {
-        if (window.DomUtils &&
-            typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) { return ''; }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
     function bindTeamFormEvents(modal, contentEl) {
         var form = contentEl.querySelector('#team-form-inner');
         if (!form) { return; }
@@ -1109,74 +1075,52 @@
             cancelBtn.addEventListener('click', close);
         }
 
-        var addNameBtn = contentEl.querySelector(
-            '#add-name-history-btn'
-        );
-        if (addNameBtn) {
-            addNameBtn.addEventListener('click', function() {
-                var containerEl = form.querySelector(
-                    '#name-history-container'
-                );
-                if (!containerEl) { return; }
-                var wrapper = document.createElement('div');
-                wrapper.innerHTML =
-                    TeamRender.renderNameHistoryRow(null);
-                containerEl.appendChild(
-                    wrapper.firstElementChild
-                );
-            });
-        }
+        // ---- Periods editor: add / remove / chips ----
 
-        // ---- Specialisations: add / remove ----
-        //
-        // Both handlers are bound directly on the modal content.
-        // The form is its own modal shell, not a descendant of
-        // the teams container, so the delegated container
-        // listeners do not reach it.
-
-        var specAddBtn = contentEl.querySelector(
-            '.team-specialisation-add'
+        var addPeriodBtn = contentEl.querySelector(
+            '#add-team-period-btn'
         );
-        if (specAddBtn) {
-            specAddBtn.addEventListener('click', function() {
-                appendSpecialisationChip(form);
+        if (addPeriodBtn) {
+            addPeriodBtn.addEventListener('click', function() {
+                appendPeriodRow(form);
             });
         }
 
         contentEl.addEventListener('click', function(e) {
-            var removeBtn = e.target.closest
-                ? e.target.closest('.team-specialisation-remove')
-                : null;
-            if (!removeBtn) { return; }
-            e.preventDefault();
-            removeSpecialisationChip(form, removeBtn);
-        });
-
-        contentEl.addEventListener('click', function(e) {
-            var removeBtn = e.target.closest
-                ? e.target.closest('.remove-name')
-                : null;
-            if (!removeBtn) { return; }
-            e.preventDefault();
-
-            var entry = removeBtn.closest(
-                '.name-history-entry'
-            );
-            if (!entry) { return; }
-            var parent = entry.parentElement;
-            if (!parent) { return; }
-
-            if (parent.querySelectorAll(
-                '.name-history-entry'
-            ).length <= 1) {
-                notify(
-                    'You need at least one name entry.',
-                    'error'
-                );
+            var target = e.target;
+            if (!target || typeof target.closest !== 'function') {
                 return;
             }
 
-            entry.remove();
+            // ---- Remove a period row ----
+            var removePeriodBtn = target.closest(
+                '.team-period-remove'
+            );
+            if (removePeriodBtn) {
+                e.preventDefault();
+                removePeriodRow(form, removePeriodBtn);
+                return;
+            }
+
+            // ---- Add a specialisation chip in this row ----
+            var addSpecBtn = target.closest(
+                '.team-period-specialisation-add'
+            );
+            if (addSpecBtn) {
+                e.preventDefault();
+                appendSpecialisationChip(addSpecBtn);
+                return;
+            }
+
+            // ---- Remove a specialisation chip ----
+            var removeSpecBtn = target.closest(
+                '.team-specialisation-remove'
+            );
+            if (removeSpecBtn) {
+                e.preventDefault();
+                removeSpecialisationChip(removeSpecBtn);
+                return;
+            }
         });
 
         form.addEventListener('submit', function(e) {
@@ -1186,42 +1130,533 @@
     }
 
     // ============================================================
-    // SPECIALISATION CHIP EDITOR (form)
+    // PERIODS EDITOR
     // ============================================================
     //
-    // Appends a chip for the currently-selected option in
-    // #team-specialisation-select, and removes the chip the
-    // remove button lives inside.
-    //
-    // Neither handler touches the pipeline. The chips are a
-    // DOM-only staging area; saveTeam reads them back out and
-    // passes the ids to TeamCore. On a failed save, nothing has
-    // been written and the modal stays open with the chips in
-    // place.
+    // All four helpers below operate on the DOM only. Nothing
+    // hits the store until saveTeam runs.
 
-    function appendSpecialisationChip(form) {
-        var select = form.querySelector(
-            '#team-specialisation-select'
-        );
-        var list = form.querySelector(
-            '#team-specialisations-list'
-        );
-        if (!select || !list) { return; }
+    /**
+     * Append a new period row to the periods list.
+     *
+     * The new row inherits the previous row's tactical style and
+     * specialisations (per the periods model). Its start year is
+     * the current application year; the previous row's end year
+     * is auto-set to (start - 1) unless it already has an
+     * explicit end.
+     *
+     * The new row becomes the LAST row, so its end year input is
+     * disabled and read-only (the open-ended current period). The
+     * previously-last row loses that treatment and gains a normal
+     * end input.
+     */
+    function appendPeriodRow(form) {
+        var list = form.querySelector('#team-periods-list');
+        if (!list) { return; }
 
-        var id = select.value;
-        if (!id) {
+        var rows = list.querySelectorAll('.team-period-row');
+        var lastRow = rows.length > 0
+            ? rows[rows.length - 1]
+            : null;
+
+        var inheritedStyle = '';
+        var inheritedSpecs = [];
+
+        if (lastRow) {
+            var styleEl = lastRow.querySelector(
+                '.team-period-style'
+            );
+            if (styleEl) {
+                inheritedStyle = String(styleEl.value || '');
+            }
+
+            var chipEls = lastRow.querySelectorAll(
+                '.team-specialisation-chip'
+            );
+            for (var c = 0; c < chipEls.length; c++) {
+                var id = chipEls[c].dataset.specialisationId;
+                if (!isNonEmptyString(id)) { continue; }
+                var nameEl = chipEls[c].querySelector(
+                    '.team-specialisation-chip-name'
+                );
+                var label = nameEl
+                    ? String(nameEl.textContent || '')
+                    : id;
+                inheritedSpecs.push({ id: id, label: label });
+            }
+        }
+
+        // ---- Determine the new row's start year ----
+        var newStart = getApplicationYear();
+
+        // ---- Auto-close the previous row at (newStart - 1) ----
+        if (lastRow) {
+            var prevEndEl = lastRow.querySelector(
+                '.team-period-end'
+            );
+            // The previous row was the last, so its end was a
+            // disabled input. Convert it to an editable number
+            // input and set its value.
+            if (prevEndEl) {
+                var wasLastDisabled =
+                    prevEndEl.hasAttribute('disabled');
+                if (wasLastDisabled) {
+                    replaceEndInputWithEditable(
+                        prevEndEl, String(newStart - 1)
+                    );
+                } else {
+                    var currentEnd = String(prevEndEl.value || '');
+                    if (currentEnd === '') {
+                        prevEndEl.value = String(newStart - 1);
+                    }
+                }
+            }
+
+            // Remove the "(open)" hint and its wrapper treatment
+            // on the previous row's end field.
+            var hint = lastRow.querySelector(
+                '.team-period-field-hint'
+            );
+            if (hint && hint.parentNode) {
+                hint.parentNode.removeChild(hint);
+            }
+
+            // The previous row is no longer the last. Update its
+            // data attribute and clear the readonly / disabled
+            // flags on the end input.
+            lastRow.dataset.isLast = 'false';
+        }
+
+        // ---- Build the new row ----
+        var newRowHtml = buildNewPeriodRowHTML(
+            newStart,
+            inheritedStyle,
+            inheritedSpecs,
+            getSpecialisationOptions(form)
+        );
+
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = newRowHtml;
+        var newRow = wrapper.firstElementChild;
+        if (!newRow) { return; }
+
+        list.appendChild(newRow);
+
+        // ---- Re-index every row ----
+        reindexPeriodRows(list);
+
+        // ---- Refresh the remove buttons visibility ----
+        updateRemoveButtons(list);
+
+        // ---- Focus the new row's name input ----
+        var newNameEl = newRow.querySelector('.team-period-name');
+        if (newNameEl && typeof newNameEl.focus === 'function') {
+            setTimeout(function() {
+                try { newNameEl.focus(); } catch (e) {}
+            }, 0);
+        }
+    }
+
+    /**
+     * Replace the previous row's disabled end input with an
+     * editable number input carrying the given value.
+     */
+    function replaceEndInputWithEditable(oldInput, value) {
+        var newInput = document.createElement('input');
+        newInput.type = 'number';
+        newInput.className = 'team-period-end';
+        newInput.min = '1';
+        newInput.value = value;
+        newInput.placeholder = 'Year';
+        if (oldInput && oldInput.parentNode) {
+            oldInput.parentNode.replaceChild(newInput, oldInput);
+        }
+    }
+
+    /**
+     * Build the HTML for a single new period row. Mirrors the
+     * renderer's row markup, but with the new row's data.
+     */
+    function buildNewPeriodRowHTML(
+        startYear, style, specialisations, options
+    ) {
+        var startStr = String(startYear);
+
+        var html = '';
+        html += '<div class="team-period-row" ' +
+                    'data-period-index="0" ' +
+                    'data-is-last="true">';
+
+        html += '<div class="team-period-row-header">';
+        html += '<span class="team-period-row-label">' +
+                    'Period' +
+                '</span>';
+        html += '<button type="button" ' +
+                    'class="small danger team-period-remove" ' +
+                    'data-period-index="0" ' +
+                    'title="Remove this period">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
+
+        html += '<div class="team-period-row-fields">';
+
+        html += '<div class="team-period-field team-period-field-name">';
+        html += '<label class="team-period-field-label">Name</label>';
+        html += '<input type="text" class="team-period-name" ' +
+                    'value="" ' +
+                    'placeholder="e.g., Rapid">';
+        html += '</div>';
+
+        html += '<div class="team-period-field team-period-field-start">';
+        html += '<label class="team-period-field-label">Start</label>';
+        html += '<input type="number" class="team-period-start" ' +
+                    'min="1" value="' +
+                    escapeAttribute(startStr) + '" ' +
+                    'placeholder="Year">';
+        html += '</div>';
+
+        html += '<div class="team-period-field team-period-field-end">';
+        html += '<label class="team-period-field-label">End</label>';
+        html += '<input type="text" class="team-period-end" ' +
+                    'value="" placeholder="present" ' +
+                    'readonly disabled>';
+        html += '<span class="team-period-field-hint">(open)</span>';
+        html += '</div>';
+
+        html += '</div>';
+
+        html += '<div class="team-period-tactical-style-row">';
+        html += '<label class="team-period-field-label">' +
+                    'Tactical Style' +
+                '</label>';
+        html += '<textarea class="team-period-style" rows="3" ' +
+                    'placeholder="How the team works together. ' +
+                    'Fighting style, doctrine, tone.">' +
+                    escapeHtml(style) +
+                '</textarea>';
+        html += '</div>';
+
+        // ---- Specialisations ----
+        html += '<div class="team-period-specialisations-row">';
+        html += '<label class="team-period-field-label">' +
+                    'Specialisations' +
+                '</label>';
+
+        html += '<div class="team-period-specialisation-input-group">';
+        html += buildSpecialisationSelectHTML(
+            specialisations, options
+        );
+        html += '<button type="button" ' +
+                    'class="small primary ' +
+                    'team-period-specialisation-add"' +
+                    (options.length === 0 ? ' disabled' : '') + '>' +
+                    '+ Add' +
+                '</button>';
+        html += '</div>';
+
+        html += '<div class="team-period-specialisation-chips">';
+        if (specialisations.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No specialisations selected.' +
+                    '</p>';
+        } else {
+            for (var i = 0; i < specialisations.length; i++) {
+                var s = specialisations[i];
+                html += renderSpecialisationChipHTML(s.id, s.label);
+            }
+        }
+        html += '</div>';
+
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function buildSpecialisationSelectHTML(selected, options) {
+        var selectedSet = Object.create(null);
+        for (var i = 0; i < selected.length; i++) {
+            selectedSet[selected[i].id] = true;
+        }
+
+        var available = [];
+        for (var j = 0; j < options.length; j++) {
+            var opt = options[j];
+            if (!opt || !isNonEmptyString(opt.id)) { continue; }
+            if (selectedSet[opt.id] === true) { continue; }
+            available.push(opt);
+        }
+
+        var html = '';
+        html += '<select class="team-period-specialisation-select"' +
+                    (available.length === 0 ? ' disabled' : '') + '>';
+
+        if (available.length === 0) {
+            var placeholderText = options.length === 0
+                ? 'No specialisations available'
+                : 'All specialisations already selected';
+            html += '<option value="" disabled selected>' +
+                        escapeHtml(placeholderText) +
+                    '</option>';
+        } else {
+            html += '<option value="">Select...</option>';
+            for (var a = 0; a < available.length; a++) {
+                var avail = available[a];
+                html += '<option value="' +
+                            escapeAttribute(avail.id) + '">' +
+                            escapeHtml(avail.label) +
+                        '</option>';
+            }
+        }
+
+        html += '</select>';
+        return html;
+    }
+
+    function renderSpecialisationChipHTML(id, label) {
+        var html = '';
+        html += '<div class="team-specialisation-chip" ' +
+                    'data-specialisation-id="' +
+                        escapeAttribute(id) + '">';
+        html += '<span class="team-specialisation-chip-name">' +
+                    escapeHtml(label) +
+                '</span>';
+        html += '<button type="button" class="small danger ' +
+                    'team-specialisation-remove" ' +
+                    'data-specialisation-id="' +
+                        escapeAttribute(id) + '">' +
+                    '\u2715' +
+                '</button>';
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Read the specialisation options off the form's first row.
+     * The renderer emits them as <option> elements inside the
+     * select; we harvest the id/label pairs from there so the new
+     * row's select shows the same vocabulary.
+     */
+    function getSpecialisationOptions(form) {
+        var result = [];
+        var seen = Object.create(null);
+
+        var selects = form.querySelectorAll(
+            '.team-period-specialisation-select'
+        );
+        for (var s = 0; s < selects.length; s++) {
+            var opts = selects[s].querySelectorAll('option');
+            for (var o = 0; o < opts.length; o++) {
+                var opt = opts[o];
+                var id = String(opt.value || '');
+                if (id === '') { continue; }
+                if (seen[id]) { continue; }
+                seen[id] = true;
+                result.push({
+                    id: id,
+                    label: String(opt.textContent || id)
+                });
+            }
+        }
+
+        // Any option already selected in an existing row is
+        // included too — the renderer removes it from the select
+        // when it is a chip, but the vocabulary must still be
+        // complete for other rows.
+        var chips = form.querySelectorAll(
+            '.team-specialisation-chip'
+        );
+        for (var c = 0; c < chips.length; c++) {
+            var chipId = chips[c].dataset.specialisationId;
+            if (!isNonEmptyString(chipId)) { continue; }
+            if (seen[chipId]) { continue; }
+            var nameEl = chips[c].querySelector(
+                '.team-specialisation-chip-name'
+            );
+            var label = nameEl
+                ? String(nameEl.textContent || '')
+                : chipId;
+            seen[chipId] = true;
+            result.push({ id: chipId, label: label });
+        }
+
+        result.sort(function(a, b) {
+            return a.label.localeCompare(b.label);
+        });
+
+        return result;
+    }
+
+    /**
+     * Remove the period row the button lives inside.
+     *
+     * The last remaining row is never removed: a team must always
+     * have at least one period. The button is not rendered when
+     * there is only one row, but a defensive check here protects
+     * against a stale button.
+     */
+    function removePeriodRow(form, button) {
+        var list = form.querySelector('#team-periods-list');
+        if (!list) { return; }
+
+        var rows = list.querySelectorAll('.team-period-row');
+        if (rows.length <= 1) {
             notify(
-                'Select a specialisation first.',
+                'A team must have at least one period.',
                 'warning'
             );
             return;
         }
 
-        // A chip for this id may already exist. The renderer
-        // removes the option from the select when a chip is
-        // present, but a stale value could survive a re-render
-        // that did not rebuild the select. Guard anyway.
-        var existing = list.querySelectorAll(
+        var row = button.closest
+            ? button.closest('.team-period-row')
+            : null;
+        if (!row) { return; }
+
+        var wasLast = row.dataset.isLast === 'true';
+        row.parentNode.removeChild(row);
+
+        // ---- If the removed row was the last one, the new last
+        //      row becomes the open-ended current period. ----
+        if (wasLast) {
+            var remaining = list.querySelectorAll(
+                '.team-period-row'
+            );
+            var newLast = remaining[remaining.length - 1];
+            if (newLast) {
+                promoteToCurrentPeriod(newLast);
+            }
+        }
+
+        reindexPeriodRows(list);
+        updateRemoveButtons(list);
+    }
+
+    /**
+     * Turn a row into the open-ended current period: disable and
+     * clear its end input, add the "(open)" hint, set the
+     * data-is-last flag.
+     */
+    function promoteToCurrentPeriod(row) {
+        row.dataset.isLast = 'true';
+
+        var endEl = row.querySelector('.team-period-end');
+        if (endEl) {
+            // Replace with a disabled, read-only text input.
+            var replacement = document.createElement('input');
+            replacement.type = 'text';
+            replacement.className = 'team-period-end';
+            replacement.value = '';
+            replacement.placeholder = 'present';
+            replacement.readOnly = true;
+            replacement.disabled = true;
+
+            if (endEl.parentNode) {
+                endEl.parentNode.replaceChild(replacement, endEl);
+            }
+        }
+
+        // Add the "(open)" hint if not present.
+        var fieldEnd = row.querySelector(
+            '.team-period-field-end'
+        );
+        if (fieldEnd && !fieldEnd.querySelector(
+            '.team-period-field-hint'
+        )) {
+            var hint = document.createElement('span');
+            hint.className = 'team-period-field-hint';
+            hint.textContent = '(open)';
+            fieldEnd.appendChild(hint);
+        }
+    }
+
+    /**
+     * Renumber every row's data-period-index and the labels on
+     * their remove buttons.
+     */
+    function reindexPeriodRows(list) {
+        var rows = list.querySelectorAll('.team-period-row');
+        for (var i = 0; i < rows.length; i++) {
+            rows[i].dataset.periodIndex = String(i);
+
+            var label = rows[i].querySelector(
+                '.team-period-row-label'
+            );
+            if (label) {
+                var isLast = rows[i].dataset.isLast === 'true';
+                label.textContent = isLast
+                    ? 'Period ' + (i + 1) + ' (current)'
+                    : 'Period ' + (i + 1);
+            }
+
+            var removeBtn = rows[i].querySelector(
+                '.team-period-remove'
+            );
+            if (removeBtn) {
+                removeBtn.dataset.periodIndex = String(i);
+            }
+        }
+    }
+
+    /**
+     * Show or hide the remove button on each row. The remove is
+     * hidden when there is only one row.
+     */
+    function updateRemoveButtons(list) {
+        var rows = list.querySelectorAll('.team-period-row');
+        var showRemove = rows.length > 1;
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var existing = row.querySelector(
+                '.team-period-remove'
+            );
+
+            if (showRemove && !existing) {
+                var header = row.querySelector(
+                    '.team-period-row-header'
+                );
+                if (!header) { continue; }
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'small danger team-period-remove';
+                btn.dataset.periodIndex = String(i);
+                btn.title = 'Remove this period';
+                btn.textContent = '\u2715';
+                header.appendChild(btn);
+            } else if (!showRemove && existing) {
+                existing.parentNode.removeChild(existing);
+            }
+        }
+    }
+
+    /**
+     * Append a specialisation chip to the row the Add button
+     * lives in. Refuses duplicates within the same row.
+     */
+    function appendSpecialisationChip(addButton) {
+        var row = addButton.closest
+            ? addButton.closest('.team-period-row')
+            : null;
+        if (!row) { return; }
+
+        var select = row.querySelector(
+            '.team-period-specialisation-select'
+        );
+        var chipsHost = row.querySelector(
+            '.team-period-specialisation-chips'
+        );
+        if (!select || !chipsHost) { return; }
+
+        var id = select.value;
+        if (!id) {
+            notify('Select a specialisation first.', 'warning');
+            return;
+        }
+
+        // Duplicate check within the row.
+        var existing = chipsHost.querySelectorAll(
             '.team-specialisation-chip'
         );
         for (var i = 0; i < existing.length; i++) {
@@ -1238,58 +1673,124 @@
         var label = '';
         for (var o = 0; o < select.options.length; o++) {
             if (select.options[o].value === id) {
-                label = select.options[o].textContent;
+                label = String(select.options[o].textContent || '');
                 break;
             }
         }
         if (!label) { label = id; }
 
-        var empty = list.querySelector('.empty-state');
-        if (empty) { empty.remove(); }
+        var empty = chipsHost.querySelector('.empty-state');
+        if (empty) {
+            empty.parentNode.removeChild(empty);
+        }
 
-        var chip = document.createElement('div');
-        chip.className = 'team-specialisation-chip';
-        chip.dataset.specialisationId = id;
-        chip.innerHTML =
-            '<span class="team-specialisation-chip-name">' +
-                escapeHtml(label) +
-            '</span>' +
-            '<button type="button" class="small danger ' +
-                'team-specialisation-remove" ' +
-                'data-specialisation-id="' +
-                    escapeAttribute(id) + '">' +
-                '\u2715' +
-            '</button>';
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = renderSpecialisationChipHTML(id, label);
+        var chip = wrapper.firstElementChild;
+        if (chip) {
+            chipsHost.appendChild(chip);
+        }
 
-        list.appendChild(chip);
+        // Remove the now-used option from the select so it does
+        // not appear twice.
+        for (var s = 0; s < select.options.length; s++) {
+            if (select.options[s].value === id) {
+                select.removeChild(select.options[s]);
+                break;
+            }
+        }
         select.value = '';
+
+        // If the select just became empty, disable it and set a
+        // placeholder.
+        if (select.options.length === 0) {
+            select.disabled = true;
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.disabled = true;
+            placeholder.selected = true;
+            placeholder.textContent =
+                'All specialisations already selected';
+            select.appendChild(placeholder);
+        }
     }
 
-    function removeSpecialisationChip(form, button) {
+    /**
+     * Remove the specialisation chip the button lives inside.
+     * Restores the option to the row's select.
+     */
+    function removeSpecialisationChip(button) {
         var chip = button.closest
             ? button.closest('.team-specialisation-chip')
             : null;
         if (!chip) { return; }
 
-        var list = chip.parentNode;
-        chip.remove();
+        var id = chip.dataset.specialisationId;
+        var label = '';
+        var nameEl = chip.querySelector(
+            '.team-specialisation-chip-name'
+        );
+        if (nameEl) {
+            label = String(nameEl.textContent || '');
+        }
 
-        if (list && list.querySelectorAll(
+        var row = chip.closest('.team-period-row');
+        var chipsHost = chip.parentNode;
+        chip.parentNode.removeChild(chip);
+
+        if (chipsHost && chipsHost.querySelectorAll(
             '.team-specialisation-chip'
         ).length === 0) {
             var empty = document.createElement('p');
             empty.className = 'empty-state small';
             empty.textContent = 'No specialisations selected.';
-            list.appendChild(empty);
+            chipsHost.appendChild(empty);
         }
-    }
 
-    function escapeAttribute(value) {
-        if (window.DomUtils &&
-            typeof window.DomUtils.escapeAttribute === 'function') {
-            return window.DomUtils.escapeAttribute(value);
+        // ---- Restore the option to the select ----
+        if (row && id) {
+            var select = row.querySelector(
+                '.team-period-specialisation-select'
+            );
+            if (select) {
+                // If the select was disabled with the "all selected"
+                // placeholder, clear it first.
+                if (select.disabled) {
+                    select.innerHTML = '';
+                    select.disabled = false;
+                    var initial = document.createElement('option');
+                    initial.value = '';
+                    initial.textContent = 'Select...';
+                    select.appendChild(initial);
+                }
+
+                // Insert in alphabetical order among the existing
+                // options, so the list stays sorted.
+                var newOption = document.createElement('option');
+                newOption.value = id;
+                newOption.textContent = label || id;
+
+                var inserted = false;
+                var opts = select.querySelectorAll('option');
+                for (var i = 1; i < opts.length; i++) {
+                    var optLabel = String(
+                        opts[i].textContent || ''
+                    );
+                    if ((label || id).localeCompare(optLabel) < 0) {
+                        select.insertBefore(
+                            newOption, opts[i]
+                        );
+                        inserted = true;
+                        break;
+                    }
+                }
+                if (!inserted) {
+                    select.appendChild(newOption);
+                }
+
+                select.value = '';
+            }
         }
-        return escapeHtml(value);
     }
 
     // ============================================================
@@ -1301,16 +1802,13 @@
 
         var nameEl = form.querySelector('#team-name');
         var typeEl = form.querySelector('#team-type');
-        var startEl = form.querySelector('#team-start');
-        var endEl = form.querySelector('#team-end');
         var classEl = form.querySelector('#team-class');
         var numberEl = form.querySelector('#team-number');
         var statusEl = form.querySelector('#team-status');
         var missionEl = form.querySelector('#team-mission');
-        var styleEl = form.querySelector('#team-style');
 
-        var name = nameEl ? nameEl.value.trim() : '';
-        if (!name) {
+        var currentName = nameEl ? nameEl.value.trim() : '';
+        if (!currentName) {
             notify('Team name is required.', 'error');
             return;
         }
@@ -1318,26 +1816,42 @@
         var type = typeEl ? typeEl.value : 'professional';
         var status = statusEl ? statusEl.value : 'active';
 
-        var startPeriod = startEl ? startEl.value : '';
-
         var temporaryMission = missionEl
             ? (missionEl.value || null)
             : null;
 
-        var style = styleEl ? styleEl.value : '';
+        // ---- Collect periods ----
+        var periods = collectPeriodsFromForm(form);
+        if (periods === null) {
+            // collectPeriodsFromForm already notified.
+            return;
+        }
 
+        // ---- The top-level name writes to the last period. ----
+        //
+        // The user may have edited the current name at the top of
+        // the form without touching the periods editor. That
+        // edit is the authoritative value for the current
+        // period's name.
+        if (periods.length > 0) {
+            periods[periods.length - 1].name = currentName;
+        }
+
+        // ---- Build the update payload ----
+        //
+        // We pass the periods array directly. TeamCore reads
+        // periods[last].name as the denormalised name, and reads
+        // periods[0].start / periods[last].end as the scalar
+        // start / end mirrors. There is no separate start / end
+        // input at the top of the form anymore.
         var teamData = {
-            name: name,
+            name: currentName,
             type: type,
-            startPeriod: startPeriod,
-            endPeriod: endEl ? endEl.value : '',
             status: status,
             classId: classEl ? classEl.value : null,
             teamNumber: numberEl ? numberEl.value.trim() : '',
             temporaryMission: temporaryMission,
-            style: style,
-            specialisations: collectSpecialisationIds(form),
-            nameHistory: collectNameHistory(form)
+            periods: periods
         };
 
         var pendingMembers = editId
@@ -1368,11 +1882,18 @@
                 ? String(result.data.team.id)
                 : null;
 
-            var newTeamStartPeriod = result.data &&
+            // The team's start period is now periods[0].start;
+            // use it as the join year for the pending members.
+            var newTeamStartPeriod = '';
+            if (result.data &&
                 result.data.team &&
-                result.data.team.startPeriod
-                ? String(result.data.team.startPeriod)
-                : '';
+                Array.isArray(result.data.team.periods) &&
+                result.data.team.periods.length > 0) {
+                var first = result.data.team.periods[0];
+                if (first && isNonEmptyString(first.startPeriod)) {
+                    newTeamStartPeriod = String(first.startPeriod);
+                }
+            }
 
             if (!pendingMembers ||
                 pendingMembers.length === 0 ||
@@ -1385,9 +1906,10 @@
 
             if (!newTeamStartPeriod) {
                 notify(
-                    'Team created, but Start Period is blank so ' +
-                    'the selected members could not be added. ' +
-                    'Set a Start Period on the team to add them.',
+                    'Team created, but its first period has no ' +
+                    'start year, so the selected members could not ' +
+                    'be added. Set a start year on the first period ' +
+                    'to add them.',
                     'warning'
                 );
                 _pendingTeamMemberIds = null;
@@ -1458,67 +1980,135 @@
     }
 
     /**
-     * Read the current specialisation chips out of the form.
+     * Read every period row out of the form.
      *
-     * Returns an array of ids in DOM order. The submit handler
-     * passes the array to TeamCore, which canonicalises it
-     * (dedupe, validate against MissionConstants, preserve
-     * order).
+     * Returns an array of { startPeriod, endPeriod, name,
+     * tacticalStyle, specialisations }, or null on a validation
+     * failure (with a notification already shown).
      *
-     * An empty list is a valid submission: the team will have no
-     * specialisations. That is the "unselect everything" case,
-     * and it needs to be expressible as a real update.
+     * Validation performed here:
+     *   - name is required on every row
+     *   - start is required and a positive integer
+     *   - end (when present) is a positive integer >= start
+     *   - the last row's end is forced to ''
      */
-    function collectSpecialisationIds(form) {
-        var list = form.querySelector(
-            '#team-specialisations-list'
-        );
-        if (!list) { return []; }
+    function collectPeriodsFromForm(form) {
+        var list = form.querySelector('#team-periods-list');
+        if (!list) {
+            notify('Periods list is missing.', 'error');
+            return null;
+        }
 
-        var chips = list.querySelectorAll(
+        var rows = list.querySelectorAll('.team-period-row');
+        if (rows.length === 0) {
+            notify(
+                'A team must have at least one period.',
+                'error'
+            );
+            return null;
+        }
+
+        var result = [];
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var isLast = (i === rows.length - 1);
+
+            var nameEl = row.querySelector('.team-period-name');
+            var startEl = row.querySelector('.team-period-start');
+            var endEl = row.querySelector('.team-period-end');
+            var styleEl = row.querySelector('.team-period-style');
+
+            var name = nameEl
+                ? String(nameEl.value || '').trim()
+                : '';
+            if (name === '') {
+                notify(
+                    'Period ' + (i + 1) + ' requires a name.',
+                    'error'
+                );
+                return null;
+            }
+
+            var startRaw = startEl
+                ? String(startEl.value || '').trim()
+                : '';
+            var startNum = parsePositiveInteger(startRaw);
+            if (startNum === null) {
+                notify(
+                    'Period ' + (i + 1) +
+                    ' requires a valid start year.',
+                    'error'
+                );
+                return null;
+            }
+
+            // The last row is the open-ended current period.
+            // Its end is always '' regardless of what the input
+            // says (the input is disabled).
+            var endCanon = '';
+            if (!isLast) {
+                var endRaw = endEl
+                    ? String(endEl.value || '').trim()
+                    : '';
+                if (endRaw === '') {
+                    notify(
+                        'Period ' + (i + 1) +
+                        ' requires an end year.',
+                        'error'
+                    );
+                    return null;
+                }
+                var endNum = parsePositiveInteger(endRaw);
+                if (endNum === null) {
+                    notify(
+                        'Period ' + (i + 1) +
+                        ' has an invalid end year.',
+                        'error'
+                    );
+                    return null;
+                }
+                if (endNum < startNum) {
+                    notify(
+                        'Period ' + (i + 1) +
+                        ' ends before it starts.',
+                        'error'
+                    );
+                    return null;
+                }
+                endCanon = String(endNum);
+            }
+
+            var style = styleEl
+                ? String(styleEl.value || '')
+                : '';
+
+            var specialisations = collectSpecialisationIdsFromRow(row);
+
+            result.push({
+                startPeriod: String(startNum),
+                endPeriod: endCanon,
+                name: name,
+                tacticalStyle: style,
+                specialisations: specialisations
+            });
+        }
+
+        return result;
+    }
+
+    function collectSpecialisationIdsFromRow(row) {
+        var chips = row.querySelectorAll(
             '.team-specialisation-chip'
         );
         var ids = [];
         for (var i = 0; i < chips.length; i++) {
             var id = chips[i].dataset.specialisationId;
-            if (id) { ids.push(id); }
+            if (isNonEmptyString(id)) {
+                ids.push(id);
+            }
         }
         return ids;
-    }
-
-    function collectNameHistory(form) {
-        var entries = form.querySelectorAll(
-            '.name-history-entry'
-        );
-        var history = [];
-
-        for (var i = 0; i < entries.length; i++) {
-            var entry = entries[i];
-            var nameEl = entry.querySelector(
-                '.name-history-name'
-            );
-            var startEl = entry.querySelector(
-                '.name-history-start'
-            );
-            var endEl = entry.querySelector(
-                '.name-history-end'
-            );
-
-            var name = nameEl ? nameEl.value.trim() : '';
-            if (!name) { continue; }
-
-            history.push({
-                name: name,
-                startPeriod: startEl
-                    ? startEl.value.trim()
-                    : '',
-                endPeriod: endEl
-                    ? endEl.value.trim()
-                    : ''
-            });
-        }
-
-        return history;
     }
 
     // ============================================================
@@ -1803,16 +2393,6 @@
     // ============================================================
     // EXPORTS
     // ============================================================
-    //
-    // Two surfaces, one binder:
-    //
-    //   #team-export-btn   bulk export of the ticked teams, one file
-    //   .export-team       single-team direct export, no picker
-    //
-    // The single-team path still goes through TeamExportPicker so
-    // the picker's existing single-team download logic is reused.
-    // The picker's direct mode calls TeamExport.exportTeam
-    // immediately and skips the list.
 
     function bindTeamExport() {
         delegate('#team-export-btn', 'click', function(e) {
@@ -1869,11 +2449,6 @@
             }
             notify(msg, 'success');
 
-            // Clear the selection after a successful bulk
-            // export. The file is downloaded; the ticks have
-            // served their purpose. Leaving them selected would
-            // force the user to clear manually before the next
-            // bulk export.
             _teamSelectedIds = Object.create(null);
             refreshUI();
             return;
@@ -2010,12 +2585,28 @@
         delegate('.export-team', 'click', function(e, target) {
             e.preventDefault();
             var teamId = target.dataset.id;
-            if (teamId) {
-                // Direct mode: export this team immediately, no
-                // picker list. The row's Export button already
-                // names the team, so making the user pick it
-                // again from a list is redundant.
+            if (!teamId) { return; }
+
+            // The period picker is only shown when the team has
+            // more than one period. A single-period team exports
+            // directly, matching the previous behaviour.
+            var team = null;
+            try {
+                team = TeamQueries.getTeamById(teamId);
+            } catch (err) {
+                team = null;
+            }
+
+            var periodCount = 0;
+            if (team) {
+                var periods = TeamQueries.getPeriods(team);
+                periodCount = periods.length;
+            }
+
+            if (periodCount <= 1) {
                 openTeamExportPicker(teamId, { direct: true });
+            } else {
+                openTeamExportPicker(teamId, { direct: false });
             }
         });
 
@@ -2088,8 +2679,6 @@
                 TeamUI.setExpandedTeamId(null);
             }
 
-            // Drop the deleted team from the selection set so
-            // the bulk Export button's count stays accurate.
             delete _teamSelectedIds[String(teamId)];
 
             refreshUI();
@@ -2203,7 +2792,7 @@
         var html = '';
         html += '<div class="modal-header">';
         html += '<h3 id="ranking-modal-title">' +
-                    escapeHtmlSafe(vm.teamName) +
+                    escapeHtml(vm.teamName) +
                     ' - Ranking History' +
                 '</h3>';
         html += '<button type="button" class="close-modal">' +
@@ -2224,18 +2813,6 @@
         Modal.showModal(modal);
 
         bindRankingModalEvents(modal, contentEl, teamId);
-    }
-
-    function escapeHtmlSafe(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
     }
 
     function bindRankingModalEvents(modal, contentEl, teamId) {
