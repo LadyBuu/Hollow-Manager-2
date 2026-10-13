@@ -25,33 +25,67 @@
  *     the blob URL, and the filename uniquification. This module
  *     supplies a base filename and hands over the payload.
  *
+ * SELECTIVE IMPORT (MERGE SEMANTICS):
+ *   Importing a JSON fragment updates ONLY the form fields whose keys
+ *   appear in the fragment. Keys absent from the fragment are left
+ *   alone. This makes partial profiles usable: paste
+ *   `{ "personality": { "traits": "Cynical" } }` and only the traits
+ *   input changes; every other field on the form keeps its current
+ *   value.
+ *
+ *   Object-valued keys (personality, magic, specialMoves,
+ *   displayParts) are merged recursively: a sub-key present in the
+ *   fragment overwrites the corresponding form field, and a sub-key
+ *   absent from the fragment is left alone. Arrays (weapons,
+ *   careerStatus, previousNames) are replaced wholesale when the key
+ *   is present, because "merge two weapons lists" has no sensible
+ *   meaning.
+ *
+ *   Fields the form does not edit are not written regardless of what
+ *   the fragment contains:
+ *
+ *     id, createdAt, updatedAt, classIds, parentIds,
+ *     eliminations, eliminatedWeeks, mode
+ *
+ *   These are managed by other modules. If the fragment names any of
+ *   them, they are listed in the import summary as "not applicable"
+ *   so the user knows they were ignored rather than silently applied.
+ *
+ *   The presence of a key in the fragment is the "this section should
+ *   be updated" signal. There is no separate section picker.
+ *
+ * EMPTY-VALUE SEMANTICS:
+ *   A key present with an empty string, null, or an empty object is
+ *   still "present" for merge purposes. That is how the user clears a
+ *   field: paste `{ "eyes": "" }` and the eyes input is emptied.
+ *   Absence, not emptiness, is what leaves a field untouched.
+ *
  * SPECIAL MOVES:
  *   The moves section of the Combat tab is rendered by
  *   CharacterStatsView.renderMovesSection and read back by
- *   CharacterStatsView.collectMovesFromDOM. This module writes
- *   the imported moves into that section by calling
- *   renderMovesSection with a minimal shim carrying only
- *   `specialMoves`. This is what makes an imported character's
- *   moves appear in the form and survive the subsequent Save.
+ *   CharacterStatsView.collectMovesFromDOM. This module writes the
+ *   imported moves into that section by calling renderMovesSection
+ *   with a shim carrying the fragment's moves. When the fragment has
+ *   no specialMoves key, the section is left as-is.
  *
  *   The moves are NOT written to any field id. The DOM list is the
- *   source of truth for the form's moves, and only
- *   CharacterStatsView knows its shape.
+ *   source of truth for the form's moves.
  *
  * DOWNLOAD FILENAMES:
  *   This module produces a base filename of the form
  *   "character-<first>-<last>.json". ExportUtils.downloadBlob
  *   inserts a local-time timestamp before the extension, so a
  *   second export of the same character in the same session never
- *   collides with the first. The timestamp logic is centralised in
- *   ExportUtils and is not duplicated here.
+ *   collides with the first.
  *
  * IMPORT INPUT:
  *   The import path is a MODAL with a textarea, not a file picker.
  *   The user pastes the JSON text directly, clicks Import, and the
  *   form fills. A "Load from file..." link is also present for
- *   users who have the JSON on disk; it drops the file's contents
- *   into the textarea. The user still clicks Import.
+ *   users who have the JSON on disk.
+ *
+ *   A live preview under the textarea shows which sections the
+ *   fragment will update, so the user knows before clicking Import.
  *
  * EXPORT SHAPE:
  *   A single JSON object: the full character record. Not wrapped in
@@ -60,13 +94,12 @@
  *
  * IMPORT SHAPE:
  *   The pasted text may contain either:
- *     - a single character object: { firstName, lastName, ... }
+ *     - a single character object: { firstName, ... } (full or partial)
  *     - an array of character objects: [ {...}, {...} ] — in which
  *       case only the FIRST entry is imported, because the target
  *       is the character form and the form holds one character.
  *
- *   Unknown keys are ignored. Missing keys fall back to defaults via
- *   normaliseCharacterData. Malformed JSON is rejected with an
+ *   Unknown keys are ignored. Malformed JSON is rejected with an
  *   inline error in the modal; the form is not touched.
  *
  * SECURITY:
@@ -162,6 +195,78 @@
     var _contentEl = null;
     var _clickHandler = null;
     var _keydownHandler = null;
+    var _inputHandler = null;
+
+    // ============================================================
+    // SECTION DEFINITIONS
+    // ============================================================
+    //
+    // Each section is a key on the character record plus a human
+    // label for the preview. The section's "present" state is
+    // decided by whether that key appears in the fragment. The
+    // write order follows the array order, so the preview reads
+    // top-to-bottom in the same order as the form tabs.
+
+    var SECTIONS = [
+        {
+            keys: ['firstName', 'middleName', 'lastName',
+                   'nickname', 'alias', 'previousNames',
+                   'displayParts'],
+            label: 'Name'
+        },
+        {
+            keys: ['birthYear', 'gender', 'attraction'],
+            label: 'Identity'
+        },
+        {
+            keys: ['deceased', 'deathYear', 'deathAge',
+                   'deathCause'],
+            label: 'Life Events'
+        },
+        {
+            keys: ['eyes', 'hair', 'skin', 'height', 'weight',
+                   'build', 'appearanceNotes'],
+            label: 'Physical'
+        },
+        {
+            keys: ['personality'],
+            label: 'Personality'
+        },
+        {
+            keys: ['specialty', 'careerStatus'],
+            label: 'Professional'
+        },
+        {
+            keys: ['stats', 'hp', 'mp', 'magic', 'weapons',
+                   'specialMoves', 'combatNotes'],
+            label: 'Combat'
+        },
+        {
+            keys: ['notes'],
+            label: 'Notes'
+        },
+        {
+            keys: ['isFiller'],
+            label: 'Filler Flag'
+        }
+    ];
+
+    // Keys the form does not edit. If a fragment carries any of
+    // these, they are reported as "not applicable" so the user
+    // knows the importer skipped them on purpose.
+    var NON_FORM_KEYS = {
+        'id': true,
+        'createdAt': true,
+        'updatedAt': true,
+        'classIds': true,
+        'parentIds': true,
+        'eliminations': true,
+        'eliminatedWeeks': true,
+        'mode': true,
+        'graduatingClassId': true,
+        'graduatingClassInstructor': true,
+        'nameFormat': true
+    };
 
     // ============================================================
     // HELPERS
@@ -211,6 +316,12 @@
             .replace(/'/g, '&#039;');
     }
 
+    function hasKey(obj, key) {
+        return obj !== null &&
+               typeof obj === 'object' &&
+               Object.prototype.hasOwnProperty.call(obj, key);
+    }
+
     // ============================================================
     // EXPORT
     // ============================================================
@@ -254,30 +365,52 @@
     // ============================================================
     // FORM FIELD WRITERS
     // ============================================================
+    //
+    // Every writer below is called only when the corresponding key
+    // is PRESENT in the fragment. The presence check happens in
+    // writeRecordToForm, not here.
 
     function writeScalarField(id, value) {
         FormUtils.setField(id, value);
     }
 
-    function writeDisplayParts(record) {
-        var dp = record.displayParts || {};
-        FormUtils.setField('char-displayFirst',    dp.first    !== false);
-        FormUtils.setField('char-displayNickname', dp.nickname === true);
-        FormUtils.setField('char-displayMiddle',   dp.middle   !== false);
-        FormUtils.setField('char-displayLast',     dp.last     !== false);
-        FormUtils.setField('char-displayAlias',    dp.alias    === true);
+    function writeDisplayParts(value) {
+        if (!value || typeof value !== 'object') { return; }
+        var dp = value;
+
+        if (hasKey(dp, 'first')) {
+            FormUtils.setField('char-displayFirst',
+                dp.first !== false);
+        }
+        if (hasKey(dp, 'nickname')) {
+            FormUtils.setField('char-displayNickname',
+                dp.nickname === true);
+        }
+        if (hasKey(dp, 'middle')) {
+            FormUtils.setField('char-displayMiddle',
+                dp.middle !== false);
+        }
+        if (hasKey(dp, 'last')) {
+            FormUtils.setField('char-displayLast',
+                dp.last !== false);
+        }
+        if (hasKey(dp, 'alias')) {
+            FormUtils.setField('char-displayAlias',
+                dp.alias === true);
+        }
     }
 
-    function writePreviousNames(record) {
-        var container = document.getElementById('previous-names-container');
+    function writePreviousNames(names) {
+        if (!Array.isArray(names)) { return; }
+
+        var container = document.getElementById(
+            'previous-names-container'
+        );
         if (!container) { return; }
         container.textContent = '';
 
         if (CharacterForm &&
             typeof CharacterForm.addPreviousNameRow === 'function') {
-            var names = Array.isArray(record.previousNames)
-                ? record.previousNames
-                : [];
             if (names.length === 0) {
                 CharacterForm.addPreviousNameRow(container, '');
             } else {
@@ -288,71 +421,69 @@
         }
     }
 
-    function writeStats(record) {
-        var stats = record.stats || {};
+    function writeStats(stats) {
+        if (!stats || typeof stats !== 'object') { return; }
         var keys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         keys.forEach(function(k) {
-            if (stats[k] !== undefined && stats[k] !== null) {
+            if (hasKey(stats, k)) {
                 FormUtils.setField('char-stat-' + k, stats[k]);
             }
         });
     }
 
-    function writeMagic(record) {
-        var magic = record.magic || {};
+    function writeMagic(magic) {
+        if (!magic || typeof magic !== 'object') { return; }
         var keys = Object.keys(magic);
         keys.forEach(function(k) {
             FormUtils.setField('char-magic-' + k, magic[k]);
         });
+
+        // Some magic types have a companion level label next to
+        // their input. Refresh any that exist.
+        if (window.MagicConstants &&
+            typeof window.MagicConstants.getProficiencyLevelLabel ===
+            'function') {
+            keys.forEach(function(k) {
+                var levelEl = document.querySelector(
+                    '[data-magic-level="' + k + '"]'
+                );
+                if (levelEl) {
+                    levelEl.textContent =
+                        window.MagicConstants
+                            .getProficiencyLevelLabel(magic[k]);
+                }
+            });
+        }
     }
 
-    function writeWeapons(record) {
-        var container = document.getElementById('weapons-container');
+    function writeWeapons(weapons) {
+        if (!Array.isArray(weapons)) { return; }
+
+        var container = document.getElementById(
+            'weapons-container'
+        );
         if (!container) { return; }
         container.textContent = '';
 
         if (CharacterForm &&
             typeof CharacterForm.addWeaponRow === 'function') {
-            var weapons = Array.isArray(record.weapons)
-                ? record.weapons
-                : [];
             weapons.forEach(function(w) {
                 CharacterForm.addWeaponRow(container, w);
             });
         }
     }
 
-    /**
-     * Write the imported record's specialMoves into the Combat tab's
-     * moves section.
-     *
-     * The moves section is owned by CharacterStatsView. Its DOM is
-     * two lists (#physical-moves-list, #magical-moves-list) whose
-     * contents are rendered by CharacterStatsView.renderMovesSection.
-     * This module does not know the section's markup; it delegates
-     * to the same renderer the form uses on open, handing it a
-     * minimal shim that carries only what renderMovesSection reads.
-     *
-     * After this call, CharacterForm.collect() will pick the moves
-     * up via CharacterStatsView.collectMovesFromDOM() when the user
-     * clicks Save. That is the round-trip.
-     */
-    function writeSpecialMoves(record) {
+    function writeSpecialMoves(moves) {
         var CharacterStatsView = window.CharacterStatsView || null;
         if (!CharacterStatsView ||
             typeof CharacterStatsView.renderMovesSection !== 'function') {
             console.warn(
                 '[CharacterJSONIO] CharacterStatsView.renderMovesSection ' +
                 'is not available; imported moves will not appear in ' +
-                'the form. Load character-stats-view.js before ' +
-                'character-json-io.js to enable the round-trip.'
+                'the form.'
             );
             return;
         }
-
-        var moves = record && record.specialMoves
-            ? record.specialMoves
-            : null;
 
         var physical = moves && Array.isArray(moves.physical)
             ? moves.physical
@@ -376,122 +507,273 @@
         }
     }
 
-    function writeCareerStatus(record) {
-        var container = document.getElementById('career-status-container');
+    function writeCareerStatus(entries) {
+        if (!Array.isArray(entries)) { return; }
+
+        var container = document.getElementById(
+            'career-status-container'
+        );
         if (!container) { return; }
         container.textContent = '';
 
         if (CharacterForm &&
             typeof CharacterForm.addCareerEntryRow === 'function') {
-            var entries = Array.isArray(record.careerStatus)
-                ? record.careerStatus
-                : [];
             if (entries.length === 0) {
                 CharacterForm.addCareerEntryRow(container);
             } else {
                 entries.forEach(function(entry) {
-                    CharacterForm.addCareerEntryRow(container, entry);
+                    CharacterForm.addCareerEntryRow(
+                        container, entry
+                    );
                 });
             }
         }
     }
 
-    function writePersonality(record) {
-        var p = record.personality || {};
-        FormUtils.setField('char-personality-traits',        p.traits        || '');
-        FormUtils.setField('char-personality-ideals',        p.ideals        || '');
-        FormUtils.setField('char-personality-bonds',         p.bonds         || '');
-        FormUtils.setField('char-personality-flaws',         p.flaws         || '');
-        FormUtils.setField('char-personality-alignment',     p.alignment     || '');
-        FormUtils.setField('char-personality-likes',         p.likes         || '');
-        FormUtils.setField('char-personality-dislikes',      p.dislikes      || '');
-        FormUtils.setField('char-personality-habits',        p.habits        || '');
-        FormUtils.setField('char-personality-fears',         p.fears         || '');
-        FormUtils.setField('char-personality-goals',         p.goals         || '');
-        FormUtils.setField('char-personality-authority',     p.authority     || '');
-        FormUtils.setField('char-personality-conflictStyle', p.conflictStyle || '');
-        FormUtils.setField('char-personality-socialStyle',   p.socialStyle   || '');
-        FormUtils.setField('char-personality-quirks',        p.quirks        || '');
+    function writePersonality(p) {
+        if (!p || typeof p !== 'object') { return; }
+
+        var map = {
+            traits:        'char-personality-traits',
+            ideals:        'char-personality-ideals',
+            bonds:         'char-personality-bonds',
+            flaws:         'char-personality-flaws',
+            alignment:     'char-personality-alignment',
+            likes:         'char-personality-likes',
+            dislikes:      'char-personality-dislikes',
+            habits:        'char-personality-habits',
+            fears:         'char-personality-fears',
+            goals:         'char-personality-goals',
+            authority:     'char-personality-authority',
+            conflictStyle: 'char-personality-conflictStyle',
+            socialStyle:   'char-personality-socialStyle',
+            quirks:        'char-personality-quirks'
+        };
+
+        var keys = Object.keys(map);
+        keys.forEach(function(k) {
+            if (hasKey(p, k)) {
+                FormUtils.setField(map[k], p[k] || '');
+            }
+        });
     }
 
-    function writeDeceasedState(record) {
-        var deceased = record.deceased === true;
-        FormUtils.setField('char-deceased', deceased);
+    function writeDeceasedState(isDeceased) {
+        FormUtils.setField('char-deceased', isDeceased === true);
 
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
-            deathFields.style.display = deceased ? 'block' : 'none';
+            deathFields.style.display =
+                isDeceased === true ? 'block' : 'none';
         }
 
         if (CharacterForm &&
             typeof CharacterForm.applyDeceasedState === 'function') {
-            CharacterForm.applyDeceasedState(deceased);
+            CharacterForm.applyDeceasedState(isDeceased === true);
         }
     }
 
-    function writeIsFiller(record) {
-        FormUtils.setField('char-is-filler', record.isFiller === true);
-    }
+    // ============================================================
+    // SELECTIVE WRITE
+    // ============================================================
+    //
+    // Write only the fields whose keys appear in the fragment.
+    // Fields whose keys are absent are left untouched. This is the
+    // core of merge semantics.
 
-    /**
-     * Write a normalised character record into the live form.
-     * Does NOT save. Does NOT touch the store.
-     */
-    function writeRecordToForm(record) {
-        if (!record || typeof record !== 'object') { return false; }
+    function writeRecordToForm(fragment) {
+        if (!fragment || typeof fragment !== 'object') {
+            return false;
+        }
 
-        // Name block
-        writeScalarField('char-firstName',  record.firstName  || '');
-        writeScalarField('char-middleName', record.middleName || '');
-        writeScalarField('char-lastName',   record.lastName   || '');
-        writeScalarField('char-nickname',   record.nickname   || '');
-        writeScalarField('char-alias',      record.alias      || '');
-        writePreviousNames(record);
-        writeDisplayParts(record);
+        // ---- Name block ----
+        if (hasKey(fragment, 'firstName')) {
+            writeScalarField('char-firstName',
+                fragment.firstName || '');
+        }
+        if (hasKey(fragment, 'middleName')) {
+            writeScalarField('char-middleName',
+                fragment.middleName || '');
+        }
+        if (hasKey(fragment, 'lastName')) {
+            writeScalarField('char-lastName',
+                fragment.lastName || '');
+        }
+        if (hasKey(fragment, 'nickname')) {
+            writeScalarField('char-nickname',
+                fragment.nickname || '');
+        }
+        if (hasKey(fragment, 'alias')) {
+            writeScalarField('char-alias',
+                fragment.alias || '');
+        }
+        if (hasKey(fragment, 'previousNames')) {
+            writePreviousNames(fragment.previousNames);
+        }
+        if (hasKey(fragment, 'displayParts')) {
+            writeDisplayParts(fragment.displayParts);
+        }
 
-        // Identity block
-        writeScalarField('char-birthYear',  record.birthYear  || '');
-        writeScalarField('char-gender',     record.gender     || '');
-        writeScalarField('char-attraction', record.attraction || '');
+        // ---- Identity block ----
+        if (hasKey(fragment, 'birthYear')) {
+            writeScalarField('char-birthYear',
+                fragment.birthYear || '');
+        }
+        if (hasKey(fragment, 'gender')) {
+            writeScalarField('char-gender',
+                fragment.gender || '');
+        }
+        if (hasKey(fragment, 'attraction')) {
+            writeScalarField('char-attraction',
+                fragment.attraction || '');
+        }
 
-        // Deceased block
-        writeScalarField('char-deathYear',  record.deathYear  || '');
-        writeScalarField('char-deathAge',   record.deathAge   || '');
-        writeScalarField('char-deathCause', record.deathCause || '');
-        writeDeceasedState(record);
+        // ---- Life Events block ----
+        if (hasKey(fragment, 'deceased')) {
+            writeDeceasedState(fragment.deceased === true);
+        }
+        if (hasKey(fragment, 'deathYear')) {
+            writeScalarField('char-deathYear',
+                fragment.deathYear || '');
+        }
+        if (hasKey(fragment, 'deathAge')) {
+            writeScalarField('char-deathAge',
+                fragment.deathAge || '');
+        }
+        if (hasKey(fragment, 'deathCause')) {
+            writeScalarField('char-deathCause',
+                fragment.deathCause || '');
+        }
 
-        // Physical block
-        writeScalarField('char-eyes',            record.eyes            || '');
-        writeScalarField('char-hair',            record.hair            || '');
-        writeScalarField('char-skin',            record.skin            || '');
-        writeScalarField('char-height',          record.height          || '');
-        writeScalarField('char-weight',          record.weight          || '');
-        writeScalarField('char-build',           record.build           || '');
-        writeScalarField('char-appearanceNotes', record.appearanceNotes || '');
+        // ---- Physical block ----
+        if (hasKey(fragment, 'eyes')) {
+            writeScalarField('char-eyes',
+                fragment.eyes || '');
+        }
+        if (hasKey(fragment, 'hair')) {
+            writeScalarField('char-hair',
+                fragment.hair || '');
+        }
+        if (hasKey(fragment, 'skin')) {
+            writeScalarField('char-skin',
+                fragment.skin || '');
+        }
+        if (hasKey(fragment, 'height')) {
+            writeScalarField('char-height',
+                fragment.height || '');
+        }
+        if (hasKey(fragment, 'weight')) {
+            writeScalarField('char-weight',
+                fragment.weight || '');
+        }
+        if (hasKey(fragment, 'build')) {
+            writeScalarField('char-build',
+                fragment.build || '');
+        }
+        if (hasKey(fragment, 'appearanceNotes')) {
+            writeScalarField('char-appearanceNotes',
+                fragment.appearanceNotes || '');
+        }
 
-        // Personality block
-        writePersonality(record);
+        // ---- Personality block ----
+        if (hasKey(fragment, 'personality')) {
+            writePersonality(fragment.personality);
+        }
 
-        // Professional block
-        writeScalarField('char-specialty', record.specialty || '');
-        writeCareerStatus(record);
+        // ---- Professional block ----
+        if (hasKey(fragment, 'specialty')) {
+            writeScalarField('char-specialty',
+                fragment.specialty || '');
+        }
+        if (hasKey(fragment, 'careerStatus')) {
+            writeCareerStatus(fragment.careerStatus);
+        }
 
-        // Combat block
-        writeStats(record);
-        writeScalarField('char-hp', record.hp || 0);
-        writeScalarField('char-mp', record.mp || 0);
-        writeMagic(record);
-        writeWeapons(record);
-        writeSpecialMoves(record);
-        writeScalarField('char-combat-notes', record.combatNotes || '');
+        // ---- Combat block ----
+        if (hasKey(fragment, 'stats')) {
+            writeStats(fragment.stats);
+        }
+        if (hasKey(fragment, 'hp')) {
+            writeScalarField('char-hp',
+                fragment.hp || 0);
+        }
+        if (hasKey(fragment, 'mp')) {
+            writeScalarField('char-mp',
+                fragment.mp || 0);
+        }
+        if (hasKey(fragment, 'magic')) {
+            writeMagic(fragment.magic);
+        }
+        if (hasKey(fragment, 'weapons')) {
+            writeWeapons(fragment.weapons);
+        }
+        if (hasKey(fragment, 'specialMoves')) {
+            writeSpecialMoves(fragment.specialMoves);
+        }
+        if (hasKey(fragment, 'combatNotes')) {
+            writeScalarField('char-combat-notes',
+                fragment.combatNotes || '');
+        }
 
-        // Notes block
-        writeScalarField('char-notes-tab', record.notes || '');
+        // ---- Notes block ----
+        if (hasKey(fragment, 'notes')) {
+            writeScalarField('char-notes-tab',
+                fragment.notes || '');
+        }
 
-        // Filler flag
-        writeIsFiller(record);
+        // ---- Filler flag ----
+        if (hasKey(fragment, 'isFiller')) {
+            FormUtils.setField('char-is-filler',
+                fragment.isFiller === true);
+        }
 
         return true;
+    }
+
+    // ============================================================
+    // SECTION ANALYSIS (for the preview)
+    // ============================================================
+    //
+    // Given a fragment, decide which sections it will update and
+    // which non-form keys it names. The result is used by the
+    // modal to show the user what will happen before they commit.
+
+    function analyseFragment(fragment) {
+        var updating = [];
+        var notApplicable = [];
+
+        if (!fragment || typeof fragment !== 'object') {
+            return { updating: updating, notApplicable: notApplicable };
+        }
+
+        // Sections that have at least one of their keys present.
+        for (var i = 0; i < SECTIONS.length; i++) {
+            var section = SECTIONS[i];
+            var hit = false;
+            for (var k = 0; k < section.keys.length; k++) {
+                if (hasKey(fragment, section.keys[k])) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                updating.push(section.label);
+            }
+        }
+
+        // Non-form keys that appear in the fragment.
+        var allKeys = Object.keys(fragment);
+        for (var j = 0; j < allKeys.length; j++) {
+            var key = allKeys[j];
+            if (NON_FORM_KEYS[key] === true) {
+                notApplicable.push(key);
+            }
+        }
+
+        return {
+            updating: updating,
+            notApplicable: notApplicable
+        };
     }
 
     // ============================================================
@@ -499,11 +781,16 @@
     // ============================================================
 
     /**
-     * Parse a JSON blob and fill the form. Does NOT save.
+     * Parse a JSON fragment. Returns { valid, fragment, error }.
+     * Does not write anything.
      */
-    function importText(text) {
+    function parseFragment(text) {
         if (typeof text !== 'string' || text.trim() === '') {
-            return { imported: false, error: 'Paste a JSON object first.' };
+            return {
+                valid: false,
+                fragment: null,
+                error: 'Paste a JSON object first.'
+            };
         }
 
         var parsed;
@@ -511,55 +798,95 @@
             parsed = JSON.parse(text);
         } catch (e) {
             return {
-                imported: false,
+                valid: false,
+                fragment: null,
                 error: 'Not valid JSON: ' + e.message
             };
         }
 
-        var record = parsed;
+        var fragment = parsed;
         if (Array.isArray(parsed)) {
             if (parsed.length === 0) {
                 return {
-                    imported: false,
+                    valid: false,
+                    fragment: null,
                     error: 'The array is empty.'
                 };
             }
-            record = parsed[0];
+            fragment = parsed[0];
         }
 
-        if (!record || typeof record !== 'object') {
+        if (!fragment ||
+            typeof fragment !== 'object' ||
+            Array.isArray(fragment)) {
             return {
-                imported: false,
+                valid: false,
+                fragment: null,
                 error: 'The text does not contain a character object.'
             };
         }
 
-        var normalised;
-        try {
-            normalised = CharacterCRUD.normaliseCharacterData(record);
-        } catch (e) {
+        return {
+            valid: true,
+            fragment: fragment,
+            error: null
+        };
+    }
+
+    // ============================================================
+    // IMPORT
+    // ============================================================
+
+    /**
+     * Parse a JSON fragment and write its present keys into the
+     * form. Does NOT save.
+     *
+     * Because writeRecordToForm uses presence semantics, a full
+     * record behaves the same as it always did: every key on the
+     * record is present, so every field is written. A partial
+     * fragment writes only the fields it names.
+     */
+    function importText(text) {
+        var parsed = parseFragment(text);
+        if (!parsed.valid) {
             return {
                 imported: false,
-                error: 'Failed to normalise record: ' + e.message
+                error: parsed.error,
+                updating: [],
+                notApplicable: []
             };
         }
 
-        if (!normalised.firstName || !normalised.lastName) {
+        var fragment = parsed.fragment;
+
+        // A fragment must name at least one key the importer
+        // understands, otherwise there is nothing to do.
+        var analysis = analyseFragment(fragment);
+        if (analysis.updating.length === 0) {
             return {
                 imported: false,
-                error: 'Record is missing firstName or lastName.'
+                error: 'The fragment has no recognised character ' +
+                       'fields. Nothing to import.',
+                updating: [],
+                notApplicable: analysis.notApplicable
             };
         }
 
-        var wrote = writeRecordToForm(normalised);
+        var wrote = writeRecordToForm(fragment);
         if (!wrote) {
             return {
                 imported: false,
-                error: 'Failed to write record into the form.'
+                error: 'Failed to write fragment into the form.',
+                updating: [],
+                notApplicable: []
             };
         }
 
-        return { imported: true };
+        return {
+            imported: true,
+            updating: analysis.updating,
+            notApplicable: analysis.notApplicable
+        };
     }
 
     // ============================================================
@@ -574,17 +901,17 @@
             </div>
             <div class="modal-body">
                 <p class="field-hint" style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px 0;line-height:1.45;">
-                    Paste a character object as JSON. The form will fill with
-                    the values, but nothing is saved until you click
-                    <strong>Save</strong> on the character form. A single object
-                    or an array of objects is accepted; an array imports only
-                    the first entry.
+                    Paste a character fragment as JSON. Only the fields
+                    present in the fragment are updated; every other
+                    field on the form is left alone. A full record works
+                    too — it updates every field. Nothing is saved until
+                    you click <strong>Save</strong> on the character form.
                 </p>
 
                 <textarea id="character-json-paste-input"
                           spellcheck="false"
                           autocomplete="off"
-                          placeholder='{ "firstName": "Alice", "lastName": "Blackwood", "birthYear": "1900", ... }'
+                          placeholder='{ "personality": { "traits": "Cynical" } }'
                           style="width:100%;min-height:260px;padding:8px 10px;
                                  background:var(--bg);
                                  border:1px solid var(--border);
@@ -596,6 +923,15 @@
                                  resize:vertical;
                                  white-space:pre;
                                  overflow:auto;"></textarea>
+
+                <div id="character-json-preview"
+                     style="display:none;margin-top:8px;padding:8px 10px;
+                            background:var(--panel-alt);
+                            border:1px solid var(--border);
+                            border-left:3px solid var(--accent);
+                            border-radius:4px;
+                            font-size:0.72rem;
+                            color:var(--text);"></div>
 
                 <div id="character-json-error"
                      style="display:none;margin-top:8px;padding:6px 10px;
@@ -636,6 +972,61 @@
         errorEl.style.display = 'block';
     }
 
+    function showPreview(contentEl, text) {
+        var previewEl = contentEl.querySelector(
+            '#character-json-preview'
+        );
+        if (!previewEl) { return; }
+
+        if (!text || String(text).trim() === '') {
+            previewEl.style.display = 'none';
+            previewEl.innerHTML = '';
+            return;
+        }
+
+        var parsed = parseFragment(text);
+        if (!parsed.valid) {
+            previewEl.style.display = 'none';
+            previewEl.innerHTML = '';
+            return;
+        }
+
+        var analysis = analyseFragment(parsed.fragment);
+
+        var parts = [];
+
+        if (analysis.updating.length > 0) {
+            parts.push(
+                '<div style="margin-bottom:4px;">' +
+                    '<strong style="color:var(--accent);">' +
+                        'Will update:' +
+                    '</strong> ' +
+                    escapeHtml(analysis.updating.join(', ')) +
+                '</div>'
+            );
+        } else {
+            parts.push(
+                '<div style="margin-bottom:4px;color:var(--text-dim);">' +
+                    'No recognised fields in this fragment.' +
+                '</div>'
+            );
+        }
+
+        if (analysis.notApplicable.length > 0) {
+            parts.push(
+                '<div style="color:var(--text-dim);font-size:0.65rem;">' +
+                    'Not applicable to the form: ' +
+                    escapeHtml(
+                        analysis.notApplicable.join(', ')
+                    ) +
+                '</div>'
+            );
+        }
+
+        previewEl.innerHTML = parts.join('');
+        previewEl.style.display = 'block';
+    }
+
     function getPasteEl(contentEl) {
         return contentEl.querySelector('#character-json-paste-input');
     }
@@ -654,11 +1045,17 @@
                 contentEl.removeEventListener('keydown', _keydownHandler);
             } catch (e) {}
         }
+        if (contentEl && _inputHandler) {
+            try {
+                contentEl.removeEventListener('input', _inputHandler);
+            } catch (e) {}
+        }
 
         _modal = null;
         _contentEl = null;
         _clickHandler = null;
         _keydownHandler = null;
+        _inputHandler = null;
 
         if (modal) {
             try { Modal.closeModal(modal); } catch (e) {}
@@ -706,11 +1103,16 @@
 
         if (result.imported) {
             closeImportModal();
-            notify(
-                'Character profile imported into the form. Review ' +
-                'the fields, then click Save.',
-                'success'
-            );
+
+            var message = 'Imported: ' +
+                (result.updating.join(', ') || 'no changes') +
+                '. Review the form, then click Save.';
+            if (result.notApplicable &&
+                result.notApplicable.length > 0) {
+                message += ' (Ignored: ' +
+                    result.notApplicable.join(', ') + '.)';
+            }
+            notify(message, 'success');
             return;
         }
 
@@ -741,6 +1143,7 @@
                 if (pasteEl) {
                     pasteEl.value = text;
                     showError(_contentEl, '');
+                    showPreview(_contentEl, text);
                     pasteEl.focus();
                 }
                 cleanup();
@@ -787,9 +1190,18 @@
                 doImport();
             }
         };
+        _inputHandler = function(e) {
+            var target = e.target;
+            if (!target) { return; }
+            if (target.id === 'character-json-paste-input') {
+                showError(contentEl, '');
+                showPreview(contentEl, target.value);
+            }
+        };
 
         contentEl.addEventListener('click', _clickHandler);
         contentEl.addEventListener('keydown', _keydownHandler);
+        contentEl.addEventListener('input', _inputHandler);
 
         Modal.modalSetup(shell, function() {
             closeImportModal();
@@ -857,7 +1269,9 @@
 
         // Exposed for tests / advanced callers
         writeRecordToForm: writeRecordToForm,
-        buildFilename: buildFilename
+        buildFilename: buildFilename,
+        analyseFragment: analyseFragment,
+        parseFragment: parseFragment
     });
 
     // ============================================================
