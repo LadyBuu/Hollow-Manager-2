@@ -21,6 +21,10 @@
  *
  * COLLECTION CONTRACT:
  *   Every field is read via FormUtils.getField(id). Not getFormData().
+ *   The Combat tab's magic and moves blocks are the exception: they
+ *   are read back via CharacterStatsView.collectMagicalFields() and
+ *   CharacterStatsView.collectMovesFromDOM(), which own the DOM
+ *   shapes they render.
  *
  * NOTES:
  *   - Combat Notes (char.combatNotes) is a separate field from
@@ -32,7 +36,18 @@
  *     #career-transition-btn. Both are bound by CharacterEvents via
  *     delegation; this file only emits the markup.
  *
- * ACTION ROW (this revision):
+ * SPECIAL MOVES:
+ *   Moves live in the DOM, not in a field id. On render, the moves
+ *   section is populated by CharacterStatsView.renderMovesSection
+ *   (called from render() below). On save, collect() reads the
+ *   moves back out via CharacterStatsView.collectMovesFromDOM(),
+ *   so dto.specialMoves carries the current list into
+ *   CharacterCRUD.normaliseCharacterData, which already handles
+ *   the field and preserves it unchanged.
+ *
+ *   This is what makes an imported move list survive the Save.
+ *
+ * ACTION ROW:
  *   The form action row (bottom of the form) carries a set of
  *   left-aligned buttons and a set of right-aligned buttons.
  *
@@ -1805,6 +1820,12 @@
             typeof CharacterStatsView.collectMagicalFields ===
             'function') {
             dto.magic = CharacterStatsView.collectMagicalFields();
+        }
+        if (CharacterStatsView &&
+            typeof CharacterStatsView.collectMovesFromDOM ===
+            'function') {
+            dto.specialMoves =
+                CharacterStatsView.collectMovesFromDOM();
         }
 
         return dto;
