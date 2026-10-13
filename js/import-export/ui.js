@@ -5,7 +5,7 @@
  * Path: js/import-export/ui.js
  *
  * ACTIVE SURFACE (this revision):
- *   Three controls are wired today:
+ *   The controls wired here are:
  *
  *     export-json-btn              download JSON backup
  *     import-json-btn              open the JSON file picker
@@ -30,13 +30,12 @@
  *   init() (for its three), or by character-events.js's init()
  *   (for the two character-page buttons that are NOT bound here).
  *
- * IMPORT SAFETY (this revision):
- *   Every import path routes through its owning domain's import
- *   entry point:
+ * IMPORT SAFETY:
+ *   Every import path routes through an owning domain entry point:
  *
  *     JSON backup   -> ImportPipeline.importFromEnvelope (or
- *                      importFromJSON when the file is raw)
- *     Character CSV -> CharacterCore.importCharacters
+ *                      importFromObject when the file is raw)
+ *     Character CSV -> CharacterCRUD.save, one row at a time
  *     Mission CSV   -> MissionCore.importMissions
  *
  *   The previous version had fallback branches that called
@@ -48,31 +47,29 @@
  *   and notifies the user, rather than proceeding through a
  *   reduced-safety path.
  *
- *   The check is not a matter of caution for caution's sake: an
- *   import that does not go through the pipeline is an import
- *   that can silently wipe the store, and the confirm dialog
- *   warns about data loss that the fallback path would actually
- *   cause without the safeguards meant to prevent it.
+ * CHARACTER CSV IMPORT:
+ *   The character CSV flow is:
+ *
+ *     1. CharacterCSV.importFromFile(file) parses the CSV and
+ *        returns an ImportResult of candidate DTOs.
+ *     2. Each candidate DTO is passed to CharacterCRUD.save.
+ *     3. Per-row failures are aggregated; a failed row does NOT
+ *        abort the batch.
+ *
+ *   CharacterCRUD is the canonical character mutation API. It
+ *   validates and normalises each DTO through the same pipeline
+ *   any single-character save uses. There is no separate
+ *   "CharacterCore" module any more; that responsibility lives
+ *   inside CharacterCRUD, and the batch loop is small enough
+ *   that keeping it in the UI layer is simpler than a wrapper
+ *   module around a one-line pipeline call.
  *
  * JSON IMPORT CONFIRM:
  *   The file-content summary shown before a JSON import is
  *   rendered as a native browser dialog (window.confirm). The
  *   wording is deliberately front-loaded: filename and total on
  *   the first line, "will replace" warning on the second, record
- *   breakdown below. A follow-up pass will replace it with a
- *   proper modal matching the pattern used by
- *   character-json-io.js and character-export-picker.js.
- *
- * JSON ROUND-TRIP (temporary):
- *   The raw-data branch below still calls
- *   Pipeline.importFromJSON(JSON.stringify(result.data), ...)
- *   even though result.data is already a parsed object. This is
- *   a temporary inefficiency left over from before the pipeline
- *   exposed an object-based entry point. It will be replaced by
- *   Pipeline.importFromObject(result.data, ...) once that entry
- *   point lands. The JSON round-trip is provably lossless for
- *   data that came out of JSON.parse, so the current code is
- *   correct; it is simply wasteful.
+ *   breakdown below.
  *
  * DEPENDENCIES:
  *   - window.ExportUtils (from export-utils.js) - MANDATORY
@@ -88,7 +85,7 @@
  * DEPENDENCIES (LAZY, resolved at click time):
  *   - window.GraduatesExportPicker
  *   - window.TeamExportPicker
- *   - window.CharacterCore
+ *   - window.CharacterCRUD
  *   - window.MissionCore
  */
 
@@ -460,13 +457,6 @@
                 // Raw data (no envelope). Route through
                 // importFromJSON, which builds an envelope from the
                 // raw object and delegates to importFromEnvelope.
-                //
-                // The JSON.stringify call is a temporary
-                // inefficiency: result.data is already a parsed
-                // object. When import-pipeline.js exposes
-                // importFromObject(data, options), this call will
-                // become Pipeline.importFromObject(result.data,
-                // ...) and the round-trip will disappear.
                 return Pipeline.importFromJSON(JSON.stringify(result.data), {
                     sourceName: file.name,
                     preserveExistingIds: true,
@@ -527,25 +517,108 @@
     // HANDLERS - Character CSV
     // ============================================================
     //
-    // IMPORT ONLY. Export and template now go through
+    // IMPORT ONLY. Export and template go through
     // CharacterExportPicker, which is bound by character-events.js
     // because its trigger button lives inside the character page's
     // re-rendered header.
+    //
+    // The flow is:
+    //
+    //   1. CharacterCSV.importFromFile(file) parses the CSV and
+    //      returns an ImportResult of candidate DTOs.
+    //   2. Each candidate DTO is passed to CharacterCRUD.save.
+    //   3. Per-row failures are aggregated; a failed row does NOT
+    //      abort the batch.
+    //
+    // CharacterCRUD is the canonical character mutation API. It
+    // validates and normalises each DTO through the same pipeline
+    // a single-character save uses.
+
+    function importCharactersBatch(candidates) {
+        var CharacterCRUD = window.CharacterCRUD || null;
+
+        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
+            return Promise.resolve({
+                success: false,
+                added: 0,
+                failed: candidates.length,
+                errors: [{
+                    index: -1,
+                    message: 'CharacterCRUD.save is not available.'
+                }],
+                message: 'Character save API is not available.'
+            });
+        }
+
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            return Promise.resolve({
+                success: true,
+                added: 0,
+                failed: 0,
+                errors: []
+            });
+        }
+
+        var added = 0;
+        var failed = 0;
+        var errors = [];
+
+        // Sequential. One save at a time so the mutation pipeline
+        // is never contended, and row order is preserved in the
+        // error report.
+        var chain = Promise.resolve();
+
+        candidates.forEach(function(dto, index) {
+            chain = chain.then(function() {
+                return CharacterCRUD.save(dto)
+                    .then(function(result) {
+                        if (result && result.success) {
+                            added++;
+                        } else {
+                            failed++;
+                            errors.push({
+                                index: index,
+                                message: (result && result.message) ||
+                                    'Save failed.'
+                            });
+                        }
+                    })
+                    .catch(function(err) {
+                        failed++;
+                        errors.push({
+                            index: index,
+                            message: (err && err.message)
+                                ? err.message
+                                : String(err)
+                        });
+                    });
+            });
+        });
+
+        return chain.then(function() {
+            return {
+                success: failed === 0,
+                added: added,
+                failed: failed,
+                errors: errors
+            };
+        });
+    }
 
     function handleCharacterImport(file) {
         var CharacterCSV = deps.CharacterCSV;
-        if (!CharacterCSV || typeof CharacterCSV.importFromFile !== 'function') {
+        if (!CharacterCSV ||
+            typeof CharacterCSV.importFromFile !== 'function') {
             notifyError('Character import not available');
             return;
         }
 
-        var CharacterCore = window.CharacterCore || null;
-        if (!CharacterCore ||
-            typeof CharacterCore.importCharacters !== 'function') {
-            // Import safety: without CharacterCore, there is no
-            // entry point that validates the candidate list before
-            // it reaches the store. Refuse rather than mutating
-            // the store directly.
+        // Import safety: without CharacterCRUD, there is no
+        // entry point that validates the candidate list before it
+        // reaches the store. Refuse rather than mutating the store
+        // directly.
+        var CharacterCRUD = window.CharacterCRUD || null;
+        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
             notifyError(
                 'Character import is not available. Reload the ' +
                 'page and try again.'
@@ -557,15 +630,19 @@
             .then(function(result) {
                 if (result.hasErrors()) {
                     var summary = result.getSummary();
-                    var msg = 'Found ' + summary.errors + ' error(s) in the file.\n\n';
+                    var msg = 'Found ' + summary.errors +
+                        ' error(s) in the file.\n\n';
                     var errors = result.getErrors(true);
                     for (var i = 0; i < Math.min(errors.length, 5); i++) {
                         var err = errors[i];
-                        var rowInfo = err.metadata && err.metadata.row ? 'Row ' + err.metadata.row + ': ' : '';
+                        var rowInfo = err.metadata && err.metadata.row
+                            ? 'Row ' + err.metadata.row + ': '
+                            : '';
                         msg += rowInfo + err.message + '\n';
                     }
                     if (errors.length > 5) {
-                        msg += '\n... and ' + (errors.length - 5) + ' more errors.';
+                        msg += '\n... and ' + (errors.length - 5) +
+                            ' more errors.';
                     }
                     if (!confirm(msg + '\n\nContinue with valid rows?')) {
                         return;
@@ -580,23 +657,70 @@
                 var candidates = result.getValid();
                 var summary = result.getSummary();
 
-                var confirmMsg = 'Import ' + candidates.length + ' character(s)?\n\n';
+                var confirmMsg = 'Import ' + candidates.length +
+                    ' character(s)?\n\n';
                 confirmMsg += 'Valid rows: ' + summary.valid + '\n';
-                if (summary.errors > 0) confirmMsg += 'Errors: ' + summary.errors + ' (skipped)\n';
-                if (summary.warnings > 0) confirmMsg += 'Warnings: ' + summary.warnings;
+                if (summary.errors > 0) {
+                    confirmMsg += 'Errors: ' + summary.errors +
+                        ' (skipped)\n';
+                }
+                if (summary.warnings > 0) {
+                    confirmMsg += 'Warnings: ' + summary.warnings;
+                }
 
                 if (!confirm(confirmMsg)) return;
 
-                return CharacterCore.importCharacters(candidates);
+                return importCharactersBatch(candidates);
             })
             .then(function(importResult) {
-                if (importResult && importResult.success !== false) {
-                    var added = importResult.added || importResult.count || 0;
-                    notifySuccess('Character import completed: ' + added + ' characters processed');
+                if (!importResult) { return; }
+
+                if (importResult.success) {
+                    notifySuccess(
+                        'Character import completed: ' +
+                        importResult.added +
+                        ' character' +
+                        (importResult.added === 1 ? '' : 's') +
+                        ' processed'
+                    );
                     refreshUI();
+                    return;
                 }
+
+                // Partial success. Report both the added count and
+                // a pointer to the console for per-row failures.
+                if (importResult.added > 0) {
+                    console.warn(
+                        '[Character import] ' + importResult.failed +
+                        ' row(s) failed. Errors:',
+                        importResult.errors
+                    );
+                    notifyWarning(
+                        'Imported ' + importResult.added +
+                        ' character' +
+                        (importResult.added === 1 ? '' : 's') +
+                        '. ' + importResult.failed + ' row' +
+                        (importResult.failed === 1 ? '' : 's') +
+                        ' failed (see console).'
+                    );
+                    refreshUI();
+                    return;
+                }
+
+                // Total failure.
+                var firstMessage = importResult.errors.length > 0
+                    ? importResult.errors[0].message
+                    : 'Unknown error';
+                console.error(
+                    '[Character import] All rows failed. Errors:',
+                    importResult.errors
+                );
+                notifyError(
+                    'Character import failed: ' + firstMessage
+                );
             })
             .catch(function(err) {
+                console.error('[Character import] threw:', err);
                 notifyError('Import failed: ' + err.message);
             });
     }
@@ -623,7 +747,10 @@
                 } else {
                     notifySuccess(result.message);
                     try {
-                        deps.ActivityLog.record('Exported ' + result.count + ' missions to CSV', 'export');
+                        deps.ActivityLog.record(
+                            'Exported ' + result.count +
+                            ' missions to CSV', 'export'
+                        );
                     } catch (e) {
                         // Non-fatal
                     }
@@ -660,15 +787,19 @@
             .then(function(result) {
                 if (result.hasErrors()) {
                     var summary = result.getSummary();
-                    var msg = 'Found ' + summary.errors + ' error(s) in the file.\n\n';
+                    var msg = 'Found ' + summary.errors +
+                        ' error(s) in the file.\n\n';
                     var errors = result.getErrors(true);
                     for (var i = 0; i < Math.min(errors.length, 5); i++) {
                         var err = errors[i];
-                        var rowInfo = err.metadata && err.metadata.row ? 'Row ' + err.metadata.row + ': ' : '';
+                        var rowInfo = err.metadata && err.metadata.row
+                            ? 'Row ' + err.metadata.row + ': '
+                            : '';
                         msg += rowInfo + err.message + '\n';
                     }
                     if (errors.length > 5) {
-                        msg += '\n... and ' + (errors.length - 5) + ' more errors.';
+                        msg += '\n... and ' + (errors.length - 5) +
+                            ' more errors.';
                     }
                     if (!confirm(msg + '\n\nContinue with valid rows?')) {
                         return;
@@ -683,10 +814,16 @@
                 var candidates = result.getValid();
                 var summary = result.getSummary();
 
-                var confirmMsg = 'Import ' + candidates.length + ' mission(s)?\n\n';
+                var confirmMsg = 'Import ' + candidates.length +
+                    ' mission(s)?\n\n';
                 confirmMsg += 'Valid rows: ' + summary.valid + '\n';
-                if (summary.errors > 0) confirmMsg += 'Errors: ' + summary.errors + ' (skipped)\n';
-                if (summary.warnings > 0) confirmMsg += 'Warnings: ' + summary.warnings;
+                if (summary.errors > 0) {
+                    confirmMsg += 'Errors: ' + summary.errors +
+                        ' (skipped)\n';
+                }
+                if (summary.warnings > 0) {
+                    confirmMsg += 'Warnings: ' + summary.warnings;
+                }
 
                 if (!confirm(confirmMsg)) return;
 
@@ -694,8 +831,12 @@
             })
             .then(function(importResult) {
                 if (importResult && importResult.success !== false) {
-                    var added = importResult.added || importResult.count || 0;
-                    notifySuccess('Mission import completed: ' + added + ' missions processed');
+                    var added = importResult.added ||
+                        importResult.count || 0;
+                    notifySuccess(
+                        'Mission import completed: ' + added +
+                        ' missions processed'
+                    );
                     refreshUI();
                 }
             })
@@ -714,7 +855,9 @@
         try {
             var result = MissionCSV.exportTemplate();
             if (result && result.exported) {
-                notifySuccess('Mission template downloaded: ' + result.filename);
+                notifySuccess(
+                    'Mission template downloaded: ' + result.filename
+                );
             } else {
                 notifySuccess('Mission template downloaded');
             }
@@ -807,10 +950,16 @@
         _initialized = true;
 
         if (!deps.ExportUtils) {
-            console.warn('[ImportExportUI] ExportUtils not available - exports will not work');
+            console.warn(
+                '[ImportExportUI] ExportUtils not available - ' +
+                'exports will not work'
+            );
         }
         if (!deps.NotificationSystem) {
-            console.warn('[ImportExportUI] NotificationSystem not available - notifications will fallback to console');
+            console.warn(
+                '[ImportExportUI] NotificationSystem not available - ' +
+                'notifications will fallback to console'
+            );
         }
 
         // ---- JSON Backup ----
@@ -848,7 +997,8 @@
     // ============================================================
 
     function tryInit() {
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        if (document.readyState === 'complete' ||
+            document.readyState === 'interactive') {
             init();
         } else {
             document.addEventListener('DOMContentLoaded', init);
@@ -867,6 +1017,7 @@
         handleJSONExport: handleJSONExport,
         handleJSONImport: handleJSONImport,
         handleCharacterImport: handleCharacterImport,
+        importCharactersBatch: importCharactersBatch,
         handleMissionExport: handleMissionExport,
         handleMissionImport: handleMissionImport,
         handleMissionTemplate: handleMissionTemplate,
