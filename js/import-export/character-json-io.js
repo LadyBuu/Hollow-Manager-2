@@ -25,6 +25,19 @@
  *     the blob URL, and the filename uniquification. This module
  *     supplies a base filename and hands over the payload.
  *
+ * SPECIAL MOVES:
+ *   The moves section of the Combat tab is rendered by
+ *   CharacterStatsView.renderMovesSection and read back by
+ *   CharacterStatsView.collectMovesFromDOM. This module writes
+ *   the imported moves into that section by calling
+ *   renderMovesSection with a minimal shim carrying only
+ *   `specialMoves`. This is what makes an imported character's
+ *   moves appear in the form and survive the subsequent Save.
+ *
+ *   The moves are NOT written to any field id. The DOM list is the
+ *   source of truth for the form's moves, and only
+ *   CharacterStatsView knows its shape.
+ *
  * DOWNLOAD FILENAMES:
  *   This module produces a base filename of the form
  *   "character-<first>-<last>.json". ExportUtils.downloadBlob
@@ -70,6 +83,9 @@
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.ExportUtils
+ *
+ * DEPENDENCIES (LAZY, at call time):
+ *   - window.CharacterStatsView  (moves section renderer)
  */
 
 (function() {
@@ -306,6 +322,60 @@
         }
     }
 
+    /**
+     * Write the imported record's specialMoves into the Combat tab's
+     * moves section.
+     *
+     * The moves section is owned by CharacterStatsView. Its DOM is
+     * two lists (#physical-moves-list, #magical-moves-list) whose
+     * contents are rendered by CharacterStatsView.renderMovesSection.
+     * This module does not know the section's markup; it delegates
+     * to the same renderer the form uses on open, handing it a
+     * minimal shim that carries only what renderMovesSection reads.
+     *
+     * After this call, CharacterForm.collect() will pick the moves
+     * up via CharacterStatsView.collectMovesFromDOM() when the user
+     * clicks Save. That is the round-trip.
+     */
+    function writeSpecialMoves(record) {
+        var CharacterStatsView = window.CharacterStatsView || null;
+        if (!CharacterStatsView ||
+            typeof CharacterStatsView.renderMovesSection !== 'function') {
+            console.warn(
+                '[CharacterJSONIO] CharacterStatsView.renderMovesSection ' +
+                'is not available; imported moves will not appear in ' +
+                'the form. Load character-stats-view.js before ' +
+                'character-json-io.js to enable the round-trip.'
+            );
+            return;
+        }
+
+        var moves = record && record.specialMoves
+            ? record.specialMoves
+            : null;
+
+        var physical = moves && Array.isArray(moves.physical)
+            ? moves.physical
+            : [];
+        var magical = moves && Array.isArray(moves.magical)
+            ? moves.magical
+            : [];
+
+        try {
+            CharacterStatsView.renderMovesSection({
+                specialMoves: {
+                    physical: physical,
+                    magical: magical
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[CharacterJSONIO] renderMovesSection threw while ' +
+                'importing moves:', e
+            );
+        }
+    }
+
     function writeCareerStatus(record) {
         var container = document.getElementById('career-status-container');
         if (!container) { return; }
@@ -412,6 +482,7 @@
         writeScalarField('char-mp', record.mp || 0);
         writeMagic(record);
         writeWeapons(record);
+        writeSpecialMoves(record);
         writeScalarField('char-combat-notes', record.combatNotes || '');
 
         // Notes block
