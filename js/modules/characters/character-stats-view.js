@@ -2,7 +2,7 @@
  * js/modules/characters/character-stats-view.js - Combat View
  * Renders the magical section and special moves section of the Combat tab.
  * Path: js/modules/characters/character-stats-view.js
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - domain logic is in character-stats.js
  *   - No data mutation
@@ -12,6 +12,31 @@
  *   - Uses CharacterQueries for character data
  *   - Uses FormUtils for field operations
  *   - Uses DomUtils for escaping
+ *
+ * MOVES DOM CONTRACT:
+ *   Each rendered move row carries:
+ *
+ *     <div class="special-move-entry"
+ *          data-move-id="move_...">
+ *       <div class="special-move-row-top">
+ *         <span class="special-move-name">Move Name</span>
+ *         <button class="remove-special-move"
+ *                 data-type="physical"
+ *                 data-move-id="move_...">✕</button>
+ *       </div>
+ *       <div class="special-move-description">Description</div>
+ *     </div>
+ *
+ *   collectMovesFromDOM() reads these rows back out. The id, if
+ *   present, is preserved; a row without an id gets id: '' and
+ *   the save path (CharacterCRUD.normaliseCharacterData) will
+ *   carry it through unchanged. character-moves.js is not
+ *   involved in the form's save path; the form is a direct
+ *   carrier of the moves array.
+ *
+ *   The name is stored in .special-move-name's textContent and
+ *   the description in .special-move-description's textContent.
+ *   Whitespace is trimmed.
  */
 
 (function() {
@@ -315,6 +340,11 @@
     // ============================================================
     // MOVES SECTION RENDERING
     // ============================================================
+    //
+    // Each row carries data-move-id (possibly empty for a move
+    // added through the form and not yet persisted), plus
+    // .special-move-name and .special-move-description so the
+    // moves can be read back out of the DOM by collectMovesFromDOM.
 
     function renderMovesSection(char) {
         var physicalList = document.getElementById('physical-moves-list');
@@ -346,38 +376,113 @@
         moves.forEach(function(move) {
             if (!move || typeof move !== 'object') { return; }
 
+            var moveId = move.id !== undefined && move.id !== null
+                ? String(move.id)
+                : '';
+            var moveName = move.name !== undefined && move.name !== null
+                ? String(move.name)
+                : 'Unnamed Move';
+            var moveDesc = move.description !== undefined &&
+                move.description !== null
+                ? String(move.description)
+                : '';
+
             var div = document.createElement('div');
             div.className = 'special-move-entry';
+            div.dataset.moveId = moveId;
             div.style.cssText = 'display:flex;flex-direction:column;gap:2px;padding:4px 6px;border-left:3px solid ' + color + ';background:var(--bg);border-radius:4px;margin-bottom:3px;font-size:0.7rem;';
 
             var topRow = document.createElement('div');
+            topRow.className = 'special-move-row-top';
             topRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
 
             var nameSpan = document.createElement('span');
+            nameSpan.className = 'special-move-name';
             nameSpan.style.cssText = 'font-weight:600;color:var(--text);';
-            nameSpan.textContent = move.name || 'Unnamed Move';
+            nameSpan.textContent = moveName;
             topRow.appendChild(nameSpan);
 
             var delBtn = document.createElement('button');
             delBtn.className = 'remove-special-move small';
             delBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
             delBtn.dataset.type = type;
-            delBtn.dataset.moveId = move.id;
+            delBtn.dataset.moveId = moveId;
             delBtn.textContent = '✕';
             delBtn.setAttribute('aria-label', 'Delete move');
             topRow.appendChild(delBtn);
 
             div.appendChild(topRow);
 
-            if (move.description) {
+            if (moveDesc) {
                 var desc = document.createElement('div');
+                desc.className = 'special-move-description';
                 desc.style.cssText = 'color:var(--text-dim);font-size:0.6rem;padding-left:4px;';
-                desc.textContent = move.description;
+                desc.textContent = moveDesc;
                 div.appendChild(desc);
             }
 
             container.appendChild(div);
         });
+    }
+
+    // ============================================================
+    // COLLECT MOVES FROM DOM
+    // ============================================================
+    //
+    // Read the two rendered move lists back into an array of
+    // { id, name, description } entries. This is what carries the
+    // form's moves through CharacterForm.collect() into
+    // CharacterCRUD.save.
+    //
+    // A row without a data-move-id produces id: '' — the
+    // canonicaliser in CharacterCRUD preserves whatever is there,
+    // and the moves record store (character-moves.js) is not
+    // involved in this path. Only rows with a non-empty name are
+    // returned; an empty row is silently dropped.
+
+    function collectMovesFromDOM() {
+        function collectOne(listId) {
+            var container = document.getElementById(listId);
+            if (!container) { return []; }
+
+            var out = [];
+            var rows = container.querySelectorAll('.special-move-entry');
+
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i];
+
+                var nameEl = row.querySelector('.special-move-name');
+                var name = nameEl
+                    ? String(nameEl.textContent || '').trim()
+                    : '';
+                if (name === '') { continue; }
+
+                var descEl = row.querySelector(
+                    '.special-move-description'
+                );
+                var desc = descEl
+                    ? String(descEl.textContent || '').trim()
+                    : '';
+
+                var id = '';
+                if (row.dataset && row.dataset.moveId) {
+                    id = String(row.dataset.moveId);
+                }
+
+                out.push({
+                    id: id,
+                    name: name,
+                    description: desc
+                });
+            }
+
+            return out;
+        }
+
+        return {
+            physical: collectOne('physical-moves-list'),
+            magical: collectOne('magical-moves-list')
+        };
     }
 
     // ============================================================
@@ -394,6 +499,7 @@
 
         // Collection
         collectMagicalFields: collectMagicalFields,
+        collectMovesFromDOM: collectMovesFromDOM,
 
         // Class display updates
         updatePhysicalClassDisplay: updatePhysicalClassDisplay,
