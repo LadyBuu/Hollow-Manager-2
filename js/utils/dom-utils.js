@@ -2,65 +2,143 @@
  * utils/dom-utils.js - DOM Utility Functions
  * Shared helper functions for DOM manipulation and HTML escaping
  * Path: utils/dom-utils.js
- * 
+ *
  * This module provides:
  *   - HTML escaping for XSS prevention (SINGLE SOURCE OF TRUTH)
+ *   - Safe HTML building (safeHtml tag, safeAttr, safeAttrs)
  *   - Safe element creation with textContent
  *   - DOM traversal helpers
  *   - Event delegation helpers
- *   - DOM manipulation helpers (empty, remove, prepend, insertAfter, etc.)
- *   - Class manipulation helpers
- *   - Scroll helpers
- *   - Visibility helpers
- *   - Style helpers
- * 
+ *   - DOM manipulation helpers
+ *   - Class, scroll, visibility, and style helpers
+ *
  * IMPORTANT:
- *   - THIS IS THE SINGLE SOURCE OF TRUTH for escapeHtml()
- *   - All modules MUST use DomUtils.escapeHtml() - do NOT duplicate
- *   - Functions avoid mutating application/domain state
- *   - DOM mutation is intentional and limited to UI operations
- *   - All user-controlled content must go through escapeHtml()
- *   - Attribute names are NOT sanitised - they must be developer-controlled
- *   - Timing utilities moved to timing-utils.js
- *   - Form utilities moved to form-utils.js
- *   - Modal utilities moved to modal.js
- *   - Notification utilities moved to notification.js
- *   - This module is UI-focused, domain utilities belong in core-utils.js
+ *   - THIS IS THE SINGLE SOURCE OF TRUTH for escapeHtml().
+ *   - All user-controlled content must go through escapeHtml(),
+ *     textContent, or the safeHtml tag.
+ *   - Attribute names and URL schemes are validated: a value
+ *     passed to safeAttr/createElement for href/src/on* is
+ *     checked against an allowlist. Values that would create a
+ *     script URL or an inline handler are dropped.
+ *   - Function parameters marked "developer-controlled" are still
+ *     the caller's responsibility. The guards catch the common
+ *     XSS shapes, not every possible one.
+ *   - Domain utilities do not belong here. This module is
+ *     UI-focused.
+ *
+ * ESCAPING CONTEXT:
+ *   - escapeHtml           — HTML text and quoted attribute values
+ *   - escapeAttribute      — quoted attribute values (extra
+ *                            defensive; escapes backticks)
+ *   - encodeUrlComponent   — URL component or query parameter
+ *                            values. Does NOT validate the scheme
+ *                            of a full URL.
+ *   - sanitizeCssValue     — a CSS declaration value. Uses a strict
+ *                            allowlist; rejects calc(), var(),
+ *                            url(), and expression().
+ *
+ * SAFE HTML COMPOSITION:
+ *   safeHtml returns a SafeHtml instance, not a raw string. When
+ *   interpolated into another safeHtml template, SafeHtml values
+ *   are inserted raw, so nested composition works:
+ *
+ *     safeHtml`<ul>${items.map(i => safeHtml`<li>${i}</li>`)}</ul>`
+ *
+ *   Raw user data is always escaped. To insert a raw HTML string
+ *   that was NOT produced by safeHtml, wrap it explicitly in
+ *   DomUtils.rawHtml(), which is a deliberate escape hatch.
+ *
+ * NOT SANITISED:
+ *   - Attribute names: developer-controlled by contract. The
+ *     guard rejects `on*` names, but any other name is set as
+ *     given.
+ *   - HTML attribute value semantics beyond URL schemes: e.g.
+ *     `srcset`, `style` (a full declaration list), and SVG
+ *     specific attributes are not parsed.
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__domUtilsLoaded) {
         return;
     }
     window.__domUtilsLoaded = true;
 
     // ============================================================
-    // HTML ESCAPING - XSS PREVENTION (SINGLE SOURCE OF TRUTH)
+    // SAFE HTML WRAPPER
     // ============================================================
 
     /**
-     * Escape HTML special characters to prevent XSS.
-     * Use for ALL user-controlled content before inserting into HTML.
-     * 
-     * @param {*} value - Value to escape
-     * @returns {string} Escaped string
-     * 
-     * USAGE:
-     *   var safe = DomUtils.escapeHtml(userInput);
-     *   element.innerHTML = '<div>' + safe + '</div>';
-     *   // OR use textContent for even safer insertion:
-     *   element.textContent = userInput; // No escaping needed
+     * Marker class for HTML strings produced by safeHtml. When a
+     * SafeHtml instance is interpolated into another safeHtml
+     * template, it is inserted raw.
+     */
+    function SafeHtml(html) {
+        this._html = html;
+    }
+    SafeHtml.prototype.toString = function() {
+        return this._html;
+    };
+
+    function isSafeHtml(value) {
+        return value instanceof SafeHtml;
+    }
+
+    /**
+     * Explicit escape hatch: mark a raw HTML string as safe.
+     *
+     * DANGER: only call this on HTML that was constructed from
+     * developer-controlled markup, or from a value that has already
+     * been escaped. Do not pass user input.
+     */
+    function rawHtml(html) {
+        return new SafeHtml(String(html));
+    }
+
+    // ============================================================
+    // HTML ESCAPING - XSS PREVENTION
+    // ============================================================
+
+    /**
+     * Escape HTML special characters for use in text content or
+     * quoted attribute values.
+     *
+     * Escapes: & < > " '
+     * Does NOT escape: ` (backtick has no special meaning in HTML)
+     *
+     * @param {*} value
+     * @returns {string}
      */
     function escapeHtml(value) {
         if (value === undefined || value === null) {
             return '';
         }
 
-        var str = String(value);
-        return str
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Escape HTML for use in quoted attribute values.
+     *
+     * More defensive than escapeHtml: also escapes backtick, in
+     * case the attribute value ends up in a template literal or a
+     * JS string at some point in the pipeline.
+     *
+     * @param {*} value
+     * @returns {string}
+     */
+    function escapeAttribute(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+
+        return String(value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
@@ -70,35 +148,11 @@
     }
 
     /**
-     * Escape HTML for use in attribute values.
-     * More restrictive than escapeHtml for attribute contexts.
-     * 
-     * @param {*} value - Value to escape
-     * @returns {string} Escaped string safe for attribute values
-     */
-    function escapeAttribute(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;')
-            .replace(/\//g, '&#x2F;');
-    }
-
-    /**
      * Encode a value for use as a URL component or query parameter.
-     * This does not validate URL schemes or make an entire URL safe.
-     * For complete URLs from users, validate the scheme separately.
-     * 
-     * @param {*} value - Value to encode
-     * @returns {string} URL-encoded string
+     * Does NOT validate the scheme of a full URL.
+     *
+     * @param {*} value
+     * @returns {string}
      */
     function encodeUrlComponent(value) {
         if (value === undefined || value === null) {
@@ -107,43 +161,76 @@
         return encodeURIComponent(String(value));
     }
 
+    // ============================================================
+    // URL SCHEME ALLOWLIST
+    // ============================================================
+
+    var SAFE_URL_SCHEMES = ['http:', 'https:', 'mailto:', 'tel:', 'data:'];
+
+    // Attributes whose value is treated as a URL and must pass the
+    // scheme check.
+    var URL_ATTRIBUTES = {
+        'href': true,
+        'src': true,
+        'action': true,
+        'formaction': true,
+        'poster': true,
+        'cite': true,
+        'xlink:href': true,
+        'ping': true
+    };
+
     /**
-     * Validate that a value is safe for use in CSS.
-     * This is a validator for CSS VALUES, not a general-purpose CSS escaper.
-     * Allows: hex colors, rgb/rgba, hsl/hsla, safe CSS identifiers.
-     * Returns empty string for unsafe values.
-     * 
-     * @param {*} value - CSS value to sanitise
-     * @returns {string} Sanitised value or empty string if unsafe
+     * Return true if the given URL value has an allowed scheme.
+     *
+     * Relative URLs (no colon before the first slash or query) are
+     * allowed. Absolute URLs must match an entry in
+     * SAFE_URL_SCHEMES. `data:` URLs are allowed but should be used
+     * with care; they can contain HTML or script payloads that
+     * some browsers will execute in certain contexts.
      */
-    function sanitizeCssValue(value) {
+    function isSafeUrlValue(value) {
         if (value === undefined || value === null) {
-            return '';
+            return true;
         }
 
-        var str = String(value);
-
-        // Hex colors: #fff, #ffffff, #ffffffff
-        if (/^#[0-9a-fA-F]{3,8}$/.test(str)) {
-            return str;
+        var str = String(value).trim();
+        if (str === '') {
+            return true;
         }
 
-        // rgb() and rgba()
-        if (/^rgb(a)?\([\d\s.,%]+\)$/.test(str)) {
-            return str;
+        // Normalise whitespace and control characters that browsers
+        // ignore when parsing URLs (e.g. "java\tscript:").
+        var normalised = str.replace(/[\s\u0000-\u001F]/g, '');
+
+        // Find a scheme: letters, digits, +, -, . followed by ':'
+        var schemeMatch = normalised.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+
+        if (!schemeMatch) {
+            // No scheme before the first slash/query: relative URL.
+            return true;
         }
 
-        // hsl() and hsla()
-        if (/^hsl(a)?\([\d\s.,%]+\)$/.test(str)) {
-            return str;
+        var scheme = schemeMatch[1].toLowerCase() + ':';
+
+        for (var i = 0; i < SAFE_URL_SCHEMES.length; i++) {
+            if (SAFE_URL_SCHEMES[i] === scheme) {
+                return true;
+            }
         }
 
-        // Safe CSS identifiers (letters, numbers, hyphens, underscores)
-        if (/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(str)) {
-            return str;
-        }
+        return false;
+    }
 
-        return '';
+    /**
+     * Reject attribute names that create inline script handlers.
+     * Names are case-insensitive.
+     */
+    function isEventHandlerName(name) {
+        if (typeof name !== 'string') {
+            return false;
+        }
+        return /^on/i.test(name);
     }
 
     // ============================================================
@@ -151,66 +238,105 @@
     // ============================================================
 
     /**
-     * Build HTML with escaped content.
-     * Use this for building HTML strings with user-controlled content.
-     * 
-     * NOTE: All interpolated values are escaped. Static markup belongs
-     * in the template literal itself, not in interpolated positions.
-     * There is no way to intentionally interpolate raw HTML through
-     * this function - that is intentional for security.
-     * 
-     * @param {TemplateStringsArray} strings - Template strings
-     * @param {...*} args - Values to interpolate (auto-escaped)
-     * @returns {string} Safe HTML string
-     * 
-     * USAGE:
-     *   var html = DomUtils.safeHtml`<div>${userName}</div>`;
+     * Build HTML with escaped content. Must be used as a tagged
+     * template. Interpolated values are escaped unless they are
+     * SafeHtml instances (see rawHtml).
+     *
+     * @param {TemplateStringsArray} strings
+     * @param {...*} args
+     * @returns {SafeHtml}
      */
     function safeHtml(strings) {
+        if (!strings || !strings.raw) {
+            throw new Error(
+                'DomUtils.safeHtml must be used as a tagged template, ' +
+                'e.g. safeHtml`<div>${value}</div>`. It cannot be ' +
+                'called as a plain function.'
+            );
+        }
+
         var args = Array.prototype.slice.call(arguments, 1);
         var result = '';
 
         for (var i = 0; i < strings.length; i++) {
             result += strings[i];
             if (i < args.length) {
-                result += escapeHtml(args[i]);
+                var arg = args[i];
+                if (isSafeHtml(arg)) {
+                    result += arg.toString();
+                } else if (Array.isArray(arg)) {
+                    // Arrays of SafeHtml / strings: join, escaping
+                    // non-SafeHtml entries.
+                    for (var j = 0; j < arg.length; j++) {
+                        if (isSafeHtml(arg[j])) {
+                            result += arg[j].toString();
+                        } else {
+                            result += escapeHtml(arg[j]);
+                        }
+                    }
+                } else {
+                    result += escapeHtml(arg);
+                }
             }
         }
 
-        return result;
+        return new SafeHtml(result);
     }
 
     /**
-     * Build an HTML attribute string with escaped values.
-     * NOTE: Attribute name must be developer-controlled.
-     * 
+     * Build a single attribute string with a validated name and an
+     * escaped value.
+     *
      * @param {string} name - Attribute name (developer-controlled)
-     * @param {*} value - Attribute value (auto-escaped)
-     * @returns {string} Safe attribute string
+     * @param {*} value - Attribute value
+     * @returns {string} e.g. ' href="https://example.com"' or ''
      */
     function safeAttr(name, value) {
         if (value === undefined || value === null) {
             return '';
         }
+        if (typeof name !== 'string' || name === '') {
+            return '';
+        }
+        if (isEventHandlerName(name)) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[DomUtils.safeAttr] refusing event-handler attribute: ' +
+                    name
+                );
+            }
+            return '';
+        }
+        if (URL_ATTRIBUTES[name.toLowerCase()]) {
+            if (!isSafeUrlValue(value)) {
+                if (typeof console !== 'undefined' && console.warn) {
+                    console.warn(
+                        '[DomUtils.safeAttr] refusing unsafe URL in ' +
+                        name + ': ' + String(value)
+                    );
+                }
+                return '';
+            }
+        }
         return ' ' + name + '="' + escapeAttribute(value) + '"';
     }
 
     /**
-     * Build multiple HTML attributes with escaped values.
-     * NOTE: Attribute names must be developer-controlled.
-     * 
-     * @param {object} attrs - Key-value pairs of attributes
-     * @returns {string} Safe attribute string
+     * Build multiple attribute strings. Same validation as safeAttr.
+     *
+     * @param {object} attrs
+     * @returns {string}
      */
     function safeAttrs(attrs) {
+        if (!attrs || typeof attrs !== 'object') {
+            return '';
+        }
         var result = '';
         for (var key in attrs) {
-            if (Object.prototype.hasOwnProperty.call(attrs, key)) {
-                var value = attrs[key];
-                if (value !== undefined && value !== null) {
-                    result += ' ' + key + '="' + escapeAttribute(value) + '"';
-                }
+            if (!Object.prototype.hasOwnProperty.call(attrs, key)) {
+                continue;
             }
+            result += safeAttr(key, attrs[key]);
         }
         return result;
     }
@@ -220,23 +346,143 @@
     // ============================================================
 
     /**
+     * Apply an attributes object to an element, with URL and
+     * event-handler guards.
+     */
+    function applyAttributes(el, attributes) {
+        if (!attributes) return;
+
+        for (var key in attributes) {
+            if (!Object.prototype.hasOwnProperty.call(attributes, key)) {
+                continue;
+            }
+
+            var value = attributes[key];
+
+            if (value === undefined || value === null) {
+                continue;
+            }
+
+            if (isEventHandlerName(key)) {
+                if (typeof console !== 'undefined' && console.warn) {
+                    console.warn(
+                        '[DomUtils] refusing event-handler attribute: ' +
+                        key
+                    );
+                }
+                continue;
+            }
+
+            if (URL_ATTRIBUTES[key.toLowerCase()]) {
+                if (!isSafeUrlValue(value)) {
+                    if (typeof console !== 'undefined' && console.warn) {
+                        console.warn(
+                            '[DomUtils] refusing unsafe URL in ' +
+                            key + ': ' + String(value)
+                        );
+                    }
+                    continue;
+                }
+            }
+
+            if (key === 'style' && typeof value === 'string') {
+                el.setAttribute('style', sanitizeStyleString(value));
+                continue;
+            }
+
+            el.setAttribute(key, value);
+        }
+    }
+
+    /**
+     * Sanitise a style string by splitting on ';' and running each
+     * declaration's value through sanitizeCssValue.
+     */
+    function sanitizeStyleString(styleString) {
+        var parts = String(styleString).split(';');
+        var out = [];
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i].trim();
+            if (part === '') continue;
+            var colon = part.indexOf(':');
+            if (colon === -1) continue;
+            var prop = part.substring(0, colon).trim();
+            var val = part.substring(colon + 1).trim();
+            if (!/^[a-zA-Z-]+$/.test(prop)) continue;
+            var safe = sanitizeCssValue(val);
+            if (safe !== '') {
+                out.push(prop + ': ' + safe);
+            }
+        }
+        return out.join('; ');
+    }
+
+    /**
+     * Validate that a value is safe for use in a CSS declaration.
+     * Uses a strict allowlist.
+     *
+     * Allows:
+     *   - hex colours (#fff, #ffffff, #ffffffff)
+     *   - rgb(a) and hsl(a) with numeric/comma/percent content
+     *   - simple numeric values with a unit (10px, 1.5em, 100%)
+     *   - safe CSS keywords (auto, none, inherit, solid, ...)
+     *
+     * Rejects: calc(), var(), url(), expression(), attr(), and
+     * anything else.
+     *
+     * @param {*} value
+     * @returns {string} Safe value, or '' if unsafe
+     */
+    function sanitizeCssValue(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+
+        var str = String(value).trim();
+        if (str === '') return '';
+
+        // Hex colours
+        if (/^#[0-9a-fA-F]{3,8}$/.test(str)) {
+            return str;
+        }
+
+        // rgb() / rgba() / hsl() / hsla()
+        if (/^rgba?\(\s*[\d\s.,%]+\)$/.test(str)) {
+            return str;
+        }
+        if (/^hsla?\(\s*[\d\s.,%]+\)$/.test(str)) {
+            return str;
+        }
+
+        // Numeric with a small set of units
+        if (/^-?\d+(\.\d+)?(px|em|rem|%|vh|vw|pt|ch|ex|cm|mm|in)?$/.test(str)) {
+            return str;
+        }
+
+        // Safe CSS keywords
+        if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(str)) {
+            return str;
+        }
+
+        return '';
+    }
+
+    /**
      * Create a DOM element with text content (safe).
-     * Use this instead of innerHTML for user-controlled content.
-     * 
-     * NOTE: 
-     * - text is treated as textContent (safe, automatically escaped)
-     * - className and attribute names must be developer-controlled
-     * - attribute values are assigned through setAttribute (safe)
-     * - Do not pass untrusted attribute names
-     * 
-     * @param {string} tag - HTML tag name
-     * @param {string|string[]} className - CSS class name(s)
-     * @param {*} text - Text content (safe, escapes automatically)
-     * @param {object} attributes - Key-value pairs of attributes
+     *
+     * Attribute names and URL/event-handler values are validated
+     * by applyAttributes. Attribute values are set via
+     * setAttribute, so they are always treated as strings.
+     *
+     * @param {string} tag
+     * @param {string|string[]} className
+     * @param {*} text - set as textContent
+     * @param {object} attributes
      * @returns {HTMLElement}
      */
     function createElement(tag, className, text, attributes) {
         var el = document.createElement(tag);
+
         if (className) {
             if (Array.isArray(className)) {
                 el.className = className.join(' ');
@@ -247,50 +493,36 @@
         if (text !== undefined && text !== null) {
             el.textContent = text;
         }
-        if (attributes) {
-            for (var key in attributes) {
-                if (Object.prototype.hasOwnProperty.call(attributes, key)) {
-                    // Attribute names must be developer-controlled
-                    el.setAttribute(key, attributes[key]);
-                }
-            }
-        }
+
+        applyAttributes(el, attributes);
+
         return el;
     }
 
-    /**
-     * Create a span element.
-     */
     function createSpan(className, text, attributes) {
         return createElement('span', className, text, attributes);
     }
 
-    /**
-     * Create a div element.
-     */
     function createDiv(className, text, attributes) {
         return createElement('div', className, text, attributes);
     }
 
     /**
-     * Create a button element.
+     * Create a button. Defaults to type="button" unless the caller
+     * supplied a type in `attributes`.
      */
     function createButton(className, text, attributes) {
-        var el = createElement('button', className, text, attributes);
-        el.type = (attributes && attributes.type) || 'button';
-        return el;
+        var attrs = attributes ? Object.assign({}, attributes) : {};
+        if (attrs.type === undefined) {
+            attrs.type = 'button';
+        }
+        return createElement('button', className, text, attrs);
     }
 
-    /**
-     * Create a label element.
-     */
     function createLabel(className, text, attributes) {
         return createElement('label', className, text, attributes);
     }
 
-    /**
-     * Create an input element.
-     */
     function createInput(type, className, value, attributes) {
         var el = document.createElement('input');
         el.type = type || 'text';
@@ -304,19 +536,10 @@
         if (value !== undefined && value !== null) {
             el.value = value;
         }
-        if (attributes) {
-            for (var key in attributes) {
-                if (Object.prototype.hasOwnProperty.call(attributes, key)) {
-                    el.setAttribute(key, attributes[key]);
-                }
-            }
-        }
+        applyAttributes(el, attributes);
         return el;
     }
 
-    /**
-     * Create a select element with options.
-     */
     function createSelect(className, options, selectedValue, attributes) {
         var el = document.createElement('select');
         if (className) {
@@ -326,20 +549,23 @@
                 el.className = className;
             }
         }
-        if (attributes) {
-            for (var key in attributes) {
-                if (Object.prototype.hasOwnProperty.call(attributes, key)) {
-                    el.setAttribute(key, attributes[key]);
-                }
-            }
-        }
+        applyAttributes(el, attributes);
 
         if (Array.isArray(options)) {
             options.forEach(function(opt) {
                 var option = document.createElement('option');
-                option.value = opt.value;
-                option.textContent = opt.label || opt.text || opt.value;
-                if (selectedValue !== undefined && String(opt.value) === String(selectedValue)) {
+                option.value = opt.value !== undefined && opt.value !== null
+                    ? String(opt.value)
+                    : '';
+                var label = opt.label !== undefined ? opt.label
+                    : (opt.text !== undefined ? opt.text : opt.value);
+                option.textContent = label !== undefined && label !== null
+                    ? String(label)
+                    : '';
+
+                if (selectedValue !== undefined &&
+                    selectedValue !== null &&
+                    String(opt.value) === String(selectedValue)) {
                     option.selected = true;
                 }
                 el.appendChild(option);
@@ -349,13 +575,12 @@
         return el;
     }
 
-    /**
-     * Create an option element.
-     */
     function createOption(value, label, selected) {
         var el = document.createElement('option');
-        el.value = value;
-        el.textContent = label || value;
+        el.value = value !== undefined && value !== null ? String(value) : '';
+        el.textContent = label !== undefined && label !== null
+            ? String(label)
+            : el.value;
         if (selected) {
             el.selected = true;
         }
@@ -366,21 +591,11 @@
     // DOM TRAVERSAL
     // ============================================================
 
-    /**
-     * Find the closest ancestor matching a selector.
-     * Defensively handles non-Element event targets.
-     * 
-     * @param {HTMLElement} el - Starting element
-     * @param {string} selector - CSS selector
-     * @returns {HTMLElement|null} Closest ancestor or null
-     */
     function closest(el, selector) {
         if (!el) return null;
         if (typeof el.closest === 'function') {
             return el.closest(selector);
         }
-
-        // Fallback for older browsers
         var current = el;
         while (current) {
             if (current.matches && current.matches(selector)) {
@@ -391,62 +606,41 @@
         return null;
     }
 
-    /**
-     * Find all descendants matching a selector.
-     * 
-     * @param {HTMLElement} el - Parent element
-     * @param {string} selector - CSS selector
-     * @returns {HTMLElement[]} Array of matching elements
-     */
     function findAll(el, selector) {
         if (!el) return [];
         return Array.from(el.querySelectorAll(selector));
     }
 
-    /**
-     * Find the first descendant matching a selector.
-     * 
-     * @param {HTMLElement} el - Parent element
-     * @param {string} selector - CSS selector
-     * @returns {HTMLElement|null} First matching element or null
-     */
     function findOne(el, selector) {
         if (!el) return null;
         return el.querySelector(selector);
     }
 
     /**
-     * Get the data attribute value from an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} key - Data attribute key (without 'data-')
-     * @returns {string|null} Attribute value or null
+     * Get a data attribute value.
+     * Returns null when the attribute is absent (matching the docs).
      */
     function getData(el, key) {
-        if (!el) return null;
-        return el.dataset ? el.dataset[key] : null;
+        if (!el || !el.dataset) return null;
+        var value = el.dataset[key];
+        return value === undefined ? null : value;
     }
 
     /**
-     * Set the data attribute value on an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} key - Data attribute key (without 'data-')
-     * @param {*} value - Value to set
+     * Set a data attribute value.
+     * A null value removes the attribute.
      */
     function setData(el, key, value) {
         if (!el) return;
+        if (value === null) {
+            removeData(el, key);
+            return;
+        }
         if (el.dataset) {
             el.dataset[key] = value;
         }
     }
 
-    /**
-     * Remove a data attribute from an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} key - Data attribute key (without 'data-')
-     */
     function removeData(el, key) {
         if (!el) return;
         if (el.dataset) {
@@ -454,13 +648,6 @@
         }
     }
 
-    /**
-     * Check if an element matches a selector.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} selector - CSS selector
-     * @returns {boolean} True if matches
-     */
     function matches(el, selector) {
         if (!el) return false;
         if (typeof el.matches === 'function') {
@@ -475,13 +662,12 @@
 
     /**
      * Delegate events to a parent element.
-     * Defensively handles non-Element event targets.
-     * 
-     * @param {HTMLElement} parent - Parent element for delegation
-     * @param {string} selector - CSS selector for target elements
-     * @param {string} eventName - Event name (e.g., 'click')
-     * @param {Function} handler - Event handler (receives event and matched element)
-     * @returns {Function} Cleanup function to remove listener
+     *
+     * NOTE: Only works with events that bubble. Delegating 'focus',
+     * 'blur', 'mouseenter', or 'mouseleave' will silently never
+     * fire; attach those directly to the target element.
+     *
+     * @returns {Function} Cleanup function
      */
     function delegate(parent, selector, eventName, handler) {
         if (!parent || !selector || !eventName || typeof handler !== 'function') {
@@ -490,23 +676,22 @@
 
         function wrappedHandler(e) {
             var target = e.target;
-
-            // Defensive: event target might not be an Element
             if (target && target.nodeType !== 1) {
                 target = target.parentElement;
             }
-
             if (!target) return;
 
-            var matched = target.closest ? target.closest(selector) : closest(target, selector);
-            if (matched && parent.contains(matched)) {
+            var matched = target.closest
+                ? target.closest(selector)
+                : closest(target, selector);
+
+            if (matched && matched !== parent && parent.contains(matched)) {
                 handler(e, matched);
             }
         }
 
         parent.addEventListener(eventName, wrappedHandler);
 
-        // Return cleanup function
         return function() {
             parent.removeEventListener(eventName, wrappedHandler);
         };
@@ -516,46 +701,28 @@
     // DOM MANIPULATION
     // ============================================================
 
-    /**
-     * Remove all children from an element.
-     * 
-     * @param {HTMLElement} el - Element to empty
-     */
     function empty(el) {
         if (!el) return;
+        if (typeof el.replaceChildren === 'function') {
+            el.replaceChildren();
+            return;
+        }
         while (el.firstChild) {
             el.removeChild(el.firstChild);
         }
     }
 
-    /**
-     * Remove an element from the DOM.
-     * 
-     * @param {HTMLElement} el - Element to remove
-     */
     function remove(el) {
         if (el && el.parentNode) {
             el.parentNode.removeChild(el);
         }
     }
 
-    /**
-     * Insert an element as the first child.
-     * 
-     * @param {HTMLElement} parent - Parent element
-     * @param {HTMLElement} child - Child element to prepend
-     */
     function prepend(parent, child) {
         if (!parent || !child) return;
         parent.insertBefore(child, parent.firstChild);
     }
 
-    /**
-     * Insert an element after another.
-     * 
-     * @param {HTMLElement} reference - Reference element
-     * @param {HTMLElement} child - Child element to insert
-     */
     function insertAfter(reference, child) {
         if (!reference || !child) return;
         var parent = reference.parentNode;
@@ -564,12 +731,6 @@
         }
     }
 
-    /**
-     * Insert an element before another.
-     * 
-     * @param {HTMLElement} reference - Reference element
-     * @param {HTMLElement} child - Child element to insert
-     */
     function insertBefore(reference, child) {
         if (!reference || !child) return;
         var parent = reference.parentNode;
@@ -578,12 +739,6 @@
         }
     }
 
-    /**
-     * Replace an element with another.
-     * 
-     * @param {HTMLElement} oldEl - Element to replace
-     * @param {HTMLElement} newEl - Replacement element
-     */
     function replace(oldEl, newEl) {
         if (!oldEl || !newEl) return;
         var parent = oldEl.parentNode;
@@ -592,15 +747,8 @@
         }
     }
 
-    /**
-     * Toggle a class on an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} className - CSS class name
-     * @param {boolean} force - Optional force state
-     */
     function toggleClass(el, className, force) {
-        if (!el) return;
+        if (!el || !el.classList) return;
         if (force !== undefined) {
             el.classList.toggle(className, force);
         } else {
@@ -608,14 +756,8 @@
         }
     }
 
-    /**
-     * Add a class to an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string|string[]} className - CSS class name(s)
-     */
     function addClass(el, className) {
-        if (!el) return;
+        if (!el || !el.classList) return;
         if (Array.isArray(className)) {
             className.forEach(function(c) { el.classList.add(c); });
         } else {
@@ -623,14 +765,8 @@
         }
     }
 
-    /**
-     * Remove a class from an element.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string|string[]} className - CSS class name(s)
-     */
     function removeClass(el, className) {
-        if (!el) return;
+        if (!el || !el.classList) return;
         if (Array.isArray(className)) {
             className.forEach(function(c) { el.classList.remove(c); });
         } else {
@@ -638,15 +774,8 @@
         }
     }
 
-    /**
-     * Check if an element has a class.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} className - CSS class name
-     * @returns {boolean} True if has class
-     */
     function hasClass(el, className) {
-        if (!el) return false;
+        if (!el || !el.classList) return false;
         return el.classList.contains(className);
     }
 
@@ -654,34 +783,32 @@
     // SCROLL HELPERS
     // ============================================================
 
-    /**
-     * Scroll an element into view smoothly.
-     * 
-     * @param {HTMLElement} el - Element to scroll to
-     * @param {object} options - Scroll options (block, behavior, etc.)
-     */
     function scrollIntoView(el, options) {
         if (!el) return;
         options = options || { block: 'nearest', behavior: 'smooth' };
         try {
             el.scrollIntoView(options);
         } catch (e) {
-            // Fallback for older browsers
-            el.scrollIntoView(false);
+            // Environment without options support; try the boolean
+            // form once, then give up rather than throwing.
+            try {
+                el.scrollIntoView(false);
+            } catch (e2) {
+                // Ignore
+            }
         }
     }
 
-    /**
-     * Scroll to the top of the page.
-     * 
-     * @param {object} options - Scroll options
-     */
     function scrollToTop(options) {
         options = options || { behavior: 'smooth' };
         try {
             window.scrollTo({ top: 0, left: 0, behavior: options.behavior });
         } catch (e) {
-            window.scrollTo(0, 0);
+            try {
+                window.scrollTo(0, 0);
+            } catch (e2) {
+                // Ignore
+            }
         }
     }
 
@@ -689,19 +816,6 @@
     // VISIBILITY HELPERS
     // ============================================================
 
-    /**
-     * Check if an element's bounding rectangle intersects the viewport.
-     * 
-     * NOTE: This checks geometric visibility only. An element can be
-     * geometrically visible while being display:none, visibility:hidden,
-     * opacity:0, or covered by another element.
-     * 
-     * @param {HTMLElement} el - Element to check
-     * @param {object} options - Options
-     * @param {number} options.verticalMargin - Vertical margin in pixels (default: 0)
-     * @param {number} options.horizontalMargin - Horizontal margin in pixels (default: 0)
-     * @returns {boolean} True if element intersects the viewport
-     */
     function isVisible(el, options) {
         if (!el) return false;
         options = options || {};
@@ -721,12 +835,6 @@
         return top < viewHeight && bottom > 0 && left < viewWidth && right > 0;
     }
 
-    /**
-     * Check if an element is fully visible in the viewport.
-     * 
-     * @param {HTMLElement} el - Element to check
-     * @returns {boolean} True if fully visible
-     */
     function isFullyVisible(el) {
         if (!el) return false;
 
@@ -743,9 +851,13 @@
     // ============================================================
 
     /**
-     * Safely set inline styles on an element.
-     * 
-     * @param {HTMLElement} el - Element
+     * Set inline styles on an element.
+     *
+     * Values are NOT sanitised by default, because callers pass
+     * developer-controlled styles. Set values from user input via
+     * sanitizeCssValue first.
+     *
+     * @param {HTMLElement} el
      * @param {object} styles - Key-value pairs of CSS properties
      */
     function setStyles(el, styles) {
@@ -757,13 +869,6 @@
         }
     }
 
-    /**
-     * Get computed style value.
-     * 
-     * @param {HTMLElement} el - Element
-     * @param {string} property - CSS property name
-     * @returns {string} Computed style value
-     */
     function getStyle(el, property) {
         if (!el) return '';
         try {
@@ -774,27 +879,53 @@
     }
 
     // ============================================================
-    // LEGACY COMPATIBILITY (Deprecated)
+    // LEGACY GLOBALS (deprecated)
     // ============================================================
 
-    /**
-     * Legacy alias for escapeHtml.
-     * @deprecated Use DomUtils.escapeHtml() instead.
-     */
-    window.escapeHtml = escapeHtml;
+    (function installLegacyGlobals() {
+        var warnedEscapeHtml = false;
+        var warnedEscapeAttribute = false;
 
-    /**
-     * Legacy alias for escapeAttribute.
-     * @deprecated Use DomUtils.escapeAttribute() instead.
-     */
-    window.escapeAttribute = escapeAttribute;
+        Object.defineProperty(window, 'escapeHtml', {
+            configurable: true,
+            get: function() {
+                if (!warnedEscapeHtml) {
+                    warnedEscapeHtml = true;
+                    if (typeof console !== 'undefined' && console.warn) {
+                        console.warn(
+                            '[DomUtils] window.escapeHtml is deprecated. ' +
+                            'Use DomUtils.escapeHtml instead.'
+                        );
+                    }
+                }
+                return escapeHtml;
+            }
+        });
+
+        Object.defineProperty(window, 'escapeAttribute', {
+            configurable: true,
+            get: function() {
+                if (!warnedEscapeAttribute) {
+                    warnedEscapeAttribute = true;
+                    if (typeof console !== 'undefined' && console.warn) {
+                        console.warn(
+                            '[DomUtils] window.escapeAttribute is ' +
+                            'deprecated. Use DomUtils.escapeAttribute ' +
+                            'instead.'
+                        );
+                    }
+                }
+                return escapeAttribute;
+            }
+        });
+    })();
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.DomUtils = {
-        // Escaping (SINGLE SOURCE OF TRUTH)
+    window.DomUtils = Object.freeze({
+        // Escaping
         escapeHtml: escapeHtml,
         escapeAttribute: escapeAttribute,
         encodeUrlComponent: encodeUrlComponent,
@@ -802,6 +933,8 @@
 
         // Safe HTML
         safeHtml: safeHtml,
+        rawHtml: rawHtml,
+        SafeHtml: SafeHtml,
         safeAttr: safeAttr,
         safeAttrs: safeAttrs,
 
@@ -849,7 +982,11 @@
 
         // Style
         setStyles: setStyles,
-        getStyle: getStyle
-    };
+        getStyle: getStyle,
+
+        // URL safety (exposed for callers that build markup
+        // themselves)
+        isSafeUrlValue: isSafeUrlValue
+    });
 
 })();
