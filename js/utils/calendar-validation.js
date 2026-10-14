@@ -30,6 +30,19 @@
  *   of these. Because this module claims to be "strict" and
  *   "canonical", it now actually is.
  *
+ * DEPENDENCIES - LAZY:
+ *   CalendarConstants is required by the bounded integer parsers
+ *   (parseWeek, parseDay, parseHour, parseCalendarHour,
+ *   parseDuration, parseSlot, parseInRange, isInRange) and the
+ *   bounds accessors. It is resolved at CALL time, not at load
+ *   time, so this module loads cleanly regardless of script order.
+ *   A caller that invokes a bounded parser before
+ *   CalendarConstants is on window gets a clear error naming the
+ *   missing file.
+ *
+ *   parseYear and isValidCalendarDate have NO dependency on
+ *   CalendarConstants. They work regardless of load order.
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive SAFE integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
@@ -54,17 +67,14 @@
  *   This module's parseHour(value) validates a NUMERIC hour value
  *   against [MIN_HOUR, MAX_HOUR]. FormatUtils.parseHour(timeStr)
  *   parses a TIME STRING like '9:00 AM' to a 0-23 integer. They
- *   are different functions with the same name. Call sites should
- *   be clear from context; FormatUtils.parseHour is being renamed
- *   to parseTimeString in a future pass.
+ *   are different functions with the same name. FormatUtils has
+ *   been renamed to parseTimeString; the old name remains as a
+ *   deprecated alias.
  *
  * SLOT SEMANTICS:
  *   parseSlot validates a (week, day, hour, duration) tuple and
  *   ensures the resulting slot fits within the calendar grid:
  *   hour + duration - 1 <= CALENDAR_END_HOUR.
- *
- * DEPENDENCIES:
- *   - window.CalendarConstants (bounds) - MANDATORY
  *
  * USAGE:
  *   var CV = window.CalendarValidation;
@@ -80,55 +90,54 @@
     if (window.__calendarValidationLoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-    //
-    // MIN_YEAR and MAX_YEAR are deliberately NOT checked. Years are
-    // unbounded positive safe integers and are validated locally by
-    // parseYear(). See the YEAR SEMANTICS block above.
-
-    var CC = window.CalendarConstants;
-
-    var _missing = [];
-
-    function requireNumber(name, value) {
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-            _missing.push(name);
-        }
-    }
-
-    if (!CC || typeof CC !== 'object') {
-        _missing.push('CalendarConstants');
-    } else {
-        requireNumber('CalendarConstants.MIN_WEEK', CC.MIN_WEEK);
-        requireNumber('CalendarConstants.MAX_WEEK', CC.MAX_WEEK);
-        requireNumber('CalendarConstants.MIN_DAY', CC.MIN_DAY);
-        requireNumber('CalendarConstants.MAX_DAY', CC.MAX_DAY);
-        requireNumber('CalendarConstants.MIN_HOUR', CC.MIN_HOUR);
-        requireNumber('CalendarConstants.MAX_HOUR', CC.MAX_HOUR);
-        requireNumber('CalendarConstants.MIN_CLASS_DURATION', CC.MIN_CLASS_DURATION);
-        requireNumber('CalendarConstants.MAX_CLASS_DURATION', CC.MAX_CLASS_DURATION);
-        requireNumber('CalendarConstants.CALENDAR_START_HOUR', CC.CALENDAR_START_HOUR);
-        requireNumber('CalendarConstants.CALENDAR_END_HOUR', CC.CALENDAR_END_HOUR);
-    }
-
     window.__calendarValidationLoaded = true;
 
-    if (_missing.length > 0) {
-        window.CalendarValidation = Object.freeze({
-            _loadFailed: true,
-            _missing: _missing.slice()
-        });
-        throw new Error(
-            '[CalendarValidation] Missing or invalid dependencies: ' +
-            _missing.join(', ')
-        );
+    // ============================================================
+    // DEPENDENCY ACCESS - LAZY
+    // ============================================================
+    //
+    // CalendarConstants is required by the bounded parsers and the
+    // bounds accessors. It is resolved at CALL time, not at load
+    // time. parseYear and isValidCalendarDate do not need it.
+
+    var REQUIRED_CONSTANTS = [
+        'MIN_WEEK', 'MAX_WEEK',
+        'MIN_DAY', 'MAX_DAY',
+        'MIN_HOUR', 'MAX_HOUR',
+        'MIN_CLASS_DURATION', 'MAX_CLASS_DURATION',
+        'CALENDAR_START_HOUR', 'CALENDAR_END_HOUR'
+    ];
+
+    function requireCalendarConstants(calleeName) {
+        var CC = window.CalendarConstants;
+
+        if (!CC || typeof CC !== 'object') {
+            throw new Error(
+                '[CalendarValidation] ' + calleeName + ' requires ' +
+                'CalendarConstants, which is not loaded. Ensure ' +
+                'js/utils/calendar-constants.js is included in the ' +
+                'page before this function is called.'
+            );
+        }
+
+        for (var i = 0; i < REQUIRED_CONSTANTS.length; i++) {
+            var key = REQUIRED_CONSTANTS[i];
+            if (typeof CC[key] !== 'number') {
+                throw new Error(
+                    '[CalendarValidation] ' + calleeName +
+                    ' requires CalendarConstants.' + key +
+                    ', which is missing or not a number. The ' +
+                    'CalendarConstants module may be an older ' +
+                    'version.'
+                );
+            }
+        }
+
+        return CC;
     }
 
     // ============================================================
-    // PRIVATE HELPERS
+    // PRIVATE HELPERS - dependency-free
     // ============================================================
 
     /**
@@ -139,6 +148,9 @@
      *   - strings matching /^\d+$/
      *
      * Rejects everything else. Returns null on rejection.
+     *
+     * Dependency-free: parseYear and isValidCalendarDate use this
+     * without touching CalendarConstants.
      */
     function strictInteger(value) {
         if (value === undefined || value === null) {
@@ -190,6 +202,7 @@
     // ============================================================
 
     function parseWeek(value) {
+        var CC = requireCalendarConstants('parseWeek');
         return parseBoundedInteger(value, CC.MIN_WEEK, CC.MAX_WEEK);
     }
 
@@ -206,6 +219,7 @@
     // which is day of month. Same word, different domain.
 
     function parseDay(value) {
+        var CC = requireCalendarConstants('parseDay');
         return parseBoundedInteger(value, CC.MIN_DAY, CC.MAX_DAY);
     }
 
@@ -218,6 +232,7 @@
     // ============================================================
 
     function parseHour(value) {
+        var CC = requireCalendarConstants('parseHour');
         return parseBoundedInteger(value, CC.MIN_HOUR, CC.MAX_HOUR);
     }
 
@@ -226,6 +241,7 @@
     }
 
     function parseCalendarHour(value) {
+        var CC = requireCalendarConstants('parseCalendarHour');
         return parseBoundedInteger(
             value,
             CC.CALENDAR_START_HOUR,
@@ -242,6 +258,7 @@
     // ============================================================
 
     function parseDuration(value) {
+        var CC = requireCalendarConstants('parseDuration');
         return parseBoundedInteger(
             value,
             CC.MIN_CLASS_DURATION,
@@ -254,12 +271,14 @@
     }
 
     // ============================================================
-    // YEAR VALIDATION
+    // YEAR VALIDATION - dependency-free
     // ============================================================
     //
     // Years are UNBOUNDED positive SAFE integers. There is no upper
     // bound, but values outside the safe integer range (like 1e21)
     // are rejected because they cannot be represented exactly.
+    //
+    // This function does NOT require CalendarConstants.
 
     function parseYear(value) {
         var parsed = strictInteger(value);
@@ -280,7 +299,7 @@
     }
 
     // ============================================================
-    // CALENDAR DATE VALIDATION
+    // CALENDAR DATE VALIDATION - dependency-free
     // ============================================================
 
     var DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -306,6 +325,8 @@
      * digit-only strings. Booleans, arrays, Dates, and NaN are
      * rejected. This matches the strictness of the other parsers
      * in this module.
+     *
+     * This function does NOT require CalendarConstants.
      *
      * @returns {boolean} True if the date is valid.
      */
@@ -337,6 +358,8 @@
     // renderable in the grid.
 
     function parseSlot(week, day, hour, duration) {
+        var CC = requireCalendarConstants('parseSlot');
+
         var parsedWeek = parseWeek(week);
         if (parsedWeek === null) { return null; }
 
@@ -413,22 +436,27 @@
     // callers should use parseYear and check for null.
 
     function getWeekBounds() {
+        var CC = requireCalendarConstants('getWeekBounds');
         return { min: CC.MIN_WEEK, max: CC.MAX_WEEK };
     }
 
     function getDayBounds() {
+        var CC = requireCalendarConstants('getDayBounds');
         return { min: CC.MIN_DAY, max: CC.MAX_DAY };
     }
 
     function getHourBounds() {
+        var CC = requireCalendarConstants('getHourBounds');
         return { min: CC.MIN_HOUR, max: CC.MAX_HOUR };
     }
 
     function getDurationBounds() {
+        var CC = requireCalendarConstants('getDurationBounds');
         return { min: CC.MIN_CLASS_DURATION, max: CC.MAX_CLASS_DURATION };
     }
 
     function getCalendarHourBounds() {
+        var CC = requireCalendarConstants('getCalendarHourBounds');
         return { min: CC.CALENDAR_START_HOUR, max: CC.CALENDAR_END_HOUR };
     }
 
@@ -455,11 +483,11 @@
         parseDuration: parseDuration,
         isDurationValid: isDurationValid,
 
-        // Year (unbounded positive safe integer)
+        // Year (unbounded positive safe integer, no constants needed)
         parseYear: parseYear,
         isYearValid: isYearValid,
 
-        // Calendar date (year + month + day)
+        // Calendar date (no constants needed)
         isValidCalendarDate: isValidCalendarDate,
 
         // Slot
