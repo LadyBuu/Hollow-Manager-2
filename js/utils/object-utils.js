@@ -1,35 +1,46 @@
 /**
  * utils/object-utils.js - Object Utilities
  * Generic object manipulation functions
- * 
+ *
  * Path: js/utils/object-utils.js
- * 
+ *
  * This module provides:
- *   - deepClone - Deep cloning with structuredClone + JSON fallback
- * 
+ *   - deepClone       - Deep clone via structuredClone
+ *   - isPlainObject   - Check whether a value is a plain data object
+ *
  * IMPORTANT:
- *   - These functions are PURE - no side effects
- *   - No knowledge of HollowBlades domain concepts
- *   - No dependencies on other modules (self-contained)
- *   - Throws on failure (does not return null)
- *   - This is the SINGLE SOURCE OF TRUTH for generic cloning
- *   - Database and MutationPipeline use this module
- * 
- * READ SAFETY CONTRACT:
- *   - deepClone ALWAYS returns a value that is not === to the input,
- *     for object inputs. There is no fallback that returns the
- *     original reference. If every clone strategy fails, deepClone
- *     throws. This is a hard contract, not a hint.
- *   - If a future edit ever introduces a fallback that returns the
- *     original, the explicit identity check below fires and throws.
- *     This makes the contract self-enforcing.
- *   - Primitives (null, undefined, number, string, boolean, symbol,
- *     bigint) are returned as-is. This is safe because primitives are
- *     copied by value; there is no aliasing.
- * 
+ *   - deepClone is PURE and throws on failure. It never returns
+ *     the input reference and never returns a lossy approximation.
+ *   - No knowledge of HollowBlades domain concepts.
+ *   - No dependencies on other modules.
+ *   - This is the SINGLE SOURCE OF TRUTH for deep cloning.
+ *     database.js and mutation-pipeline.js MUST call it rather
+ *     than reimplement it.
+ *
+ * THE READ SAFETY CONTRACT:
+ *   deepClone(value) returns a new value that shares no mutable
+ *   structure with `value`, for any value structuredClone can
+ *   handle. If structuredClone is unavailable or throws, deepClone
+ *   throws. There is no JSON fallback.
+ *
+ *   WHY NO FALLBACK:
+ *     MutationPipeline calls deepClone to snapshot live state
+ *     before a mutation. If the save then fails, it restores from
+ *     that snapshot. A JSON fallback would "succeed" by silently
+ *     dropping functions and undefined fields, turning NaN and
+ *     Infinity into null, Dates into strings, and Map/Set into {}.
+ *     The pipeline would then restore a corrupted copy over live
+ *     data. A snapshot you cannot trust is worse than no snapshot.
+ *
+ *     The same failure mode applies to database.js, which uses
+ *     structuredClone directly for its persistence copy. Making
+ *     deepClone match that behaviour means a value that cannot be
+ *     safely snapshotted fails loudly at the point of cloning,
+ *     not silently at the point of rollback.
+ *
  * DEPENDENCIES:
- *   - None
- * 
+ *   - structuredClone (browser API)
+ *
  * USAGE:
  *   var cloned = ObjectUtils.deepClone(original);
  *   // Throws if cloning fails
@@ -47,30 +58,31 @@
 
     /**
      * Deep clone a value.
-     * 
+     *
      * SEMANTICS:
-     *   - Uses structuredClone if available (modern browsers)
-     *   - Falls back to JSON.parse(JSON.stringify()) for compatibility
-     *   - Throws an error if cloning fails
-     *   - Does NOT return null on failure (distinguishes from cloned null)
-     *   - Does NOT return the original reference on failure. Aliasing
-     *     is treated as a cloning failure, not a graceful degradation.
-     * 
-     * LIMITATIONS:
-     *   - JSON fallback loses: undefined, Date, Map, Set, TypedArrays, etc.
-     *   - JSON fallback only works with JSON-serializable data
-     *   - For application data, ensure your data is JSON-serializable
-     * 
+     *   - Primitives (null, undefined, number, string, boolean,
+     *     symbol, bigint) are returned as-is. Primitives are
+     *     copied by value; there is no aliasing concern.
+     *   - Objects and arrays are cloned via structuredClone.
+     *   - If structuredClone is unavailable, throws.
+     *   - If structuredClone throws (functions, DOM nodes, proxies,
+     *     some host objects), the error propagates unchanged.
+     *   - Never returns the input reference for object inputs.
+     *
+     * LIMITATIONS (inherent to structuredClone):
+     *   - Functions cannot be cloned and cause a throw.
+     *   - DOM nodes, Window, and some host objects cause a throw.
+     *   - Proxies cause a throw.
+     *   - Symbols used as keys are dropped silently by the browser's
+     *     structuredClone implementation. This is a browser
+     *     behaviour, not something this module can detect.
+     *   - Class instances clone as plain objects, losing their
+     *     prototype. This is structuredClone's behaviour.
+     *
      * @param {*} value - Value to clone
      * @returns {*} Cloned value
-     * @throws {Error} If cloning fails or if aliasing is detected
-     * 
-     * USAGE:
-     *   try {
-     *       var cloned = ObjectUtils.deepClone(data);
-     *   } catch (e) {
-     *       // Handle clone failure
-     *   }
+     * @throws {Error} If structuredClone is unavailable, or if it
+     *   throws on the given value.
      */
     function deepClone(value) {
         // Primitives: return as-is. Safe because primitives are
@@ -79,51 +91,56 @@
             return value;
         }
 
-        // Try structuredClone first (modern browsers)
-        if (typeof structuredClone === 'function') {
-            try {
-                var structured = structuredClone(value);
-                // structuredClone never returns the input reference,
-                // but check anyway to keep the contract self-enforcing.
-                if (structured !== value) {
-                    return structured;
-                }
-                // If we somehow got the same reference, fall through.
-            } catch (e) {
-                // Fall through to JSON fallback
-            }
+        if (typeof structuredClone !== 'function') {
+            throw new Error(
+                'ObjectUtils.deepClone: structuredClone is not ' +
+                'available in this environment. Cannot safely clone. ' +
+                'A JSON fallback would silently corrupt data; this ' +
+                'module refuses to provide one.'
+            );
         }
 
-        // Fallback to JSON
-        var json;
+        var cloned;
         try {
-            json = JSON.parse(JSON.stringify(value));
+            cloned = structuredClone(value);
         } catch (e) {
             throw new Error(
-                'ObjectUtils.deepClone: Failed to clone value. ' +
-                'Ensure the value is JSON-serializable. ' +
-                'Original error: ' + e.message
+                'ObjectUtils.deepClone: structuredClone failed. ' +
+                'Value contains something that cannot be safely ' +
+                'cloned (function, DOM node, proxy, or host object). ' +
+                'Original error: ' + (e && e.message ? e.message : e)
             );
         }
 
-        // The JSON round-trip always constructs a new value for object
-        // inputs. If it somehow produced the same reference (which is
-        // impossible for a genuine JSON.parse result), treat it as a
-        // cloning failure rather than silently returning an alias.
-        if (json === value) {
+        // structuredClone never returns the input reference for
+        // object inputs. Assert that invariant defensively; a
+        // failure here means the runtime is broken, not the caller.
+        if (cloned === value) {
             throw new Error(
-                'ObjectUtils.deepClone: Clone produced the original reference. ' +
-                'This is a bug — deepClone must never return the input for object inputs.'
+                'ObjectUtils.deepClone: structuredClone returned the ' +
+                'input reference. This violates the read safety ' +
+                'contract and indicates a broken runtime.'
             );
         }
 
-        return json;
+        return cloned;
     }
 
+    // ============================================================
+    // PLAIN OBJECT CHECK
+    // ============================================================
+
     /**
-     * Check if a value is a plain object.
-     * Useful for determining if a value can be deeply cloned via JSON.
-     * 
+     * Check if a value is a plain data object.
+     *
+     * "Plain" means the prototype is Object.prototype or null.
+     * Arrays, class instances, Dates, Maps, and Sets are NOT plain.
+     *
+     * NOTE: This duplicates ValidationUtils.isPlainObject. Both are
+     * kept because this module is deliberately dependency-free, and
+     * ValidationUtils is the canonical source. When in doubt, use
+     * ValidationUtils.isPlainObject.
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a plain object
      */
@@ -131,55 +148,17 @@
         if (value === null || typeof value !== 'object') {
             return false;
         }
-
         var prototype = Object.getPrototypeOf(value);
         return prototype === Object.prototype || prototype === null;
-    }
-
-    /**
-     * Check if a value is cloneable via JSON.
-     * Some values (Date, Map, Set, etc.) are not JSON-serializable.
-     * 
-     * @param {*} value - Value to check
-     * @returns {boolean} True if value is JSON-serializable
-     */
-    function isJsonSerializable(value) {
-        if (value === null || typeof value !== 'object') {
-            return true;
-        }
-
-        if (Array.isArray(value)) {
-            for (var i = 0; i < value.length; i++) {
-                if (!isJsonSerializable(value[i])) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        if (isPlainObject(value)) {
-            for (var key in value) {
-                if (Object.prototype.hasOwnProperty.call(value, key)) {
-                    if (!isJsonSerializable(value[key])) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-
-        // Non-plain objects (Date, Map, Set, custom classes) are not JSON-serializable
-        return false;
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.ObjectUtils = {
+    window.ObjectUtils = Object.freeze({
         deepClone: deepClone,
-        isPlainObject: isPlainObject,
-        isJsonSerializable: isJsonSerializable
-    };
+        isPlainObject: isPlainObject
+    });
 
 })();
