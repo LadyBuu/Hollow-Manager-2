@@ -2,54 +2,39 @@
  * js/core/tab-manager.js - Tab Manager
  * Single source of truth for tab navigation and lifecycle
  * Path: js/core/tab-manager.js
- * 
- * This module handles:
+ *
+ * Handles:
  *   - Tab registration with render functions
+ *   - Optional per-tab unmount hooks
  *   - Tab switching (programmatic and user-initiated)
- *   - Tab lifecycle (mount/unmount)
  *   - Active tab tracking
- *   - URL hash persistence for deep linking
- * 
+ *   - URL hash persistence
+ *
  * IMPORTANT:
- *   - TabManager is the SINGLE SOURCE OF TRUTH for navigation state
- *   - Features register themselves with a render function
- *   - TabManager owns the lifecycle (mount/destroy)
- *   - NO rendering logic in this module
- *   - NO direct DOM manipulation of feature content
- *   - Features are responsible for their own rendering
- *   - Data readiness is handled by DataLoader
- * 
- * LIFECYCLE:
- *   - Features register on load: TabManager.register('tabName', renderFn)
- *   - User clicks tab: TabManager.switchTo('tabName')
- *   - TabManager hides all tabs, shows target, calls renderFn
- *   - TabManager updates URL hash
- *   - Features can call TabManager.forceRefresh() if needed
- * 
+ *   - TabManager is the SINGLE SOURCE OF TRUTH for navigation state.
+ *   - Features register with a render function.
+ *   - Render runs BEFORE the DOM is committed, so a throwing render
+ *     does not leave a half-switched UI.
+ *   - onDataReady(data) requires `data`. A null argument (loader
+ *     failure) is ignored.
+ *   - Nav clicks honour ctrl/meta/middle-click for "open in new tab".
+ *
  * DEPENDENCIES:
  *   - window.DataLoader (from loader.js) - MANDATORY
- * 
+ *
  * USAGE:
- *   // Register a feature
- *   TabManager.register('characters', function(container) {
- *       container.innerHTML = '<h1>Characters</h1>';
- *   });
- * 
- *   // Switch to a tab
+ *   TabManager.register('characters', renderFn, unmountFn?);
  *   TabManager.switchTo('characters');
- * 
- *   // Get current tab
- *   var current = TabManager.getCurrentTab();
+ *   TabManager.getCurrentTab();
  */
 
 (function() {
     'use strict';
 
-    if (window.__tabManagerLoaded) {
-        return;
-    }
+    if (window.__tabManagerLoaded) return;
 
-    if (!window.DataLoader || typeof window.DataLoader.whenReady !== 'function') {
+    if (!window.DataLoader ||
+        typeof window.DataLoader.whenReady !== 'function') {
         throw new Error('[TabManager] DataLoader is required.');
     }
 
@@ -59,64 +44,54 @@
     // PRIVATE STATE
     // ============================================================
 
-    var _registeredTabs = {};
+    var _registeredTabs = {};       // name -> { render, unmount }
     var _currentTab = null;
     var _isInitialized = false;
     var _dataReady = false;
     var _pendingTab = null;
     var _tabChangeListeners = [];
+    var _navClickHandler = null;
 
     // ============================================================
-    // DOM REFS - Cached on init
+    // DOM QUERIES - always live
     // ============================================================
 
-    var _navLinks = null;
-    var _tabContainers = null;
-    var _navContainer = null;
+    function queryNavLinks() {
+        var nav = document.getElementById('main-nav');
+        if (!nav) { return []; }
+        var nodes = nav.querySelectorAll('[data-tab]');
+        return Array.prototype.slice.call(nodes);
+    }
+
+    function queryTabContainers() {
+        var nodes = document.querySelectorAll('.tab-content');
+        return Array.prototype.slice.call(nodes);
+    }
+
+    function getContainerFor(tabName) {
+        return document.getElementById('tab-' + tabName);
+    }
 
     // ============================================================
     // INITIALIZATION
     // ============================================================
 
     function init() {
-        if (_isInitialized) {
-            return;
-        }
-
-        refreshDomCache();
+        if (_isInitialized) { return; }
 
         _bindNavEvents();
-
         window.addEventListener('hashchange', _handleHashChange);
 
         if (DataLoader.getStatus() === 'ready') {
-            _dataReady = true;
-            _handleReady();
+            onDataReady(window.data);
         } else {
-            DataLoader.whenReady(function() {
-                _dataReady = true;
-                _handleReady();
-            });
+            DataLoader.whenReady(
+                function(data) { onDataReady(data); },
+                function() { /* failure: do nothing here */ }
+            );
         }
 
         _isInitialized = true;
-    }
-
-    // ============================================================
-    // DOM CACHE
-    // ============================================================
-
-    function refreshDomCache() {
-        _navContainer = document.getElementById('main-nav');
-        if (_navContainer) {
-            _navLinks = _navContainer.querySelectorAll('[data-tab]');
-        }
-
-        var containers = document.querySelectorAll('.tab-content');
-        _tabContainers = [];
-        for (var i = 0; i < containers.length; i++) {
-            _tabContainers.push(containers[i]);
-        }
     }
 
     // ============================================================
@@ -124,51 +99,70 @@
     // ============================================================
 
     function _bindNavEvents() {
-        if (!_navContainer) {
-            return;
+        var nav = document.getElementById('main-nav');
+        if (!nav) { return; }
+
+        // Replace any prior handler to avoid double-binding on re-init.
+        if (_navClickHandler) {
+            nav.removeEventListener('click', _navClickHandler);
         }
 
-        _navContainer.addEventListener('click', function(e) {
-            var link = e.target.closest('[data-tab]');
-            if (!link) {
+        _navClickHandler = function(e) {
+            // Respect modifier clicks.
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) {
                 return;
             }
 
+            var link = e.target.closest('[data-tab]');
+            if (!link) { return; }
+
             e.preventDefault();
             var tabName = link.getAttribute('data-tab');
-
             if (tabName && _registeredTabs[tabName]) {
                 switchTo(tabName, true);
             }
-        });
+        };
+
+        nav.addEventListener('click', _navClickHandler);
     }
 
     // ============================================================
-    // HASH CHANGE HANDLER
+    // HASH HANDLING
     // ============================================================
 
     function _handleHashChange() {
-        var hash = window.location.hash;
-        var tabName = _parseHash(hash);
-
+        var tabName = _parseHash(window.location.hash);
         if (tabName && _registeredTabs[tabName]) {
             switchTo(tabName, false);
+        } else if (!tabName && _currentTab) {
+            // Empty hash: fall back to current tab without pushing.
+            _commitHash(_currentTab, true);
         }
     }
 
     function _parseHash(hash) {
-        if (!hash || hash.length < 2) {
-            return null;
-        }
-
+        if (!hash || hash.length < 2) { return null; }
         var clean = hash.substring(1);
-
         var queryIndex = clean.indexOf('?');
         if (queryIndex !== -1) {
             clean = clean.substring(0, queryIndex);
         }
-
         return clean || null;
+    }
+
+    function _commitHash(tabName, replace) {
+        var newHash = '#' + tabName;
+        if (window.location.hash === newHash) { return; }
+
+        try {
+            if (replace) {
+                window.history.replaceState(null, '', newHash);
+            } else {
+                window.history.pushState(null, '', newHash);
+            }
+        } catch (e) {
+            window.location.hash = newHash;
+        }
     }
 
     // ============================================================
@@ -177,40 +171,30 @@
 
     function _handleReady() {
         if (_pendingTab && _registeredTabs[_pendingTab]) {
-            switchTo(_pendingTab, false);
+            switchTo(_pendingTab, true);  // replace for the very first commit
             _pendingTab = null;
         } else {
             var initialTab = _getInitialTab();
             if (initialTab && _registeredTabs[initialTab]) {
-                switchTo(initialTab, false);
-            } else {
-                var firstTab = _getFirstRegisteredTab();
-                if (firstTab) {
-                    switchTo(firstTab, false);
-                }
+                switchTo(initialTab, true);
             }
         }
 
-        document.dispatchEvent(new CustomEvent('tabManagerReady', {
-            detail: { currentTab: _currentTab }
-        }));
+        try {
+            document.dispatchEvent(new CustomEvent('tabManagerReady', {
+                detail: { currentTab: _currentTab }
+            }));
+        } catch (e) {
+            // Ignore
+        }
     }
 
     function _getInitialTab() {
-        var hash = window.location.hash;
-        var tabFromHash = _parseHash(hash);
+        var tabFromHash = _parseHash(window.location.hash);
         if (tabFromHash && _registeredTabs[tabFromHash]) {
             return tabFromHash;
         }
-
-        if (_registeredTabs['dashboard']) {
-            return 'dashboard';
-        }
-
-        return _getFirstRegisteredTab();
-    }
-
-    function _getFirstRegisteredTab() {
+        if (_registeredTabs['dashboard']) { return 'dashboard'; }
         var keys = Object.keys(_registeredTabs);
         return keys.length > 0 ? keys[0] : null;
     }
@@ -219,21 +203,31 @@
     // PUBLIC API - Registration
     // ============================================================
 
-    function register(tabName, renderFn) {
-        if (!tabName || typeof tabName !== 'string') {
-            return false;
-        }
+    function register(tabName, renderFn, unmountFn) {
+        if (!tabName || typeof tabName !== 'string') { return false; }
+        if (typeof renderFn !== 'function') { return false; }
 
-        if (typeof renderFn !== 'function') {
-            return false;
-        }
+        _registeredTabs[tabName] = {
+            render: renderFn,
+            unmount: typeof unmountFn === 'function' ? unmountFn : null
+        };
 
-        _registeredTabs[tabName] = renderFn;
-
-        if (_dataReady && !_currentTab && !_pendingTab) {
-            var initialTab = _getInitialTab();
-            if (initialTab === tabName) {
-                switchTo(tabName, false);
+        // If a deep link to this tab is waiting and data is ready,
+        // honour it.
+        if (_dataReady) {
+            if (_pendingTab === tabName) {
+                _pendingTab = null;
+                switchTo(tabName, true);
+            } else if (!_currentTab) {
+                var initialTab = _getInitialTab();
+                if (initialTab === tabName) {
+                    switchTo(tabName, true);
+                }
+            }
+        } else if (!_pendingTab) {
+            var hashTab = _parseHash(window.location.hash);
+            if (hashTab === tabName) {
+                _pendingTab = tabName;
             }
         }
 
@@ -244,70 +238,94 @@
     // PUBLIC API - Navigation
     // ============================================================
 
-    function switchTo(tabName, updateHistory) {
-        updateHistory = updateHistory !== false;
+    function switchTo(tabName, replaceHash) {
+        replaceHash = replaceHash === true;
 
-        if (!_registeredTabs[tabName]) {
-            return false;
-        }
+        if (!_registeredTabs[tabName]) { return false; }
 
         if (!_dataReady) {
             _pendingTab = tabName;
             return true;
         }
 
-        for (var i = 0; i < _tabContainers.length; i++) {
-            _tabContainers[i].classList.remove('active');
-        }
-
-        var targetContainer = document.getElementById('tab-' + tabName);
+        // 1. Look up the container BEFORE touching the DOM.
+        var targetContainer = getContainerFor(tabName);
         if (!targetContainer) {
+            console.error('[TabManager] No container for tab "' + tabName + '"');
             return false;
         }
-        targetContainer.classList.add('active');
 
-        if (_navLinks) {
-            for (var j = 0; j < _navLinks.length; j++) {
-                var link = _navLinks[j];
-                var linkTab = link.getAttribute('data-tab');
-                if (linkTab === tabName) {
-                    link.classList.add('active');
-                } else {
-                    link.classList.remove('active');
+        // 2. Run any active unmount hook.
+        if (_currentTab && _currentTab !== tabName) {
+            var prevEntry = _registeredTabs[_currentTab];
+            if (prevEntry && prevEntry.unmount) {
+                try {
+                    prevEntry.unmount();
+                } catch (e) {
+                    console.error('[TabManager] unmount failed:', e);
                 }
             }
         }
 
+        // 3. Render into the target while it is not yet active, so a
+        //    throwing render is visible only in the console, not on
+        //    screen.
+        var previousTab = _currentTab;
+        var previousContainer = previousTab ? getContainerFor(previousTab) : null;
+
         try {
-            var renderFn = _registeredTabs[tabName];
-            renderFn(targetContainer);
+            _registeredTabs[tabName].render(targetContainer);
         } catch (e) {
+            console.error('[TabManager] render failed for tab "' + tabName + '":', e);
+            // Restore previous tab highlight/visibility if any.
+            if (previousContainer) {
+                // Nothing changed yet for the previous tab; leave it.
+            }
             return false;
         }
 
-        var previousTab = _currentTab;
-        _currentTab = tabName;
+        // 4. Commit DOM: hide everything else, show target.
+        var containers = queryTabContainers();
+        for (var i = 0; i < containers.length; i++) {
+            containers[i].classList.remove('active');
+        }
+        targetContainer.classList.add('active');
 
-        if (updateHistory) {
-            var currentHash = window.location.hash;
-            var newHash = '#' + tabName;
-            if (currentHash !== newHash) {
-                window.history.pushState(null, '', newHash);
+        // 5. Update nav links.
+        var links = queryNavLinks();
+        for (var j = 0; j < links.length; j++) {
+            var link = links[j];
+            var linkTab = link.getAttribute('data-tab');
+            if (linkTab === tabName) {
+                link.classList.add('active');
+                link.setAttribute('aria-selected', 'true');
+            } else {
+                link.classList.remove('active');
+                link.setAttribute('aria-selected', 'false');
             }
         }
 
-        document.dispatchEvent(new CustomEvent('tabChanged', {
-            detail: {
-                tab: tabName,
-                previousTab: previousTab
-            }
-        }));
+        // 6. Update current tab BEFORE listeners observe it.
+        _currentTab = tabName;
 
-        for (var k = 0; k < _tabChangeListeners.length; k++) {
+        // 7. Update URL.
+        _commitHash(tabName, replaceHash || previousTab === null);
+
+        // 8. Notify.
+        try {
+            document.dispatchEvent(new CustomEvent('tabChanged', {
+                detail: { tab: tabName, previousTab: previousTab }
+            }));
+        } catch (e) {
+            // Ignore
+        }
+
+        var listeners = _tabChangeListeners.slice();
+        for (var k = 0; k < listeners.length; k++) {
             try {
-                _tabChangeListeners[k](tabName, previousTab);
+                listeners[k](tabName, previousTab);
             } catch (e) {
-                // Ignore listener errors
+                console.error('[TabManager] tab change listener error:', e);
             }
         }
 
@@ -316,27 +334,18 @@
 
     function forceRefresh(tabName) {
         tabName = tabName || _currentTab;
+        if (!tabName) { return false; }
+        if (!_registeredTabs[tabName]) { return false; }
 
-        if (!tabName) {
-            return false;
-        }
-
-        if (!_registeredTabs[tabName]) {
-            return false;
-        }
-
-        var targetContainer = document.getElementById('tab-' + tabName);
-        if (!targetContainer) {
-            return false;
-        }
+        var container = getContainerFor(tabName);
+        if (!container) { return false; }
 
         try {
-            var renderFn = _registeredTabs[tabName];
-            renderFn(targetContainer);
+            _registeredTabs[tabName].render(container);
         } catch (e) {
+            console.error('[TabManager] forceRefresh render failed:', e);
             return false;
         }
-
         return true;
     }
 
@@ -348,25 +357,11 @@
     // PUBLIC API - Queries
     // ============================================================
 
-    function getCurrentTab() {
-        return _currentTab;
-    }
-
-    function isTabActive(tabName) {
-        return _currentTab === tabName;
-    }
-
-    function getTabContainer(tabName) {
-        return document.getElementById('tab-' + tabName);
-    }
-
-    function isTabRegistered(tabName) {
-        return !!_registeredTabs[tabName];
-    }
-
-    function getRegisteredTabs() {
-        return Object.keys(_registeredTabs);
-    }
+    function getCurrentTab() { return _currentTab; }
+    function isTabActive(tabName) { return _currentTab === tabName; }
+    function getTabContainer(tabName) { return getContainerFor(tabName); }
+    function isTabRegistered(tabName) { return !!_registeredTabs[tabName]; }
+    function getRegisteredTabs() { return Object.keys(_registeredTabs); }
 
     // ============================================================
     // PUBLIC API - Listeners
@@ -376,14 +371,10 @@
         if (typeof listener !== 'function') {
             return function() {};
         }
-
         _tabChangeListeners.push(listener);
-
         return function() {
-            var index = _tabChangeListeners.indexOf(listener);
-            if (index !== -1) {
-                _tabChangeListeners.splice(index, 1);
-            }
+            var idx = _tabChangeListeners.indexOf(listener);
+            if (idx !== -1) { _tabChangeListeners.splice(idx, 1); }
         };
     }
 
@@ -391,24 +382,33 @@
     // PUBLIC API - Lifecycle
     // ============================================================
 
-    function onDataReady() {
-        if (!_dataReady) {
-            _dataReady = true;
-            _handleReady();
-        }
+    /**
+     * Called by Bootstrap on success. Requires data; ignores a null
+     * argument so a loader failure does not cause a render against
+     * missing state.
+     */
+    function onDataReady(data) {
+        if (!data) { return; }
+        if (_dataReady) { return; }
+
+        _dataReady = true;
+        _handleReady();
     }
 
     function destroy() {
         window.removeEventListener('hashchange', _handleHashChange);
 
-        if (_navContainer) {
-            var newNav = _navContainer.cloneNode(true);
-            _navContainer.parentNode.replaceChild(newNav, _navContainer);
-            _navContainer = newNav;
-            _navLinks = _navContainer.querySelectorAll('[data-tab]');
+        var nav = document.getElementById('main-nav');
+        if (nav && _navClickHandler) {
+            nav.removeEventListener('click', _navClickHandler);
         }
+        _navClickHandler = null;
 
         _tabChangeListeners = [];
+        _registeredTabs = {};
+        _currentTab = null;
+        _pendingTab = null;
+        _dataReady = false;
         _isInitialized = false;
     }
 
@@ -416,21 +416,18 @@
     // INITIALISE
     // ============================================================
 
-    function tryInit() {
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {
-            init();
-        } else {
-            document.addEventListener('DOMContentLoaded', init);
-        }
+    if (document.readyState === 'complete' ||
+        document.readyState === 'interactive') {
+        init();
+    } else {
+        document.addEventListener('DOMContentLoaded', init);
     }
-
-    tryInit();
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.TabManager = {
+    window.TabManager = Object.freeze({
         register: register,
         switchTo: switchTo,
         forceRefresh: forceRefresh,
@@ -442,9 +439,8 @@
         getRegisteredTabs: getRegisteredTabs,
         onTabChange: onTabChange,
         onDataReady: onDataReady,
-        destroy: destroy,
-        refreshDomCache: refreshDomCache
-    };
+        destroy: destroy
+    });
 
     window.__tabManagerLoaded = true;
 
