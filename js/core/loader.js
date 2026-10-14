@@ -1,59 +1,47 @@
 /**
  * js/core/loader.js - Data Loading System
  * Path: js/core/loader.js
- * 
- * This module provides:
- *   - Readiness state for application data
- *   - Callback-based API for consumers
- *   - Event-to-callback translation
- *   - Retry capability for recovery scenarios
- * 
- * IMPORTANT:
- *   - This is a READINESS ADAPTER, not a data loader
- *   - Owns readiness/error state, NOT data
- *   - window.data is the canonical data source
- *   - DataLoader is a facade for the dataReady event
- *   - Can recover from missed events by checking current state
- *   - Failure is NOT permanently terminal (can recover via retry)
- * 
- * RETRY SEMANTICS:
- *   retry() is a REAL retry. It:
- *     1. Clears readiness/error state.
- *     2. Calls window.db.ensureDatabaseReady() to re-open the
- *        IndexedDB connection.
- *     3. Calls window.db.loadData() to reload application data.
- *     4. Transitions to ready on success, failed on failure.
- * 
- *   If window.db is unavailable (missing module or the module
- *   doesn't expose the required methods), retry() falls back to
- *   waiting for a dataReady event. This preserves the previous
- *   behavior as a degraded mode rather than crashing.
- * 
- *   Calling retry() while not in a failed state is a no-op that
- *   resolves to the current data (or null).
- * 
- *   Calling retry() while a retry is already in flight returns
- *   the same Promise. This prevents concurrent retries from
- *   stacking db.ensureDatabaseReady() calls.
- * 
+ *
+ * Readiness adapter. Owns readiness/error state, not data.
+ *
+ * EXPOSES:
+ *   DataLoader.isReady        boolean
+ *   DataLoader.hasFailed      boolean
+ *   DataLoader.isInitialized  boolean
+ *   DataLoader.error          Error|null
+ *
+ *   whenReady(onReady, onError?)   Register a callback pair.
+ *                                  Both are called asynchronously.
+ *                                  onReady(data) on success,
+ *                                  onError(err) on failure.
+ *
+ *   getData()      window.data or null
+ *   getStatus()    'uninitialized' | 'waiting' | 'ready' | 'failed'
+ *   getError()     the recorded error, if any
+ *   init()         idempotent
+ *   reset()        clears readiness/error state; pending callbacks
+ *                  are carried into the next attempt
+ *   retry()        real retry: re-opens the DB and reloads data.
+ *                  Returns Promise<data|null>.
+ *
+ * BEHAVIOUR NOTES:
+ *   - `window.data` is NOT treated as a readiness signal on its own.
+ *     database.js assigns it before the migration save completes, so
+ *     trusting it can flip "failed" to "ready" incorrectly.
+ *   - Failure is NOT terminal. `retry()` re-attempts the load.
+ *   - The degraded retry path (no window.db) has a bounded timeout so
+ *     callers fail honestly rather than hanging.
+ *
  * DEPENDENCIES:
  *   - window.data (canonical data source)
- *   - document (for dataReady event)
- *   - window.db (for status checks and retry)
- * 
+ *   - document (dataReady event)
+ *   - window.db (optional; for status checks and real retry)
+ *
  * USAGE:
- *   DataLoader.whenReady(function(data) {
- *       // data is window.data
- *   });
- * 
- *   if (DataLoader.isReady) {
- *       var data = window.data;
- *   }
- * 
- *   // Retry after failure
- *   DataLoader.retry().then(function(data) {
- *       // data is window.data or null
- *   });
+ *   DataLoader.whenReady(
+ *       function(data) { ... },
+ *       function(err)  { ... }
+ *   );
  */
 
 (function() {
@@ -61,6 +49,8 @@
 
     if (window.__loaderLoaded) return;
     window.__loaderLoaded = true;
+
+    var DEGRADED_RETRY_TIMEOUT_MS = 30000;
 
     // ============================================================
     // STATE
@@ -70,29 +60,55 @@
     var _isReady = false;
     var _hasFailed = false;
     var _error = null;
+
+    // Each entry: { onReady, onError }
     var _pendingCallbacks = [];
 
-    // Retry state - prevents concurrent retries
     var _retryPromise = null;
+    var _listenerAttached = false;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function scheduleAsync(fn) {
+        setTimeout(fn, 0);
+    }
+
+    function safeInvoke(fn, arg) {
+        try {
+            fn(arg);
+        } catch (e) {
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('[DataLoader] callback error:', e);
+            }
+        }
+    }
+
+    function normalisePair(onReady, onError) {
+        if (typeof onReady === 'function') {
+            return { onReady: onReady, onError: onError };
+        }
+        // Legacy single-argument form: treat as onReady only.
+        return null;
+    }
 
     // ============================================================
     // EVENT HANDLING
     // ============================================================
 
     function onDataReady(event) {
-        if (event.detail && event.detail.status === 'failed') {
+        if (event && event.detail && event.detail.status === 'failed') {
             markFailed(
                 event.detail.error || new Error('Data loading failed')
             );
             return;
         }
 
-        var data = event.detail ? event.detail.data : null;
+        var data = event && event.detail ? event.detail.data : null;
 
         if (!data) {
-            markFailed(
-                new Error('dataReady received without data')
-            );
+            markFailed(new Error('dataReady received without data'));
             return;
         }
 
@@ -104,14 +120,14 @@
     // ============================================================
 
     function markReady(data) {
-        if (!data) return;
+        if (!data) { return; }
 
         _isReady = true;
         _hasFailed = false;
         _error = null;
         _isInitialized = true;
 
-        processCallbacks();
+        drainReady(data);
     }
 
     function markFailed(error) {
@@ -120,49 +136,51 @@
         _error = error || new Error('Data loading failed');
         _isInitialized = true;
 
-        var callbacks = _pendingCallbacks.slice();
-        _pendingCallbacks = [];
-
-        callbacks.forEach(function(cb) {
-            setTimeout(function() {
-                try {
-                    cb(null);
-                } catch (e) {
-                    // Ignore callback errors
-                }
-            }, 0);
-        });
+        drainFailed(_error);
     }
 
-    function processCallbacks() {
-        if (!_isReady) return;
-
-        var callbacks = _pendingCallbacks.slice();
+    function drainReady(data) {
+        var batch = _pendingCallbacks.slice();
         _pendingCallbacks = [];
 
-        callbacks.forEach(function(cb) {
-            try {
-                cb(window.data);
-            } catch (e) {
-                // Ignore callback errors
-            }
-        });
+        for (var i = 0; i < batch.length; i++) {
+            (function(pair) {
+                scheduleAsync(function() {
+                    safeInvoke(pair.onReady, data);
+                });
+            })(batch[i]);
+        }
+    }
+
+    function drainFailed(err) {
+        var batch = _pendingCallbacks.slice();
+        _pendingCallbacks = [];
+
+        for (var i = 0; i < batch.length; i++) {
+            (function(pair) {
+                scheduleAsync(function() {
+                    if (pair.onError) {
+                        safeInvoke(pair.onError, err);
+                    } else if (pair.onReady) {
+                        // Legacy caller did not supply onError.
+                        // Deliver null so existing checks still work.
+                        safeInvoke(pair.onReady, null);
+                    }
+                });
+            })(batch[i]);
+        }
     }
 
     // ============================================================
-    // CURRENT STATE CHECK (for missed events)
+    // CURRENT STATE CHECK
     // ============================================================
 
     function checkCurrentState() {
-        if (_isReady) {
-            return;
-        }
+        if (_isReady) { return; }
 
-        if (window.data) {
-            markReady(window.data);
-            return;
-        }
-
+        // Error state takes precedence over the presence of
+        // window.data, which database.js assigns before its
+        // migration save completes.
         if (window.db && typeof window.db.getLoadError === 'function') {
             var loadError = window.db.getLoadError();
             if (loadError) {
@@ -178,6 +196,12 @@
                 return;
             }
         }
+
+        // Only trust window.data once we know there is no recorded
+        // error and the DB has not failed.
+        if (window.data) {
+            markReady(window.data);
+        }
     }
 
     // ============================================================
@@ -185,9 +209,12 @@
     // ============================================================
 
     function init() {
-        if (_isInitialized) return;
+        if (_isInitialized) { return; }
 
-        document.addEventListener('dataReady', onDataReady);
+        if (!_listenerAttached) {
+            document.addEventListener('dataReady', onDataReady);
+            _listenerAttached = true;
+        }
 
         checkCurrentState();
 
@@ -200,34 +227,32 @@
     // PUBLIC API
     // ============================================================
 
-    function whenReady(callback) {
-        if (typeof callback !== 'function') return;
+    function whenReady(onReady, onError) {
+        var pair = normalisePair(onReady, onError);
+        if (!pair) { return; }
 
         checkCurrentState();
 
         if (_isReady && window.data) {
-            setTimeout(function() {
-                try {
-                    callback(window.data);
-                } catch (e) {
-                    // Ignore callback errors
-                }
-            }, 0);
+            scheduleAsync(function() {
+                safeInvoke(pair.onReady, window.data);
+            });
             return;
         }
 
         if (_hasFailed) {
-            setTimeout(function() {
-                try {
-                    callback(null);
-                } catch (e) {
-                    // Ignore callback errors
+            var err = _error || new Error('Data loading failed');
+            scheduleAsync(function() {
+                if (pair.onError) {
+                    safeInvoke(pair.onError, err);
+                } else {
+                    safeInvoke(pair.onReady, null);
                 }
-            }, 0);
+            });
             return;
         }
 
-        _pendingCallbacks.push(callback);
+        _pendingCallbacks.push(pair);
     }
 
     function getData() {
@@ -241,97 +266,89 @@
         return 'uninitialized';
     }
 
-    function getError() {
-        return _error;
-    }
+    function getError() { return _error; }
 
+    /**
+     * Clear readiness/error state but keep any pending callbacks so
+     * they still fire on the next resolution.
+     */
     function reset() {
         _isReady = false;
         _hasFailed = false;
         _error = null;
-        _pendingCallbacks = [];
         _isInitialized = false;
         _retryPromise = null;
+        // _pendingCallbacks deliberately preserved.
     }
 
-    /**
-     * Attempt to recover from a data-loading failure.
-     * 
-     * BEHAVIOR:
-     *   - Not failed: resolves immediately with the current data (or
-     *     null). Does not re-attempt the load.
-     *   - Failed and a retry is already in flight: returns the same
-     *     Promise. Concurrent calls do not stack.
-     *   - Failed: resets state, then re-attempts the database open
-     *     and load. On success transitions to ready; on failure
-     *     transitions to failed and resolves with null.
-     * 
-     *   If window.db is unavailable or doesn't expose
-     *   ensureDatabaseReady / loadData, the function falls back to
-     *   the previous "reset and wait for a dataReady event" path.
-     *   This keeps retry() safe in a degraded environment where
-     *   only the event path exists.
-     * 
-     * @returns {Promise<object|null>} Resolved with window.data on
-     *   success, null on failure.
-     */
     function retry() {
-        // Not failed: nothing to retry.
         if (!_hasFailed) {
             return Promise.resolve(window.data || null);
         }
 
-        // Already retrying: return the in-flight Promise.
         if (_retryPromise) {
             return _retryPromise;
         }
 
-        // Snapshot the db reference once, so a mid-retry swap of
-        // window.db does not produce inconsistent state.
         var db = window.db;
 
-        // Degraded path: no db, or db missing the required methods.
-        // Reset and wait for a dataReady event.
+        // Degraded path: no db or missing required methods.
         if (!db ||
             typeof db.ensureDatabaseReady !== 'function' ||
             typeof db.loadData !== 'function') {
+
             reset();
             _isInitialized = true;
 
             _retryPromise = new Promise(function(resolve) {
-                whenReady(function(data) {
+                var settled = false;
+
+                function finish(value) {
+                    if (settled) { return; }
+                    settled = true;
                     _retryPromise = null;
-                    resolve(data || null);
-                });
+                    resolve(value);
+                }
+
+                // Timeout so this fails honestly rather than hanging.
+                var timer = setTimeout(function() {
+                    markFailed(new Error(
+                        'Retry timed out waiting for dataReady. ' +
+                        'window.db is unavailable and no dataReady ' +
+                        'event arrived within ' +
+                        (DEGRADED_RETRY_TIMEOUT_MS / 1000) + 's.'
+                    ));
+                    finish(null);
+                }, DEGRADED_RETRY_TIMEOUT_MS);
+
+                whenReady(
+                    function(data) {
+                        clearTimeout(timer);
+                        finish(data || null);
+                    },
+                    function() {
+                        clearTimeout(timer);
+                        finish(null);
+                    }
+                );
             });
 
             return _retryPromise;
         }
 
-        // Full retry: reset, re-open the database, then load.
+        // Full retry.
         reset();
         _isInitialized = true;
 
         _retryPromise = Promise.resolve()
-            .then(function() {
-                return db.ensureDatabaseReady();
-            })
-            .then(function() {
-                return db.loadData();
-            })
+            .then(function() { return db.ensureDatabaseReady(); })
+            .then(function() { return db.loadData(); })
             .then(function(data) {
                 if (data) {
-                    // Ensure listeners and callbacks observe the ready
-                    // state. dataReady may or may not have fired
-                    // depending on whether loadData went through the
-                    // dispatch path.
                     markReady(data);
                     _retryPromise = null;
                     return data;
                 }
-
-                // loadData resolved but yielded no data. Treat as
-                // failure.
                 markFailed(new Error('Data load returned no data.'));
                 _retryPromise = null;
                 return null;
@@ -349,11 +366,11 @@
     // EXPOSE
     // ============================================================
 
-    window.DataLoader = {
-        get isReady() { return _isReady; },
-        get hasFailed() { return _hasFailed; },
+    window.DataLoader = Object.freeze({
+        get isReady()       { return _isReady; },
+        get hasFailed()     { return _hasFailed; },
         get isInitialized() { return _isInitialized; },
-        get error() { return _error; },
+        get error()         { return _error; },
 
         init: init,
         whenReady: whenReady,
@@ -362,13 +379,14 @@
         getError: getError,
         reset: reset,
         retry: retry
-    };
+    });
 
     // ============================================================
     // AUTO-INIT
     // ============================================================
 
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    if (document.readyState === 'complete' ||
+        document.readyState === 'interactive') {
         init();
     } else {
         document.addEventListener('DOMContentLoaded', init);
