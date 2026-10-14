@@ -6,50 +6,72 @@
  * This module provides:
  *   - Strict validation and parsing of calendar values
  *   - Week, day, hour, duration validation
- *   - Year validation (unbounded positive integers)
+ *   - Year validation (unbounded positive safe integers)
  *   - Calendar date validation (year + month + day)
- *   - Single source of truth - all modules MUST use this
  *
  * IMPORTANT:
- *   - This is the CANONICAL validation layer for calendar values
- *   - All modules MUST use these functions - do NOT duplicate
- *   - Validation functions return null for invalid input
- *   - Parse functions return null for invalid input
- *   - No domain knowledge - calendar concepts only
+ *   - This is the CANONICAL validation layer for calendar values.
+ *     All modules MUST use these functions.
+ *   - Parse functions return null for invalid input. They never
+ *     return NaN, and they never throw on invalid input.
+ *   - No domain knowledge - calendar concepts only.
+ *
+ * STRICTNESS:
+ *   Every parse function accepts only:
+ *     - numbers that are already integers in range
+ *     - strings matching /^\d+$/ (digits only, no sign, no decimal,
+ *       no exponent, no hex)
+ *
+ *   Rejected examples (all return null):
+ *     true, false, [5], new Date(), {}, Symbol(), undefined
+ *     '0x5', '1e1', '5.0', '-5', '+5', ' 5 ', ''
+ *
+ *   The previous version coerced via Number() and accepted most
+ *   of these. Because this module claims to be "strict" and
+ *   "canonical", it now actually is.
  *
  * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
+ *   - Years are UNBOUNDED positive SAFE integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
- *   - Any integer >= 1 is a valid year.
- *   - parseYear() accepts any positive integer.
- *   - Weeks and days remain bounded (they have real semantic
- *     meaning: 52 weeks per year, 7 days per week).
+ *   - Any Number.isSafeInteger value >= 1 is a valid year.
+ *   - parseYear() rejects non-safe integers (e.g. 1e21).
+ *   - Weeks and days remain bounded: 52 weeks per year, 7 days
+ *     per week, both with real semantic meaning.
  *
  * CALENDAR DATE SEMANTICS:
  *   - isValidCalendarDate(y, m, d) validates a (year, month, day)
  *     triple against the real Gregorian calendar.
- *   - Year is unbounded (any integer >= 1).
+ *   - Year is unbounded (any positive safe integer).
  *   - Month is 1-12.
- *   - Day is 1-31, but the day must fit the month. Feb 30 is
- *     rejected. Feb 29 is accepted only in leap years.
- *   - Returns a boolean, not a parsed value. The inputs are used
- *     as-is; callers that need the parsed integer form should call
- *     parseYear / a Number() cast themselves.
+ *   - Day is 1-31, and must fit the month. Feb 30 is rejected.
+ *     Feb 29 is accepted only in leap years.
+ *   - Uses a leap-year formula and month table, not a Date
+ *     object. This avoids the local-time and year-range quirks
+ *     of `new Date(y, m, 0)`.
+ *   - Returns a boolean. Does not return a parsed date.
  *
- *   This function exists for the missions domain, which stores
- *   (year, month, day) as three separate integers and needs to
- *   reject impossible dates like 2026-02-30 or 2026-13-01.
+ * PARSEHOUR NAME CLASH:
+ *   This module's parseHour(value) validates a NUMERIC hour value
+ *   against [MIN_HOUR, MAX_HOUR]. FormatUtils.parseHour(timeStr)
+ *   parses a TIME STRING like '9:00 AM' to a 0-23 integer. They
+ *   are different functions with the same name. Call sites should
+ *   be clear from context; FormatUtils.parseHour is being renamed
+ *   to parseTimeString in a future pass.
+ *
+ * SLOT SEMANTICS:
+ *   parseSlot validates a (week, day, hour, duration) tuple and
+ *   ensures the resulting slot fits within the calendar grid:
+ *   hour + duration - 1 <= CALENDAR_END_HOUR.
  *
  * DEPENDENCIES:
- *   - window.CalendarConstants (for bounds only)
+ *   - window.CalendarConstants (bounds) - MANDATORY
  *
  * USAGE:
  *   var CV = window.CalendarValidation;
- *   var week = CV.parseWeek(weekInput);
- *   if (week === null) { /* invalid *\/ }
- *   var isValid = CV.isWeekValid(weekInput);
- *   var dateOk = CV.isValidCalendarDate(2026, 2, 29);  // false
- *   var dateOk = CV.isValidCalendarDate(2024, 2, 29);  // true
+ *   var week = CV.parseWeek(input);
+ *   if (week === null) { ... }
+ *   var dateOk = CV.isValidCalendarDate(2026, 2, 29); // false
+ *   var dateOk = CV.isValidCalendarDate(2024, 2, 29); // true
  */
 
 (function() {
@@ -58,100 +80,109 @@
     if (window.__calendarValidationLoaded) {
         return;
     }
-    window.__calendarValidationLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var CC = window.CalendarConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
     //
-    // NOTE: MIN_YEAR and MAX_YEAR are deliberately NOT checked.
-    // Years are unbounded positive integers and are validated
-    // locally by parseYear(). See the YEAR SEMANTICS block above.
+    // MIN_YEAR and MAX_YEAR are deliberately NOT checked. Years are
+    // unbounded positive safe integers and are validated locally by
+    // parseYear(). See the YEAR SEMANTICS block above.
 
-    function checkDependencies() {
-        var missing = [];
+    var CC = window.CalendarConstants;
 
-        if (!CC || typeof CC.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-        if (!CC || typeof CC.MAX_WEEK !== 'number') {
-            missing.push('CalendarConstants.MAX_WEEK');
-        }
-        if (!CC || typeof CC.MIN_DAY !== 'number') {
-            missing.push('CalendarConstants.MIN_DAY');
-        }
-        if (!CC || typeof CC.MAX_DAY !== 'number') {
-            missing.push('CalendarConstants.MAX_DAY');
-        }
-        if (!CC || typeof CC.MIN_HOUR !== 'number') {
-            missing.push('CalendarConstants.MIN_HOUR');
-        }
-        if (!CC || typeof CC.MAX_HOUR !== 'number') {
-            missing.push('CalendarConstants.MAX_HOUR');
-        }
-        if (!CC || typeof CC.MIN_CLASS_DURATION !== 'number') {
-            missing.push('CalendarConstants.MIN_CLASS_DURATION');
-        }
-        if (!CC || typeof CC.MAX_CLASS_DURATION !== 'number') {
-            missing.push('CalendarConstants.MAX_CLASS_DURATION');
-        }
-        if (!CC || typeof CC.CALENDAR_START_HOUR !== 'number') {
-            missing.push('CalendarConstants.CALENDAR_START_HOUR');
-        }
-        if (!CC || typeof CC.CALENDAR_END_HOUR !== 'number') {
-            missing.push('CalendarConstants.CALENDAR_END_HOUR');
-        }
+    var _missing = [];
 
-        if (missing.length > 0) {
-            console.warn('[CalendarValidation] Missing dependencies:', missing.join(', '));
+    function requireNumber(name, value) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+            _missing.push(name);
         }
-
-        return missing.length === 0;
     }
 
-    checkDependencies();
+    if (!CC || typeof CC !== 'object') {
+        _missing.push('CalendarConstants');
+    } else {
+        requireNumber('CalendarConstants.MIN_WEEK', CC.MIN_WEEK);
+        requireNumber('CalendarConstants.MAX_WEEK', CC.MAX_WEEK);
+        requireNumber('CalendarConstants.MIN_DAY', CC.MIN_DAY);
+        requireNumber('CalendarConstants.MAX_DAY', CC.MAX_DAY);
+        requireNumber('CalendarConstants.MIN_HOUR', CC.MIN_HOUR);
+        requireNumber('CalendarConstants.MAX_HOUR', CC.MAX_HOUR);
+        requireNumber('CalendarConstants.MIN_CLASS_DURATION', CC.MIN_CLASS_DURATION);
+        requireNumber('CalendarConstants.MAX_CLASS_DURATION', CC.MAX_CLASS_DURATION);
+        requireNumber('CalendarConstants.CALENDAR_START_HOUR', CC.CALENDAR_START_HOUR);
+        requireNumber('CalendarConstants.CALENDAR_END_HOUR', CC.CALENDAR_END_HOUR);
+    }
+
+    window.__calendarValidationLoaded = true;
+
+    if (_missing.length > 0) {
+        window.CalendarValidation = Object.freeze({
+            _loadFailed: true,
+            _missing: _missing.slice()
+        });
+        throw new Error(
+            '[CalendarValidation] Missing or invalid dependencies: ' +
+            _missing.join(', ')
+        );
+    }
 
     // ============================================================
     // PRIVATE HELPERS
     // ============================================================
 
-    function isString(value) {
-        return typeof value === 'string';
-    }
-
-    function isEmptyString(value) {
-        if (!isString(value)) {
-            return false;
-        }
-        return value.trim() === '';
-    }
-
-    function toNumber(value) {
+    /**
+     * Strict integer coercion from a numeric or digit-string value.
+     *
+     * Accepts:
+     *   - numbers that are already integers
+     *   - strings matching /^\d+$/
+     *
+     * Rejects everything else. Returns null on rejection.
+     */
+    function strictInteger(value) {
         if (value === undefined || value === null) {
-            return NaN;
+            return null;
         }
-        if (isString(value)) {
-            var trimmed = value.trim();
-            if (trimmed === '') {
-                return NaN;
-            }
-            return Number(trimmed);
+
+        if (typeof value === 'number') {
+            return Number.isInteger(value) ? value : null;
         }
-        return Number(value);
+
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        var trimmed = value.trim();
+        if (trimmed === '') {
+            return null;
+        }
+
+        if (!/^\d+$/.test(trimmed)) {
+            return null;
+        }
+
+        var parsed = Number(trimmed);
+        if (!Number.isInteger(parsed)) {
+            return null;
+        }
+
+        return parsed;
     }
 
-    function isInteger(num) {
-        return Number.isInteger(num);
-    }
-
-    function isFiniteNumber(num) {
-        return Number.isFinite(num);
+    /**
+     * Parse a bounded integer in [min, max]. Shared by week, day,
+     * hour, calendar hour, and duration parsers.
+     */
+    function parseBoundedInteger(value, min, max) {
+        var parsed = strictInteger(value);
+        if (parsed === null) {
+            return null;
+        }
+        if (parsed < min || parsed > max) {
+            return null;
+        }
+        return parsed;
     }
 
     // ============================================================
@@ -159,25 +190,7 @@
     // ============================================================
 
     function parseWeek(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        if (isEmptyString(value)) {
-            return null;
-        }
-
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
-            return null;
-        }
-        if (!isInteger(num)) {
-            return null;
-        }
-        if (num < CC.MIN_WEEK || num > CC.MAX_WEEK) {
-            return null;
-        }
-
-        return num;
+        return parseBoundedInteger(value, CC.MIN_WEEK, CC.MAX_WEEK);
     }
 
     function isWeekValid(value) {
@@ -187,27 +200,13 @@
     // ============================================================
     // DAY VALIDATION
     // ============================================================
+    //
+    // NOTE: "day" here means day of week (1-7, Monday=1). This is
+    // NOT the same as the "day" argument to isValidCalendarDate,
+    // which is day of month. Same word, different domain.
 
     function parseDay(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        if (isEmptyString(value)) {
-            return null;
-        }
-
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
-            return null;
-        }
-        if (!isInteger(num)) {
-            return null;
-        }
-        if (num < CC.MIN_DAY || num > CC.MAX_DAY) {
-            return null;
-        }
-
-        return num;
+        return parseBoundedInteger(value, CC.MIN_DAY, CC.MAX_DAY);
     }
 
     function isDayValid(value) {
@@ -219,25 +218,7 @@
     // ============================================================
 
     function parseHour(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        if (isEmptyString(value)) {
-            return null;
-        }
-
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
-            return null;
-        }
-        if (!isInteger(num)) {
-            return null;
-        }
-        if (num < CC.MIN_HOUR || num > CC.MAX_HOUR) {
-            return null;
-        }
-
-        return num;
+        return parseBoundedInteger(value, CC.MIN_HOUR, CC.MAX_HOUR);
     }
 
     function isHourValid(value) {
@@ -245,14 +226,11 @@
     }
 
     function parseCalendarHour(value) {
-        var num = parseHour(value);
-        if (num === null) {
-            return null;
-        }
-        if (num < CC.CALENDAR_START_HOUR || num > CC.CALENDAR_END_HOUR) {
-            return null;
-        }
-        return num;
+        return parseBoundedInteger(
+            value,
+            CC.CALENDAR_START_HOUR,
+            CC.CALENDAR_END_HOUR
+        );
     }
 
     function isCalendarHourValid(value) {
@@ -264,25 +242,11 @@
     // ============================================================
 
     function parseDuration(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        if (isEmptyString(value)) {
-            return null;
-        }
-
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
-            return null;
-        }
-        if (!isInteger(num)) {
-            return null;
-        }
-        if (num < CC.MIN_CLASS_DURATION || num > CC.MAX_CLASS_DURATION) {
-            return null;
-        }
-
-        return num;
+        return parseBoundedInteger(
+            value,
+            CC.MIN_CLASS_DURATION,
+            CC.MAX_CLASS_DURATION
+        );
     }
 
     function isDurationValid(value) {
@@ -293,32 +257,22 @@
     // YEAR VALIDATION
     // ============================================================
     //
-    // Years are UNBOUNDED positive integers. Any integer >= 1 is a
-    // valid year. There is no upper bound.
-    //
-    // This function intentionally does NOT consult CalendarConstants
-    // for bounds. The unbounded contract is local to this function.
+    // Years are UNBOUNDED positive SAFE integers. There is no upper
+    // bound, but values outside the safe integer range (like 1e21)
+    // are rejected because they cannot be represented exactly.
 
     function parseYear(value) {
-        if (value === undefined || value === null) {
+        var parsed = strictInteger(value);
+        if (parsed === null) {
             return null;
         }
-        if (isEmptyString(value)) {
+        if (!Number.isSafeInteger(parsed)) {
             return null;
         }
-
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
+        if (parsed < 1) {
             return null;
         }
-        if (!isInteger(num)) {
-            return null;
-        }
-        if (num < 1) {
-            return null;
-        }
-
-        return num;
+        return parsed;
     }
 
     function isYearValid(value) {
@@ -328,68 +282,74 @@
     // ============================================================
     // CALENDAR DATE VALIDATION
     // ============================================================
-    //
-    // Validates a (year, month, day) triple against the real
-    // Gregorian calendar.
-    //
-    // CONTRACT:
-    //   - Year: any integer >= 1. Unbounded.
-    //   - Month: integer in [1, 12].
-    //   - Day: integer in [1, 31], AND must fit the month. Feb 30
-    //     is rejected. Feb 29 is accepted only in leap years.
-    //
-    // Returns a boolean. It does NOT return a parsed date or a
-    // structured result. Callers that want the parsed integer form
-    // should call parseYear / Number() themselves.
-    //
-    // IMPLEMENTATION:
-    //   `new Date(y, m, 0)` constructs a date with month m
-    //   (0-indexed in the Date constructor, so m is our 1-indexed
-    //   month here) and day 0. The Date object interprets day 0 as
-    //   the last day of the *previous* month, which is exactly our
-    //   target month. `.getDate()` then returns the number of days
-    //   in that month. This handles leap years correctly for any
-    //   year the JS engine supports.
 
+    var DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    function isLeapYear(year) {
+        if (year % 400 === 0) { return true; }
+        if (year % 100 === 0) { return false; }
+        return year % 4 === 0;
+    }
+
+    function daysInMonth(year, month) {
+        if (month === 2 && isLeapYear(year)) {
+            return 29;
+        }
+        return DAYS_IN_MONTH[month];
+    }
+
+    /**
+     * Validate a (year, month, day) triple against the Gregorian
+     * calendar.
+     *
+     * STRICT INPUT: year, month, and day must each be integers or
+     * digit-only strings. Booleans, arrays, Dates, and NaN are
+     * rejected. This matches the strictness of the other parsers
+     * in this module.
+     *
+     * @returns {boolean} True if the date is valid.
+     */
     function isValidCalendarDate(year, month, day) {
-        var y = Number(year);
-        var m = Number(month);
-        var d = Number(day);
+        var y = strictInteger(year);
+        if (y === null || y < 1) { return false; }
+        if (!Number.isSafeInteger(y)) { return false; }
 
-        if (!Number.isInteger(y) || y < 1) { return false; }
-        if (!Number.isInteger(m) || m < 1 || m > 12) { return false; }
-        if (!Number.isInteger(d) || d < 1 || d > 31) { return false; }
+        var m = strictInteger(month);
+        if (m === null || m < 1 || m > 12) { return false; }
 
-        var daysInMonth = new Date(y, m, 0).getDate();
-        return d <= daysInMonth;
+        var d = strictInteger(day);
+        if (d === null || d < 1 || d > 31) { return false; }
+
+        return d <= daysInMonth(y, m);
     }
 
     // ============================================================
     // SLOT VALIDATION
     // ============================================================
+    //
+    // A slot is (week, day, hour, duration) and must fit within the
+    // visible calendar grid: the last covered hour must not exceed
+    // CALENDAR_END_HOUR.
+    //
+    // The old check was `hour + duration > MAX_HOUR + 1`, which
+    // validated against the broader hour range rather than the
+    // calendar window. A slot could be "valid" here but not
+    // renderable in the grid.
 
     function parseSlot(week, day, hour, duration) {
         var parsedWeek = parseWeek(week);
-        if (parsedWeek === null) {
-            return null;
-        }
+        if (parsedWeek === null) { return null; }
 
         var parsedDay = parseDay(day);
-        if (parsedDay === null) {
-            return null;
-        }
+        if (parsedDay === null) { return null; }
 
-        var parsedHour = parseHour(hour);
-        if (parsedHour === null) {
-            return null;
-        }
+        var parsedHour = parseCalendarHour(hour);
+        if (parsedHour === null) { return null; }
 
         var parsedDuration = parseDuration(duration);
-        if (parsedDuration === null) {
-            return null;
-        }
+        if (parsedDuration === null) { return null; }
 
-        if (parsedHour + parsedDuration > CC.MAX_HOUR + 1) {
+        if (parsedHour + parsedDuration - 1 > CC.CALENDAR_END_HOUR) {
             return null;
         }
 
@@ -409,93 +369,79 @@
     // RANGE VALIDATION
     // ============================================================
 
+    /**
+     * Parse a value within an inclusive integer range.
+     *
+     * @param {*} value
+     * @param {number} min
+     * @param {number} max
+     * @param {boolean} allowNull - If true, null/undefined/'' return
+     *   null (treated as "not provided") rather than being rejected.
+     * @returns {number|null} Parsed integer, or null for invalid or
+     *   (with allowNull) absent input.
+     */
     function parseInRange(value, min, max, allowNull) {
         allowNull = allowNull === true;
 
-        if (value === undefined || value === null) {
-            return allowNull ? null : NaN;
+        if (value === undefined || value === null || value === '') {
+            return null;
         }
 
-        if (isEmptyString(value)) {
-            return allowNull ? null : NaN;
+        if (!Number.isInteger(min) || !Number.isInteger(max) || min > max) {
+            return null;
         }
 
-        var num = toNumber(value);
-        if (!isFiniteNumber(num)) {
-            return NaN;
-        }
-        if (!isInteger(num)) {
-            return NaN;
-        }
-        if (num < min || num > max) {
-            return NaN;
-        }
-
-        return num;
+        return parseBoundedInteger(value, min, max);
     }
 
     function isInRange(value, min, max, allowNull) {
-        var result = parseInRange(value, min, max, allowNull);
-        if (allowNull && result === null) {
-            return true;
+        allowNull = allowNull === true;
+
+        // Absent input: valid iff allowNull.
+        if (value === undefined || value === null || value === '') {
+            return allowNull;
         }
-        return isFiniteNumber(result);
+
+        return parseInRange(value, min, max, allowNull) !== null;
     }
 
     // ============================================================
     // BOUNDS ACCESSORS
     // ============================================================
     //
-    // NOTE: getYearBounds() has been REMOVED. Years are unbounded;
-    // there are no bounds to return. Callers that previously used
-    // it should call parseYear() and check for null instead, or
-    // simply validate "integer >= 1" inline.
+    // getYearBounds is deliberately absent. Years are unbounded;
+    // callers should use parseYear and check for null.
 
     function getWeekBounds() {
-        return {
-            min: CC.MIN_WEEK,
-            max: CC.MAX_WEEK
-        };
+        return { min: CC.MIN_WEEK, max: CC.MAX_WEEK };
     }
 
     function getDayBounds() {
-        return {
-            min: CC.MIN_DAY,
-            max: CC.MAX_DAY
-        };
+        return { min: CC.MIN_DAY, max: CC.MAX_DAY };
     }
 
     function getHourBounds() {
-        return {
-            min: CC.MIN_HOUR,
-            max: CC.MAX_HOUR
-        };
+        return { min: CC.MIN_HOUR, max: CC.MAX_HOUR };
     }
 
     function getDurationBounds() {
-        return {
-            min: CC.MIN_CLASS_DURATION,
-            max: CC.MAX_CLASS_DURATION
-        };
+        return { min: CC.MIN_CLASS_DURATION, max: CC.MAX_CLASS_DURATION };
     }
 
     function getCalendarHourBounds() {
-        return {
-            min: CC.CALENDAR_START_HOUR,
-            max: CC.CALENDAR_END_HOUR
-        };
+        return { min: CC.CALENDAR_START_HOUR, max: CC.CALENDAR_END_HOUR };
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.CalendarValidation = {
+    window.CalendarValidation = Object.freeze({
         // Week
         parseWeek: parseWeek,
         isWeekValid: isWeekValid,
 
-        // Day
+        // Day (of week, 1-7)
         parseDay: parseDay,
         isDayValid: isDayValid,
 
@@ -509,7 +455,7 @@
         parseDuration: parseDuration,
         isDurationValid: isDurationValid,
 
-        // Year
+        // Year (unbounded positive safe integer)
         parseYear: parseYear,
         isYearValid: isYearValid,
 
@@ -525,12 +471,11 @@
         isInRange: isInRange,
 
         // Bounds
-        // NOTE: getYearBounds is deliberately absent — years are unbounded.
         getWeekBounds: getWeekBounds,
         getDayBounds: getDayBounds,
         getHourBounds: getHourBounds,
         getDurationBounds: getDurationBounds,
         getCalendarHourBounds: getCalendarHourBounds
-    };
+    });
 
 })();
