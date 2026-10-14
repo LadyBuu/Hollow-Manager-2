@@ -1,835 +1,521 @@
-# Complete Documentation: HollowBlades Core System
-
-## Table of Contents
-1. [System Overview](#system-overview)
-2. [Module Architecture](#module-architecture)
-3. [Module Documentation](#module-documentation)
-   - [Database Module](#database-module)
-   - [State Management Module](#state-management-module)
-   - [Core Utilities Module](#core-utilities-module)
-   - [Mutation Utilities Module](#mutation-utilities-module)
-   - [Tab Manager Module](#tab-manager-module)
-   - [Data Loader Module](#data-loader-module)
-4. [Dependency Graph](#dependency-graph)
-5. [Data Flow](#data-flow)
-6. [Best Practices](#best-practices)
+Here is the consolidated documentation for the core layer, drawing together everything from the rewrites and the verdicts. It's organised as a single document you can drop into `docs/core.md` or the project wiki. Every claim in it matches the shipped code.
 
 ---
 
-## System Overview
+# Core Layer
 
-The HollowBlades core system is a modular JavaScript application architecture built around:
-
-- **IndexedDB persistence** with automatic migrations
-- **Centralized state management** (UI state separate from domain data)
-- **Transactional mutation pipeline** with automatic rollback
-- **Tab-based navigation** with lifecycle management
-- **Pure utility functions** for domain operations
-
-### Core Principles
-
-1. **Single Source of Truth**: `window.data` holds all persistent domain data
-2. **Separation of Concerns**: UI state (`AppState`) vs Domain data (`window.data`)
-3. **Immutability During Transactions**: Backups before mutations, rollback on failure
-4. **Coalescing Saves**: Multiple save requests are batched efficiently
-5. **Fail-Fast Validation**: All mutations validate before execution
-
----
-
-## Module Architecture
+Six modules. Read in this order: **database** → **loader** → **state** → **mutation-pipeline** → **tab-manager** → **bootstrap**. Plus **activity-log**, which any producer may call.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    APPLICATION LAYER                        │
-│  (CharacterList, TeamManager, TournamentBracket, etc.)     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      MUTATION UTILITIES                     │
-│           performMutation() - Pipeline Orchestrator         │
-│           createSafeBackup() - Deep Clone Engine           │
-│           saveWithPromise() - Save Wrapper                  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│   CORE UTILS    │ │   STATE MANAGER │ │   TAB MANAGER   │
-│ Pure Functions  │ │   UI State Only │ │   Navigation    │
-│ - Queries       │ │   AppState      │ │   Lifecycle     │
-│ - Formatting    │ │   SessionState  │ │   Rendering     │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
-          │                   │                   │
-          └───────────────────┼───────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      DATA LOADER                           │
-│           Orchestrates startup sequence                    │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       DATABASE MODULE                      │
-│  IndexedDB Operations • Migrations • Coalescing Saves     │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────┐
+│ bootstrap   │  coordinates startup
+└──────┬──────┘
+       │
+       ├─> loader ──> database   (readiness + persistence)
+       │
+       └─> tab-manager ──> activity-log
+                          state
+                          mutation-pipeline ──> activity-log
+                                             ──> notification (utils)
+                                             ──> database.saveData()
 ```
+
+**Load order in `index.html`** (required by `bootstrap.checkLoadOrder`):
+
+```html
+<!-- Utils first; no dependencies among them except leaf ↔ leaf -->
+<script src="js/utils/id-utils.js"></script>
+<script src="js/utils/object-utils.js"></script>
+<script src="js/utils/validation-utils.js"></script>
+<script src="js/utils/dom-utils.js"></script>
+<script src="js/utils/calendar-constants.js"></script>
+<script src="js/utils/calendar-validation.js"></script>
+<script src="js/utils/range-utils.js"></script>
+<script src="js/utils/format-utils.js"></script>
+<script src="js/utils/form-utils.js"></script>
+<script src="js/utils/timing-utils.js"></script>
+<script src="js/utils/theme-manager.js"></script>
+
+<!-- Core -->
+<script src="js/core/activity-log.js"></script>
+<script src="js/core/database.js"></script>
+<script src="js/core/loader.js"></script>
+<script src="js/core/state.js"></script>
+<script src="js/utils/notification.js"></script>
+<script src="js/utils/modal.js"></script>
+<script src="js/core/mutation-pipeline.js"></script>
+<script src="js/core/tab-manager.js"></script>
+<script src="js/core/bootstrap.js"></script>
+
+<!-- Application -->
+<script src="js/app.js"></script>
+```
+
+Any deviation from this order causes `bootstrap.js` to dispatch `bootstrapFailed` with a message naming the missing module.
 
 ---
 
-## Module Documentation
+## The three-state model
 
-### Database Module
-**Path:** `js/core/database.js`
+Three sources of truth, distinguished by **lifetime**:
 
-The database module manages all IndexedDB persistence operations with versioned migrations and coalescing save queue.
+| State | Lives in | Survives | Owner |
+|---|---|---|---|
+| **Domain data** | `window.data` | page reload (IndexedDB) | `database.js` |
+| **UI state** | `AppState` / `SessionState` | tab switches, not reloads | `state.js` |
+| **Readiness** | `DataLoader` internal | the page session | `loader.js` |
 
-#### Key Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `openDatabase()` | None | `Promise<IDBDatabase>` | Opens/creates IndexedDB connection |
-| `ensureDatabaseReady()` | None | `Promise<IDBDatabase>` | Ensures DB is open and ready |
-| `loadData()` | None | `Promise<Object>` | Loads data from IndexedDB |
-| `saveData()` | None | `Promise<boolean>` | Saves current state to IndexedDB |
-| `autoLoadData()` | None | `Promise<Object>` | Loads data and dispatches events |
-| `createSafeCopy(data)` | `data: Object` | `Object` | Deep clone using structuredClone |
-| `getDatabaseStatus()` | None | `string` | Returns: 'uninitialized', 'initializing', 'ready', 'failed' |
-| `isDatabaseReady()` | None | `boolean` | Checks if DB is ready |
-| `getLoadError()` | None | `Error|null` | Returns last load error |
-| `getEmptyData()` | None | `Object` | Returns default empty data structure |
-
-#### Data Version History
-
-| Version | Changes |
-|---------|---------|
-| 1 | Initial character data |
-| 2 | Added careerStatus, eliminatedWeeks, eliminations, name fields |
-| 3 | Added stats and magic proficiencies |
-| 4 | Added team fields (nameHistory, rankingHistory, members, status, etc.) |
-| 5 | Added team member role, joinPeriod, leavePeriod |
-| 6 | Added tournament fields |
-| 7 | Added mission fields |
-| 8 | Added curriculum data |
-| 9 | Added social data |
-| 10 | Added classes, locations, locationSchedules, classLocations |
-| 11 | Added statsConfig |
-| 12 | Added personality and specialMoves to characters |
-| 13 | Added attraction and sexuality to characters |
-
-#### Data Structure
-
-```javascript
-window.data = {
-    _dataVersion: 13,
-    characters: [...],
-    teams: [...],
-    tournaments: [...],
-    missions: [...],
-    activities: [...],
-    classes: [...],
-    locations: [...],
-    locationSchedules: {},
-    currentYear: 2026,
-    currentWeek: 1,
-    curriculum: {
-        disciplines: [],
-        schedules: {},
-        restDays: {},
-        examDays: {},
-        grades: {},
-        rankings: {},
-        currentWeek: 1,
-        classInstructors: {},
-        classLabels: {},
-        classGroupLabels: {},
-        classDurations: {},
-        classLocations: {},
-        instructorClasses: {},
-        instructorTemplates: {},
-        instructorBlocks: {},
-        instructorGroups: {},
-        disciplineGroups: {},
-        autoGroups: {}
-    },
-    social: {
-        relationships: [],
-        relationshipTypes: [...],
-        nextId: 1
-    },
-    statsConfig: {
-        classes: [...]
-    }
-};
-```
-
-#### Save Queue Semantics
-
-- Multiple save requests while one is in progress are **coalesced**
-- Waiters are **frozen** at the start of each save operation
-- All waiters in a batch share the result of that save
-- New waiters arriving during a save belong to the **next** save
-- Prevents "saved successfully" responses for unsaved data
-
-#### Events
-
-| Event | Detail | Description |
-|-------|--------|-------------|
-| `dataReady` | `{ data, status, error }` | Dispatched when data loads |
-| `dataSaveFailed` | `{ error }` | Dispatched when save fails |
+Nobody reads `window.data` before `DataLoader.isReady` is true. Nobody persists UI state. Nobody treats readiness as data.
 
 ---
 
-### State Management Module
-**Path:** `js/core/state.js`
+## `database.js` — persistence and migrations
 
-Manages UI state only. Domain data lives in `window.data`. UI state is **not** persisted to IndexedDB.
+**Data version:** 33. Migrations run in sequence from the stored `_dataVersion` up to 33 on every load. Each migration documents its own purpose and retired fields; the header no longer carries the list.
 
-#### State Hierarchy
+**Storage:** single IndexedDB store `appData`, keyPath `id`, one row with `id: 'mainData'`. Pre-migration backups are written to `mainData_backup_pre_v<n>` under the same store. Nothing else.
 
-```javascript
+**Public surface** (`window.db`, frozen):
+
+| Method | Purpose |
+|---|---|
+| `openDatabase` | Open or reuse the IDB connection |
+| `ensureDatabaseReady` | Open + memoise; use before first access |
+| `loadData` | Read `mainData`, migrate, normalise, return `window.data` |
+| `saveData` | Serialise writes; `performSave` in order |
+| `getEmptyData` | Fresh empty state (see the schema below) |
+| `getDefaultMagicProficiencies` | Default magic block for a character |
+| `autoLoadData` | `ensureDatabaseReady` then `loadData`, dispatches `dataReady` |
+| `createSafeCopy` | `ObjectUtils.deepClone` wrapper |
+| `getDatabaseStatus` | `'uninitialized'` / `'initializing'` / `'ready'` / `'failed'` / `'version-mismatch'` |
+| `isDatabaseReady` | Boolean |
+| `getLoadError` | Last recorded load error, or `null` |
+| `deleteDatabase` | Delete IDB and close |
+| `forceReset` | Delete IDB and clear module state (console-only) |
+
+**Also exposed**: `window.loadData`, `window.saveData`, `window.getEmptyData`, `window.getDefaultMagicProficiencies`.
+
+**Side effects at load:** `ensureDatabaseReady().then(autoLoadData)`. `dataReady` is dispatched once (success or failure), 10ms after resolution, on `document`.
+
+### Version mismatch policy
+
+The old code deleted the entire database on `VersionError`. That is gone.
+
+If IndexedDB reports a stored database at a higher `DB_VERSION` than the build requests, `openDatabase` sets `_dbStatus = 'version-mismatch'`, rejects with a `VersionMismatchError`, and logs a message pointing to `window.db.forceReset()`. Data is not wiped.
+
+To recover, the user runs:
+
+```js
+await window.db.forceReset();
+location.reload();
+```
+
+from the console. This is deliberate: destroying user data without their knowledge is worse than a failed load.
+
+### Pre-migration backups
+
+Before the first migration on a store, `writePreMigrationBackup(version, rawData)` writes the *raw* `mainData` payload to `mainData_backup_pre_v<version>`. It only writes if a backup for that version doesn't already exist. On failure, it logs a warning and continues; backup failure does not block the migration save.
+
+This closes the "v19 wipes weeklyTeams, v27 admits to losing assignments" gap: whatever is about to be lost is preserved.
+
+### Class-reference pruning
+
+`normaliseDataStructure` prunes references to non-existent classes for `grades`, `rankings`, `enrolments`, `weeklyTeams`, `classDisciplines`, `socialScores`, and `character.classIds`. This is the correct shape guard for a healthy store.
+
+But pruning is **skipped** when:
+
+- `data._skipClassPrune === true`, or
+- `academy.graduatingClasses` is empty.
+
+In both cases a `console.warn` explains why. An empty or half-loaded class map no longer cascades through the reference stores.
+
+### Migration dependencies
+
+v17, v18, v23, v26 require `TournamentSchema`, `IdUtils`, `TeamConstants`, and `CalendarValidation` respectively. If a required module is missing, the migration **throws**, `migrateData` aborts, and `_dataVersion` does not advance. The next load (with the module present) runs the migration properly.
+
+This is the fix for the "warn, skip, but bump version anyway" bug. A migration that cannot run does not pretend to have run.
+
+### Soft dependencies
+
+- `structuredClone` — required (native). No JSON fallback.
+- `ObjectUtils.deepClone` — preferred; a local `structuredClone`-only wrapper is used if absent.
+- `ValidationUtils.parseStrictPositiveInteger` — preferred; a local equivalent is used if absent.
+
+Missing soft dependencies produce a one-time `console.warn`, not an error.
+
+### Save queue
+
+`saveData` returns a Promise. Concurrent calls are serialised: the first call runs `performSave`, and waiters queue behind it. Each caller resolves or rejects with the outcome of the save that included their changes. A failed save rejects all waiters, dispatches `dataSaveFailed`, and the next queued save starts fresh.
+
+### Schema at version 33
+
+Top-level keys:
+
+```
+_dataVersion: 33
+characters:     []
+teams:          []      // team.periods is the source of truth (v33)
+departments:    []
+tournaments:    []
+missions:       []
+activities:     []      // capped at 100, newest first (activity-log.js)
+classes:        []
+locations:      []
+currentYear:    number
+currentWeek:    number
+curriculum:     {...}   // disciplines, restDays, examDays, grades, etc.
+social:         {...}   // relationships + relationshipTypes
+statsConfig:    {...}   // classes with statWeights, minStats, icon
+academy:        {...}   // graduatingClasses, grades, rankings, enrolments,
+                        // socialScores, weeklyTeams, classDisciplines,
+                        // teachingGroups, teachingSequences, teachingSessions
+```
+
+Retired top-level fields (v1–v33): see the individual migration functions. The header no longer lists them; each migration explains its own.
+
+---
+
+## `loader.js` — readiness adapter
+
+**Purpose:** translate the `dataReady` event into a callback API, and own the readiness state that other modules query.
+
+The module owns **readiness**, not data. `window.data` is the canonical source; `DataLoader` is the observable that says whether it exists.
+
+**Public surface** (`window.DataLoader`, frozen):
+
+| Member | Type | Purpose |
+|---|---|---|
+| `isReady` | getter | Boolean |
+| `hasFailed` | getter | Boolean |
+| `isInitialized` | getter | Boolean |
+| `error` | getter | Last error, or `null` |
+| `init()` | method | Idempotent; attaches the `dataReady` listener |
+| `whenReady(onReady, onError?)` | method | See below |
+| `getData()` | method | `window.data` if ready, else `null` |
+| `getStatus()` | method | `'uninitialized'` / `'waiting'` / `'ready'` / `'failed'` |
+| `getError()` | method | Same as `error` getter |
+| `reset()` | method | Clears readiness/error; preserves pending callbacks |
+| `retry()` | method | Real retry; see below |
+
+### `whenReady(onReady, onError)`
+
+Both callbacks are optional. Both are invoked **asynchronously** — even if readiness has already resolved. This makes the timing uniform across the fast path and the wait path.
+
+- `onReady(data)` — called with `window.data` on success.
+- `onError(err)` — called with the error on failure.
+
+The legacy single-argument form is preserved: if `onError` is not provided and the load fails, `onReady(null)` is called. Callers that check `if (data)` work as before.
+
+### `retry()`
+
+Real retry. Returns a `Promise<data|null>`:
+
+1. If not failed: resolves with `window.data || null`.
+2. If failed and a retry is already in flight: returns the same Promise.
+3. If failed: resets readiness, calls `db.ensureDatabaseReady()`, calls `db.loadData()`, transitions to ready on success or failed on failure.
+
+If `window.db` is unavailable or missing the required methods, `retry` falls back to a degraded path that waits for a `dataReady` event with a **30-second timeout**. On timeout it marks failed with an honest error rather than hanging forever.
+
+### What loader does *not* do
+
+- It does not touch `window.data`. It observes it.
+- It does not treat `window.data`'s presence as a readiness signal on its own. `database.js` assigns `window.data` before the migration save completes, so a naive check would flip `failed` to `ready`. `checkCurrentState` consults `db.getLoadError()` and `db.getDatabaseStatus()` **before** trusting `window.data`.
+
+---
+
+## `state.js` — UI state
+
+**Purpose:** the single source of truth for UI state — filters, current tabs *within* a feature, expanded rows, selected IDs, etc.
+
+**What it does not hold:** domain data, persistence, navigation (that's `TabManager`).
+
+**Structure:**
+
+```
 AppState = {
-    dashboard: {},              // Dashboard UI state
-    characters: {               // Character module UI state
-        filterStatus: 'all',
-        filterName: '',
-        hideDeceased: false,
-        hideEliminated: false,
-        formEditId: null,
-        activeFormTab: 'name'
-    },
-    teams: {                    // Teams module UI state
-        currentTab: 'academic',
-        expandedTeamId: null,
-        currentTeamId: null,
-        filters: { ... }
-    },
-    tournaments: {              // Tournaments UI state
-        currentTournamentId: null,
-        currentMode: 'teams',
-        expandedMatch: null,
-        editingMatch: null
-    },
-    curriculum: {               // Curriculum UI state
-        grade: { currentWeek: 1, selectedStudentId: null },
-        ranking: { currentWeek: 1 },
-        classView: { currentWeek: 1, filterDiscipline: 'all' },
-        instructorCalendar: { currentWeek: 1, selectedInstructorId: null, expandedGroups: {} },
-        studentSchedule: { currentWeek: 1, selectedStudentId: null },
-        autoGroups: { expanded: {} },
-        classes: { selectedClassId: null, viewMode: 'roster', distributionWeek: 1, maxTeamSize: 4 }
-    },
-    missions: {
-        currentFilter: 'all',
-        currentMissionId: null
-    },
-    social: {
-        selectedCharacterId: null,
-        viewMode: 'list',
-        zoomLevel: 1,
-        panX: 0,
-        panY: 0,
-        expandedNodes: {}
-    }
-};
+  dashboard:    {}
+  characters:   { filterStatus, filterName, ... }
+  teams:        { currentTab, filters: { academic, professional, ... } }
+  tournaments:  { currentTournamentId, currentMode, ... }
+  curriculum:   { grade, ranking, classView, instructorCalendar, ... }
+  missions:     { currentFilter, currentMissionId }
+  social:       { selectedCharacterId, viewMode, ... }
+}
 
 SessionState = {
-    characterListOpen: false,
-    navOpen: false,
-    toast: null,
-    lastTab: 'dashboard'
-};
-```
-
-#### Key Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getState(module, key)` | `module: string, key: string` | `*` | Get a value from AppState |
-| `setState(module, key, value)` | `module: string, key: string, value: *` | `void` | Set a value in AppState |
-| `updateState(module, updates)` | `module: string, updates: Object` | `void` | Update multiple values |
-| `getModuleState(module)` | `module: string` | `Object\|null` | Get entire module state |
-| `resetModuleState(module)` | `module: string` | `void` | Reset module to defaults |
-| `resetAllState()` | None | `void` | Reset all state to defaults |
-| `getCurriculumViewWeek(viewName)` | `viewName: string` | `number` | Get week for curriculum view |
-| `setCurriculumViewWeek(viewName, week)` | `viewName: string, week: number` | `void` | Set week for curriculum view |
-| `getSession(key)` | `key: string` | `*` | Get session value |
-| `setSession(key, value)` | `key: string, value: *` | `void` | Set session value |
-| `resetSession()` | None | `void` | Reset session to defaults |
-| `getStateSnapshot(includeSession)` | `includeSession: boolean` | `Object` | Get serializable state snapshot |
-| `logState(includeSession)` | `includeSession: boolean` | `void` | Log state to console |
-| `getStateDiff()` | None | `Object` | Get diff from defaults |
-
-#### Module-Specific Getters
-
-```javascript
-getCurriculumState()  // -> AppState.curriculum
-getCharacterState()   // -> AppState.characters
-getTeamState()        // -> AppState.teams
-getTournamentState()  // -> AppState.tournaments
-getSocialState()      // -> AppState.social
-getMissionState()     // -> AppState.missions
-getDashboardState()   // -> AppState.dashboard
-```
-
----
-
-### Core Utilities Module
-**Path:** `js/core/core-utils.js`
-
-Pure helper functions for domain operations. No DOM manipulation, no UI logic.
-
-#### Type Helpers
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `isObject(value)` | `value: *` | `boolean` | Checks if value is a plain object |
-| `isSafeInteger(value)` | `value: *` | `boolean` | Checks if value is safe integer |
-| `isPositiveInteger(value)` | `value: *` | `boolean` | Checks if value is positive integer |
-
-#### Period Parsing
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `parseOptionalPeriod(value)` | `value: any` | `number\|null` | Parse period string to integer |
-| `parsePositivePeriod(value, fallback)` | `value: any, fallback: number` | `number` | Parse with fallback |
-| `parseStrictPositivePeriod(value)` | `value: any` | `number\|null` | Strict positive integer parse |
-| `hasPeriodValue(value)` | `value: any` | `boolean` | Checks if period has value |
-| `getPeriodInfo(value)` | `value: any` | `{ present, valid, value }` | Detailed period info |
-
-#### ID Generation
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `generateId(prefix)` | `prefix: string` | `string` | Generates unique ID with prefix |
-
-#### Deep Clone
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `deepClone(value)` | `value: any` | `any` | Deep clone using structuredClone or JSON |
-
-#### Team Predicates
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `isTeamOperational(team)` | `team: Object` | `boolean` | Team is active/deleted check |
-| `isTeamActiveCompat(team)` | `team: Object` | `boolean` | Legacy active check |
-| `isTeamStatusActive(team)` | `team: Object` | `boolean` | Status === 'active' |
-| `isValidTeamStatus(status)` | `status: string` | `boolean` | Valid status enum check |
-| `filterOperationalTeams(teams)` | `teams: Array` | `Array` | Filters operational teams |
-
-#### Activity Logging
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `_logActivity(message, type)` | `message: string, type: string` | `void` | Internal logging |
-| `recordActivity(message, type)` | `message: string, type: string` | `void` | Public activity logging |
-
-#### Character Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `calculateAge(char)` | `char: Object` | `number\|null` | Calculate character age |
-| `getCharacterAge(char)` | `char: Object` | `string` | Formatted age string |
-| `getDisplayName(char)` | `char: Object` | `string` | Formatted display name |
-| `getFullName(char)` | `char: Object` | `string` | Full legal name |
-| `getNicknameOrFirstName(char)` | `char: Object` | `string` | Preferred name |
-| `getCurrentStatus(char)` | `char: Object` | `string` | Current career status |
-| `getCharacterTeamCount(charId, period)` | `charId: string, period: number` | `number` | Team count at period |
-| `getCharacterNameById(charId)` | `charId: string` | `string` | Name from ID |
-| `getCharacterById(charId)` | `charId: string` | `Object\|null` | Character from ID |
-
-#### Elimination Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `isCharacterEliminated(charId, week)` | `charId: string, week: number` | `boolean` | Check elimination status |
-| `getEliminatedCharacters(week)` | `week: number` | `Array` | List of eliminated IDs |
-
-#### Team Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getTeamById(teamId)` | `teamId: string` | `Object\|null` | Team from ID |
-| `getTeamName(teamId)` | `teamId: string` | `string` | Team name from ID |
-| `getTeams(type, status, includeDeleted)` | `type, status, includeDeleted` | `Array` | Get filtered teams |
-| `getActiveTeamsForWeek(week)` | `week: number` | `Array` | Active teams at week |
-| `getAllOperationalTeams()` | None | `Array` | All operational teams |
-| `getAllActiveTeams()` | None | `Array` | All active teams |
-| `getTeamsByType(type, status)` | `type, status` | `Array` | Teams by type |
-| `getActiveTeamMembers(team, period)` | `team: Object, period: number` | `Array` | Members at period |
-| `getActiveTeamMemberCount(team, period)` | `team: Object, period: number` | `number` | Member count at period |
-
-#### Student/Instructor Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getStudents()` | None | `Array` | All student characters |
-| `getInstructors()` | None | `Array` | All instructor characters |
-| `getNonCivilianCharacters()` | None | `Array` | All non-civilian characters |
-
-#### Discipline Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getDiscipline(id)` | `id: string` | `Object\|null` | Discipline from ID |
-| `getAvailableDisciplines(week)` | `week: number` | `Array` | Available disciplines at week |
-
-#### Schedule Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getStudentSchedule(studentId, week)` | `studentId: string, week: number` | `Object` | Student schedule at week |
-
-#### Class Queries
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getClasses()` | None | `Array` | All classes |
-| `getClass(id)` | `id: string` | `Object\|null` | Class from ID |
-| `getClassByName(name)` | `name: string` | `Object\|null` | Class from name |
-| `getCharactersByClass(classId)` | `classId: string` | `Array` | Characters in class |
-| `getTeamsByClass(classId)` | `classId: string` | `Array` | Teams in class |
-| `getAvailableStudentsForClass(classId, week)` | `classId: string, week: number` | `Array` | Available students |
-| `getClassOptions()` | None | `Array` | Class options for dropdowns |
-| `getClassDisplayName(classId)` | `classId: string` | `string` | Class name from ID |
-| `getCharacterClasses(char)` | `char: Object` | `Array` | Character's classes |
-| `getCharacterClassNames(char)` | `char: Object` | `Array` | Character's class names |
-
-#### Tournament Helpers
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `getParticipantName(participant)` | `participant: Object\|string` | `string` | Participant display name |
-
-#### Random Generators
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `generateRandomStats()` | None | `Object` | Random ability scores |
-| `generateRandomMagic()` | None | `Object` | Random magic proficiencies |
-
-#### Formatting Helpers
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `formatDate(dateString)` | `dateString: string` | `string` | Formatted date string |
-| `truncateString(str, length)` | `str: string, length: number` | `string` | Truncated string |
-
----
-
-### Mutation Utilities Module
-**Path:** `js/modules/shared/mutation-utils.js`
-
-Centralized mutation pipeline with validation, snapshot, mutation, persistence, logging, and UI commit.
-
-#### Mutation Pipeline
-
-```
-VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
-    │          │         │         │        │       │
-    │          │         │         │        │       └── onSuccess callback
-    │          │         │         │        └────────── Activity logging
-    │          │         │         └─────────────────── saveData() with coalescing
-    │          │         └───────────────────────────── mutate(data, backup)
-    │          └─────────────────────────────────────── createSafeBackup(data)
-    └─────────────────────────────────────────────────── config.validate()
-```
-
-#### Key Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `performMutation(config)` | `config: Object` | `Promise<Result>` | Complete mutation pipeline |
-| `createSafeBackup(data)` | `data: Object` | `Object\|null` | Deep clone with fallbacks |
-| `saveWithPromise(options)` | `options: Object` | `Promise<void>` | Wraps saveData() |
-| `simpleMutation(logMsg, successMsg, failureMsg, mutateFn, validateFn)` | Various | `Promise<Result>` | Simplified mutation wrapper |
-| `refreshUI(options)` | `options: Object` | `void` | Safe UI refresh |
-
-#### Mutation Configuration
-
-```javascript
-performMutation({
-    // Required
-    validate: function() {
-        // Returns { valid: true } or { valid: false, message: string }
-        return { valid: true };
-    },
-    mutate: function(data, backup) {
-        // Mutates window.data (caller owns this)
-        data.characters.push(newCharacter);
-    },
-    
-    // Optional
-    getData: function() { return window.data; },  // Override data source
-    logMessage: function() { return 'Mutation performed'; }, // Or string
-    onSuccess: function(result) { /* UI commit / notification */ },
-    onRollback: function(backup) { /* Custom rollback */ },
-    onFailure: function(error) { /* Custom failure handling */ },
-    skipLog: false,          // Skip activity logging
-    skipNotification: false, // Skip notifications
-    successMessage: 'Operation completed successfully.',
-    failureMessage: 'Operation failed.',
-    _testSaveFailure: false  // Force save failure for testing
-});
-
-// Returns: Promise<{ success: boolean, data?: any, message?: string }>
-```
-
-#### Notification Fallback Chain
-
-1. `window.NotificationSystem.notify()` - Primary
-2. `window.showToast()` - Secondary
-3. `window.setSession('toast', ...)` + `window.renderToast()` - Tertiary
-4. `alert()` - Last resort
-
-#### UI Refresh Options
-
-```javascript
-refreshUI({
-    characterList: true,           // Render character list
-    characterForm: true,           // Show character form
-    characterId: 'char_123',       // For form refresh
-    dashboardStats: true,          // Update dashboard
-    customRefresh: function() { /* Custom refresh */ }
-});
-```
-
----
-
-### Tab Manager Module
-**Path:** `js/core/tab-manager.js`
-
-Centralized tab navigation system. Modules register with TabManager, TabManager calls render functions.
-
-#### Lifecycle
-
-```
-1. DOMContentLoaded → TabManager.init()
-2. _findTabContentElements() → Find #tab-{name} elements
-3. _bindNavLinks() → Bind [data-tab] links
-4. _getInitialTab() → From URL hash or DEFAULT_TAB
-5. _updateUrlHash() → Update URL
-6. switchTo(initialTab) → Render initial tab
-7. Modules register via TabManager.register(tabName, renderFn)
-8. TabManager calls renderFn(container) when tab is shown
-```
-
-#### Key Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `init()` | None | `void` | Initialize TabManager |
-| `register(tabName, renderFn)` | `tabName: string, renderFn: Function` | `boolean` | Register a tab renderer |
-| `hasTab(tabName)` | `tabName: string` | `boolean` | Check if tab exists |
-| `getTabs()` | None | `Array` | Get all registered tab names |
-| `switchTo(tabName, updateHistory)` | `tabName: string, updateHistory: boolean` | `void` | Switch to tab |
-| `forceRefresh(tabName)` | `tabName: string` | `void` | Force refresh tab content |
-| `refreshCurrent()` | None | `void` | Refresh current tab |
-| `getCurrentTab()` | None | `string` | Get current tab name |
-| `isTabActive(tabName)` | `tabName: string` | `boolean` | Check if tab is active |
-| `getTabContainer(tabName)` | `tabName: string` | `Element\|null` | Get tab container |
-| `onDataReady()` | None | `void` | Called when data is ready |
-
-#### Events
-
-| Event | Detail | Description |
-|-------|--------|-------------|
-| `tabManagerReady` | `{ isInitialized, currentTab, tabs }` | Dispatched when TabManager initializes |
-| `tabChanged` | `{ tab, previousTab, timestamp }` | Dispatched when tab changes |
-
-#### Tab Registration Example
-
-```javascript
-// Register with TabManager
-TabManager.register('characters', function(container) {
-    if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-        window.CharacterList.render(container);
-    } else {
-        container.innerHTML = '<p>Character List Loading...</p>';
-    }
-});
-```
-
----
-
-### Data Loader Module
-**Path:** `js/core/loader.js`
-
-Orchestrates data loading and provides callback-based data readiness.
-
-#### Key Functions
-
-| Function | Parameters | Returns | Description |
-|----------|------------|---------|-------------|
-| `init()` | None | `void` | Initialize loader |
-| `whenReady(callback)` | `callback: Function` | `void` | Call when data ready |
-| `getData()` | None | `Object\|null` | Get data if ready |
-| `getStatus()` | None | `string` | 'uninitialized', 'waiting', 'ready', 'failed' |
-| `getError()` | None | `Error\|null` | Get error if failed |
-
-#### Usage Example
-
-```javascript
-DataLoader.whenReady(function(data) {
-    if (data) {
-        console.log('Data loaded:', data);
-        // Render UI
-    } else {
-        console.error('Data load failed');
-        // Show error UI
-    }
-});
-```
-
----
-
-## Dependency Graph
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           APPLICATION MODULES                       │
-│      (CharacterList, TeamManager, TournamentBracket, etc.)         │
-└─────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         MUTATION UTILITIES                          │
-│                        (mutation-utils.js)                          │
-│   performMutation │ createSafeBackup │ saveWithPromise              │
-└─────────────────────────────────────────────────────────────────────┘
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        │                           │                           │
-        ▼                           ▼                           ▼
-┌───────────────────┐   ┌───────────────────┐   ┌───────────────────┐
-│   CORE UTILITIES  │   │   STATE MANAGER   │   │   TAB MANAGER     │
-│   (core-utils.js) │   │   (state.js)      │   │   (tab-manager.js)│
-│                   │   │                   │   │                   │
-│ Pure queries      │   │ UI State only     │   │ Navigation        │
-│ Formatting        │   │ AppState/Session  │   │ Lifecycle         │
-│ Period parsing    │   │ Getter/Setter     │   │ Rendering         │
-└───────────────────┘   └───────────────────┘   └───────────────────┘
-        │                           │                           │
-        └───────────────────────────┼───────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                           DATA LOADER                              │
-│                          (loader.js)                               │
-│               Orchestrates startup sequence                        │
-└─────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                           DATABASE MODULE                          │
-│                          (database.js)                             │
-│   IndexedDB │ Migrations │ Coalescing Saves │ Events              │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Dependency Details
-
-| Module | Depends On | Purpose |
-|--------|------------|---------|
-| **mutation-utils.js** | `window.saveData` (database.js) | Persistence |
-| | `window.data` (database.js) | State access |
-| | `window.logActivity` (core-utils.js) | Activity logging |
-| | `window.NotificationSystem` | User notifications |
-| **core-utils.js** | `window.data` (database.js) | Data queries |
-| **state.js** | None | Pure state management |
-| **tab-manager.js** | `window.data` (database.js) | Data readiness |
-| **loader.js** | `window.db` (database.js) | Data loading |
-| **database.js** | None | Self-contained |
-
----
-
-## Data Flow
-
-### Load Flow
-
-```
-1. database.js loads
-   → opens IndexedDB
-   → reads data
-   → migrates if needed
-   → sets window.data
-
-2. loader.js initializes
-   → listens for dataReady event
-   → when dataReady → marks as ready
-   → processes callbacks
-
-3. tab-manager.js initializes
-   → checks window.data
-   → when data ready → processes initial tab
-
-4. Application modules register with TabManager
-   → render when tab is selected
-```
-
-### Mutation Flow
-
-```
-1. Module calls performMutation(config)
-
-2. Validation phase
-   → config.validate() called
-   → if invalid → return error
-
-3. Snapshot phase
-   → createSafeBackup(data) called
-   → if backup fails → return error
-
-4. Mutation phase
-   → config.mutate(data, backup) called
-   → if error → rollback to backup
-
-5. Persistence phase
-   → saveWithPromise() called
-   → if save fails → rollback to backup
-
-6. Log phase
-   → window.logActivity() called (if not skipped)
-
-7. UI Commit phase
-   → config.onSuccess() called (if provided)
-   → notification shown (if not skipped)
-
-8. Return result
-   → { success: true, data: result, message: msg }
-```
-
-### State Update Flow
-
-```
-1. User action → Module calls state setter
-   → setState('characters', 'filterStatus', 'active')
-   → AppState.characters.filterStatus = 'active'
-
-2. Module observes state change
-   → Re-renders based on new state
-
-3. No persistence → UI state is ephemeral
-   → Page reload → state resets to defaults
-```
-
----
-
-## Best Practices
-
-### Mutation Usage
-
-```javascript
-// ✅ DO: Use performMutation for all state changes
-function addCharacter(character) {
-    return MutationUtils.performMutation({
-        validate: function() {
-            if (!character.firstName) {
-                return { valid: false, message: 'First name is required.' };
-            }
-            return { valid: true };
-        },
-        mutate: function(data) {
-            data.characters.push(character);
-        },
-        logMessage: 'Added character: ' + character.firstName,
-        successMessage: 'Character added successfully!'
-    });
-}
-
-// ❌ DON'T: Mutate window.data directly
-function addCharacter(character) {
-    window.data.characters.push(character);
-    window.saveData(); // This bypasses validation and rollback
+  characterListOpen, navOpen, lastTab
 }
 ```
 
-### State Management
+`DefaultAppState` and `DefaultSessionState` are immutable templates. `resetModuleState` and `resetAllState` mutate the live objects **in place**, so callers holding a reference from `getTeamState()` etc. keep a valid reference after a reset.
 
-```javascript
-// ✅ DO: Use state for UI concerns
-setState('characters', 'filterStatus', 'active');
-setState('teams', 'expandedTeamId', teamId);
+### Public surface
 
-// ❌ DON'T: Store UI state in window.data
-window.data.uiState = { selectedTab: 'characters' };
+**State access:**
 
-// ✅ DO: Use window.data for domain data
-window.data.characters = characters;  // Persistent
-window.data.teams = teams;            // Persistent
+| Function | Notes |
+|---|---|
+| `getState(module, key?)` | Live reference. Mutating it bypasses notification. |
+| `setState(module, key, value)` | Notifies listeners |
+| `updateState(module, updates)` | Applies all keys, then notifies |
+| `getModuleState(module)` | Live reference to a module's sub-tree |
+| `resetModuleState(module)` | In-place reset; notifies per key |
+| `resetAllState()` | In-place reset of all modules |
 
-// ❌ DON'T: Use AppState for domain data
-AppState.characters = characters;     // Not persistent!
-```
+**Convenience getters:** `getCurriculumState`, `getCharacterState`, `getTeamState`, `getTournamentState`, `getSocialState`, `getMissionState`, `getDashboardState`.
 
-### Tab Registration
+**Curriculum helpers:** `getCurriculumViewWeek(viewName)`, `setCurriculumViewWeek(viewName, week)`. The setter notifies with `(module='curriculum', key=viewName, value=viewObject, oldValue=oldWeek)`.
 
-```javascript
-// ✅ DO: Register tab renderers
-TabManager.register('characters', function(container) {
-    CharacterList.render(container);
-});
+**Session:** `getSession(key)`, `setSession(key, value)`, `resetSession()`. Session setters notify with `module='session'`.
 
-// ✅ DO: Handle data readiness in renderer
-TabManager.register('dashboard', function(container) {
-    whenDataReady(function(data) {
-        if (data) {
-            Dashboard.render(container);
-        }
-    });
-});
+**Observation:**
 
-// ❌ DON'T: Auto-render on dataReady
-document.addEventListener('dataReady', function() {
-    // This will render before TabManager is ready
-    CharacterList.render();
+```js
+var unsubscribe = onStateChange(function(module, key, value, oldValue) {
+  // called for each state change
 });
 ```
 
-### Data Queries
+Listener errors are caught and logged to `console.error`. The listener array is snapshotted before iteration, so a listener that unsubscribes during dispatch does not skip the next listener.
 
-```javascript
-// ✅ DO: Use CoreUtils for queries
-var students = window.CoreUtils.getStudents();
-var team = window.CoreUtils.getTeamById(teamId);
-var name = window.CoreUtils.getDisplayName(character);
+**Debugging:** `getStateSnapshot(includeSession)`, `getStateDiff()`.
 
-// ✅ DO: Use pure functions
-var age = window.calculateAge(character);
-var isEliminated = window.isCharacterEliminated(charId, week);
+### Caveats
 
-// ❌ DON'T: Write inline queries with null checks everywhere
-var students = (window.data && window.data.characters) 
-    ? window.data.characters.filter(c => c.status === 'student')
-    : [];
+- Mutating a value returned by `getState` or a convenience getter bypasses listeners. Use `setState` / `updateState` for tracked changes.
+- `setCurriculumViewWeek` emits the module name as the key (not `'viewName.currentWeek'`). Listeners that filter on the key should match `module === 'curriculum' && key === viewName`.
+
+---
+
+## `activity-log.js` — activity logging
+
+**Purpose:** record user-visible events in `window.data.activities`. Newest-first. Capped at 100.
+
+**Entry shape:**
+
+```
+{
+  id: string,           // from IdUtils.generateId('act'), or a local fallback
+  message: string,      // complete human-readable text
+  type: string,         // 'info' | 'success' | 'warning' | 'error'
+  timestamp: string,    // ISO 8601
+  metadata: object|null // deep-cloned on write
+}
 ```
 
-### Error Handling
+**Contract:**
 
-```javascript
-// ✅ DO: Handle mutation errors
-performMutation(config)
-    .then(function(result) {
-        if (!result.success) {
-            showError(result.message);
-            return;
-        }
-        // Handle success
-    })
-    .catch(function(error) {
-        showError('Unexpected error: ' + error.message);
-    });
+- `message` is the **complete text**, not a template. The producer includes any referenced entity names.
+- `type` is validated; unknown types are coerced to `'info'`.
+- `metadata` is deep-cloned on write. Non-cloneable values are dropped with no error. This defends against a caller storing a function that would break the entire next save via `createSafeCopy`.
+- `getHistory()` returns **deep-ish copies**: entries and their metadata are cloned, so a consumer cannot corrupt storage.
+- `clearHistory()` empties the array in place (`length = 0`) so holders of `window.data.activities` stay coherent.
+- All failures are non-fatal. A missing `window.data` produces a `console.warn` and no entry.
 
-// ✅ DO: Provide user feedback
-performMutation({
-    // ...
-    onFailure: function(error) {
-        showError('Failed to save changes: ' + error.message);
-    }
-});
+**Public surface** (`window.ActivityLog`, frozen): `record`, `getHistory`, `clearHistory`, `getCount`, `getByType`, `search`.
 
-// ❌ DON'T: Ignore errors
-performMutation(config); // Fire and forget!
+**Callers:** `mutation-pipeline.js` records entries *inside the mutate phase* (before the save), so the log entry commits atomically with the change it describes. If a save fails and rollback runs, the entry is removed along with the change.
+
+---
+
+## `mutation-pipeline.js` — transaction orchestration
+
+**Purpose:** every mutation goes through one entry point: validate → snapshot → mutate → log → persist → commit-or-rollback.
+
+**Public surface** (`window.MutationPipeline`):
+
+| Member | Purpose |
+|---|---|
+| `performMutation(config)` | Enqueue a mutation; returns `Promise<result>` |
+| `createSafeBackup(data)` | `ObjectUtils.deepClone` wrapper |
+| `saveWithPromise(options)` | `window.saveData()` wrapped so sync throws become rejections |
+| `simpleMutation(logMsg, successMsg, failMsg, mutateFn, validateFn?)` | Convenience wrapper |
+| `_diagnostic` | Getter/setter for tracing (off by default) |
+
+### `performMutation(config)`
+
+Required:
+
+- `validate(data)` → `{ valid: boolean, message?: string }`
+- `mutate(data, backup)` → any (sync or a Promise)
+
+Optional:
+
+- `logMessage` — string or `(result) => string`
+- `onSuccess(result)` — called after a successful save
+- `onRollback(backup)` — called after a rollback
+- `onFailure(error, stage)` — called on validation failure (`stage='validate'`), mutate throw (`stage='mutate'`), or save failure (`stage='save'`)
+- `skipLog: boolean` — do not write an ActivityLog entry
+- `skipNotification: boolean` — do not show a toast
+- `successMessage` — string or `(result) => string`
+- `failureMessage` — string
+- `_testSaveFailure: boolean` — testing only
+
+Returns `Promise<{ success: boolean, data?: any, message?: string }>`.
+
+### Guarantees
+
+1. **Serialised.** Mutations are queued; only one runs at a time. A failing mutation cannot race another's rollback.
+2. **Validate first.** If `validate` returns anything other than `{ valid: true }`, no snapshot is taken, no mutation runs, no log entry is written.
+3. **Snapshot is real.** The backup is `ObjectUtils.deepClone(window.data)`, so it is not aliased to live state. Rollback restores it by removing all keys from `window.data` and copying the backup's keys back in.
+4. **Log commits with the change.** The ActivityLog entry is written *before* the save. If the save fails, the rollback removes the entry too. The entry and the change it describes are atomic.
+5. **Save failure rolls back; post-save failure does not.** The persist step uses `.then(onSaved, onSaveFailed)`. If `onSuccess`, `successMessage(...)`, or the toast throws *after* a successful save, there is no rollback. Only a save failure reverts.
+6. **Async mutate is supported.** `mutate` may return a Promise; the pipeline awaits it before proceeding. An async rejection is treated as a mutate-phase failure and rolls back.
+7. **Dependencies are lazy.** `ObjectUtils`, `ActivityLog`, `NotificationSystem` are read at call time via accessor functions, not captured at module load.
+8. **Dependencies are required.** `checkDependencies()` throws if `window.saveData`, `window.data`, `structuredClone`, `ObjectUtils.deepClone`, or `ActivityLog.record` is missing.
+
+### Diagnostics
+
+`window.MutationPipeline._diagnostic = true` enables trace logging. Off by default. When enabled, `executeMutation` prints the phases and probes for `data === window.data` at the points where a mismatch would be meaningful.
+
+---
+
+## `tab-manager.js` — navigation and tab lifecycle
+
+**Purpose:** the single source of truth for which tab is active. Features register a render function; `TabManager` owns the DOM switch, the URL hash, and the lifecycle.
+
+**Public surface** (`window.TabManager`, frozen):
+
+| Member | Purpose |
+|---|---|
+| `register(name, renderFn, unmountFn?)` | Register a tab. `unmountFn` is called when the tab is switched away from. |
+| `switchTo(name, replaceHash?)` | Switch tabs. `replaceHash` uses `replaceState` instead of `pushState`. |
+| `forceRefresh(name?)` | Re-render the named tab (or the current one) |
+| `refreshCurrent()` | `forceRefresh(currentTab)` |
+| `getCurrentTab()` | Name or `null` |
+| `isTabActive(name)` | Boolean |
+| `getTabContainer(name)` | DOM node or `null` |
+| `isTabRegistered(name)` | Boolean |
+| `getRegisteredTabs()` | Array of names |
+| `onTabChange(listener)` | Returns an unsubscribe function |
+| `onDataReady(data)` | Called by Bootstrap; requires `data` |
+| `destroy()` | Remove listeners, clear registration |
+
+**Lifecycle:**
+
+1. `register(name, renderFn)` is called on script load. Registration is order-independent for the deep-link case (see below).
+2. On DOM ready, `TabManager` subscribes to `DataLoader.whenReady`.
+3. On ready, `_handleReady()` determines the initial tab: hash > `'dashboard'` > first registered.
+4. `switchTo(name)` **renders first, then commits the DOM**. If `renderFn` throws, the DOM is not switched, the hash is not updated, and the error is logged.
+5. On switch-away, the previous tab's `unmount` hook runs.
+
+**Deep links:** if the URL hash points to a tab that has not yet registered, `register` recognises the match when it arrives and honours it. This is the fix for "data is ready and dashboard registers before the hash target".
+
+**Hash handling:**
+
+- A tab switch with `updateHistory=true` (the default) uses `pushState`.
+- The first navigation of a session uses `replaceState` so Back does not return to an empty hash.
+- An empty hash falls back to the current tab without changing the URL.
+
+**Focus and accessibility:** the active tab link gets `aria-selected="true"`, others get `"false"`. Modifier-click (Ctrl, Meta, Shift) and middle-click on a nav link are not intercepted, so "open in new tab" works.
+
+**What `TabManager` does not do:**
+
+- It does not render. Features own their own rendering.
+- It does not read `window.data`.
+- It does not own "is data ready". `DataLoader` does; `TabManager` observes it.
+
+---
+
+## `bootstrap.js` — startup coordination
+
+**Purpose:** a single, small coordinator. Load-order check → DataLoader readiness → TabManager.onDataReady → `bootstrapReady`. Or `bootstrapFailed` with a diagnostic.
+
+**Public surface** (`window.bootstrap`, frozen):
+
+| Member | Purpose |
+|---|---|
+| `init()` | Idempotent. Returns `true` if started or already complete, `false` if in flight or blocked. |
+| `reset()` | Clear state and increment the attempt token |
+| `reinit()` | `reset(); init()` |
+| `getStatus()` | `{ initialized, bootstrapping, resolved, dataReady, dataFailed }` |
+
+**Load-order assertion:** `checkLoadOrder()` verifies that `IdUtils`, `ObjectUtils`, `DomUtils`, `CalendarConstants`, `CalendarValidation`, `DataLoader`, `TabManager`, and `window.db.loadData` are all present with the required methods. If any is missing, `bootstrapFailed` is dispatched with a message naming the missing file. `init` returns `false`.
+
+**Sequence:**
+
+1. `checkLoadOrder()`. If it fails → `bootstrapFailed`.
+2. `checkDependencies()`. If it fails → `bootstrapFailed`.
+3. Token-guarded attempt.
+4. If `DataLoader.isReady` → resolve success.
+5. If `DataLoader.hasFailed` → resolve failure and start watching for a retry.
+6. Otherwise `whenReady` with both callbacks.
+
+**On success:** `TabManager.onDataReady()` is called. If it throws, `bootstrapFailed` is dispatched (not `bootstrapReady`). Otherwise `bootstrapReady` is dispatched on a **macrotask** so listeners registered by `app.js` (loaded after this file) still receive it.
+
+**On failure:** `bootstrapFailed` is dispatched with the error attached. A second `whenReady` registration watches for a successful retry; if one arrives, `reset()` and `init()` run the sequence again.
+
+**Events:**
+
 ```
+'bootstrapReady'  detail: { status: 'ready', timestamp }
+'bootstrapFailed' detail: { status: 'failed', message, error, timestamp }
+```
+
+Both bubble, both cancelable (nobody cancels).
+
+**No safety timeouts.** Bootstrap does not manufacture success. If `DataLoader` never resolves, Bootstrap never fires an event. This is deliberate; a stuck load is surfaced by the loader's own timeout only on the degraded retry path.
+
+---
+
+## Cross-cutting rules
+
+**1. State ownership.** Domain data lives in `window.data`. UI state lives in `AppState`. Readiness lives in `DataLoader`. Never read across these layers without going through the owner.
+
+**2. Mutation.** Every change to `window.data` goes through `MutationPipeline.performMutation`. Direct writes followed by `saveData()` bypass validation, rollback, and the atomic log.
+
+**3. Logging.** Every mutation logs through `ActivityLog.record`, called from inside the mutate phase. Log messages are complete text.
+
+**4. Save semantics.** `saveData()` returns a Promise and serialises concurrent calls. A failed save rejects all waiters, dispatches `dataSaveFailed`, and does not leave partial state in IndexedDB.
+
+**5. Failure is loud.** Every module that can meaningfully fail logs to `console.error` or `console.warn` with a `[ModuleName]` prefix. Silent catches are reserved for cases where a failure genuinely has no downstream consequence (event dispatch, listener callbacks).
+
+**6. Dependencies are asserted.** `bootstrap.js` asserts load order. `mutation-pipeline.js`, `database.js`, and the utils that require `structuredClone` all check at the point of use and either throw or warn loudly. There is no silent fallback that returns wrong answers.
+
+**7. No JSON clone.** `ObjectUtils.deepClone` and `database.createSafeCopy` use `structuredClone` and throw on failure. There is no JSON fallback anywhere in the save or rollback path.
+
+---
+
+## Testing the layer
+
+**Smoke checks that the rewrites fix:**
+
+1. **`ObjectUtils.deepClone` on a value containing a function** throws, rather than returning a lossy copy. This is the guard that protects `MutationPipeline`'s rollback.
+2. **A second modal opening while a first is showing** does not leave focus stranded; closing the second returns focus to the button that opened the first.
+3. **`NotificationSystem.notify('msg', 'success', 3000, fn)`** calls `fn` exactly once, on dismiss.
+4. **`ThemeManager.init()` called twice** does not double-bind the toggle button.
+5. **`DataLoader.whenReady(cb)` after a failed load** calls `cb(null)`; `TabManager.onDataReady(null)` ignores it; `bootstrapFailed` fires without rendering tabs.
+6. **`bootstrap.reinit()` after a failure** does not double-fire `bootstrapReady` from a stale callback.
+7. **VersionError** on IDB open does not delete the database. `window.db.forceReset()` does.
+8. **A v32 store's first load** writes `mainData_backup_pre_v32` before the migration save.
+9. **An empty `academy.graduatingClasses`** does not cascade-prune `enrolments`, `weeklyTeams`, `grades`, `rankings`, `classDisciplines`, or `socialScores`.
+
+**What the layer does *not* test:** rendering, form input, user flows. Those are `app.js` and the feature modules. `bootstrap.js` stops at the moment `TabManager.onDataReady()` returns.
+
+---
+
+## Change log for this rewrite
+
+Cross-file changes applied in this pass, in the order they were delivered:
+
+1. `activity-log.js` — type coercion, metadata cloning, malformed-entry guards, `getHistory` deep copy, `clearHistory` in place.
+2. `state.js` — `resetModuleState`/`resetAllState` in place, listener array snapshot, notify on reset, real key in `setCurriculumViewWeek`.
+3. `loader.js` — `whenReady(onReady, onError)`, async callbacks, preserve pending callbacks across reset, degraded-retry timeout, error state precedes `window.data`.
+4. `bootstrap.js` — load-order assertion, token-guarded attempts, deferred event dispatch, retry recovery, `onDataReady` throw → `bootstrapFailed`.
+5. `tab-manager.js` — render-first-commit-second, live DOM queries, `onDataReady(data)` requires data, unmount hooks, `replaceState` for first nav, `Object.freeze`.
+6. `mutation-pipeline.js` — persist/post-process split, log inside the mutate phase, async `mutate`, lazy deps, `_diagnostic` off by default.
+7. `database.js` — `deepClone` delegates to `ObjectUtils`, v33 period parser delegates to `ValidationUtils`, VersionError refuses to open, pre-migration backup, class-prune gate, migration dependency throw.
+8. `timing-utils.js` — throttle try/finally, debounce `.cancel()`/`.flush()`, `once` rethrows cached error.
+9. `id-utils.js` — `Object.create(null)` in `uniqueIds`, `isSameId` requires both valid, `normaliseId` rejects non-finite/boolean, `Object.freeze`.
+10. `validation-utils.js` — `truncateString` clamps, `parseNumber('')` returns fallback, `clamp(NaN)` returns `NaN`, `isEmptyObject` narrow, deprecation markers.
+11. `object-utils.js` — JSON fallback dropped, dead identity checks removed, `isJsonSerializable` removed, `Object.freeze`.
+12. `range-utils.js` — inverted ranges rejected consistently, `undefined` end rejected, self-test fixed, load-order guard fixed.
+13. `calendar-validation.js` — strict integer parsing, `parseInRange` returns `null`, missing dep throws, `isValidCalendarDate` uses a leap-year formula, `parseSlot` uses calendar bounds.
+14. `format-utils.js` — `CalendarConstants` mandatory, `parseHour` → `parseTimeString`, `getDayNumber` delegates, `formatPercentage` validates decimals, `formatCurrency` fallback per currency.
+15. `form-utils.js` — `setFormData` resets by default, checkbox group shape deterministic, disabled controls skipped, `type="number"` uses `valueAsNumber`, event dispatch.
+16. `dom-utils.js` — URL scheme allowlist, `on*` refusal, `SafeHtml` marker, `safeHtml` composition, `getData` returns `null`, `sanitizeCssValue` strict.
+17. `modal.js` — focus handoff between stacked modals, Escape handled per active modal, focus cache invalidated on show, click-outside guards against drag-release.
+18. `notification.js` — `onDismiss` stored on the DOM node, queued dismissals work, refresh preserves duration, `role` set correctly, queue cap.
+19. `theme-manager.js` — `init` idempotent, `clearPreference`, `mediaQuery` feature-detect, table-driven toggle, `\uFE0E` variation selectors, `theme-color` meta.
+
+The public API surface of every module is unchanged except for additions (`forceReset`, `flush`, `cancel`, `clearPreference`, `rawHtml`, `destroy`). No caller outside this document needs to change its behaviour to keep working. Callers that depended on documented bugs (e.g. `isSameId('', null) === true`, `formatCurrency` returning `$0` for EUR) will see the fix, which is the intent.
