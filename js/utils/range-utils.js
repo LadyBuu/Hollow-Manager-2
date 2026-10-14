@@ -15,12 +15,22 @@
  *   - PURE. No side effects. No mutable state.
  *   - No domain knowledge beyond "weeks are bounded by
  *     CalendarConstants".
- *   - Dependencies: CalendarConstants, CalendarValidation (both
- *     MANDATORY and checked at load time).
+ *   - Dependencies: CalendarConstants and CalendarValidation are
+ *     MANDATORY AT THE POINT OF USE for the week-typed functions.
+ *     The generic predicates (contains, overlaps, intersection)
+ *     have no dependencies and work regardless of script order.
  *   - These are the SINGLE SOURCE OF TRUTH for range predicates in
  *     the application. Every module that needs "does this interval
  *     contain this value" or "do these two intervals overlap" MUST
  *     delegate here. Do not reimplement per-module.
+ *
+ * LOAD ORDER:
+ *   This module does not require any specific load order. The
+ *   generic predicates work as soon as the module is loaded. The
+ *   week-typed predicates check for CalendarConstants and
+ *   CalendarValidation when called and throw a clear error naming
+ *   the missing file if either is absent. This matches the pattern
+ *   used by format-utils.js and the rest of the codebase.
  *
  * OPEN-ENDED RANGES:
  *   `end === null` means "unbounded on the right" (ongoing). This
@@ -105,51 +115,49 @@
     if (window.__rangeUtilsLoaded) {
         return;
     }
-
-    // ============================================================
-    // MANDATORY DEPENDENCIES
-    // ============================================================
-
-    var CalendarConstants = window.CalendarConstants;
-    var CalendarValidation = window.CalendarValidation;
-
-    var _missing = [];
-
-    if (!CalendarConstants ||
-        typeof CalendarConstants.MIN_WEEK !== 'number' ||
-        typeof CalendarConstants.MAX_WEEK !== 'number') {
-        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
-    }
-    if (!CalendarValidation ||
-        typeof CalendarValidation.parseWeek !== 'function') {
-        _missing.push('CalendarValidation.parseWeek');
-    }
-
-    // Mark loaded immediately so a second attempt no-ops. The
-    // actual throw is deferred until after the API has been
-    // exposed, so callers can inspect the broken state.
     window.__rangeUtilsLoaded = true;
 
-    if (_missing.length > 0) {
-        window.RangeUtils = Object.freeze({
-            _loadFailed: true,
-            _missing: _missing.slice()
-        });
-        throw new Error(
-            '[RangeUtils] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
+    // ============================================================
+    // DEPENDENCY ACCESS - LAZY
+    // ============================================================
+    //
+    // The generic predicates have no dependencies. The week-typed
+    // predicates require CalendarConstants (for MIN_WEEK, MAX_WEEK)
+    // and CalendarValidation (for parseWeek). Both are resolved at
+    // CALL time, not at load time, so the module loads cleanly
+    // regardless of script order.
+
+    function requireCalendarConstants(calleeName) {
+        var CC = window.CalendarConstants;
+        if (!CC ||
+            typeof CC.MIN_WEEK !== 'number' ||
+            typeof CC.MAX_WEEK !== 'number') {
+            throw new Error(
+                '[RangeUtils] ' + calleeName + ' requires ' +
+                'CalendarConstants with MIN_WEEK and MAX_WEEK, which ' +
+                'is not loaded. Ensure ' +
+                'js/utils/calendar-constants.js is included in the ' +
+                'page before this function is called.'
+            );
+        }
+        return CC;
+    }
+
+    function requireCalendarValidation(calleeName) {
+        var CV = window.CalendarValidation;
+        if (!CV || typeof CV.parseWeek !== 'function') {
+            throw new Error(
+                '[RangeUtils] ' + calleeName + ' requires ' +
+                'CalendarValidation.parseWeek, which is not loaded. ' +
+                'Ensure js/utils/calendar-validation.js is included ' +
+                'in the page before this function is called.'
+            );
+        }
+        return CV;
     }
 
     // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-
-    // ============================================================
-    // HELPERS
+    // HELPERS - generic (no dependencies)
     // ============================================================
 
     /**
@@ -217,7 +225,7 @@
     }
 
     // ============================================================
-    // GENERIC PREDICATES
+    // GENERIC PREDICATES (no dependencies)
     // ============================================================
 
     /**
@@ -293,8 +301,7 @@
      * LIMITATION:
      *   Returns null for both "no overlap" and "invalid input". A
      *   caller that needs to distinguish must validate its inputs
-     *   before calling (e.g. via contains() with a known probe, or
-     *   by checking the endpoints itself).
+     *   before calling.
      *
      * @returns {object|null} { start, end } or null
      */
@@ -319,7 +326,7 @@
     }
 
     // ============================================================
-    // WEEK-TYPED PREDICATES
+    // WEEK-TYPED PREDICATES (require CalendarConstants + CalendarValidation)
     // ============================================================
     //
     // These parse every bound through CalendarValidation.parseWeek,
@@ -331,10 +338,10 @@
      * Parse a week-typed start bound. Returns the parsed integer,
      * or null if invalid.
      */
-    function parseWeekStart(value) {
-        var parsed = CalendarValidation.parseWeek(value);
+    function parseWeekStart(value, CC, CV) {
+        var parsed = CV.parseWeek(value);
         if (parsed === null) { return null; }
-        if (parsed < MIN_WEEK || parsed > MAX_WEEK) { return null; }
+        if (parsed < CC.MIN_WEEK || parsed > CC.MAX_WEEK) { return null; }
         return parsed;
     }
 
@@ -342,11 +349,11 @@
      * Parse a week-typed end bound. `null` means unbounded (Infinity).
      * Anything else must parse as a valid week.
      */
-    function parseWeekEnd(value) {
+    function parseWeekEnd(value, CC, CV) {
         if (value === null) {
             return Infinity;
         }
-        return parseWeekStart(value);
+        return parseWeekStart(value, CC, CV);
     }
 
     /**
@@ -366,15 +373,18 @@
      * @returns {boolean}
      */
     function containsWeek(week, startWeek, endWeek) {
-        var w = CalendarValidation.parseWeek(week);
+        var CC = requireCalendarConstants('containsWeek');
+        var CV = requireCalendarValidation('containsWeek');
+
+        var w = CV.parseWeek(week);
         if (w === null) {
             return false;
         }
 
-        var s = parseWeekStart(startWeek);
+        var s = parseWeekStart(startWeek, CC, CV);
         if (s === null) { return false; }
 
-        var e = parseWeekEnd(endWeek);
+        var e = parseWeekEnd(endWeek, CC, CV);
         if (e === null) { return false; }
 
         if (s > e) { return false; }
@@ -396,16 +406,19 @@
      * @returns {boolean}
      */
     function weeksOverlap(startA, endA, startB, endB) {
-        var sA = parseWeekStart(startA);
+        var CC = requireCalendarConstants('weeksOverlap');
+        var CV = requireCalendarValidation('weeksOverlap');
+
+        var sA = parseWeekStart(startA, CC, CV);
         if (sA === null) { return false; }
 
-        var sB = parseWeekStart(startB);
+        var sB = parseWeekStart(startB, CC, CV);
         if (sB === null) { return false; }
 
-        var eA = parseWeekEnd(endA);
+        var eA = parseWeekEnd(endA, CC, CV);
         if (eA === null) { return false; }
 
-        var eB = parseWeekEnd(endB);
+        var eB = parseWeekEnd(endB, CC, CV);
         if (eB === null) { return false; }
 
         if (sA > eA || sB > eB) { return false; }
@@ -417,27 +430,30 @@
     // EXPOSE
     // ============================================================
 
-    window.RangeUtils = Object.freeze({
-        // Generic
+    var RangeUtils = Object.freeze({
+        // Generic (no dependencies)
         contains: contains,
         overlaps: overlaps,
         intersection: intersection,
 
-        // Week-typed
+        // Week-typed (require CalendarConstants + CalendarValidation)
         containsWeek: containsWeek,
-        weeksOverlap: weeksOverlap,
-
-        // Constants (read-only)
-        MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK
+        weeksOverlap: weeksOverlap
     });
+
+    window.RangeUtils = RangeUtils;
 
     // ============================================================
     // VERIFICATION
     // ============================================================
+    //
+    // The generic predicates are always testable. The week-typed
+    // predicates are tested only if their dependencies are present.
+    // A failure in either set throws after the API is exposed, so a
+    // broken module fails loudly at first use rather than quietly
+    // returning wrong answers.
 
     (function verify() {
-        var exports = window.RangeUtils;
         var failures = [];
 
         var required = [
@@ -449,7 +465,7 @@
         ];
 
         for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
+            if (typeof RangeUtils[required[i]] !== 'function') {
                 failures.push('missing export: ' + required[i]);
             }
         }
@@ -461,13 +477,8 @@
             );
         }
 
-        // Smoke tests. A failure here throws after the API has
-        // already been exposed, so callers that try to use the
-        // module will crash loudly rather than quietly getting
-        // wrong answers.
-
         try {
-            // ---- contains ----
+            // ---- contains (no dependencies) ----
             if (contains(5, 1, 10) !== true) {
                 failures.push('contains(5,1,10) should be true');
             }
@@ -493,7 +504,7 @@
                 failures.push('contains undefined end should be false');
             }
 
-            // ---- overlaps ----
+            // ---- overlaps (no dependencies) ----
             if (overlaps(1, 10, 5, 15) !== true) {
                 failures.push('overlaps simple');
             }
@@ -519,7 +530,7 @@
                 failures.push('overlaps undefined end should be false');
             }
 
-            // ---- intersection ----
+            // ---- intersection (no dependencies) ----
             var inter = intersection(1, 10, 5, 15);
             if (!inter || inter.start !== 5 || inter.end !== 10) {
                 failures.push('intersection(1,10,5,15)');
@@ -535,58 +546,63 @@
                 failures.push('intersection inverted should be null');
             }
 
-            // ---- containsWeek ----
-            if (containsWeek(5, 1, 10) !== true) {
-                failures.push('containsWeek(5,1,10)');
-            }
-            if (containsWeek('5', 1, 10) !== true) {
-                failures.push('containsWeek string week');
-            }
-            // This case actually exercises the bounds check: 53
-            // is within the range [1, null] as an integer, so the
-            // only way it returns false is if the bounds check
-            // rejects 53. The previous test (containsWeek(53,1,10))
-            // passed trivially because 53 > 10.
-            if (containsWeek(53, 1, null) !== false) {
-                failures.push('containsWeek out-of-bounds week');
-            }
-            if (containsWeek(5, 1, null) !== true) {
-                failures.push('containsWeek open end');
-            }
-            if (containsWeek(5, 0, 10) !== false) {
-                failures.push('containsWeek start below MIN_WEEK');
-            }
-            if (containsWeek(5, 10, 1) !== false) {
-                failures.push('containsWeek inverted should be false');
-            }
+            // ---- week-typed (only if dependencies present) ----
+            var canTestWeeks =
+                typeof window.CalendarConstants === 'object' &&
+                window.CalendarConstants !== null &&
+                typeof window.CalendarValidation === 'object' &&
+                window.CalendarValidation !== null &&
+                typeof window.CalendarValidation.parseWeek === 'function';
 
-            // ---- weeksOverlap ----
-            if (weeksOverlap(1, 10, 5, 15) !== true) {
-                failures.push('weeksOverlap simple');
-            }
-            if (weeksOverlap(1, 10, 11, 20) !== false) {
-                failures.push('weeksOverlap disjoint');
-            }
-            if (weeksOverlap(1, 10, 10, 20) !== true) {
-                failures.push('weeksOverlap inclusive endpoint');
-            }
-            if (weeksOverlap(1, 10, 5, null) !== true) {
-                failures.push('weeksOverlap open end');
-            }
-            if (weeksOverlap(0, 10, 5, 15) !== false) {
-                failures.push('weeksOverlap start below MIN_WEEK');
-            }
-            if (weeksOverlap(10, 1, 0, 20) !== false) {
-                failures.push('weeksOverlap inverted should be false');
-            }
+            if (canTestWeeks) {
+                if (containsWeek(5, 1, 10) !== true) {
+                    failures.push('containsWeek(5,1,10)');
+                }
+                if (containsWeek('5', 1, 10) !== true) {
+                    failures.push('containsWeek string week');
+                }
+                // Exercises the bounds check: 53 within [1, null]
+                // as an integer, so the only reason this returns
+                // false is the bounds rejection.
+                if (containsWeek(53, 1, null) !== false) {
+                    failures.push('containsWeek out-of-bounds week');
+                }
+                if (containsWeek(5, 1, null) !== true) {
+                    failures.push('containsWeek open end');
+                }
+                if (containsWeek(5, 0, 10) !== false) {
+                    failures.push('containsWeek start below MIN_WEEK');
+                }
+                if (containsWeek(5, 10, 1) !== false) {
+                    failures.push('containsWeek inverted should be false');
+                }
 
-            // ---- cross-predicate agreement ----
-            // containsWeek and weeksOverlap must agree on bad bounds.
-            if (containsWeek(5, 0, 10) !== false ||
-                weeksOverlap(0, 10, 5, 15) !== false) {
-                failures.push(
-                    'containsWeek / weeksOverlap disagree on bad start'
-                );
+                if (weeksOverlap(1, 10, 5, 15) !== true) {
+                    failures.push('weeksOverlap simple');
+                }
+                if (weeksOverlap(1, 10, 11, 20) !== false) {
+                    failures.push('weeksOverlap disjoint');
+                }
+                if (weeksOverlap(1, 10, 10, 20) !== true) {
+                    failures.push('weeksOverlap inclusive endpoint');
+                }
+                if (weeksOverlap(1, 10, 5, null) !== true) {
+                    failures.push('weeksOverlap open end');
+                }
+                if (weeksOverlap(0, 10, 5, 15) !== false) {
+                    failures.push('weeksOverlap start below MIN_WEEK');
+                }
+                if (weeksOverlap(10, 1, 0, 20) !== false) {
+                    failures.push('weeksOverlap inverted should be false');
+                }
+
+                // Cross-predicate agreement on bad bounds.
+                if (containsWeek(5, 0, 10) !== false ||
+                    weeksOverlap(0, 10, 5, 15) !== false) {
+                    failures.push(
+                        'containsWeek / weeksOverlap disagree on bad start'
+                    );
+                }
             }
 
         } catch (e) {
