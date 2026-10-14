@@ -1,56 +1,40 @@
 /**
  * js/core/bootstrap.js - Application Bootstrap
  * Path: js/core/bootstrap.js
- * 
- * Responsibility (single): coordinate the startup sequence.
- * 
- * Sequence:
- *   DataLoader readiness
- *       ↓
- *   TabManager.onDataReady()
- *       ↓
- *   dispatch 'bootstrapReady'
- * 
+ *
+ * Coordinates the startup sequence:
+ *   DataLoader readiness -> TabManager.onDataReady() -> 'bootstrapReady'
  *   OR
- * 
- *   DataLoader failure
- *       ↓
- *   dispatch 'bootstrapFailed'
- * 
+ *   DataLoader failure   -> 'bootstrapFailed'
+ *
  * IMPORTANT:
- *   - No domain knowledge. No dashboard, no tabs, no rendering.
+ *   - No domain knowledge.
  *   - No direct window.data access. DataLoader is the sole source.
  *   - No safety timeouts that manufacture success.
- *   - No lifecycle methods added to TabManager.
- *   - Failure is reported via event, not by calling into TabManager.
- * 
- * LOAD ORDER:
- *   Must load AFTER core infrastructure (DataLoader, TabManager)
- *   and BEFORE app.js.
- * 
+ *   - Failure is reported via event, not by calling TabManager on error.
+ *   - If TabManager.onDataReady() throws, 'bootstrapReady' is NOT
+ *     dispatched; 'bootstrapFailed' is dispatched instead.
+ *   - After a failure, a successful DataLoader.retry() re-runs the
+ *     bootstrap sequence and dispatches 'bootstrapReady'.
+ *
+ * EVENTS:
+ *   'bootstrapReady'  detail: { status: 'ready', timestamp }
+ *   'bootstrapFailed' detail: { status: 'failed', message, error, timestamp }
+ *
+ * 'bootstrapReady' may fire synchronously during script load if data
+ * is already present. Consumers in app.js must call getStatus() first
+ * if they need to catch a late subscription.
+ *
  * DEPENDENCIES:
  *   - window.DataLoader (from loader.js)
- *   - window.TabManager (from tab-manager.js)
- * 
- * USAGE:
- *   // Auto-bootstraps on DOM ready.
- *   // Manual reinit (for tests): window.bootstrap.reinit();
+ *   - window.TabManager  (from tab-manager.js)
  */
 
 (function() {
     'use strict';
 
-    if (window.__bootstrapLoaded) {
-        return;
-    }
+    if (window.__bootstrapLoaded) return;
     window.__bootstrapLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var DataLoader = window.DataLoader;
-    var TabManager = window.TabManager;
 
     // ============================================================
     // STATE
@@ -59,19 +43,30 @@
     var _initialized = false;
     var _bootstrapping = false;
     var _resolved = false;
+    var _attemptToken = 0;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - reads lazily
     // ============================================================
+
+    function getDependencies() {
+        return {
+            DataLoader: window.DataLoader,
+            TabManager: window.TabManager
+        };
+    }
 
     function checkDependencies() {
+        var deps = getDependencies();
         var missing = [];
 
-        if (!DataLoader || typeof DataLoader.whenReady !== 'function') {
+        if (!deps.DataLoader ||
+            typeof deps.DataLoader.whenReady !== 'function') {
             missing.push('DataLoader.whenReady');
         }
 
-        if (!TabManager || typeof TabManager.onDataReady !== 'function') {
+        if (!deps.TabManager ||
+            typeof deps.TabManager.onDataReady !== 'function') {
             missing.push('TabManager.onDataReady');
         }
 
@@ -88,18 +83,13 @@
     // ============================================================
 
     /**
-     * Initialize the bootstrap sequence.
-     * 
-     * @returns {boolean} True if the sequence was started (or already complete).
+     * @returns {boolean} true if the sequence was started or already
+     *   complete; false if dependencies are missing or an attempt is
+     *   already in flight.
      */
     function init() {
-        if (_initialized) {
-            return true;
-        }
-
-        if (_bootstrapping) {
-            return false;
-        }
+        if (_initialized) { return true; }
+        if (_bootstrapping) { return false; }
 
         _bootstrapping = true;
 
@@ -108,68 +98,110 @@
             return false;
         }
 
-        // If DataLoader has already resolved before we started, handle now.
+        var deps = getDependencies();
+        var DataLoader = deps.DataLoader;
+
+        var myToken = ++_attemptToken;
+
+        // Fast path: already resolved.
         if (DataLoader.isReady) {
-            resolveSuccess();
+            resolveSuccess(myToken);
             return true;
         }
 
         if (DataLoader.hasFailed) {
-            resolveFailure(DataLoader.getError() || new Error('Data loading failed'));
+            resolveFailure(
+                DataLoader.getError() || new Error('Data loading failed'),
+                myToken
+            );
+            // Leave a listener in place for a possible later retry.
+            watchForRetry(myToken);
             return true;
         }
 
-        // Wait for readiness. DataLoader.whenReady fires with data on
-        // success, or with null on failure.
-        DataLoader.whenReady(function(data) {
-            if (data) {
-                resolveSuccess();
-            } else {
+        DataLoader.whenReady(
+            function(data) {
+                if (myToken !== _attemptToken) { return; }
+                if (data) {
+                    resolveSuccess(myToken);
+                } else {
+                    resolveFailure(
+                        DataLoader.getError() ||
+                        new Error('Data loading failed'),
+                        myToken
+                    );
+                    watchForRetry(myToken);
+                }
+            },
+            function(err) {
+                if (myToken !== _attemptToken) { return; }
                 resolveFailure(
-                    DataLoader.getError() || new Error('Data loading failed')
+                    err || new Error('Data loading failed'),
+                    myToken
                 );
+                watchForRetry(myToken);
             }
-        });
+        );
 
         return true;
+    }
+
+    /**
+     * After a failure, watch for a successful retry and re-run the
+     * sequence so 'bootstrapReady' is not lost.
+     */
+    function watchForRetry(previousToken) {
+        var DataLoader = getDependencies().DataLoader;
+        if (!DataLoader || typeof DataLoader.whenReady !== 'function') {
+            return;
+        }
+
+        DataLoader.whenReady(function(data) {
+            if (!data) { return; }
+            if (!_resolved) { return; }
+            // Successful retry after a failure: re-run.
+            reset();
+            init();
+        });
     }
 
     // ============================================================
     // RESOLUTION
     // ============================================================
 
-    function resolveSuccess() {
-        if (_resolved) {
-            return;
-        }
+    function resolveSuccess(token) {
+        if (token !== _attemptToken) { return; }
+        if (_resolved) { return; }
+
         _resolved = true;
         _initialized = true;
         _bootstrapping = false;
 
-        // Notify TabManager that data is ready so it can render the
-        // initial tab. TabManager handles whichever tabs are registered.
+        var TabManager = getDependencies().TabManager;
+        var ok = true;
+
         try {
             TabManager.onDataReady();
         } catch (err) {
+            ok = false;
             console.error('[Bootstrap] TabManager.onDataReady failed:', err);
+            dispatchFailure(err);
         }
 
-        dispatchReady();
+        if (ok) {
+            dispatchReady();
+        }
     }
 
-    function resolveFailure(error) {
-        if (_resolved) {
-            return;
-        }
+    function resolveFailure(error, token) {
+        if (token !== undefined && token !== _attemptToken) { return; }
+        if (_resolved) { return; }
+
         _resolved = true;
         _initialized = true;
         _bootstrapping = false;
 
         console.error('[Bootstrap] Data loading failed:', error);
-
-        // Do not call TabManager.onDataReady(). TabManager stays in its
-        // waiting state. The failure is reported via event; app.js
-        // decides how to surface it.
         dispatchFailure(error);
     }
 
@@ -179,15 +211,11 @@
 
     function dispatchReady() {
         try {
-            var event = new CustomEvent('bootstrapReady', {
-                detail: {
-                    status: 'ready',
-                    timestamp: Date.now()
-                },
+            document.dispatchEvent(new CustomEvent('bootstrapReady', {
+                detail: { status: 'ready', timestamp: Date.now() },
                 bubbles: true,
                 cancelable: false
-            });
-            document.dispatchEvent(event);
+            }));
         } catch (e) {
             // Ignore event dispatch errors
         }
@@ -195,7 +223,7 @@
 
     function dispatchFailure(error) {
         try {
-            var event = new CustomEvent('bootstrapFailed', {
+            document.dispatchEvent(new CustomEvent('bootstrapFailed', {
                 detail: {
                     status: 'failed',
                     message: error && error.message
@@ -206,8 +234,7 @@
                 },
                 bubbles: true,
                 cancelable: false
-            });
-            document.dispatchEvent(event);
+            }));
         } catch (e) {
             // Ignore event dispatch errors
         }
@@ -221,6 +248,7 @@
         _initialized = false;
         _bootstrapping = false;
         _resolved = false;
+        _attemptToken++;
     }
 
     function reinit() {
@@ -229,6 +257,8 @@
     }
 
     function getStatus() {
+        var deps = getDependencies();
+        var DataLoader = deps.DataLoader;
         return {
             initialized: _initialized,
             bootstrapping: _bootstrapping,
@@ -242,25 +272,24 @@
     // EXPOSE
     // ============================================================
 
-    window.bootstrap = {
+    window.bootstrap = Object.freeze({
         init: init,
         reset: reset,
         reinit: reinit,
         getStatus: getStatus
-    };
+    });
 
     // ============================================================
     // AUTO-BOOTSTRAP
     // ============================================================
 
     function autoBootstrap() {
-        if (_initialized) {
-            return;
-        }
+        if (_initialized) { return; }
         init();
     }
 
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    if (document.readyState === 'complete' ||
+        document.readyState === 'interactive') {
         autoBootstrap();
     } else {
         document.addEventListener('DOMContentLoaded', autoBootstrap);
