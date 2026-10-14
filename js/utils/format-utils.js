@@ -1,108 +1,207 @@
 /**
  * utils/format-utils.js - Formatting Utilities
- * 
+ *
  * Path: js/utils/format-utils.js
- * 
+ *
  * This module provides:
- *   - formatDate - Date formatting with timezone awareness
- *   - truncateString - String truncation with validation
- *   - truncateWithSuffix - String truncation with custom suffix
- *   - formatNumber - Number formatting with locale
- *   - formatCurrency - Currency formatting
- *   - formatPercentage - Percentage formatting
- *   - getDayName - Day name lookup (1-indexed, Monday=1)
- *   - getDayName0 - Day name lookup (0-indexed, Sunday=0)
- *   - getDayNumber - Day number from day name
- *   - formatHour - Hour formatting (12-hour with AM/PM)
- *   - parseHour - Hour parsing from time string
- *   - formatRelativeTime - Relative time formatting ("2h ago")
- * 
+ *   - formatDate          - Date string -> localized date
+ *   - formatRelativeTime  - ISO timestamp -> "5m ago"
+ *   - truncateString      - Truncate to a maximum total length
+ *   - truncateWithSuffix  - Truncate with a custom suffix
+ *   - formatNumber        - Number with locale thousands separators
+ *   - formatCurrency      - Number with locale currency format
+ *   - formatPercentage    - Number (0-1) as a percentage
+ *   - getDayName          - 1-indexed day name (Monday=1)
+ *   - getDayName0         - 0-indexed day name (Sunday=0)
+ *   - getDayNumber        - Day name -> 1-indexed number
+ *   - formatHour          - Hour number -> "2:00 PM"
+ *   - parseTimeString     - "9:00 AM" -> 0-23 integer
+ *
  * IMPORTANT:
- *   - PURE functions - no side effects
- *   - No domain knowledge
- *   - No application state
- *   - No DOM dependencies
- *   - Uses CalendarConstants for day names and hour formatting
- * 
+ *   - No side effects. No application state. No DOM dependencies.
+ *   - Pure with respect to input -> output, EXCEPT that formatDate,
+ *     formatNumber, formatCurrency, and formatRelativeTime depend
+ *     on the browser locale and the current time. Callers that need
+ *     deterministic output must pin the locale or use a date
+ *     library.
+ *   - CalendarConstants is a MANDATORY dependency. The module
+ *     throws at load time if it is missing or lacks the required
+ *     functions. There are no fallback day-name or hour tables.
+ *
  * DATE SEMANTICS:
- *   - Date-only strings (e.g., "2026-09-05") are interpreted as UTC
- *   - This can display the previous calendar date in some timezones
- *   - For precise date handling, use a dedicated date library
- *   - If your data stores date-only values, be aware of timezone conversion
- * 
+ *   - Date-only strings (e.g. "2026-09-05") are parsed as UTC
+ *     midnight by `new Date()`, then rendered in local time by
+ *     `toLocaleDateString()`. West of UTC this shows the previous
+ *     calendar day. For date-only values, either store a full
+ *     timestamp or format with `timeZone: 'UTC'` at the call site.
+ *     This module does not do that for you because not every caller
+ *     wants UTC.
+ *
  * RELATIVE TIME SEMANTICS:
- *   - formatRelativeTime expects an ISO 8601 timestamp
- *   - Returns '' (or the provided fallback) for invalid/missing timestamps
- *   - Past-only: assumes the timestamp is in the past
- *   - Boundaries: <1m → "Just now", <60m → "Xm ago", <24h → "Xh ago",
- *     <7d → "Xd ago", otherwise → localized date string
- * 
+ *   - formatRelativeTime expects an ISO 8601 timestamp.
+ *   - Past-only by design. A timestamp more than 30 seconds in
+ *     the future returns the fallback, because the historical
+ *     behaviour of "Just now" for future-dated data (clock skew,
+ *     imported records) was misleading.
+ *   - Boundaries:
+ *       < 1 minute     -> "Just now"
+ *       < 60 minutes   -> "Xm ago"
+ *       < 24 hours     -> "Xh ago"
+ *       < 7 days       -> "Xd ago"
+ *       otherwise      -> localized date string
+ *   - Invalid or missing timestamps return the fallback.
+ *
+ * FALLBACK SEMANTICS:
+ *   Every formatter accepts an optional fallback, applied when the
+ *   input is absent or invalid. A fallback of '' or 0 is respected;
+ *   it is only substituted when the argument is `undefined`. The
+ *   old code used `fallback || DEFAULT`, which swallowed '' and 0.
+ *
+ * PARSEHOUR RENAME:
+ *   This module's time-string parser was named parseHour, which
+ *   collided with CalendarValidation.parseHour (which validates a
+ *   numeric hour against [MIN_HOUR, MAX_HOUR]). The function is now
+ *   parseTimeString. A deprecated alias parseHour is kept on the
+ *   export for backward compatibility with existing call sites.
+ *
+ * DEPENDENCIES:
+ *   - window.CalendarConstants (MANDATORY)
+ *   - window.ValidationUtils (for truncateString; if absent, a
+ *     local implementation matching its semantics is used)
+ *   - window.ValidationUtils.parseOptionalInteger (if absent, a
+ *     local implementation matching its strictness is used)
+ *
  * USAGE:
  *   var FU = window.FormatUtils;
- *   var date = FU.formatDate('2026-09-05');
- *   var truncated = FU.truncateString('Hello world', 5);
- *   var dayName = FU.getDayName(3); // 'Wednesday'
- *   var hour = FU.formatHour(14); // '2:00 PM'
- *   var relative = FU.formatRelativeTime('2026-09-10T08:00:00Z'); // '2h ago'
+ *   FU.formatDate('2026-09-05');
+ *   FU.truncateString('Hello world', 8);        // 'hello...'? -> 'Hello...'
+ *   FU.getDayName(3);                            // 'Wednesday'
+ *   FU.formatHour(14);                           // '2:00 PM'
+ *   FU.formatRelativeTime('2026-09-10T08:00:00Z');
+ *   FU.parseTimeString('9:00 AM');               // 9
  */
 
 (function() {
     'use strict';
 
     if (window.__formatUtilsLoaded) return;
-    window.__formatUtilsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY CHECK - MANDATORY
     // ============================================================
 
     var CalendarConstants = window.CalendarConstants;
+    var _missing = [];
 
-    // ============================================================
-    // HELPER - Strict integer parsing
-    // ============================================================
-
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
+    if (!CalendarConstants || typeof CalendarConstants !== 'object') {
+        _missing.push('CalendarConstants');
+    } else {
+        var requiredMethods = [
+            'getDayName',
+            'getDayName0',
+            'getDayNumber',
+            'formatHour',
+            'parseHour'
+        ];
+        for (var i = 0; i < requiredMethods.length; i++) {
+            var m = requiredMethods[i];
+            if (typeof CalendarConstants[m] !== 'function') {
+                _missing.push('CalendarConstants.' + m);
+            }
         }
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
+    }
+
+    window.__formatUtilsLoaded = true;
+
+    if (_missing.length > 0) {
+        window.FormatUtils = Object.freeze({
+            _loadFailed: true,
+            _missing: _missing.slice()
+        });
+        throw new Error(
+            '[FormatUtils] Missing or invalid dependencies: ' +
+            _missing.join(', ')
+        );
     }
 
     // ============================================================
-    // FORMATTING HELPERS
+    // DEPENDENCY CACHE
+    // ============================================================
+    // These are read at call time inside the helpers, not cached
+    // into local variables, so a late-loaded ValidationUtils is
+    // still picked up.
+
+    function getValidationUtils() {
+        return window.ValidationUtils;
+    }
+
+    // ============================================================
+    // INTEGER PARSING
+    // ============================================================
+    // Delegates to ValidationUtils.parseOptionalInteger when
+    // available. Falls back to a local strict implementation with
+    // identical semantics. Rejects '0x10', '1e1', '5.0', signed
+    // strings, and non-numeric types.
+
+    function parseInteger(value) {
+        var VU = getValidationUtils();
+        if (VU && typeof VU.parseOptionalInteger === 'function') {
+            return VU.parseOptionalInteger(value);
+        }
+
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+
+        if (typeof value === 'number') {
+            return Number.isSafeInteger(value) ? value : null;
+        }
+
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        var trimmed = value.trim();
+        if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+            return null;
+        }
+
+        var num = Number(trimmed);
+        return Number.isSafeInteger(num) ? num : null;
+    }
+
+    // ============================================================
+    // FALLBACK HELPERS
+    // ============================================================
+
+    function resolveFallback(value, defaultValue) {
+        return value !== undefined ? value : defaultValue;
+    }
+
+    // ============================================================
+    // DATE / TIME FORMATTING
     // ============================================================
 
     /**
      * Format a date string to a localized date string.
-     * 
+     *
      * SEMANTICS:
-     *   - Date-only strings (e.g., "2026-09-05") are parsed as UTC
-     *   - The result is formatted in the user's local timezone
-     *   - This can cause the displayed date to be one day off
-     *   - For date-only values, consider storing as "2026-09-05T00:00:00"
-     * 
-     * TIMEZONE NOTE:
-     *   - "2026-09-05" -> new Date() interprets as UTC midnight
-     *   - In US Pacific timezone, this displays as "2026-09-04"
-     *   - In UTC timezone, this displays as "2026-09-05"
-     *   - For consistent display, use UTC-based formatting or a date library
-     * 
-     * @param {string} dateString - ISO date string
-     * @param {string} fallback - Fallback value if date is invalid (default: 'N/A')
-     * @returns {string} Formatted date or fallback
+     *   - Date-only strings (e.g. "2026-09-05") are parsed as UTC
+     *     midnight and rendered in local time. West of UTC this
+     *     can show the previous day. See the header note.
+     *
+     * @param {string} dateString
+     * @param {string} [fallback='N/A']
+     * @returns {string}
      */
     function formatDate(dateString, fallback) {
-        fallback = fallback || 'N/A';
+        fallback = resolveFallback(fallback, 'N/A');
 
         if (dateString === undefined || dateString === null || dateString === '') {
             return fallback;
         }
 
-        var str = String(dateString);
-        var date = new Date(str);
-
+        var date = new Date(String(dateString));
         if (isNaN(date.getTime())) {
             return fallback;
         }
@@ -112,33 +211,17 @@
 
     /**
      * Format a timestamp as a relative time string.
-     * 
-     * Produces human-friendly strings for recent timestamps:
-     *   - < 1 minute:   "Just now"
-     *   - < 1 hour:     "Xm ago"
-     *   - < 1 day:      "Xh ago"
-     *   - < 1 week:     "Xd ago"
-     *   - Otherwise:    localized date string (e.g., "9/10/2026")
-     * 
-     * SEMANTICS:
-     *   - Assumes past timestamps. Future timestamps produce "Just now"
-     *     because the diff is negative and the first branch matches.
-     *   - Invalid or missing timestamps return the fallback.
-     *   - Uses Date diffing; not timezone-aware beyond what the
-     *     browser provides for the current locale.
-     * 
-     * @param {string} timestamp - ISO 8601 timestamp
-     * @param {string} fallback - Fallback for invalid timestamps (default: '')
-     * @returns {string} Relative time string or fallback
-     * 
-     * USAGE:
-     *   formatRelativeTime('2026-09-10T10:30:00Z'); // '5m ago'
-     *   formatRelativeTime('2026-09-08T10:30:00Z'); // '2d ago'
-     *   formatRelativeTime('invalid', 'unknown');   // 'unknown'
-     *   formatRelativeTime(null);                   // ''
+     *
+     * A timestamp more than 30 seconds in the future returns the
+     * fallback. Timestamps within the last 30 seconds (or up to 30
+     * seconds ahead, for clock skew) return "Just now".
+     *
+     * @param {string} timestamp
+     * @param {string} [fallback='']
+     * @returns {string}
      */
     function formatRelativeTime(timestamp, fallback) {
-        fallback = fallback !== undefined ? fallback : '';
+        fallback = resolveFallback(fallback, '');
 
         if (!timestamp) {
             return fallback;
@@ -149,8 +232,14 @@
             return fallback;
         }
 
-        var now = new Date();
-        var diffMs = now - date;
+        var now = Date.now();
+        var diffMs = now - date.getTime();
+
+        // Future beyond a small skew tolerance: not "just now".
+        if (diffMs < -30000) {
+            return fallback;
+        }
+
         var diffMins = Math.floor(diffMs / 60000);
         var diffHours = Math.floor(diffMs / 3600000);
         var diffDays = Math.floor(diffMs / 86400000);
@@ -171,73 +260,90 @@
         return date.toLocaleDateString();
     }
 
+    // ============================================================
+    // STRING TRUNCATION
+    // ============================================================
+    // Delegates to ValidationUtils.truncateString so there is one
+    // implementation. Semantics: the result is at most `length`
+    // characters, INCLUDING the suffix.
+
     /**
-     * Truncate a string to a maximum length.
-     * 
-     * SEMANTICS:
-     *   - length must be a non-negative finite integer
-     *   - Invalid length values return the original string (forgiving)
-     *   - This is intentionally non-throwing for UI presentation
-     * 
-     * @param {*} value - Value to truncate
-     * @param {number} length - Maximum length (must be a non-negative finite integer)
-     * @returns {string} Truncated string or original string if invalid length
+     * Truncate a string to a maximum total length, including the
+     * suffix. Delegates to ValidationUtils.truncateString.
+     *
+     * NOTE: Older versions of this module appended '...' AFTER
+     * truncating to `length`, producing `length + 3` characters.
+     * The current semantics match ValidationUtils (the total is
+     * `length`). Callers that relied on the longer output need to
+     * pass `length + 3`.
+     *
+     * @param {*} value
+     * @param {number} length - Maximum total length including suffix
+     * @returns {string}
      */
     function truncateString(value, length) {
+        var VU = getValidationUtils();
+        if (VU && typeof VU.truncateString === 'function') {
+            return VU.truncateString(value, length);
+        }
+
         if (value === undefined || value === null) {
             return '';
         }
-
         var str = String(value);
-
         if (!Number.isFinite(length) || length < 0 || !Number.isInteger(length)) {
             return str;
         }
-
         if (str.length <= length) {
             return str;
         }
-
-        return str.substring(0, length) + '...';
+        if (length <= 3) {
+            return '...'.substring(0, length);
+        }
+        return str.substring(0, length - 3) + '...';
     }
 
     /**
-     * Truncate a string with custom suffix.
-     * 
-     * @param {*} value - Value to truncate
-     * @param {number} length - Maximum length
-     * @param {string} suffix - Suffix to append (default: '...')
-     * @returns {string} Truncated string
+     * Truncate with a custom suffix.
+     *
+     * Same semantics as truncateString, with the suffix supplied by
+     * the caller.
+     *
+     * @param {*} value
+     * @param {number} length - Maximum total length including suffix
+     * @param {string} [suffix='...']
+     * @returns {string}
      */
     function truncateWithSuffix(value, length, suffix) {
-        suffix = suffix || '...';
+        suffix = suffix === undefined ? '...' : String(suffix);
+
+        var VU = getValidationUtils();
+        if (VU && typeof VU.truncateString === 'function') {
+            return VU.truncateString(value, length, suffix);
+        }
 
         if (value === undefined || value === null) {
             return '';
         }
-
         var str = String(value);
-
         if (!Number.isFinite(length) || length < 0 || !Number.isInteger(length)) {
             return str;
         }
-
         if (str.length <= length) {
             return str;
         }
-
-        return str.substring(0, length) + suffix;
+        if (length <= suffix.length) {
+            return suffix.substring(0, length);
+        }
+        return str.substring(0, length - suffix.length) + suffix;
     }
 
-    /**
-     * Format a number with commas.
-     * 
-     * @param {*} value - Value to format
-     * @param {string} fallback - Fallback if value is not a number (default: '0')
-     * @returns {string} Formatted number
-     */
+    // ============================================================
+    // NUMBER / CURRENCY / PERCENTAGE
+    // ============================================================
+
     function formatNumber(value, fallback) {
-        fallback = fallback || '0';
+        fallback = resolveFallback(fallback, '0');
 
         if (value === undefined || value === null || value === '') {
             return fallback;
@@ -251,17 +357,26 @@
         return num.toLocaleString();
     }
 
-    /**
-     * Format a number as currency.
-     * 
-     * @param {*} value - Value to format
-     * @param {string} currency - Currency code (default: 'USD')
-     * @param {string} fallback - Fallback if value is not a number (default: '$0')
-     * @returns {string} Formatted currency
-     */
+    var CURRENCY_SYMBOLS = {
+        USD: '$', EUR: '€', GBP: '£', JPY: '¥',
+        CHF: 'CHF', CAD: 'CA$', AUD: 'A$', CNY: '¥',
+        SEK: 'kr', NOK: 'kr', DKK: 'kr', PLN: 'zł'
+    };
+
+    function currencyFallback(currency, value) {
+        var symbol = CURRENCY_SYMBOLS[currency];
+        if (symbol) {
+            return symbol + '0';
+        }
+        return currency + ' 0';
+    }
+
     function formatCurrency(value, currency, fallback) {
         currency = currency || 'USD';
-        fallback = fallback || '$0';
+
+        if (fallback === undefined) {
+            fallback = currencyFallback(currency, value);
+        }
 
         if (value === undefined || value === null || value === '') {
             return fallback;
@@ -284,15 +399,21 @@
 
     /**
      * Format a number as a percentage.
-     * 
-     * @param {*} value - Value to format (0-1 range)
-     * @param {number} decimals - Number of decimal places (default: 0)
-     * @param {string} fallback - Fallback if value is not a number (default: '0%')
-     * @returns {string} Formatted percentage
+     *
+     * @param {*} value - Value in the 0-1 range (0.5 -> '50%')
+     * @param {number} [decimals=0] - Non-negative integer decimal places
+     * @param {string} [fallback='0%']
+     * @returns {string}
      */
     function formatPercentage(value, decimals, fallback) {
-        decimals = decimals || 0;
-        fallback = fallback || '0%';
+        fallback = resolveFallback(fallback, '0%');
+
+        if (decimals === undefined || decimals === null) {
+            decimals = 0;
+        }
+        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 100) {
+            decimals = 0;
+        }
 
         if (value === undefined || value === null || value === '') {
             return fallback;
@@ -307,187 +428,55 @@
     }
 
     // ============================================================
-    // DAY NAME FUNCTIONS
+    // DAY NAME FUNCTIONS - delegate to CalendarConstants
     // ============================================================
 
-    /**
-     * Get day name by number (1-indexed: Monday=1, Sunday=7).
-     * 
-     * @param {number} day - Day number (1-7, Monday=1)
-     * @param {string} format - 'long', 'short', or 'min' (default: 'long')
-     * @returns {string} Day name
-     */
     function getDayName(day, format) {
-        if (CalendarConstants && typeof CalendarConstants.getDayName === 'function') {
-            return CalendarConstants.getDayName(day, format);
-        }
-
-        format = format || 'long';
-        var num = parseInteger(day);
-        if (num === null || num < 1 || num > 7) {
-            return 'Unknown';
-        }
-
-        var names = {
-            'long': ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
-            'short': ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-            'min': ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
-        };
-
-        var dayNames = names[format] || names['long'];
-        return dayNames[num] || 'Unknown';
+        return CalendarConstants.getDayName(day, format);
     }
 
-    /**
-     * Get day name by number (0-indexed: Sunday=0, Saturday=6).
-     * 
-     * @param {number} day - Day number (0-6, Sunday=0)
-     * @param {string} format - 'long', 'short', or 'min' (default: 'long')
-     * @returns {string} Day name
-     */
     function getDayName0(day, format) {
-        if (CalendarConstants && typeof CalendarConstants.getDayName0 === 'function') {
-            return CalendarConstants.getDayName0(day, format);
-        }
-
-        format = format || 'long';
-        var num = parseInteger(day);
-        if (num === null || num < 0 || num > 6) {
-            return 'Unknown';
-        }
-
-        var names = {
-            'long': ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
-            'short': ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
-            'min': ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
-        };
-
-        var dayNames = names[format] || names['long'];
-        return dayNames[num] || 'Unknown';
+        return CalendarConstants.getDayName0(day, format);
     }
 
-    /**
-     * Get day number from day name.
-     * 
-     * @param {string} dayName - Day name (e.g., 'Monday', 'Mon', 'Mo')
-     * @returns {number|null} Day number (1-7, Monday=1) or null
-     */
     function getDayNumber(dayName) {
-        if (CalendarConstants && typeof CalendarConstants.getDayNumber === 'function') {
-            return CalendarConstants.getDayNumber(dayName);
-        }
-
-        if (!dayName || typeof dayName !== 'string') {
-            return null;
-        }
-
-        var names = {
-            'monday': 1, 'mon': 1, 'mo': 1,
-            'tuesday': 2, 'tue': 2, 'tu': 2,
-            'wednesday': 3, 'wed': 3, 'we': 3,
-            'thursday': 4, 'thu': 4, 'th': 4,
-            'friday': 5, 'fri': 5, 'fr': 5,
-            'saturday': 6, 'sat': 6, 'sa': 6,
-            'sunday': 7, 'sun': 7, 'su': 7
-        };
-
-        var key = String(dayName).toLowerCase();
-        return names[key] || null;
+        return CalendarConstants.getDayNumber(dayName);
     }
 
     // ============================================================
-    // HOUR FORMATTING FUNCTIONS
+    // HOUR FUNCTIONS - delegate to CalendarConstants
     // ============================================================
 
-    /**
-     * Format an hour number to a display string (e.g., 9 -> "9:00 AM", 14 -> "2:00 PM").
-     * 
-     * @param {number} hour - Hour number (0-23)
-     * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
-     * @returns {string} Formatted hour string
-     */
     function formatHour(hour, includeMinutes) {
-        if (CalendarConstants && typeof CalendarConstants.formatHour === 'function') {
-            return CalendarConstants.formatHour(hour, includeMinutes);
-        }
-
-        includeMinutes = includeMinutes !== false;
-
-        var num = parseInteger(hour);
-        if (num === null || num < 0 || num > 23) {
-            return String(hour);
-        }
-
-        var displayHour = num > 12 ? num - 12 : num;
-        if (num === 0) displayHour = 12;
-        var ampm = num >= 12 ? 'PM' : 'AM';
-
-        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
+        return CalendarConstants.formatHour(hour, includeMinutes);
     }
 
     /**
-     * Parse a time string to hour number.
-     * 
-     * @param {string} timeStr - Time string (e.g., "9:00 AM", "14:00")
-     * @returns {number|null} Hour number (0-23) or null if invalid
+     * Parse a time string to an hour number.
+     *
+     * NOTE: This is a DIFFERENT function from
+     * CalendarValidation.parseHour, which validates a numeric hour
+     * against [MIN_HOUR, MAX_HOUR]. This one parses a string like
+     * '9:00 AM' or '14:00' to a 0-23 integer.
      */
-    function parseHour(timeStr) {
-        if (CalendarConstants && typeof CalendarConstants.parseHour === 'function') {
-            return CalendarConstants.parseHour(timeStr);
-        }
+    function parseTimeString(timeStr) {
+        return CalendarConstants.parseHour(timeStr);
+    }
 
-        if (!timeStr || typeof timeStr !== 'string') {
-            return null;
-        }
-
-        var trimmed = timeStr.trim().toUpperCase();
-
-        var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-        if (match24) {
-            var hour = parseInt(match24[1], 10);
-            var minute = parseInt(match24[2], 10);
-            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-                return hour;
-            }
-        }
-
-        var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-        if (match12) {
-            var hour = parseInt(match12[1], 10);
-            var minute = parseInt(match12[2], 10);
-            var ampm = match12[3];
-            if (hour >= 1 && hour <= 12 && minute >= 0 && minute <= 59) {
-                if (ampm === 'PM' && hour < 12) hour += 12;
-                if (ampm === 'AM' && hour === 12) hour = 0;
-                return hour;
-            }
-        }
-
-        var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
-        if (matchSimple) {
-            var hour = parseInt(matchSimple[1], 10);
-            if (matchSimple[2]) {
-                var ampm = matchSimple[2];
-                if (hour >= 1 && hour <= 12) {
-                    if (ampm === 'PM' && hour < 12) hour += 12;
-                    if (ampm === 'AM' && hour === 12) hour = 0;
-                    return hour;
-                }
-            } else {
-                if (hour >= 0 && hour <= 23) {
-                    return hour;
-                }
-            }
-        }
-
-        return null;
+    /**
+     * @deprecated Use parseTimeString. Kept for backward
+     * compatibility with existing call sites that call
+     * FormatUtils.parseHour.
+     */
+    function parseHourLegacy(timeStr) {
+        return parseTimeString(timeStr);
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.FormatUtils = {
+    window.FormatUtils = Object.freeze({
         // Core formatting
         formatDate: formatDate,
         formatRelativeTime: formatRelativeTime,
@@ -506,7 +495,8 @@
 
         // Hour functions
         formatHour: formatHour,
-        parseHour: parseHour
-    };
+        parseTimeString: parseTimeString,
+        parseHour: parseHourLegacy   // deprecated alias
+    });
 
 })();
