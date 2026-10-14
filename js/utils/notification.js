@@ -3,112 +3,88 @@
  * Toast/notification system for the application
  * Path: js/utils/notification.js
  *
- * This module provides:
+ * Provides:
  *   - Toast notifications with auto-dismiss
- *   - Notification types (success, error, warning, info)
- *   - Notification queue management
- *   - Persistent notification support
- *   - Proper notification identity (dismiss by ID, not message text)
- *   - Reliable onDismiss callbacks (called exactly once)
- *   - Duplicate coalescing (see DEDUP below)
+ *   - Types: success, error, warning, info
+ *   - FIFO queue with a simultaneous cap
+ *   - Persistent notifications (duration 0)
+ *   - Dismissal by ID
+ *   - onDismiss called exactly once
+ *   - Duplicate coalescing (see DEDUP)
  *
  * IMPORTANT:
- *   - Owns notification UI lifecycle
- *   - Does not mutate application/domain data
- *   - Does not persist notifications
- *   - Has no domain knowledge
- *   - Self-contained (direct DOM manipulation only)
- *   - Uses IdUtils for notification IDs (SINGLE SOURCE OF TRUTH)
- *   - No "pure" claims - this is a UI subsystem
- *
- * STYLES:
- *   Notification appearance is governed by css/shared.css. This
- *   module no longer injects a stylesheet at runtime. The toast
- *   chrome (.notification-container, .notification, and its
- *   variants) is declared in shared.css alongside the theme
- *   tokens, so light and dark themes are handled by the same
- *   cascade.
+ *   - Owns notification UI lifecycle.
+ *   - Does not mutate application/domain data.
+ *   - Does not persist.
+ *   - No domain knowledge.
+ *   - IdUtils.generateId is preferred; a local fallback is used
+ *     if it is unavailable. Load order is not fatal.
  *
  * DEDUP:
  *   When notify() is called and an identical (message, type) toast
  *   is CURRENTLY VISIBLE, the existing toast is refreshed instead
  *   of a new one being stacked. Refresh means:
  *     - the auto-dismiss timer is reset
- *     - a short visual pulse is applied so the user notices
+ *     - a short visual pulse is applied
  *     - the returned handle points at the SAME notification ID
+ *     - the original duration is preserved unless the caller
+ *       passes a new one explicitly
+ *     - any onDismiss supplied by the refresh REPLACES the
+ *       original; both are called only if the caller opted in via
+ *       the handle. (See REFRESH AND ONDISMISS below.)
  *
  *   Duplicates that are QUEUED but not yet shown are NOT deduped.
- *   A queued duplicate means the user already missed the first
- *   one; a second toast is the right call.
  *
- *   This is what stops "click Roll Stats five times in a row" from
- *   producing five toasts. It is the single biggest improvement to
- *   the notification experience for keyboard-mashing users.
+ * REFRESH AND ONDISMISS:
+ *   Refresh replaces the notification's onDismiss with the one
+ *   passed on the refresh call. If the refresh call passes no
+ *   onDismiss, the original is kept. This means:
+ *     - notify(msg, type, dur, fnA) -> shows a toast with fnA
+ *     - notify(msg, type)           -> refreshes, keeps fnA
+ *     - notify(msg, type, dur, fnB) -> refreshes, fnB replaces fnA
+ *
+ *   Exactly one onDismiss fires, on dismissal. It is never fired
+ *   twice, and never silently dropped.
  *
  * DURATION DEFAULTS:
- *   Success and info are acknowledgements: 1.5s is plenty.
- *   Warning gets a bit more: 2.5s.
- *   Error gets the most: 4s, because the user may need to read it.
- *   Persistent toasts (duration 0) are unchanged.
+ *   success, info: 1.5s.
+ *   warning:       2.5s.
+ *   error:         4s.
+ *   duration 0 (or null) is persistent.
  *
  * CAP:
- *   Five simultaneous toasts was too many. Three is the new cap.
- *   Past three, the container starts covering the UI even on a
- *   desktop viewport.
+ *   _maxNotifications (default 3) simultaneous toasts.
+ *   _maxQueueSize (default 20) queued toasts. Beyond the queue
+ *   cap, new notifications are dropped with a console warning.
  *
- * DEPENDENCIES:
- *   - window.IdUtils (for notification IDs)
- *   - DOM APIs (document, window)
+ * STYLES:
+ *   Governed by css/shared.css. This module does not inject a
+ *   stylesheet. `.notification-container`, `.notification`, and
+ *   the variant classes are declared in shared.css alongside the
+ *   theme tokens.
  *
  * USAGE:
- *   // Simple toast
- *   var notif = NotificationSystem.notify('Hello world!');
+ *   var n = NotificationSystem.notify('Saved!', 'success', 3000, fn);
+ *   n.dismiss();
+ *   n.isDismissed();
  *
- *   // With type and callback
- *   var notif = NotificationSystem.notify('Saved!', 'success', 3000, function() {
- *       console.log('Notification dismissed');
- *   });
- *
- *   // Dismiss manually
- *   notif.dismiss();
- *
- *   // Persistent (must be dismissed manually)
- *   var notif = NotificationSystem.notify('Important', 'warning', 0);
- *   notif.dismiss(); // Must be called explicitly
+ *   var p = NotificationSystem.notify('Important', 'warning', 0);
+ *   p.dismiss();
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
-    if (window.__notificationLoaded) {
-        return;
-    }
+    if (window.__notificationLoaded) return;
     window.__notificationLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCIES
     // ============================================================
 
-    var IdUtils = window.IdUtils;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-            missing.push('IdUtils.generateId');
-        }
-
-        if (missing.length > 0) {
-            console.warn('[NotificationSystem] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+    // Read at call time so a late-loaded IdUtils still works.
+    function getIdUtils() {
+        return window.IdUtils;
     }
 
     // ============================================================
@@ -116,35 +92,57 @@
     // ============================================================
 
     var DEFAULT_DURATION = 1500;
-    var _maxNotifications = 3;
     var ANIMATION_DURATION = 300;
+
+    var _maxNotifications = 3;
+    var _maxQueueSize = 20;
 
     var TYPES = {
         success: {
             icon: '✓',
             className: 'notification-success',
             defaultDuration: 1500,
+            ariaRole: 'status',
             ariaLabel: 'Success'
         },
         error: {
             icon: '✕',
             className: 'notification-error',
             defaultDuration: 4000,
+            ariaRole: 'alert',
             ariaLabel: 'Error'
         },
         warning: {
             icon: '⚠',
             className: 'notification-warning',
             defaultDuration: 2500,
+            ariaRole: 'alert',
             ariaLabel: 'Warning'
         },
         info: {
             icon: 'ℹ',
             className: 'notification-info',
             defaultDuration: 1500,
+            ariaRole: 'status',
             ariaLabel: 'Information'
         }
     };
+
+    function deepFreezeTypes(obj) {
+        Object.keys(obj).forEach(function(key) {
+            var v = obj[key];
+            if (v && typeof v === 'object') {
+                Object.keys(v).forEach(function(k) {
+                    if (v[k] && typeof v[k] === 'object') {
+                        Object.freeze(v[k]);
+                    }
+                });
+                Object.freeze(v);
+            }
+        });
+        return Object.freeze(obj);
+    }
+    deepFreezeTypes(TYPES);
 
     // ============================================================
     // STATE
@@ -155,32 +153,62 @@
     var _activeNotifications = [];
     var _nextId = 1;
     var _initialized = false;
+    var _destroyed = false;
+    var _pendingQueueTimers = [];
 
     // ============================================================
-    // NOTIFICATION IDENTITY
+    // ID GENERATION
     // ============================================================
 
     function generateNotificationId() {
+        var IdUtils = getIdUtils();
         if (IdUtils && typeof IdUtils.generateId === 'function') {
             return IdUtils.generateId('notif');
         }
-        // Emergency fallback (should never be reached if checkDependencies passes)
-        return 'notif_' + (_nextId++);
+        return 'notif_' + (_nextId++) + '_' +
+               Math.random().toString(36).slice(2, 8);
     }
 
     // ============================================================
-    // CONTAINER MANAGEMENT
+    // DURATION NORMALISATION
+    // ============================================================
+
+    /**
+     * Resolve a duration value to a concrete number.
+     * Returns 0 for persistent; a positive integer otherwise.
+     */
+    function resolveDuration(duration, type) {
+        if (duration === undefined) {
+            var cfg = TYPES[type];
+            return cfg ? cfg.defaultDuration : DEFAULT_DURATION;
+        }
+        if (duration === null) {
+            return 0;
+        }
+        var n = Number(duration);
+        if (!isFinite(n) || n < 0) {
+            var c = TYPES[type];
+            return c ? c.defaultDuration : DEFAULT_DURATION;
+        }
+        return n === 0 ? 0 : Math.floor(n);
+    }
+
+    // ============================================================
+    // CONTAINER
     // ============================================================
 
     function getContainer() {
+        if (_container) return _container;
+        if (!document.body) return null;
+
+        _container = document.getElementById('notification-container');
         if (!_container) {
-            _container = document.getElementById('notification-container');
-            if (!_container) {
-                _container = document.createElement('div');
-                _container.id = 'notification-container';
-                _container.className = 'notification-container';
-                document.body.appendChild(_container);
-            }
+            _container = document.createElement('div');
+            _container.id = 'notification-container';
+            _container.className = 'notification-container';
+            _container.setAttribute('role', 'region');
+            _container.setAttribute('aria-label', 'Notifications');
+            document.body.appendChild(_container);
         }
         return _container;
     }
@@ -190,524 +218,498 @@
     // ============================================================
 
     function createNotificationDOM(item) {
-        var type = item.type || 'info';
-        var duration = item.duration !== undefined
-            ? item.duration
-            : (TYPES[type]
-                ? TYPES[type].defaultDuration
-                : DEFAULT_DURATION);
+        var type = item.type;
+        var cfg = TYPES[type] || TYPES.info;
+        var duration = item.duration;  // already resolved
         var isPersistent = duration === 0;
 
-        var typeConfig = TYPES[type] || TYPES.info;
-        var notificationId = item.id;
-
         var notification = document.createElement('div');
-        notification.className = 'notification ' + typeConfig.className;
-        notification.role = 'alert';
-        notification.setAttribute('aria-label', typeConfig.ariaLabel || 'Notification');
-        notification.dataset.notificationId = notificationId;
+        notification.className = 'notification ' + cfg.className;
+        notification.setAttribute('role', cfg.ariaRole);
+        notification.setAttribute('aria-label', cfg.ariaLabel);
+        notification.setAttribute('aria-live',
+            cfg.ariaRole === 'alert' ? 'assertive' : 'polite');
+        notification.dataset.notificationId = item.id;
 
-        // Icon
         var icon = document.createElement('span');
         icon.className = 'notification-icon';
-        icon.textContent = typeConfig.icon;
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = cfg.icon;
         notification.appendChild(icon);
 
-        // Content (textContent is safe - no escaping needed)
         var content = document.createElement('span');
         content.className = 'notification-content';
         content.textContent = item.message;
         notification.appendChild(content);
 
-        // Close button
         var closeBtn = document.createElement('button');
         closeBtn.className = 'notification-close';
         closeBtn.setAttribute('aria-label', 'Dismiss notification');
+        closeBtn.setAttribute('type', 'button');
         closeBtn.textContent = '×';
         closeBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            dismissNotification(notificationId);
+            dismissNotification(item.id);
         });
         notification.appendChild(closeBtn);
 
-        // Auto-dismiss
-        var timer = null;
-        if (!isPersistent) {
-            timer = setTimeout(function() {
-                dismissNotification(notificationId);
-            }, duration);
-        }
-
-        notification._timer = timer;
-        notification._dismissed = false;
-        notification._id = notificationId;
+        // Node-level state. onDismiss lives here, not in _queue.
+        notification._id = item.id;
         notification._message = item.message;
         notification._type = type;
+        notification._duration = duration;
+        notification._onDismiss = item.onDismiss || null;
+        notification._dismissed = false;
+        notification._timer = null;
+
+        if (!isPersistent) {
+            notification._timer = setTimeout(function() {
+                dismissNotification(item.id);
+            }, duration);
+        }
 
         return notification;
     }
 
     // ============================================================
-    // NOTIFICATION DISMISSAL
+    // DISMISSAL
     // ============================================================
 
+    /**
+     * Dismiss a notification by id, whether it is currently shown
+     * or still in the queue. Safe to call multiple times.
+     */
     function dismissNotification(notificationId) {
-        // Find the notification by ID in active list
-        var notification = null;
-        var index = -1;
+        if (!notificationId) return;
 
+        // ---- Active notification ----
+        var activeIndex = -1;
         for (var i = 0; i < _activeNotifications.length; i++) {
-            var n = _activeNotifications[i];
-            if (n && n._id === notificationId) {
-                notification = n;
-                index = i;
+            if (_activeNotifications[i] && _activeNotifications[i]._id === notificationId) {
+                activeIndex = i;
                 break;
             }
         }
 
-        if (!notification || notification._dismissed) {
+        if (activeIndex !== -1) {
+            _dismissActive(activeIndex);
             return;
         }
 
-        // Mark as dismissed to prevent double dismissal
+        // ---- Queued notification ----
+        var queueIndex = -1;
+        for (var j = 0; j < _queue.length; j++) {
+            if (_queue[j] && _queue[j].id === notificationId) {
+                queueIndex = j;
+                break;
+            }
+        }
+
+        if (queueIndex !== -1) {
+            var item = _queue[queueIndex];
+            _queue.splice(queueIndex, 1);
+            if (typeof item.onDismiss === 'function') {
+                try { item.onDismiss(); } catch (e) {}
+            }
+        }
+    }
+
+    function _dismissActive(index) {
+        var notification = _activeNotifications[index];
+        if (!notification || notification._dismissed) return;
+
         notification._dismissed = true;
 
-        // Clear timer
         if (notification._timer) {
             clearTimeout(notification._timer);
             notification._timer = null;
         }
 
-        // Remove from active list
-        if (index !== -1) {
-            _activeNotifications.splice(index, 1);
-        }
+        var onDismiss = notification._onDismiss;
+        notification._onDismiss = null;
 
-        // Find the queue item and execute callback
-        var queueIndex = -1;
-        var onDismiss = null;
-
-        for (var j = 0; j < _queue.length; j++) {
-            if (_queue[j] && _queue[j].id === notificationId) {
-                queueIndex = j;
-                onDismiss = _queue[j].onDismiss;
-                break;
-            }
-        }
-
-        // Remove from queue if found
-        if (queueIndex !== -1) {
-            _queue.splice(queueIndex, 1);
-        }
-
-        // Animate out
+        // Do NOT remove from _activeNotifications yet. The hide
+        // animation runs first, and the cap should reflect the
+        // toast until it is fully gone.
         notification.classList.remove('visible');
         notification.classList.add('hiding');
 
         setTimeout(function() {
+            // Remove from active list after animation.
+            var idx = _activeNotifications.indexOf(notification);
+            if (idx !== -1) {
+                _activeNotifications.splice(idx, 1);
+            }
+
             if (notification.parentNode) {
                 notification.parentNode.removeChild(notification);
             }
-            // Process queue
+
+            // Fire onDismiss exactly once.
+            if (typeof onDismiss === 'function') {
+                try { onDismiss(); } catch (e) {}
+            }
+
             processQueue();
         }, ANIMATION_DURATION);
-
-        // Execute callback exactly once
-        if (typeof onDismiss === 'function') {
-            try {
-                onDismiss();
-            } catch (e) {
-                // Ignore callback errors - notification dismissal should not throw
-            }
-        }
     }
 
     // ============================================================
-    // DEDUP HELPERS
+    // DEDUP
     // ============================================================
 
     /**
-     * Find a currently-visible notification with the given
-     * (message, type). Returns the notification DOM node, or null.
-     *
-     * Only ACTIVE notifications are considered. Queued-but-not-yet-
-     * shown duplicates are deliberately ignored: if the first was
-     * queued and the second arrives before the first is shown, the
-     * user deserves to see both. See the DEDUP note in the file
-     * header.
+     * Find a currently-visible notification matching (message, type).
+     * Queued-but-not-shown duplicates are ignored.
      */
     function findActiveDuplicate(message, type) {
         for (var i = 0; i < _activeNotifications.length; i++) {
             var n = _activeNotifications[i];
-            if (!n || n._dismissed) { continue; }
-            if (n._message !== message) { continue; }
-            if (n._type !== type) { continue; }
+            if (!n || n._dismissed) continue;
+            if (n._message !== message) continue;
+            if (n._type !== type) continue;
             return n;
         }
         return null;
     }
 
     /**
-     * Refresh a visible duplicate: reset its timer, pulse it, and
-     * return a handle pointing at the same notification ID.
+     * Refresh a visible duplicate: reset the timer with the
+     * original duration (unless the caller passed a new one),
+     * pulse the toast, update the onDismiss if a new one was
+     * passed, and return a handle pointing at the same id.
      */
-    function refreshDuplicate(existing, type, duration, onDismiss) {
-        // Clear the old timer
+    function refreshDuplicate(existing, type, rawDuration, onDismiss) {
+        var newDuration;
+        if (rawDuration === undefined) {
+            newDuration = existing._duration;
+        } else {
+            newDuration = resolveDuration(rawDuration, type);
+        }
+
         if (existing._timer) {
             clearTimeout(existing._timer);
             existing._timer = null;
         }
 
-        // Resolve the new duration
-        var resolvedDuration = duration !== undefined
-            ? duration
-            : (TYPES[type]
-                ? TYPES[type].defaultDuration
-                : DEFAULT_DURATION);
+        existing._duration = newDuration;
 
-        // Re-arm the timer if not persistent
-        if (resolvedDuration > 0) {
+        if (newDuration > 0) {
             existing._timer = setTimeout(function() {
                 dismissNotification(existing._id);
-            }, resolvedDuration);
+            }, newDuration);
         }
 
-        // Visual pulse. Two-step class toggle with a forced reflow
-        // so the animation restarts even if the class was already
-        // present from a very recent refresh.
+        if (typeof onDismiss === 'function') {
+            existing._onDismiss = onDismiss;
+        }
+
+        // Force a reflow so the pulse animation restarts even if
+        // it was recently applied.
         existing.classList.remove('pulse');
         // eslint-disable-next-line no-unused-expressions
         void existing.offsetWidth;
         existing.classList.add('pulse');
 
-        // Remove the pulse class when the animation finishes, so a
-        // subsequent refresh can re-trigger it.
         setTimeout(function() {
             if (existing && existing.classList) {
                 existing.classList.remove('pulse');
             }
         }, 260);
 
-        // If the caller supplied an onDismiss for this refresh,
-        // chain it onto the existing one rather than replacing.
-        // The existing notification may already have been dismissed
-        // by the time the new callback should fire.
-        if (typeof onDismiss === 'function') {
-            var priorId = existing._id;
-            // The old onDismiss will still fire on the old timer
-            // path; we do not attempt to merge them. The new
-            // callback fires when the refreshed notification is
-            // actually dismissed.
-            // Attach it by pushing a queued record keyed by the
-            // same id so dismissNotification finds it.
-            var alreadyQueued = false;
-            for (var q = 0; q < _queue.length; q++) {
-                if (_queue[q] && _queue[q].id === priorId) {
-                    alreadyQueued = true;
-                    break;
-                }
-            }
-            if (!alreadyQueued) {
-                _queue.push({
-                    id: priorId,
-                    message: existing._message,
-                    type: existing._type,
-                    duration: resolvedDuration,
-                    onDismiss: onDismiss
-                });
-            }
-        }
-
-        return {
-            id: existing._id,
-            dismiss: function() {
-                dismissNotification(existing._id);
-            },
-            isDismissed: function() {
-                return existing._dismissed === true;
-            }
-        };
+        return makeHandle(existing._id);
     }
 
     // ============================================================
-    // QUEUE MANAGEMENT
+    // QUEUE
     // ============================================================
 
     function processQueue() {
-        if (_activeNotifications.length >= _maxNotifications) {
-            return;
-        }
+        if (_destroyed) return;
+        if (_activeNotifications.length >= _maxNotifications) return;
+        if (_queue.length === 0) return;
 
-        if (_queue.length === 0) {
-            return;
-        }
-
-        // Dequeue next notification
-        var item = _queue.shift();
         var container = getContainer();
+        if (!container) {
+            // Body not available yet; retry on the next tick.
+            scheduleProcessQueue(50);
+            return;
+        }
 
-        // Create DOM notification
+        var item = _queue.shift();
         var notification = createNotificationDOM(item);
         container.appendChild(notification);
         _activeNotifications.push(notification);
 
-        // Trigger reflow for animation
-        requestAnimationFrame(function() {
-            notification.classList.add('visible');
-        });
+        // rAF doesn't fire in background tabs. Use it when the tab
+        // is visible; otherwise fall back to a microtask so the
+        // `visible` class still gets applied and the timer still
+        // counts down coherently.
+        if (typeof document.hidden === 'boolean' && document.hidden) {
+            setTimeout(function() {
+                notification.classList.add('visible');
+            }, 0);
+        } else if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(function() {
+                notification.classList.add('visible');
+            });
+        } else {
+            setTimeout(function() {
+                notification.classList.add('visible');
+            }, 0);
+        }
 
-        // Process next if we have room
         if (_activeNotifications.length < _maxNotifications && _queue.length > 0) {
-            // Small delay to prevent visual overlap issues
-            setTimeout(processQueue, 50);
+            scheduleProcessQueue(50);
         }
     }
 
-    function enqueue(item) {
-        _queue.push(item);
+    function scheduleProcessQueue(delay) {
+        var timer = setTimeout(function() {
+            var idx = _pendingQueueTimers.indexOf(timer);
+            if (idx !== -1) _pendingQueueTimers.splice(idx, 1);
+            processQueue();
+        }, delay);
+        _pendingQueueTimers.push(timer);
+    }
 
+    function enqueue(item) {
+        if (_queue.length >= _maxQueueSize) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[NotificationSystem] queue full (' +
+                    _maxQueueSize + '), dropping notification: ' +
+                    item.message
+                );
+            }
+            // Fire the callback so the caller doesn't hang.
+            if (typeof item.onDismiss === 'function') {
+                try { item.onDismiss(); } catch (e) {}
+            }
+            return;
+        }
+        _queue.push(item);
         if (_activeNotifications.length < _maxNotifications) {
             processQueue();
         }
     }
 
     // ============================================================
-    // INITIALIZATION
+    // INIT / DESTROY
     // ============================================================
 
     function init() {
         if (_initialized) return;
-
-        if (!checkDependencies()) {
-            console.warn('[NotificationSystem] Dependencies not met - notifications may not work correctly.');
+        if (!document.body) {
+            // Defer; DOMContentLoaded will trigger init again if
+            // the module auto-init path is what called us.
+            return;
         }
-
+        _destroyed = false;
         getContainer();
         _initialized = true;
     }
 
     function destroy() {
-        // Clear all notifications
-        clearNotifications();
+        clearNotifications(false);
 
-        // Remove container
+        // Cancel pending queue timers.
+        for (var i = 0; i < _pendingQueueTimers.length; i++) {
+            clearTimeout(_pendingQueueTimers[i]);
+        }
+        _pendingQueueTimers = [];
+
         if (_container && _container.parentNode) {
             _container.parentNode.removeChild(_container);
         }
         _container = null;
         _initialized = false;
+        _destroyed = true;
     }
 
     // ============================================================
     // PUBLIC API
     // ============================================================
 
+    function makeHandle(id) {
+        return {
+            id: id,
+            dismiss: function() { dismissNotification(id); },
+            isDismissed: function() { return isIdDismissed(id); }
+        };
+    }
+
+    function isIdDismissed(id) {
+        for (var i = 0; i < _queue.length; i++) {
+            if (_queue[i] && _queue[i].id === id) return false;
+        }
+        for (var j = 0; j < _activeNotifications.length; j++) {
+            var n = _activeNotifications[j];
+            if (n && n._id === id && !n._dismissed) return false;
+        }
+        return true;
+    }
+
     /**
-     * Show a notification toast.
+     * Show a notification.
      *
-     * DEDUP: if an identical (message, type) toast is currently
-     * visible, this refreshes it instead of stacking a new one.
-     * See the DEDUP note in the file header.
-     *
-     * @param {string} message - The message to display
-     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
-     * @param {number} duration - Duration in ms (0 = persistent)
-     * @param {function} onDismiss - Callback when dismissed (called exactly once)
-     * @returns {object} Notification handle with dismiss() method
+     * @param {string} message
+     * @param {string} [type='info']
+     * @param {number} [duration] - ms; 0 or null for persistent
+     * @param {function} [onDismiss]
+     * @returns {object|null} Handle with dismiss() and isDismissed()
      */
     function notify(message, type, duration, onDismiss) {
-        if (!message) {
-            console.warn('[NotificationSystem] No message provided.');
+        if (message === undefined || message === null || message === '') {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn('[NotificationSystem] No message provided.');
+            }
             return null;
         }
 
-        // Ensure container exists
-        init();
+        if (!_initialized) init();
+        if (!getContainer()) {
+            // Still no body; defer to DOMContentLoaded.
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[NotificationSystem] document.body not available; ' +
+                    'queuing notify() call.'
+                );
+            }
+            var deferredMessage = String(message);
+            var deferredType = type || 'info';
+            var deferredDuration = duration;
+            var deferredCb = onDismiss;
+
+            if (!window.__notificationDeferredReady) {
+                window.__notificationDeferredReady = true;
+                document.addEventListener('DOMContentLoaded', function() {
+                    notify(deferredMessage, deferredType,
+                           deferredDuration, deferredCb);
+                });
+            }
+            return null;
+        }
 
         var messageStr = String(message);
-        var resolvedType = type || 'info';
+        var resolvedType = TYPES[type] ? type : 'info';
 
-        // ---- Dedup ----
+        // ---- Dedup against visible toast ----
         var existing = findActiveDuplicate(messageStr, resolvedType);
         if (existing) {
             return refreshDuplicate(
-                existing,
-                resolvedType,
-                duration,
-                onDismiss
+                existing, resolvedType, duration, onDismiss
             );
         }
 
-        // ---- No duplicate: enqueue as normal ----
+        // ---- Enqueue new ----
         var id = generateNotificationId();
+        var resolvedDuration = resolveDuration(duration, resolvedType);
 
-        var item = {
+        enqueue({
             id: id,
             message: messageStr,
             type: resolvedType,
-            duration: duration !== undefined
-                ? duration
-                : (TYPES[resolvedType]
-                    ? TYPES[resolvedType].defaultDuration
-                    : DEFAULT_DURATION),
-            onDismiss: onDismiss || null
-        };
+            duration: resolvedDuration,
+            onDismiss: typeof onDismiss === 'function' ? onDismiss : null
+        });
 
-        enqueue(item);
-
-        // Return handle with dismiss method
-        return {
-            id: id,
-            dismiss: function() {
-                dismissNotification(id);
-            },
-            isDismissed: function() {
-                // Check if notification is still in queue
-                var inQueue = false;
-                for (var i = 0; i < _queue.length; i++) {
-                    if (_queue[i] && _queue[i].id === id) {
-                        inQueue = true;
-                        break;
-                    }
-                }
-
-                // Check if notification is still active
-                var inActive = false;
-                for (var j = 0; j < _activeNotifications.length; j++) {
-                    var n = _activeNotifications[j];
-                    if (n && n._id === id && !n._dismissed) {
-                        inActive = true;
-                        break;
-                    }
-                }
-
-                return !inQueue && !inActive;
-            }
-        };
+        return makeHandle(id);
     }
 
-    /**
-     * Show a success notification.
-     */
     function notifySuccess(message, duration, onDismiss) {
         return notify(message, 'success', duration, onDismiss);
     }
-
-    /**
-     * Show an error notification.
-     */
     function notifyError(message, duration, onDismiss) {
         return notify(message, 'error', duration, onDismiss);
     }
-
-    /**
-     * Show a warning notification.
-     */
     function notifyWarning(message, duration, onDismiss) {
         return notify(message, 'warning', duration, onDismiss);
     }
-
-    /**
-     * Show an info notification.
-     */
     function notifyInfo(message, duration, onDismiss) {
         return notify(message, 'info', duration, onDismiss);
     }
 
     /**
-     * Clear all active notifications.
+     * Clear all notifications.
      *
-     * @param {boolean} callCallbacks - Whether to call onDismiss for cleared notifications
+     * @param {boolean} [callCallbacks=true] - Fire onDismiss for
+     *   every cleared notification (active and queued).
      */
     function clearNotifications(callCallbacks) {
         callCallbacks = callCallbacks !== false;
 
-        // Clear queue
-        var queuedItems = _queue.slice();
+        var queued = _queue.slice();
         _queue = [];
 
-        // Dismiss all active notifications
-        var activeCopy = _activeNotifications.slice();
+        var active = _activeNotifications.slice();
         _activeNotifications = [];
 
-        activeCopy.forEach(function(notification) {
-            if (notification._timer) {
-                clearTimeout(notification._timer);
-                notification._timer = null;
+        active.forEach(function(n) {
+            if (n._timer) {
+                clearTimeout(n._timer);
+                n._timer = null;
             }
-
-            if (notification.parentNode) {
-                notification.parentNode.removeChild(notification);
+            if (n.parentNode) {
+                n.parentNode.removeChild(n);
+            }
+            var cb = n._onDismiss;
+            n._onDismiss = null;
+            n._dismissed = true;
+            if (callCallbacks && typeof cb === 'function') {
+                try { cb(); } catch (e) {}
             }
         });
 
-        // Call onDismiss for queued items if requested
         if (callCallbacks) {
-            queuedItems.forEach(function(item) {
+            queued.forEach(function(item) {
                 if (typeof item.onDismiss === 'function') {
-                    try {
-                        item.onDismiss();
-                    } catch (e) {
-                        // Ignore callback errors
-                    }
+                    try { item.onDismiss(); } catch (e) {}
                 }
             });
         }
     }
 
-    /**
-     * Get the number of active notifications.
-     */
     function getNotificationCount() {
         return _activeNotifications.length + _queue.length;
     }
 
-    /**
-     * Get the notification container element.
-     */
     function getNotificationContainer() {
         return getContainer();
     }
 
-    /**
-     * Set the maximum number of simultaneous notifications.
-     */
     function setMaxNotifications(max) {
         if (typeof max === 'number' && max > 0) {
-            _maxNotifications = max;
+            _maxNotifications = Math.floor(max);
+            // Drain if the cap was raised.
+            while (_activeNotifications.length < _maxNotifications &&
+                   _queue.length > 0) {
+                processQueue();
+                // processQueue schedules follow-ups; break if the
+                // queue didn't move (avoid infinite loop).
+                if (_activeNotifications.length === 0) break;
+                if (_activeNotifications.length >= _maxNotifications) break;
+                // If nothing happened (e.g. no container), stop.
+                break;
+            }
         }
     }
+    function getMaxNotifications() { return _maxNotifications; }
 
-    /**
-     * Get the maximum number of simultaneous notifications.
-     */
-    function getMaxNotifications() {
-        return _maxNotifications;
+    function setMaxQueueSize(size) {
+        if (typeof size === 'number' && size >= 0) {
+            _maxQueueSize = Math.floor(size);
+        }
     }
+    function getMaxQueueSize() { return _maxQueueSize; }
 
-    /**
-     * Get the default duration for a notification type.
-     */
     function getDefaultDuration(type) {
-        var config = TYPES[type];
-        return config ? config.defaultDuration : DEFAULT_DURATION;
+        var cfg = TYPES[type];
+        return cfg ? cfg.defaultDuration : DEFAULT_DURATION;
     }
 
-    /**
-     * Check if the notification system is initialized.
-     */
-    function isInitialized() {
-        return _initialized;
-    }
+    function isInitialized() { return _initialized; }
 
-    // ============================================================
-    // COMPATIBILITY WRAPPERS
-    // ============================================================
-
-    /**
-     * Compatibility wrapper for window.showToast.
-     * @deprecated Use NotificationSystem.notify() instead.
-     */
     function showToast(message, type) {
         return notify(message, type || 'info');
     }
@@ -716,42 +718,39 @@
     // EXPOSE
     // ============================================================
 
-    window.NotificationSystem = {
-        // Main API
+    window.NotificationSystem = Object.freeze({
         notify: notify,
         notifySuccess: notifySuccess,
         notifyError: notifyError,
         notifyWarning: notifyWarning,
         notifyInfo: notifyInfo,
 
-        // Management
         clearNotifications: clearNotifications,
         getNotificationCount: getNotificationCount,
         getNotificationContainer: getNotificationContainer,
         setMaxNotifications: setMaxNotifications,
         getMaxNotifications: getMaxNotifications,
+        setMaxQueueSize: setMaxQueueSize,
+        getMaxQueueSize: getMaxQueueSize,
         getDefaultDuration: getDefaultDuration,
 
-        // Lifecycle
         init: init,
         destroy: destroy,
         isInitialized: isInitialized,
 
-        // Compatibility
         showToast: showToast,
 
-        // Constants (read-only)
-        TYPES: Object.freeze(TYPES),
+        TYPES: TYPES,
         DEFAULT_DURATION: DEFAULT_DURATION,
+        ANIMATION_DURATION: ANIMATION_DURATION,
         get MAX_NOTIFICATIONS() { return _maxNotifications; }
-    };
+    });
 
-    // Global aliases for backward compatibility
     window.notify = notify;
     window.showToast = showToast;
 
-    // Auto-init container
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    if (document.readyState === 'complete' ||
+        document.readyState === 'interactive') {
         init();
     } else {
         document.addEventListener('DOMContentLoaded', init);
