@@ -24,9 +24,19 @@
  *     on the browser locale and the current time. Callers that need
  *     deterministic output must pin the locale or use a date
  *     library.
- *   - CalendarConstants is a MANDATORY dependency. The module
- *     throws at load time if it is missing or lacks the required
- *     functions. There are no fallback day-name or hour tables.
+ *   - CalendarConstants is a MANDATORY dependency at the POINT OF
+ *     USE, not at load time. The module loads cleanly regardless of
+ *     script order; the five calendar-dependent functions check for
+ *     CalendarConstants when they are called and throw a clear error
+ *     naming the missing file if it is absent.
+ *   - There are no fallback day-name or hour tables. CalendarConstants
+ *     is the single source of truth for those values.
+ *
+ * LOAD ORDER:
+ *   This module does not require any specific load order. It can be
+ *   included before or after calendar-constants.js. The calendar
+ *   functions will work as soon as CalendarConstants is on window,
+ *   and will throw a descriptive error if called before then.
  *
  * DATE SEMANTICS:
  *   - Date-only strings (e.g. "2026-09-05") are parsed as UTC
@@ -34,8 +44,6 @@
  *     `toLocaleDateString()`. West of UTC this shows the previous
  *     calendar day. For date-only values, either store a full
  *     timestamp or format with `timeZone: 'UTC'` at the call site.
- *     This module does not do that for you because not every caller
- *     wants UTC.
  *
  * RELATIVE TIME SEMANTICS:
  *   - formatRelativeTime expects an ISO 8601 timestamp.
@@ -57,6 +65,13 @@
  *   it is only substituted when the argument is `undefined`. The
  *   old code used `fallback || DEFAULT`, which swallowed '' and 0.
  *
+ * TRUNCATION SEMANTICS:
+ *   truncateString and truncateWithSuffix guarantee the result is
+ *   at most `length` characters, INCLUDING the suffix. This is
+ *   the ValidationUtils.truncateString convention. Older versions
+ *   of this module appended '...' after truncating to `length`,
+ *   producing `length + 3` characters; that is gone.
+ *
  * PARSEHOUR RENAME:
  *   This module's time-string parser was named parseHour, which
  *   collided with CalendarValidation.parseHour (which validates a
@@ -65,74 +80,80 @@
  *   export for backward compatibility with existing call sites.
  *
  * DEPENDENCIES:
- *   - window.CalendarConstants (MANDATORY)
- *   - window.ValidationUtils (for truncateString; if absent, a
- *     local implementation matching its semantics is used)
- *   - window.ValidationUtils.parseOptionalInteger (if absent, a
- *     local implementation matching its strictness is used)
+ *   - window.CalendarConstants (lazy; required by five functions)
+ *   - window.ValidationUtils  (optional; a local fallback with
+ *     matching semantics is used if absent)
  *
  * USAGE:
  *   var FU = window.FormatUtils;
  *   FU.formatDate('2026-09-05');
- *   FU.truncateString('Hello world', 8);        // 'hello...'? -> 'Hello...'
- *   FU.getDayName(3);                            // 'Wednesday'
- *   FU.formatHour(14);                           // '2:00 PM'
+ *   FU.truncateString('Hello world', 8);
+ *   FU.getDayName(3);                       // 'Wednesday'
+ *   FU.formatHour(14);                      // '2:00 PM'
  *   FU.formatRelativeTime('2026-09-10T08:00:00Z');
- *   FU.parseTimeString('9:00 AM');               // 9
+ *   FU.parseTimeString('9:00 AM');          // 9
  */
 
 (function() {
     'use strict';
 
     if (window.__formatUtilsLoaded) return;
-
-    // ============================================================
-    // DEPENDENCY CHECK - MANDATORY
-    // ============================================================
-
-    var CalendarConstants = window.CalendarConstants;
-    var _missing = [];
-
-    if (!CalendarConstants || typeof CalendarConstants !== 'object') {
-        _missing.push('CalendarConstants');
-    } else {
-        var requiredMethods = [
-            'getDayName',
-            'getDayName0',
-            'getDayNumber',
-            'formatHour',
-            'parseHour'
-        ];
-        for (var i = 0; i < requiredMethods.length; i++) {
-            var m = requiredMethods[i];
-            if (typeof CalendarConstants[m] !== 'function') {
-                _missing.push('CalendarConstants.' + m);
-            }
-        }
-    }
-
     window.__formatUtilsLoaded = true;
 
-    if (_missing.length > 0) {
-        window.FormatUtils = Object.freeze({
-            _loadFailed: true,
-            _missing: _missing.slice()
-        });
-        throw new Error(
-            '[FormatUtils] Missing or invalid dependencies: ' +
-            _missing.join(', ')
-        );
+    // ============================================================
+    // DEPENDENCY ACCESS - LAZY
+    // ============================================================
+    //
+    // CalendarConstants is required by five functions:
+    //   getDayName, getDayName0, getDayNumber, formatHour,
+    //   parseTimeString.
+    //
+    // It is resolved at CALL time, not at load time. The module
+    // loads cleanly regardless of script order, and a caller that
+    // invokes one of the five functions before CalendarConstants
+    // is on window gets a clear error naming the missing file.
+    //
+    // This matches the pattern used elsewhere in the codebase
+    // (database.js soft dependencies, mutation-pipeline.js lazy
+    // getObjectUtils, character-crud.js lazy getters).
+
+    var CALENDAR_REQUIRED_METHODS = [
+        'getDayName',
+        'getDayName0',
+        'getDayNumber',
+        'formatHour',
+        'parseHour'
+    ];
+
+    function requireCalendarConstants(calleeName) {
+        var CC = window.CalendarConstants;
+
+        if (!CC || typeof CC !== 'object') {
+            throw new Error(
+                '[FormatUtils] ' + calleeName + ' requires ' +
+                'CalendarConstants, which is not loaded. Ensure ' +
+                'js/utils/calendar-constants.js is included in the ' +
+                'page before this function is called.'
+            );
+        }
+
+        for (var i = 0; i < CALENDAR_REQUIRED_METHODS.length; i++) {
+            var m = CALENDAR_REQUIRED_METHODS[i];
+            if (typeof CC[m] !== 'function') {
+                throw new Error(
+                    '[FormatUtils] ' + calleeName + ' requires ' +
+                    'CalendarConstants.' + m + ', which is missing ' +
+                    'or not a function. The CalendarConstants module ' +
+                    'may be an older version.'
+                );
+            }
+        }
+
+        return CC;
     }
 
-    // ============================================================
-    // DEPENDENCY CACHE
-    // ============================================================
-    // These are read at call time inside the helpers, not cached
-    // into local variables, so a late-loaded ValidationUtils is
-    // still picked up.
-
     function getValidationUtils() {
-        return window.ValidationUtils;
+        return window.ValidationUtils || null;
     }
 
     // ============================================================
@@ -363,7 +384,7 @@
         SEK: 'kr', NOK: 'kr', DKK: 'kr', PLN: 'zł'
     };
 
-    function currencyFallback(currency, value) {
+    function currencyFallback(currency) {
         var symbol = CURRENCY_SYMBOLS[currency];
         if (symbol) {
             return symbol + '0';
@@ -375,7 +396,7 @@
         currency = currency || 'USD';
 
         if (fallback === undefined) {
-            fallback = currencyFallback(currency, value);
+            fallback = currencyFallback(currency);
         }
 
         if (value === undefined || value === null || value === '') {
@@ -428,27 +449,31 @@
     }
 
     // ============================================================
-    // DAY NAME FUNCTIONS - delegate to CalendarConstants
+    // DAY NAME FUNCTIONS - CalendarConstants (lazy)
     // ============================================================
 
     function getDayName(day, format) {
-        return CalendarConstants.getDayName(day, format);
+        var CC = requireCalendarConstants('getDayName');
+        return CC.getDayName(day, format);
     }
 
     function getDayName0(day, format) {
-        return CalendarConstants.getDayName0(day, format);
+        var CC = requireCalendarConstants('getDayName0');
+        return CC.getDayName0(day, format);
     }
 
     function getDayNumber(dayName) {
-        return CalendarConstants.getDayNumber(dayName);
+        var CC = requireCalendarConstants('getDayNumber');
+        return CC.getDayNumber(dayName);
     }
 
     // ============================================================
-    // HOUR FUNCTIONS - delegate to CalendarConstants
+    // HOUR FUNCTIONS - CalendarConstants (lazy)
     // ============================================================
 
     function formatHour(hour, includeMinutes) {
-        return CalendarConstants.formatHour(hour, includeMinutes);
+        var CC = requireCalendarConstants('formatHour');
+        return CC.formatHour(hour, includeMinutes);
     }
 
     /**
@@ -460,7 +485,8 @@
      * '9:00 AM' or '14:00' to a 0-23 integer.
      */
     function parseTimeString(timeStr) {
-        return CalendarConstants.parseHour(timeStr);
+        var CC = requireCalendarConstants('parseTimeString');
+        return CC.parseHour(timeStr);
     }
 
     /**
