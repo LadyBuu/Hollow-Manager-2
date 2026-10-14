@@ -37,13 +37,21 @@
  *
  * MIGRATION DEPENDENCIES:
  *   v17 (TournamentSchema), v18 (IdUtils), v23 (TournamentSchema +
- *   IdUtils + TeamConstants), v26 (CalendarValidation) require their
- *   module to be present. If missing, the migration throws and
- *   _dataVersion does not advance, so the migration runs on a later
- *   load once the module is available.
+ *   IdUtils + TeamConstants), v26 (CalendarValidation) require
+ *   their module to be present. If missing, the migration throws
+ *   and _dataVersion does not advance, so the migration runs on a
+ *   later load once the module is available.
+ *
+ * CLONE DEPENDENCIES:
+ *   deepClone delegates to ObjectUtils.deepClone. If ObjectUtils is
+ *   unavailable, a local structuredClone wrapper is used, and a
+ *   warning is emitted. There is NO JSON fallback. Data that
+ *   structuredClone cannot handle fails loudly rather than being
+ *   silently corrupted.
  *
  * SOFT DEPENDENCIES:
- *   structuredClone (preferred) with JSON fallback.
+ *   structuredClone (required); ObjectUtils (preferred);
+ *   ValidationUtils (preferred; used by v33).
  */
 
 (function() {
@@ -66,6 +74,38 @@
 
     var _isSaving = false;
     var _saveWaiters = [];
+
+    // ============================================================
+    // DEPENDENCY WARNINGS (non-fatal)
+    // ============================================================
+
+    var _warnedAboutObjectUtils = false;
+    var _warnedAboutValidationUtils = false;
+
+    function warnMissingObjectUtils() {
+        if (_warnedAboutObjectUtils) return;
+        _warnedAboutObjectUtils = true;
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn(
+                '[Database] ObjectUtils.deepClone is not available. ' +
+                'Using a local structuredClone wrapper. Load object-utils.js ' +
+                'before database.js to remove this fallback.'
+            );
+        }
+    }
+
+    function warnMissingValidationUtils() {
+        if (_warnedAboutValidationUtils) return;
+        _warnedAboutValidationUtils = true;
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn(
+                '[Database] ValidationUtils.parseStrictPositiveInteger is ' +
+                'not available. v33 will use a local equivalent. Load ' +
+                'validation-utils.js before database.js to remove this ' +
+                'fallback.'
+            );
+        }
+    }
 
     // ============================================================
     // DEFAULT FACTORIES
@@ -225,18 +265,90 @@
         return { merged: result, changed: changed };
     }
 
+    // ============================================================
+    // DEEP CLONE
+    // ============================================================
+    //
+    // Delegates to ObjectUtils.deepClone when available. Falls back
+    // to a local structuredClone wrapper with identical semantics.
+    // There is NO JSON fallback: the save path must not silently
+    // accept a lossy copy.
+
     function deepClone(value) {
         if (value === null || typeof value !== 'object') {
             return value;
         }
-        if (typeof structuredClone === 'function') {
-            try { return structuredClone(value); } catch (e) { /* fall through */ }
+
+        var ObjectUtils = window.ObjectUtils;
+        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
+            return ObjectUtils.deepClone(value);
         }
-        try {
-            return JSON.parse(JSON.stringify(value));
-        } catch (e) {
-            throw new Error('Database: Failed to clone value: ' + e.message);
+
+        warnMissingObjectUtils();
+
+        if (typeof structuredClone !== 'function') {
+            throw new Error(
+                'Database: cannot clone value. structuredClone is not ' +
+                'available and ObjectUtils.deepClone is missing.'
+            );
         }
+
+        var cloned = structuredClone(value);
+        if (cloned === value) {
+            throw new Error(
+                'Database: structuredClone returned the input reference. ' +
+                'This violates the read safety contract.'
+            );
+        }
+        return cloned;
+    }
+
+    // ============================================================
+    // IDEMPOTENT MIGRATION-INTERNAL HELPERS
+    // ============================================================
+
+    /**
+     * Parse a positive integer used by migrations.
+     *
+     * Delegates to ValidationUtils.parseStrictPositiveInteger when
+     * available. Falls back to a local implementation with the same
+     * semantics: only numbers that are safe integers >= 1, or
+     * strings matching /^\d+$/ that parse to safe integers >= 1.
+     */
+    function parseStrictPositiveInteger(value) {
+        var VU = window.ValidationUtils;
+        if (VU && typeof VU.parseStrictPositiveInteger === 'function') {
+            return VU.parseStrictPositiveInteger(value);
+        }
+
+        warnMissingValidationUtils();
+
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+
+        if (typeof value === 'number') {
+            if (Number.isSafeInteger(value) && value >= 1) {
+                return value;
+            }
+            return null;
+        }
+
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        var str = value.trim();
+        if (str === '' || !/^\d+$/.test(str)) {
+            return null;
+        }
+
+        var parsed = Number(str);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) {
+            return null;
+        }
+
+        return parsed;
     }
 
     // ============================================================
@@ -461,7 +573,6 @@
                 var tx = _indexedDB.transaction([STORE_NAME], 'readwrite');
                 var store = tx.objectStore(STORE_NAME);
 
-                // Only write if a backup for this version doesn't exist.
                 var getReq = store.get(key);
                 getReq.onsuccess = function() {
                     if (getReq.result) {
@@ -486,12 +597,8 @@
                     }
                     resolve(true);
                 };
-                getReq.onerror = function() {
-                    resolve(false);
-                };
-                tx.onerror = function() {
-                    resolve(false);
-                };
+                getReq.onerror = function() { resolve(false); };
+                tx.onerror = function() { resolve(false); };
             } catch (e) {
                 console.warn('[Database] Pre-migration backup threw:', e);
                 resolve(false);
@@ -2403,13 +2510,15 @@
             return out;
         }
 
+        /**
+         * Normalise a period value for storage.
+         * Delegates to ValidationUtils.parseStrictPositiveInteger
+         * via parseStrictPositiveInteger() above.
+         */
         function normalisePeriodForStorage(value) {
-            if (value === undefined || value === null || value === '') return '';
-            var str = String(value).trim();
-            if (!/^\d+$/.test(str)) return '';
-            var n = parseInt(str, 10);
-            if (!isFinite(n) || n < 1) return '';
-            return String(n);
+            var parsed = parseStrictPositiveInteger(value);
+            if (parsed === null) return '';
+            return String(parsed);
         }
 
         for (var i = 0; i < data.teams.length; i++) {
@@ -2633,7 +2742,6 @@
             }
         });
 
-        // ---- Departments shape guard ----
         (function ensureDepartmentShape() {
             if (!Array.isArray(data.departments)) return;
             var kept = [];
@@ -2716,7 +2824,6 @@
             data.academy.teachingSessions = {}; repaired = true;
         }
 
-        // ---- Enrolment role tags ----
         (function ensureEnrolmentRoleTags() {
             var ROLE_STUDENT = 'student';
             var ROLE_INSTRUCTOR = 'instructor';
@@ -2752,7 +2859,6 @@
             }
         })();
 
-        // ---- weeklyTeams member field ----
         if (data.academy.weeklyTeams &&
             typeof data.academy.weeklyTeams === 'object' &&
             !Array.isArray(data.academy.weeklyTeams)) {
@@ -2770,7 +2876,6 @@
             });
         }
 
-        // ---- Team members intervals / memberIds ----
         data.teams.forEach(function(team) {
             if (!team || typeof team !== 'object') return;
             if (!Array.isArray(team.members)) return;
@@ -2804,7 +2909,6 @@
             }
         });
 
-        // ---- Elimination years ----
         (function ensureEliminationYears() {
             var fallbackYear = (typeof data.currentYear === 'number' &&
                                 isFinite(data.currentYear) &&
@@ -2863,7 +2967,6 @@
             });
         })();
 
-        // ---- Discipline shape (v27-canonical: no instructorIds) ----
         (function ensureDisciplineShape() {
             var CV = window.CalendarValidation;
             var hasParser = CV && typeof CV.parseWeek === 'function';
@@ -2905,7 +3008,6 @@
                 if (coerceWeek(record, 'startWeek')) repaired = true;
                 if (coerceWeek(record, 'endWeek')) repaired = true;
 
-                // Retired fields: drop without creating anything.
                 if (Object.prototype.hasOwnProperty.call(record, 'curriculum')) {
                     delete record.curriculum; repaired = true;
                 }
@@ -2931,7 +3033,6 @@
             }
         })();
 
-        // ---- Class-discipline markers (v27 shape) ----
         (function ensureClassDisciplineMarkerShape() {
             if (!data.academy ||
                 !data.academy.classDisciplines ||
@@ -3020,7 +3121,6 @@
             }
         })();
 
-        // ---- Stats-config icons ----
         (function ensureStatsConfigMonochromeIcons() {
             if (!data.statsConfig ||
                 typeof data.statsConfig !== 'object' ||
@@ -3055,7 +3155,6 @@
             }
         })();
 
-        // ---- class-level instructorId retirement ----
         (function ensureClassNoInstructorField() {
             if (!data.academy ||
                 !data.academy.graduatingClasses ||
@@ -3075,7 +3174,6 @@
             }
         })();
 
-        // ---- Class restDays ----
         (function ensureClassRestDays() {
             if (!data.academy ||
                 !data.academy.graduatingClasses ||
@@ -3136,13 +3234,6 @@
                 }
             }
         })();
-
-        // ============================================================
-        // CLASS-REFERENCE PRUNING
-        // ============================================================
-        // Skipped when the class map is empty or a skip flag is set,
-        // to prevent an untrustworthy map from cascading away the
-        // stores that reference it.
 
         var classMap = data.academy && data.academy.graduatingClasses;
         var classMapSize = (classMap && typeof classMap === 'object' && !Array.isArray(classMap))
@@ -3234,15 +3325,16 @@
     // ============================================================
     // CREATE SAFE COPY
     // ============================================================
+    //
+    // Delegates to ObjectUtils.deepClone when available. The
+    // save-path copy MUST be structuredClone-clean; a JSON fallback
+    // would silently corrupt persisted data.
 
     function createSafeCopy(data) {
         if (data === null || typeof data !== 'object') {
             throw new Error('Cannot clone non-object data');
         }
-        if (typeof structuredClone !== 'function') {
-            throw new Error('This browser does not support structuredClone().');
-        }
-        return structuredClone(data);
+        return deepClone(data);
     }
 
     // ============================================================
@@ -3310,10 +3402,6 @@
                     }
                     if (repaired) needsPersistence = true;
 
-                    // If migrations are about to run for the first
-                    // time on this record, snapshot the raw pre-
-                    // migration payload before saving the migrated
-                    // version over it.
                     var willMigrate =
                         originalVersion !== undefined &&
                         originalVersion !== _data._dataVersion;
