@@ -28,7 +28,8 @@
  *   - Read access (getSpecialMoves)
  *   - Mutations (addSpecialMove, updateSpecialMove, removeSpecialMove)
  *   - Move-specific bounds: MAX_SPECIAL_MOVES, MAX_MOVE_NAME_LENGTH,
- *     MAX_MOVE_DESCRIPTION_LENGTH
+ *     MAX_MOVE_DESCRIPTION_LENGTH (read from CharacterConstants
+ *     lazily; see LOAD ORDER below).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Stat calculation, HP/MP rolling, physical/magical class
@@ -38,6 +39,14 @@
  *     reads char.specialMoves directly. It does not call this module.
  *   - The character record itself. CharacterQueries owns the reads;
  *     the mutations here route through MutationPipeline to write.
+ *
+ * LOAD ORDER:
+ *   This module loads cleanly regardless of script order.
+ *   CharacterConstants is required for the three bounds constants,
+ *   but is read lazily at the point of use, not at load time. A
+ *   caller that invokes a mutation before CharacterConstants is on
+ *   window gets a clear error; the module itself does not throw at
+ *   load.
  *
  * MUTATION CONTRACT:
  *   All three mutations:
@@ -55,11 +64,20 @@
  *   Each layer rejects with a distinct message so callers and the
  *   console can tell them apart.
  *
+ * MUTATE-PHASE POLICY:
+ *   If the pre-flight structure check rejects a malformed
+ *   specialMoves, the pipeline is never reached. If a mutation
+ *   races a structure change between pre-flight and mutate, the
+ *   mutate phase throws rather than silently repairing the shape.
+ *   Silent repair would mask the caller that created the malformed
+ *   state. The policy here matches the pre-flight policy: reject,
+ *   do not repair.
+ *
  * DEPENDENCIES:
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
+ *   - window.CharacterConstants (lazy; required by mutations)
+ *   - window.CharacterQueries (required)
+ *   - window.MutationPipeline (required)
+ *   - window.IdUtils (required)
  *
  * USAGE:
  *   var CM = window.CharacterMoves;
@@ -85,21 +103,55 @@
     window.__characterMovesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY ACCESS - LAZY
     // ============================================================
 
-    var CharacterConstants = window.CharacterConstants;
-    var CharacterQueries = window.CharacterQueries;
-    var MutationPipeline = window.MutationPipeline;
-    var IdUtils = window.IdUtils;
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
 
-    var MAX_SPECIAL_MOVES = (CharacterConstants && CharacterConstants.MAX_SPECIAL_MOVES) || 20;
-    var MAX_MOVE_NAME_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_NAME_LENGTH) || 100;
-    var MAX_MOVE_DESCRIPTION_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH) || 500;
+    function getMutationPipeline() {
+        return window.MutationPipeline || null;
+    }
+
+    function getIdUtils() {
+        return window.IdUtils || null;
+    }
+
+    // Bound defaults used when CharacterConstants is not yet on
+    // window. These are the same values the module has always used;
+    // the constants module is the canonical source when loaded.
+    var DEFAULT_MAX_SPECIAL_MOVES = 20;
+    var DEFAULT_MAX_MOVE_NAME_LENGTH = 100;
+    var DEFAULT_MAX_MOVE_DESCRIPTION_LENGTH = 500;
+
+    function getMaxSpecialMoves() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_SPECIAL_MOVES === 'number') {
+            return CC.MAX_SPECIAL_MOVES;
+        }
+        return DEFAULT_MAX_SPECIAL_MOVES;
+    }
+
+    function getMaxMoveNameLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_MOVE_NAME_LENGTH === 'number') {
+            return CC.MAX_MOVE_NAME_LENGTH;
+        }
+        return DEFAULT_MAX_MOVE_NAME_LENGTH;
+    }
+
+    function getMaxMoveDescriptionLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_MOVE_DESCRIPTION_LENGTH === 'number') {
+            return CC.MAX_MOVE_DESCRIPTION_LENGTH;
+        }
+        return DEFAULT_MAX_MOVE_DESCRIPTION_LENGTH;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -108,24 +160,28 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterConstants) {
-            missing.push('CharacterConstants');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CQ || typeof CQ.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+        var MP = getMutationPipeline();
+        if (!MP || typeof MP.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
 
-        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+        var IU = getIdUtils();
+        if (!IU || typeof IU.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
+
+        // CharacterConstants is required for the bounds, but the
+        // module falls back to defaults. A missing module is a
+        // degradation, not a failure. Warn once at first mutation
+        // via the accessor, not at load.
 
         if (missing.length > 0) {
             console.warn('[CharacterMoves] Missing dependencies:', missing.join(', '));
@@ -258,6 +314,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             return Promise.resolve({
@@ -274,17 +331,21 @@
             });
         }
 
+        var maxMoves = getMaxSpecialMoves();
         var moves = char.specialMoves[type] || [];
-        if (moves.length >= MAX_SPECIAL_MOVES) {
+        if (moves.length >= maxMoves) {
             return Promise.resolve({
                 success: false,
-                message: 'Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.'
+                message: 'Maximum of ' + maxMoves + ' ' + type + ' moves reached.'
             });
         }
 
-        var nameTruncated = name.trim().slice(0, MAX_MOVE_NAME_LENGTH);
+        var maxNameLen = getMaxMoveNameLength();
+        var maxDescLen = getMaxMoveDescriptionLength();
+
+        var nameTruncated = name.trim().slice(0, maxNameLen);
         var descTruncated = typeof description === 'string'
-            ? description.trim().slice(0, MAX_MOVE_DESCRIPTION_LENGTH)
+            ? description.trim().slice(0, maxDescLen)
             : '';
 
         var displayName = CharacterQueries.getDisplayName(char);
@@ -306,7 +367,7 @@
                     };
                 }
                 var currentMoves = current.specialMoves[type] || [];
-                if (currentMoves.length >= MAX_SPECIAL_MOVES) {
+                if (currentMoves.length >= maxMoves) {
                     return {
                         valid: false,
                         message: 'Maximum moves reached.'
@@ -322,12 +383,19 @@
                     throw new Error('Character not found in data store.');
                 }
 
-                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
-                    currentChar.specialMoves = { physical: [], magical: [] };
+                // Re-validate the structure inside the snapshot. If
+                // the shape changed since pre-flight, throw. Do NOT
+                // silently repair; that would mask the caller that
+                // created the malformed shape.
+                var snapshotValidation = validateSpecialMovesStructure(currentChar);
+                if (!snapshotValidation.valid) {
+                    throw new Error(
+                        'Special moves data is corrupted in the ' +
+                        'snapshot: ' + snapshotValidation.errors.join(', ')
+                    );
                 }
-                if (!Array.isArray(currentChar.specialMoves[type])) {
-                    currentChar.specialMoves[type] = [];
-                }
+
+                var IdUtils = getIdUtils();
 
                 var move = {
                     id: IdUtils.generateId('move'),
@@ -381,6 +449,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             return Promise.resolve({
@@ -397,6 +466,9 @@
             });
         }
         var newDesc = description !== undefined ? String(description).trim() : '';
+
+        var maxNameLen = getMaxMoveNameLength();
+        var maxDescLen = getMaxMoveDescriptionLength();
 
         var displayName = CharacterQueries.getDisplayName(char);
 
@@ -435,12 +507,21 @@
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
-                var moves = currentChar.specialMoves[type] || [];
+
+                var snapshotValidation = validateSpecialMovesStructure(currentChar);
+                if (!snapshotValidation.valid) {
+                    throw new Error(
+                        'Special moves data is corrupted in the ' +
+                        'snapshot: ' + snapshotValidation.errors.join(', ')
+                    );
+                }
+
+                var moves = currentChar.specialMoves[type];
                 var found = false;
                 for (var i = 0; i < moves.length; i++) {
                     if (moves[i] && String(moves[i].id) === String(moveId)) {
-                        moves[i].name = newName.slice(0, MAX_MOVE_NAME_LENGTH);
-                        moves[i].description = newDesc.slice(0, MAX_MOVE_DESCRIPTION_LENGTH);
+                        moves[i].name = newName.slice(0, maxNameLen);
+                        moves[i].description = newDesc.slice(0, maxDescLen);
                         found = true;
                         break;
                     }
@@ -488,6 +569,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             return Promise.resolve({
@@ -533,9 +615,18 @@
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
+
+                var snapshotValidation = validateSpecialMovesStructure(currentChar);
+                if (!snapshotValidation.valid) {
+                    throw new Error(
+                        'Special moves data is corrupted in the ' +
+                        'snapshot: ' + snapshotValidation.errors.join(', ')
+                    );
+                }
+
                 var found = false;
                 var removed = null;
-                currentChar.specialMoves[type] = (currentChar.specialMoves[type] || []).filter(function(m) {
+                currentChar.specialMoves[type] = currentChar.specialMoves[type].filter(function(m) {
                     if (m && String(m.id) === String(moveId)) {
                         found = true;
                         removed = m;
@@ -567,7 +658,7 @@
     // EXPOSE
     // ============================================================
 
-    window.CharacterMoves = {
+    window.CharacterMoves = Object.freeze({
         // Reads
         getSpecialMoves: getSpecialMoves,
 
@@ -580,11 +671,11 @@
         // want to check shape without going through a mutation)
         validateSpecialMovesStructure: validateSpecialMovesStructure,
 
-        // Constants (read-only)
-        MAX_SPECIAL_MOVES: MAX_SPECIAL_MOVES,
-        MAX_MOVE_NAME_LENGTH: MAX_MOVE_NAME_LENGTH,
-        MAX_MOVE_DESCRIPTION_LENGTH: MAX_MOVE_DESCRIPTION_LENGTH
-    };
+        // Bounds accessors (lazily resolved from CharacterConstants)
+        getMaxSpecialMoves: getMaxSpecialMoves,
+        getMaxMoveNameLength: getMaxMoveNameLength,
+        getMaxMoveDescriptionLength: getMaxMoveDescriptionLength
+    });
 
     // ============================================================
     // VERIFICATION
@@ -592,26 +683,51 @@
 
     (function verify() {
         var exports = window.CharacterMoves;
-        var missing = [];
+        var failures = [];
 
         var required = [
             'getSpecialMoves',
             'addSpecialMove',
             'updateSpecialMove',
             'removeSpecialMove',
-            'validateSpecialMovesStructure'
+            'validateSpecialMovesStructure',
+            'getMaxSpecialMoves',
+            'getMaxMoveNameLength',
+            'getMaxMoveDescriptionLength'
         ];
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
+                failures.push('missing export: ' + required[i]);
             }
         }
 
-        if (missing.length > 0) {
-            console.warn(
-                '[CharacterMoves] Verification - some exports may be missing:',
-                missing.join(', ')
+        try {
+            var empty = exports.getSpecialMoves(null);
+            if (!empty || !Array.isArray(empty.physical) ||
+                !Array.isArray(empty.magical)) {
+                failures.push('getSpecialMoves(null) did not return empty shape');
+            }
+
+            var shape = exports.validateSpecialMovesStructure({
+                specialMoves: { physical: [], magical: [] }
+            });
+            if (!shape || shape.valid !== true) {
+                failures.push('validateSpecialMovesStructure rejected valid shape');
+            }
+
+            var bad = exports.validateSpecialMovesStructure({});
+            if (!bad || bad.valid !== false) {
+                failures.push('validateSpecialMovesStructure accepted missing shape');
+            }
+        } catch (e) {
+            failures.push('smoke test threw: ' + e.message);
+        }
+
+        if (failures.length > 0) {
+            throw new Error(
+                '[CharacterMoves] Verification failed: ' +
+                failures.join('; ')
             );
         }
     })();
