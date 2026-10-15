@@ -18,8 +18,23 @@
  *   - No DOM manipulation
  *   - No persistence calls
  *   - Results can be used by CharacterForm or CharacterStats
- *   - USES CharacterConstants for domain constants
+ *   - Uses CharacterConstants for physical constants (lazy)
+ *   - Uses MagicConstants for magic constants (lazy)
  *   - No ID generation here - that belongs to IdUtils at creation time
+ *
+ * LOAD ORDER:
+ *   This module loads cleanly regardless of script order. Both
+ *   CharacterConstants and MagicConstants are resolved at call
+ *   time, not at load time. A missing module produces a warning
+ *   the first time a function that needs it is called.
+ *
+ * MAGIC CONSTANTS:
+ *   Magic type keys, category types, and MAGIC_MAX come from
+ *   MagicConstants, not CharacterConstants. A previous version of
+ *   this file read them from CharacterConstants, which does not
+ *   export them; generateMagic silently returned {} as a result.
+ *   That is fixed: the module now reads MagicConstants and will
+ *   correctly produce magic data.
  *
  * PHYSICAL MODEL:
  *   Height, weight, and build are correlated through BODY_PROFILES.
@@ -43,21 +58,18 @@
  *
  *   Trait picks are weighted 70/30 core-to-behavioural.
  *
- * TRAIT POOLS (this revision):
- *   The trait pools are expanded with descriptors mined from the
- *   graduates file. Existing rows are preserved in their original
- *   order; new rows are appended at the end of each pool under an
- *   "EXPANSION" banner. Row format is unchanged: three short
- *   descriptors, comma-joined, forming one coherent character
- *   sketch. pickTraitPhrase() still picks ONE row, not three
- *   independent descriptors.
- *
  * COMPLEXION MODEL:
  *   Skin tone, hair colour, and eye colour are correlated through
  *   COMPLEXION_TIERS. Weights are expressed by repetition.
  *
- * DEPENDENCIES:
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ * CURRENT-YEAR WARNING:
+ *   generateCharacter expects a currentYear in its options. If
+ *   absent it falls back to the current system year and warns
+ *   once per session. This is a degradation, not a failure.
+ *
+ * DEPENDENCIES (LAZY):
+ *   - window.CharacterConstants (for stat bounds)
+ *   - window.MagicConstants (for magic type keys and MAGIC_MAX)
  */
 
 (function() {
@@ -69,22 +81,81 @@
     window.__characterGeneratorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY ACCESS - LAZY
     // ============================================================
 
-    var CC = window.CharacterConstants;
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
+    function getMagicConstants() {
+        return window.MagicConstants || null;
+    }
+
+    function getStatMin() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_MIN === 'number') { return CC.STAT_MIN; }
+        return 6;
+    }
+
+    function getStatMax() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_MAX === 'number') { return CC.STAT_MAX; }
+        return 30;
+    }
+
+    function getStatRandomMin() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_RANDOM_MIN === 'number') {
+            return CC.STAT_RANDOM_MIN;
+        }
+        return 6;
+    }
+
+    function getStatRandomMax() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_RANDOM_MAX === 'number') {
+            return CC.STAT_RANDOM_MAX;
+        }
+        return 18;
+    }
+
+    var _warnedAboutCurrentYear = false;
+    function warnMissingCurrentYear() {
+        if (_warnedAboutCurrentYear) { return; }
+        _warnedAboutCurrentYear = true;
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn(
+                '[CharacterGenerator] generateCharacter called without ' +
+                'a currentYear option. Using the system year as a ' +
+                'fallback. Pass currentYear explicitly to remove this ' +
+                'warning.'
+            );
+        }
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - at call time
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
-        if (!CC) { missing.push('CharacterConstants'); }
-        if (CC && typeof CC.MAGIC_TYPE_KEYS === 'undefined') {
-            missing.push('CharacterConstants.MAGIC_TYPE_KEYS');
+
+        if (!getCharacterConstants()) {
+            missing.push('CharacterConstants');
         }
-        if (CC && typeof CC.MAGIC_CATEGORIES === 'undefined') {
-            missing.push('CharacterConstants.MAGIC_CATEGORIES');
+
+        if (!getMagicConstants()) {
+            missing.push('MagicConstants');
         }
+
         if (missing.length > 0) {
-            console.warn('CharacterGenerator: Missing dependencies:', missing.join(', '));
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[CharacterGenerator] Missing dependencies:',
+                    missing.join(', ')
+                );
+            }
             return false;
         }
         return true;
@@ -273,9 +344,7 @@
     // adjectives independently would produce noise.
     //
     // Rows marked "EXPANSION" were mined from the graduates file's
-    // descriptor vocabulary. Existing rows are preserved in their
-    // original order so habits about which rows come up often are
-    // undisturbed.
+    // descriptor vocabulary.
 
     var TRAIT_CORE_WEIGHT = 70;
     var TRAIT_BEHAVIOURAL_WEIGHT = 30;
@@ -497,7 +566,7 @@
         // EXPANSION — mined from the graduates file
         // ================================================
 
-        // --- Analytical minds (Agile, Robert, Caria) ---
+        // --- Analytical minds ---
         'Analytical, Composed, Perceptive',
         'Analytical, Deliberate, Quietly Stubborn',
         'Strategic, Methodical, Understated',
@@ -513,7 +582,7 @@
         'Studious, Introspective, Clinical',
         'Sharp, Exact, Medically Minded',
 
-        // --- Stoic labourers (Charlie, Ronan, Axis, Gale) ---
+        // --- Stoic labourers ---
         'Stoic, Patient, Observant',
         'Hardworking, Stubborn, Deeply Kind',
         'Quiet, Practical, Dependable',
@@ -528,7 +597,7 @@
         'Introverted, Practical, Dependable',
         'Rural-Practical, Unhurried, Steady',
 
-        // --- Competitive pressure (Fallow, Danielle, Weiss, Ibex) ---
+        // --- Competitive pressure ---
         'Relentless, Disciplined, Self-Critical',
         'Fiercely Loyal, Impulsive, Guarded',
         'Competitive, Prickly, Proud',
@@ -544,7 +613,7 @@
         'Socially Confident, Pragmatic, Abrasive',
         'Confident, Restless, Resourceful',
 
-        // --- Quiet observers (Jinx, Axis, Ronan, Wisteria) ---
+        // --- Quiet observers ---
         'Quiet, Perceptive, Calm',
         'Reserved, Watchful, Patient',
         'Silent, Attentive, Self-Sufficient',
@@ -556,7 +625,7 @@
         'Perceptive, Quiet, Warm-In-Private',
         'Attentive, Silent, Unassuming',
 
-        // --- Warm social (Basil, Caria, Tatiana, Robert) ---
+        // --- Warm social ---
         'Curious, Enthusiastic, Fearless',
         'Friendly, Socially Confident, Sharp',
         'Warm, Energetic, Blunt',
@@ -568,7 +637,7 @@
         'Optimistic, Generous, Oblivious',
         'Cheerful, Direct, Distractible',
 
-        // --- Guarded warmth (Jinx, Charlie, Axis, Ibex) ---
+        // --- Guarded warmth ---
         'Guarded, Warm-In-Private, Devoted',
         'Self-Sufficient, Patient, Loyal',
         'Independent, Unhurried, Difficult to Rattle',
@@ -578,7 +647,7 @@
         'Reserved, Honest, Warm-Underneath',
         'Watchful, Loyal, Slow to Warm',
 
-        // --- Friction and edge (Agile/Danielle, Weiss/Robert, Ibex/Danielle) ---
+        // --- Friction and edge ---
         'Diplomatic, Guarded, Quietly Stubborn',
         'Composed, Analytical, Dryly Amused',
         'Confident, Cutting, Reserved',
@@ -590,7 +659,7 @@
         'Cutting, Self-Controlled, Privately Kind',
         'Jealous, Loyal, Slow to Trust',
 
-        // --- Physically grounded (Fallow, Gale, Charlie, Tatiana) ---
+        // --- Physically grounded ---
         'Physically Confident, Disciplined, Reliable',
         'Physically Fearless, Pragmatic, Competitive',
         'Relaxed, Tough, Practical',
@@ -599,13 +668,13 @@
         'Grounded, Hardworking, Self-Effacing',
         'Abrasive, Practical, Fiercely Loyal',
 
-        // --- Odd / creative (Robert, Basil) ---
+        // --- Odd / creative ---
         'Enthusiastic, Oblivious, Warm',
         'Curious, Distracted, Fearless',
         'Optimistic, Associative, Scattered',
         'Inventive, Restless, Easily Amused',
 
-        // --- Eldritch / composed (Weiss, Agile, Wisteria) ---
+        // --- Eldritch / composed ---
         'Composed, Controlled, Aggressive',
         'Prickly, Proud, Self-Disciplined',
         'Controlled, Sharp, Slow to Trust',
@@ -739,7 +808,7 @@
         // EXPANSION — mined from the graduates file
         // ================================================
 
-        // --- Under pressure (Fallow, Ibex, Danielle, Weiss) ---
+        // --- Under pressure ---
         'Escalates When Challenged, Relentless, Self-Critical',
         'Pushes Past Exhaustion, Disciplined, Self-Doubting',
         'Interprets Rest as Weakness, Competitive, Driven',
@@ -751,7 +820,7 @@
         'Difficult to Provoke, Deadly, Patient',
         'Slow to Anger, Formidable, Restrained',
 
-        // --- Guarded under warmth (Jinx, Axis, Ronan) ---
+        // --- Guarded under warmth ---
         'Withdrawn Under Stress, Patient, Quietly Present',
         'Goes Silent When Frightened, Perceptive, Steady',
         'Moves Quietly, Watches Closely, Withholds Words',
@@ -761,7 +830,7 @@
         'Avoids Confrontation, Measured, Loyal',
         'Says Little, Notices Much, Forgives Slowly',
 
-        // --- Oblivious to self (Robert, Basil) ---
+        // --- Oblivious to self ---
         'Curiosity Overrides Caution, Obsessive, Warm',
         'Distracted by Questions, Brilliant, Oblivious',
         'Pushes Past Own Limits, Enthusiastic, Well-Meaning',
@@ -771,7 +840,7 @@
         'Talks Past People, Enthusiastic, Brilliant',
         'Approaches Danger as Curiosity, Fearless, Oblivious',
 
-        // --- Protective pressure (Charlie, Gale, Tatiana, Fallow) ---
+        // --- Protective pressure ---
         'Steps in Front First, Protective, Quiet',
         'Physically Inserts Self, Loyal, Unhesitating',
         'Protects Without Comment, Stoic, Fierce-Underneath',
@@ -781,7 +850,7 @@
         'Anchors Others, Steady, Slow to Show Strain',
         'Protects First, Reflects After, Rarely Regrets',
 
-        // --- Composure under strain (Agile, Ronan, Jinx) ---
+        // --- Composure under strain ---
         'Composed Under Pressure, Analytical, Withholding',
         'Calm in Crisis, Deliberate, Private',
         'Reads the Room, Says Little, Decides Slowly',
@@ -790,7 +859,7 @@
         'Waits for Certainty, Deliberate, Frustrated by Chaos',
         'Analyses Before Acting, Slow to Panic, Withholding',
 
-        // --- Sharpened edge (Ibex, Weiss, Danielle) ---
+        // --- Sharpened edge ---
         'Sharp-Tongued When Wounded, Loyal, Slow to Forgive',
         'Turns Vulnerability Into an Argument, Proud, Wounded',
         'Jokes When Uncomfortable, Dry, Guarded',
@@ -800,7 +869,7 @@
         'Pushes People Away, Resents Being Alone, Loyal',
         'Provokes When Uncertain, Restless, Seeking Confirmation',
 
-        // --- Warm in private (Charlie, Jinx, Axis, Ronan) ---
+        // --- Warm in private ---
         'Warm When Safe, Guarded Otherwise, Devoted',
         'Shows Affection Through Action, Quiet, Unhurried',
         'Present Without Words, Patient, Watching',
@@ -809,7 +878,7 @@
         'Fixes Things for People Instead of Explaining, Quiet, Attentive',
         'Notices Small Needs, Acts Without Announcing, Private',
 
-        // --- Tactical under strain (Agile, Jinx, Axis) ---
+        // --- Tactical under strain ---
         'Controls Variables Before Committing, Analytical, Frustrated by Improvisation',
         'Prepares for Every Outcome, Methodical, Slow to Adjust',
         'Forces Movement Through Terrain, Patient, Calculating',
@@ -817,19 +886,19 @@
         'Positions Before Acting, Observant, Reserved',
         'Reads Opponents, Waits for Openings, Precise',
 
-        // --- Passive under love (Charlie, Ronan, Axis) ---
+        // --- Passive under love ---
         'Indispensable to Everyone, Passive in Own Life, Loving',
         'Confuses Usefulness With Worth, Devoted, Working On It',
         'Tolerates What Should Be Refused, Loyal, Learning Boundaries',
         'Makes Self Necessary, Quietly Drowning, Warm',
 
-        // --- Curious-brave (Basil, Robert, Ibex) ---
+        // --- Curious-brave ---
         'Investigates Before Retreating, Curious, Reckless',
         'Takes Physical Risks for Knowledge, Fearless, Oblivious',
         'Handles Dangerous Things Gently, Patient, Unflinching',
         'Approaches the Strange Without Prejudice, Curious, Kind',
 
-        // --- Composed-aggressive (Wisteria, Weiss, Fallow) ---
+        // --- Composed-aggressive ---
         'Closes Distance Fast, Aggressive, Physically Dominant',
         'Overwhelms Before Being Overwhelmed, Competitive, Focused',
         'Uses Terrain to Isolate, Aggressive, Tactically Narrow',
@@ -1503,15 +1572,17 @@
     function generateStats3d6() {
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         var stats = {};
-        var statMin = CC ? CC.STAT_MIN : 1;
-        var statMax = CC ? CC.STAT_MAX : 50;
+        var statMin = getStatMin();
+        var statMax = getStatMax();
+        var randMin = getStatRandomMin();
+        var randMax = getStatRandomMax();
 
         for (var i = 0; i < statKeys.length; i++) {
             var roll = randomInt(1, 6) + randomInt(1, 6) + randomInt(1, 6);
             stats[statKeys[i]] = clamp(
                 roll,
-                Math.max(6, statMin),
-                Math.min(18, statMax)
+                Math.max(randMin, statMin),
+                Math.min(randMax, statMax)
             );
         }
         return stats;
@@ -1520,8 +1591,10 @@
     function generateStats4d6() {
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         var stats = {};
-        var statMin = CC ? CC.STAT_MIN : 1;
-        var statMax = CC ? CC.STAT_MAX : 50;
+        var statMin = getStatMin();
+        var statMax = getStatMax();
+        var randMin = getStatRandomMin();
+        var randMax = getStatRandomMax();
 
         for (var i = 0; i < statKeys.length; i++) {
             var rolls = [
@@ -1532,8 +1605,8 @@
             var sum = rolls[0] + rolls[1] + rolls[2];
             stats[statKeys[i]] = clamp(
                 sum,
-                Math.max(6, statMin),
-                Math.min(18, statMax)
+                Math.max(randMin, statMin),
+                Math.min(randMax, statMax)
             );
         }
         return stats;
@@ -1542,19 +1615,28 @@
     // ============================================================
     // MAGIC
     // ============================================================
+    //
+    // All magic constants come from MagicConstants, not
+    // CharacterConstants. The previous version read them from
+    // CharacterConstants, which does not export them, and
+    // generateMagic therefore silently returned {}.
 
     function generateMagic(category) {
-        if (!CC || !CC.MAGIC_TYPE_KEYS) {
-            console.warn(
-                'CharacterGenerator: CharacterConstants.MAGIC_TYPE_KEYS ' +
-                'not available.'
-            );
+        var MC = getMagicConstants();
+        if (!MC || !Array.isArray(MC.MAGIC_TYPE_KEYS)) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[CharacterGenerator] MagicConstants.MAGIC_TYPE_KEYS ' +
+                    'is not available. Returning empty magic.'
+                );
+            }
             return {};
         }
 
-        var magicTypeKeys = CC.MAGIC_TYPE_KEYS;
-        var magicCategories = CC.MAGIC_CATEGORIES || {};
-        var magicMax = CC.MAGIC_MAX || 10;
+        var magicTypeKeys = MC.MAGIC_TYPE_KEYS;
+        var magicCategories = MC.MAGIC_CATEGORIES || {};
+        var magicMax = (typeof MC.MAGIC_MAX === 'number')
+            ? MC.MAGIC_MAX : 10;
 
         var magic = {};
         var categoryTypes = [];
@@ -1599,10 +1681,7 @@
         options = options || {};
 
         if (options.currentYear === undefined || options.currentYear === null) {
-            console.warn(
-                'CharacterGenerator.generateCharacter: currentYear is ' +
-                'required. Using fallback.'
-            );
+            warnMissingCurrentYear();
         }
 
         var currentYear = options.currentYear || new Date().getFullYear();
