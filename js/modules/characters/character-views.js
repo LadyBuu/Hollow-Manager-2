@@ -16,65 +16,57 @@
  *
  * IMPORTANT:
  *   - RENDER ONLY - no data mutation
- *   - No direct window.data access
- *   - Uses SocialQueries, TeamQueries, DepartmentQueries
+ *   - Data access is via CharacterQueries / SocialQueries /
+ *     TeamQueries / DepartmentQueries, not raw window.data. The
+ *     single exception is the current-year fallback in
+ *     renderCharacterProfessional / renderProfessionalDepartmentsSection,
+ *     which reads window.data.currentYear when CharacterQueries is
+ *     unavailable.
  *   - Uses SocialConstants for type definitions
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
  *
- * PROFESSIONAL TAB STINT ACTIONS:
- *   Each professional stint row carries End and Remove buttons
- *   when the stint is open. The buttons carry
- *   data-action="end-professional-stint" and
- *   data-action="remove-professional-stint" plus the team id and
- *   join period. character-events.js dispatches them.
+ * GROUP COLLAPSE STATE:
+ *   The collapsed state for a relationship group is keyed by
+ *   `charId|typeId` and persisted in sessionStorage under
+ *   `characters_relationship_collapsed_v1`. A re-render reads
+ *   the current state from storage, so groups stay as the user
+ *   left them.
  *
- *   Rows are per-stint, not per-team. A character who has left
- *   and rejoined the same team appears twice, once per stint,
- *   because End and Remove act on a single interval. A closed
- *   stint shows only Remove (nothing to end).
+ *   A module-level click listener on document watches for
+ *   `.relationship-group-header` clicks. It runs alongside the
+ *   delegated handler in character-events.js. That handler toggles
+ *   the DOM; this listener reads the DOM after the toggle and
+ *   persists the state. Storage and DOM stay in sync without
+ *   character-events.js needing to know about this module.
  *
- *   The mutations route through TeamCore.endMemberInterval and
- *   TeamCore.purgeMemberInterval, which are the canonical paths
- *   already used by the team Members modal.
+ * PROFESSIONAL TAB BUCKETS:
+ *   When the current year is known and the TeamQueries helpers are
+ *   available, stints are split into:
+ *     Active    - the current year falls within the stint
+ *     Upcoming  - the stint starts after the current year
+ *     Former    - the stint ended before the current year
  *
- * TEAM SHAPE ASSUMPTION:
- *   renderCharacterProfessional assumes:
- *     - TeamQueries.getTeamsForCharacterAllTime(charId, 'professional')
- *       returns one entry per team the character has EVER been on,
- *       filtered by type
- *     - Each entry has an id and is resolvable via
- *       TeamQueries.getCharacterTeamMembership(teamId, charId)
- *     - The returned member has a `member.intervals` array, one
- *       entry per stint
+ *   A stint that fits none of these (corrupt window, missing
+ *   bounds) lands in the Membership list so the row is visible
+ *   and editable. When the split is unavailable, all stints land
+ *   in Membership.
  *
- *   If getTeamsForCharacterAllTime ever returns a "merged"
- *   interval (one entry covering the entire membership history),
- *   the row-per-stint invariant collapses to row-per-team. The
- *   code does not defend against that; the caller's TeamQueries
- *   contract is authoritative.
+ * STINT ACTIONS:
+ *   End and Remove buttons are rendered only when a stint has a
+ *   non-empty joinPeriod. A row without a join period cannot be
+ *   addressed by TeamCore.endMemberInterval /
+ *   purgeMemberInterval, and the event layer rejects it. Hiding
+ *   the buttons avoids dead actions.
  *
  * RELATIONSHIP FORM OWNERSHIP:
- *   The character-tab relationship form has been RETIRED.
- *   buildRelationshipFormHTML and buildCharacterOptions used to
- *   live here and duplicated the standalone Social tab's form.
- *   That duplication was the source of a data-corruption bug.
- *
- *   The character-tab Social section now opens the SAME modal the
- *   standalone tab opens, via SocialEvents.handleAddRelationship.
- *   See character-events.js openRelationshipModal for the
- *   delegation.
- *
- *   Do NOT reintroduce a relationship-form builder in this file.
- *
- * CLARIFICATION DISPLAY:
- *   The character-tab row reads the two-sided clarification
- *   fields (clarification1 / clarification2) and shows THIS
- *   character's role toward the other side, with a legacy
- *   fallback for old records that only carry `clarification`.
+ *   The character-tab relationship form has been RETIRED. Opening
+ *   the relationship modal from the character tab goes through
+ *   SocialEvents.handleAddRelationship. Do NOT reintroduce a
+ *   relationship-form builder in this file.
  *
  * GRAPH NODE COLORS:
- *   Node colors are read from --graph-node-* tokens declared in
+ *   Node colours come from --graph-node-* tokens declared in
  *   css/shared.css:
  *
  *     --graph-node-accent-fill
@@ -82,25 +74,22 @@
  *     --graph-node-accent-stroke
  *     --graph-node-info-stroke
  *
- *   These must exist in every theme this app supports. Do NOT
- *   inline hex literals here.
+ *   These must exist in every theme this app supports.
  *
- * GRAPH RENDERING TIMING:
- *   renderCharacterGraph reads container.clientWidth and
- *   container.clientHeight at render time. If the modal is
- *   hidden when renderCharacterGraph is called, the dimensions
- *   are 0 and the layout falls back to 800x500. The caller
- *   (character-events.js openCharacterGraphModal) defers the
- *   render by 50ms to allow the modal to become visible. If
- *   Modal.showModal's animation is extended, the delay may need
- *   adjustment; alternatively, defer to a requestAnimationFrame
- *   after the modal's 'visible' class is applied.
+ * GRAPH MODAL:
+ *   The graph modal is built as a plain DOM subtree with its own
+ *   close-button id and inline styles. character-events.js binds
+ *   the overlay-click handler separately. Migrating it to
+ *   Modal.modalSetup is a future improvement; the current shape is
+ *   documented here.
  *
- * DEPARTMENTS:
- *   renderProfessionalDepartmentsSection returns an empty string
- *   when DepartmentQueries is not loaded. It does not throw. The
- *   Professional tab still renders, without the departments
- *   sub-section.
+ * DEPENDENCIES (LAZY):
+ *   - window.CharacterQueries
+ *   - window.SocialQueries
+ *   - window.SocialConstants
+ *   - window.TeamQueries
+ *   - window.DepartmentQueries
+ *   - window.DomUtils
  */
 
 (function() {
@@ -112,38 +101,37 @@
     window.__characterViewsLoaded = true;
 
     // ============================================================
-    // LAZY LOADING HELPERS
+    // LAZY DEPENDENCY ACCESS
     // ============================================================
 
     function getCharacterQueries() { return window.CharacterQueries || null; }
     function getSocialQueries() { return window.SocialQueries || null; }
     function getSocialConstants() { return window.SocialConstants || null; }
-    function getSocialGraph() { return window.SocialGraph || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
     function getDepartmentQueries() { return window.DepartmentQueries || null; }
     function getDomUtils() { return window.DomUtils || null; }
 
-    // ============================================================
-    // STATE - collapse state per (charId, typeId)
-    // ============================================================
-
-    var _collapsedGroups = Object.create(null);
-
-    function getGroupKey(charId, typeId) {
-        return String(charId) + '|' + String(typeId);
-    }
-
-    function isGroupCollapsed(charId, typeId) {
-        return _collapsedGroups[getGroupKey(charId, typeId)] === true;
-    }
-
-    function setGroupCollapsed(charId, typeId, collapsed) {
-        var key = getGroupKey(charId, typeId);
-        if (collapsed) {
-            _collapsedGroups[key] = true;
-        } else {
-            delete _collapsedGroups[key];
+    var _warnedAboutCurrentYear = false;
+    function getCurrentYear() {
+        var CQ = getCharacterQueries();
+        if (CQ && typeof CQ.getCurrentYear === 'function') {
+            return CQ.getCurrentYear();
         }
+        if (window.data &&
+            typeof window.data.currentYear === 'number' &&
+            isFinite(window.data.currentYear) &&
+            window.data.currentYear > 0) {
+            return Math.floor(window.data.currentYear);
+        }
+        if (!_warnedAboutCurrentYear && typeof console !== 'undefined' &&
+            console.warn) {
+            _warnedAboutCurrentYear = true;
+            console.warn(
+                '[CharacterViews] CharacterQueries.getCurrentYear ' +
+                'is not available. Falling back to window.data.currentYear.'
+            );
+        }
+        return new Date().getFullYear();
     }
 
     // ============================================================
@@ -177,6 +165,116 @@
     }
 
     // ============================================================
+    // COLLAPSE STATE - sessionStorage-backed
+    // ============================================================
+
+    var COLLAPSE_STORAGE_KEY = 'characters_relationship_collapsed_v1';
+
+    function readCollapseMap() {
+        try {
+            var raw = sessionStorage.getItem(COLLAPSE_STORAGE_KEY);
+            if (!raw) { return {}; }
+            var parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                return parsed;
+            }
+        } catch (e) {
+            // Ignore.
+        }
+        return {};
+    }
+
+    function writeCollapseMap(map) {
+        try {
+            sessionStorage.setItem(
+                COLLAPSE_STORAGE_KEY, JSON.stringify(map)
+            );
+        } catch (e) {
+            // Ignore.
+        }
+    }
+
+    function getGroupKey(charId, typeId) {
+        return String(charId) + '|' + String(typeId);
+    }
+
+    function isGroupCollapsed(charId, typeId) {
+        var map = readCollapseMap();
+        return map[getGroupKey(charId, typeId)] === true;
+    }
+
+    function setGroupCollapsed(charId, typeId, collapsed) {
+        var map = readCollapseMap();
+        var key = getGroupKey(charId, typeId);
+        if (collapsed) {
+            map[key] = true;
+        } else {
+            delete map[key];
+        }
+        writeCollapseMap(map);
+    }
+
+    function toggleGroupCollapsed(charId, typeId) {
+        var next = !isGroupCollapsed(charId, typeId);
+        setGroupCollapsed(charId, typeId, next);
+        return next;
+    }
+
+    function clearCollapseState() {
+        try {
+            sessionStorage.removeItem(COLLAPSE_STORAGE_KEY);
+        } catch (e) {
+            // Ignore.
+        }
+    }
+
+    /**
+     * Module-level listener: after a click on a group header, read
+     * the resulting DOM state and persist it. Runs alongside the
+     * delegated handler in character-events.js (which performs the
+     * toggle). Installed once; idempotent.
+     */
+    function installCollapsePersistenceListener() {
+        if (window.__characterViewsCollapseListener) { return; }
+        window.__characterViewsCollapseListener = true;
+
+        document.addEventListener('click', function(e) {
+            var target = e.target;
+            if (!target || typeof target.closest !== 'function') {
+                return;
+            }
+            var header = target.closest('.relationship-group-header');
+            if (!header) { return; }
+
+            var group = header.closest('.relationship-group');
+            if (!group) { return; }
+
+            // The delegated handler in character-events.js runs
+            // first (the container-level listener bubbles before
+            // this document-level one). Read the resulting DOM
+            // state on a microtask boundary so the toggle has
+            // applied.
+            setTimeout(function() {
+                var body = group.querySelector(
+                    '.relationship-group-body'
+                );
+                if (!body) { return; }
+
+                var isCollapsed = body.style.display === 'none';
+
+                var charId = group.dataset.charId || '';
+                var typeId = group.dataset.type || '';
+
+                if (charId && typeId) {
+                    setGroupCollapsed(charId, typeId, isCollapsed);
+                }
+            }, 0);
+        });
+    }
+
+    installCollapsePersistenceListener();
+
+    // ============================================================
     // HELPERS - Relationship display
     // ============================================================
 
@@ -201,16 +299,17 @@
 
     function getDirectionGlyph(relationship, charId) {
         var SocialConstants = getSocialConstants();
-        if (!SocialConstants || typeof SocialConstants.isDirectional !== 'function') {
-            return '\u2194';
+        if (!SocialConstants ||
+            typeof SocialConstants.isDirectional !== 'function') {
+            return '\u2194\uFE0E';
         }
         if (!SocialConstants.isDirectional(relationship.typeId)) {
-            return '\u2194';
+            return '\u2194\uFE0E';
         }
         if (String(relationship.character1) === String(charId)) {
-            return '\u2192';
+            return '\u2192\uFE0E';
         }
-        return '\u2190';
+        return '\u2190\uFE0E';
     }
 
     // ============================================================
@@ -271,17 +370,22 @@
 
     function renderTypeGroup(charId, typeId, relationships) {
         var SocialConstants = getSocialConstants();
-        var label = SocialConstants && typeof SocialConstants.getLabel === 'function'
+        var label = SocialConstants &&
+            typeof SocialConstants.getLabel === 'function'
             ? SocialConstants.getLabel(typeId)
             : typeId;
-        var color = SocialConstants && typeof SocialConstants.getColor === 'function'
+        var color = SocialConstants &&
+            typeof SocialConstants.getColor === 'function'
             ? SocialConstants.getColor(typeId)
             : 'var(--relationship-other)';
 
         var ongoing = [];
         var ended = [];
         relationships.forEach(function(rel) {
-            if (rel && rel.endYear !== undefined && rel.endYear !== null && String(rel.endYear).trim() !== '') {
+            if (rel &&
+                rel.endYear !== undefined &&
+                rel.endYear !== null &&
+                String(rel.endYear).trim() !== '') {
                 ended.push(rel);
             } else {
                 ongoing.push(rel);
@@ -295,25 +399,55 @@
         var count = relationships.length;
 
         var html = '';
-        html += '<div class="relationship-group" data-type="' + escapeAttribute(typeId) + '" style="background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;overflow:hidden;">';
+        html += '<div class="relationship-group" ' +
+                    'data-type="' + escapeAttribute(typeId) + '" ' +
+                    'data-char-id="' + escapeAttribute(charId) + '" ' +
+                    'style="background:var(--panel-alt);' +
+                    'border:1px solid var(--border-soft);' +
+                    'border-radius:6px;overflow:hidden;">';
 
-        html += '<div class="relationship-group-header" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border-left:3px solid ' + escapeAttribute(color) + ';">';
-        html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
-        html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeAttribute(color) + ';">' + escapeHtml(label) + '</span>';
-        html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + count + ')</span>';
+        html += '<div class="relationship-group-header" ' +
+                    'style="display:flex;align-items:center;gap:6px;' +
+                    'padding:6px 10px;cursor:pointer;' +
+                    'background:var(--panel);border-left:3px solid ' +
+                    escapeAttribute(color) + ';">';
+        html += '<span class="relationship-group-caret" ' +
+                    'style="font-size:0.7rem;color:var(--text-dim);' +
+                    'width:12px;display:inline-block;">' +
+                    caret +
+                '</span>';
+        html += '<span style="font-size:0.75rem;font-weight:600;color:' +
+                    escapeAttribute(color) + ';">' +
+                    escapeHtml(label) +
+                '</span>';
+        html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' +
+                    count +
+                ')</span>';
         html += '</div>';
 
-        html += '<div class="relationship-group-body" style="display:' + bodyDisplay + ';padding:6px 10px;">';
+        html += '<div class="relationship-group-body" ' +
+                    'style="display:' + bodyDisplay + ';' +
+                    'padding:6px 10px;">';
 
         if (ongoing.length > 0) {
-            html += '<div class="relationship-subheader" style="font-size:0.6rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;padding:4px 0;border-bottom:1px solid var(--border-soft);margin-bottom:4px;">Ongoing</div>';
+            html += '<div class="relationship-subheader" ' +
+                        'style="font-size:0.6rem;font-weight:600;' +
+                        'color:var(--accent);text-transform:uppercase;' +
+                        'letter-spacing:0.05em;padding:4px 0;' +
+                        'border-bottom:1px solid var(--border-soft);' +
+                        'margin-bottom:4px;">Ongoing</div>';
             ongoing.forEach(function(rel) {
                 html += renderRelationshipRow(charId, rel, color);
             });
         }
 
         if (ended.length > 0) {
-            html += '<div class="relationship-subheader" style="font-size:0.6rem;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;padding:4px 0 4px 0;border-bottom:1px solid var(--border-soft);margin-bottom:4px;margin-top:6px;">Ended</div>';
+            html += '<div class="relationship-subheader" ' +
+                        'style="font-size:0.6rem;font-weight:600;' +
+                        'color:var(--text-dim);text-transform:uppercase;' +
+                        'letter-spacing:0.05em;padding:4px 0 4px 0;' +
+                        'border-bottom:1px solid var(--border-soft);' +
+                        'margin-bottom:4px;margin-top:6px;">Ended</div>';
             ended.forEach(function(rel) {
                 html += renderRelationshipRow(charId, rel, color);
             });
@@ -330,9 +464,11 @@
         var otherName = getCharacterName(otherId);
         var arrow = getDirectionGlyph(rel, charId);
 
-        var clar1 = rel.clarification1 !== undefined && rel.clarification1 !== null
+        var clar1 = rel.clarification1 !== undefined &&
+            rel.clarification1 !== null
             ? String(rel.clarification1) : '';
-        var clar2 = rel.clarification2 !== undefined && rel.clarification2 !== null
+        var clar2 = rel.clarification2 !== undefined &&
+            rel.clarification2 !== null
             ? String(rel.clarification2) : '';
         if (!clar1 && !clar2 && rel.clarification) {
             clar1 = String(rel.clarification);
@@ -343,7 +479,8 @@
         var otherClar = viewerIsChar1 ? clar2 : clar1;
 
         var clarDisplay = '';
-        if (viewerClar && otherClar && viewerClar.toLowerCase() !== otherClar.toLowerCase()) {
+        if (viewerClar && otherClar &&
+            viewerClar.toLowerCase() !== otherClar.toLowerCase()) {
             clarDisplay = viewerClar + ' / ' + otherClar;
         } else if (viewerClar) {
             clarDisplay = viewerClar;
@@ -363,23 +500,44 @@
         }
 
         var html = '';
-        html += '<div class="relationship-row" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
+        html += '<div class="relationship-row" ' +
+                    'style="display:flex;align-items:center;gap:6px;' +
+                    'padding:4px 0 4px 18px;font-size:0.72rem;">';
 
-        html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
-        html += '<span style="font-weight:600;">' + escapeHtml(otherName) + '</span>';
-        html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + arrow + '</span>';
+        html += '<span style="flex:1;display:flex;align-items:center;' +
+                    'gap:6px;flex-wrap:wrap;">';
+        html += '<span style="font-weight:600;">' +
+                    escapeHtml(otherName) +
+                '</span>';
+        html += '<span style="color:var(--text-dim);font-size:0.9rem;">' +
+                    arrow +
+                '</span>';
         if (clarDisplay) {
-            html += '<span style="color:' + escapeAttribute(color) + ';font-size:0.7rem;">' + escapeHtml(clarDisplay) + '</span>';
+            html += '<span style="color:' +
+                        escapeAttribute(color) +
+                        ';font-size:0.7rem;">' +
+                        escapeHtml(clarDisplay) +
+                    '</span>';
         }
         html += '</span>';
 
         if (periodDisplay) {
-            html += '<span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(periodDisplay) + '</span>';
+            html += '<span style="color:var(--text-dim);font-size:0.65rem;">' +
+                        escapeHtml(periodDisplay) +
+                    '</span>';
         }
 
         html += '<span style="display:flex;gap:4px;">';
-        html += '<button type="button" class="edit-char-relationship small" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">\u270e</button>';
-        html += '<button type="button" class="delete-char-relationship small danger" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">\u2715</button>';
+        html += '<button type="button" ' +
+                    'class="edit-char-relationship small" ' +
+                    'data-rel-id="' + escapeAttribute(rel.id) + '" ' +
+                    'style="font-size:0.55rem;padding:1px 6px;" ' +
+                    'title="Edit">\u270e</button>';
+        html += '<button type="button" ' +
+                    'class="delete-char-relationship small danger" ' +
+                    'data-rel-id="' + escapeAttribute(rel.id) + '" ' +
+                    'style="font-size:0.55rem;padding:1px 6px;" ' +
+                    'title="Delete">\u2715</button>';
         html += '</span>';
 
         html += '</div>';
@@ -397,9 +555,7 @@
 
         container.textContent = '';
 
-        if (!char || !char.id) {
-            return;
-        }
+        if (!char || !char.id) { return; }
 
         var TeamQueries = getTeamQueries();
         if (!TeamQueries ||
@@ -416,8 +572,7 @@
         var teams = [];
         try {
             teams = TeamQueries.getTeamsForCharacterAllTime(
-                char.id,
-                'professional'
+                char.id, 'professional'
             ) || [];
         } catch (e) {
             console.warn(
@@ -446,18 +601,25 @@
         }
 
         var currentYear = null;
-        if (window.data &&
-            typeof window.data.currentYear === 'number' &&
-            isFinite(window.data.currentYear) &&
-            window.data.currentYear > 0) {
-            currentYear = Math.floor(window.data.currentYear);
+        var CQ = getCharacterQueries();
+        if (CQ && typeof CQ.getCurrentYear === 'function') {
+            var y = CQ.getCurrentYear();
+            if (typeof y === 'number' && isFinite(y) && y > 0) {
+                currentYear = Math.floor(y);
+            }
+        } else {
+            var rawYear = getCurrentYear();
+            if (typeof rawYear === 'number' && isFinite(rawYear) &&
+                rawYear > 0) {
+                currentYear = Math.floor(rawYear);
+            }
         }
 
         var canSplit = currentYear !== null &&
-            typeof TeamQueries.isMemberActive === 'function' &&
-            typeof TeamQueries.isMemberFormer === 'function';
+            typeof TeamQueries.intervalContains === 'function';
 
         var activeRows = [];
+        var upcomingRows = [];
         var formerRows = [];
 
         for (var i = 0; i < teams.length; i++) {
@@ -474,14 +636,11 @@
             }
             if (!member) { continue; }
 
-            // One row per stint.
             var intervals = Array.isArray(member.intervals)
                 ? member.intervals
                 : [];
 
-            if (intervals.length === 0) {
-                continue;
-            }
+            if (intervals.length === 0) { continue; }
 
             for (var s = 0; s < intervals.length; s++) {
                 var interval = intervals[s];
@@ -493,60 +652,27 @@
                     team, member, interval
                 );
 
-                // Classification follows the STINT, not the member.
-                var stintActive = false;
-                var stintFormer = false;
+                var bucket = classifyStintBucket(
+                    interval, currentYear, canSplit, TeamQueries
+                );
 
-                if (canSplit) {
-                    try {
-                        stintActive = TeamQueries.intervalContains(
-                            interval, currentYear
-                        ) === true;
-                    } catch (e) {
-                        stintActive = false;
-                    }
-
-                    if (!stintActive) {
-                        var leave = interval.leavePeriod === undefined ||
-                            interval.leavePeriod === null
-                            ? ''
-                            : String(interval.leavePeriod).trim();
-                        var join = interval.joinPeriod === undefined ||
-                            interval.joinPeriod === null
-                            ? ''
-                            : String(interval.joinPeriod).trim();
-                        var joinNum = parseInt(join, 10);
-                        var leaveNum = parseInt(leave, 10);
-
-                        if (leave !== '' &&
-                            !isNaN(leaveNum) &&
-                            leaveNum < currentYear) {
-                            stintFormer = true;
-                        }
-                        // Future stints (join > currentYear) fall
-                        // through as neither active nor former;
-                        // they land in the else branch below and
-                        // are shown in the "active" bucket so the
-                        // row remains editable.
-                    }
-                }
-
-                if (stintActive) {
+                if (bucket === 'active') {
                     activeRows.push(row);
-                } else if (stintFormer) {
+                } else if (bucket === 'upcoming') {
+                    upcomingRows.push(row);
+                } else if (bucket === 'former') {
                     formerRows.push(row);
                 } else {
-                    // Neither active nor former, OR the split
+                    // Neither active, upcoming, nor former, OR the
                     // classification is unavailable. Fall into the
-                    // active bucket so the row is still visible
-                    // and editable. This also covers future stints
-                    // and the canSplit === false case.
+                    // Membership list so the row remains editable.
                     activeRows.push(row);
                 }
             }
         }
 
         activeRows.sort(compareProfessionalRows);
+        upcomingRows.sort(compareProfessionalRows);
         formerRows.sort(compareProfessionalRows);
 
         var html = '';
@@ -564,17 +690,24 @@
                     'Active', activeRows
                 );
             }
+            if (upcomingRows.length > 0) {
+                html += renderProfessionalSubsection(
+                    'Upcoming', upcomingRows
+                );
+            }
             if (formerRows.length > 0) {
                 html += renderProfessionalSubsection(
                     'Former', formerRows
                 );
             }
-            if (activeRows.length === 0 && formerRows.length === 0) {
+            if (activeRows.length === 0 &&
+                upcomingRows.length === 0 &&
+                formerRows.length === 0) {
                 html += '<p class="empty-state" ' +
                             'style="padding:4px;font-size:0.7rem;' +
                             'color:var(--text-dim);">' +
-                            'No current or former professional team ' +
-                            'memberships.' +
+                            'No current, upcoming, or former ' +
+                            'professional team memberships.' +
                         '</p>';
             }
         } else {
@@ -590,6 +723,49 @@
         container.innerHTML = html;
     }
 
+    /**
+     * Classify a stint into 'active' | 'upcoming' | 'former' | null.
+     * A null return means "not classifiable"; the caller falls into
+     * the Membership list so the row remains visible.
+     */
+    function classifyStintBucket(
+        interval, currentYear, canSplit, TeamQueries
+    ) {
+        if (!canSplit || currentYear === null) { return null; }
+
+        var join = interval.joinPeriod === undefined ||
+            interval.joinPeriod === null
+            ? '' : String(interval.joinPeriod).trim();
+        var leave = interval.leavePeriod === undefined ||
+            interval.leavePeriod === null
+            ? '' : String(interval.leavePeriod).trim();
+
+        var joinNum = parseInt(join, 10);
+        var leaveNum = parseInt(leave, 10);
+        var hasJoin = join !== '' && !isNaN(joinNum);
+        var hasLeave = leave !== '' && !isNaN(leaveNum);
+
+        // Upcoming: starts strictly after the current year.
+        if (hasJoin && joinNum > currentYear) {
+            return 'upcoming';
+        }
+
+        // Former: ended strictly before the current year.
+        if (hasLeave && leaveNum < currentYear) {
+            return 'former';
+        }
+
+        // Active: current year within the window.
+        if (hasJoin && joinNum <= currentYear) {
+            if (!hasLeave || leaveNum >= currentYear) {
+                return 'active';
+            }
+        }
+
+        // Corrupt window (join > leave, malformed bounds): null.
+        return null;
+    }
+
     // ============================================================
     // RENDER - Departments sub-section
     // ============================================================
@@ -602,14 +778,12 @@
             return '';
         }
 
-        var currentYear = null;
-        if (window.data &&
-            typeof window.data.currentYear === 'number' &&
-            isFinite(window.data.currentYear) &&
-            window.data.currentYear > 0) {
-            currentYear = Math.floor(window.data.currentYear);
+        var currentYear = getCurrentYear();
+        if (typeof currentYear !== 'number' ||
+            !isFinite(currentYear) || currentYear < 1) {
+            return '';
         }
-        if (currentYear === null) { return ''; }
+        currentYear = Math.floor(currentYear);
 
         var departments = [];
         try {
@@ -759,7 +933,7 @@
             : '';
 
         var periodDisplay = buildStintPeriodDisplay(join, leave);
-        var isOpen = leave === '';
+        var isOpen = leave === '' && join !== '';
 
         var html = '';
         html += '<div class="character-professional-team-row" ' +
@@ -797,9 +971,17 @@
         html += '</div>';
 
         return {
-            sortKey: teamName + '|' + (join || ''),
+            sortKey: teamName + '|' + padYear(join),
             html: html
         };
+    }
+
+    function padYear(yearStr) {
+        var n = parseInt(yearStr, 10);
+        if (isNaN(n)) { return '0000'; }
+        var s = String(n);
+        while (s.length < 4) { s = '0' + s; }
+        return s;
     }
 
     function buildStintActions(team, join, leave, isOpen) {
@@ -807,12 +989,21 @@
         html += '<span class="stint-actions" ' +
                     'style="display:flex;gap:4px;align-items:center;">';
 
+        // Actions require a join period. A row without one cannot
+        // be addressed by TeamCore.endMemberInterval /
+        // purgeMemberInterval, so the buttons are hidden.
+        if (join === '') {
+            html += '</span>';
+            return html;
+        }
+
         if (isOpen) {
             html += '<button type="button" ' +
                         'class="small secondary stint-end-btn" ' +
                         'data-action="end-professional-stint" ' +
                         'data-team-id="' + escapeAttribute(team.id) + '" ' +
-                        'data-join-period="' + escapeAttribute(join) + '" ' +
+                        'data-join-period="' +
+                            escapeAttribute(join) + '" ' +
                         'title="Set a leave year for this stint">' +
                         'End' +
                     '</button>';
@@ -924,7 +1115,9 @@
         var centerX = width / 2;
         var centerY = height / 2;
 
-        var others = nodeIds.filter(function(id) { return id !== String(charId); });
+        var others = nodeIds.filter(function(id) {
+            return id !== String(charId);
+        });
         var radius = Math.min(width, height) * 0.35;
 
         var positions = Object.create(null);
@@ -946,10 +1139,14 @@
             var p2 = positions[String(rel.character2)];
             if (!p1 || !p2) { return; }
 
-            var color = SocialConstants.getColor(rel.typeId) || 'var(--relationship-other)';
+            var color = SocialConstants.getColor(rel.typeId) ||
+                'var(--relationship-other)';
             var isDir = SocialConstants.isDirectional(rel.typeId);
 
-            html += '<line x1="' + p1.x + '" y1="' + p1.y + '" x2="' + p2.x + '" y2="' + p2.y + '" stroke="' + escapeAttribute(color) + '" stroke-width="2" opacity="0.6" />';
+            html += '<line x1="' + p1.x + '" y1="' + p1.y + '" x2="' +
+                p2.x + '" y2="' + p2.y + '" stroke="' +
+                escapeAttribute(color) + '" stroke-width="2" ' +
+                'opacity="0.6" />';
 
             if (isDir) {
                 var dx = p2.x - p1.x;
@@ -963,10 +1160,14 @@
                 var ay = p1.y + (p2.y - p1.y) * ratio;
 
                 html += '<polygon points="' +
-                    (ax + arrowSize * Math.cos(angle - 0.4)) + ',' + (ay + arrowSize * Math.sin(angle - 0.4)) + ' ' +
-                    (ax + arrowSize * Math.cos(angle + 0.4)) + ',' + (ay + arrowSize * Math.sin(angle + 0.4)) + ' ' +
-                    (ax + arrowSize * 1.4 * Math.cos(angle)) + ',' + (ay + arrowSize * 1.4 * Math.sin(angle)) +
-                    '" fill="' + escapeAttribute(color) + '" opacity="0.8" />';
+                    (ax + arrowSize * Math.cos(angle - 0.4)) + ',' +
+                    (ay + arrowSize * Math.sin(angle - 0.4)) + ' ' +
+                    (ax + arrowSize * Math.cos(angle + 0.4)) + ',' +
+                    (ay + arrowSize * Math.sin(angle + 0.4)) + ' ' +
+                    (ax + arrowSize * 1.4 * Math.cos(angle)) + ',' +
+                    (ay + arrowSize * 1.4 * Math.sin(angle)) +
+                    '" fill="' + escapeAttribute(color) +
+                    '" opacity="0.8" />';
             }
         });
 
@@ -980,7 +1181,8 @@
             var connCount = 0;
             relationships.forEach(function(rel) {
                 if (!rel) { return; }
-                if (String(rel.character1) === id || String(rel.character2) === id) {
+                if (String(rel.character1) === id ||
+                    String(rel.character2) === id) {
                     connCount++;
                 }
             });
@@ -1002,15 +1204,24 @@
                 if (parts.length >= 2) {
                     var first = parts[0];
                     var last = parts[parts.length - 1];
-                    label = (first.length > 6 ? first.charAt(0) + '. ' + last : first + ' ' + last.charAt(0) + '.');
+                    label = (first.length > 6
+                        ? first.charAt(0) + '. ' + last
+                        : first + ' ' + last.charAt(0) + '.');
                 } else {
                     label = label.substring(0, 10) + '...';
                 }
             }
 
-            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + (r + 3) + '" fill="rgba(0,0,0,0.3)" />';
-            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="2" />';
-            html += '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" text-anchor="middle" fill="var(--text)" font-size="' + Math.max(9, r * 0.5) + '" font-weight="600" pointer-events="none">' + escapeHtml(label) + '</text>';
+            html += '<circle cx="' + pos.x + '" cy="' + pos.y +
+                '" r="' + (r + 3) + '" fill="rgba(0,0,0,0.3)" />';
+            html += '<circle cx="' + pos.x + '" cy="' + pos.y +
+                '" r="' + r + '" fill="' + fill + '" stroke="' +
+                stroke + '" stroke-width="2" />';
+            html += '<text x="' + pos.x + '" y="' + (pos.y + 4) +
+                '" text-anchor="middle" fill="var(--text)" font-size="' +
+                Math.max(9, r * 0.5) + '" font-weight="600" ' +
+                'pointer-events="none">' + escapeHtml(label) +
+                '</text>';
         });
 
         transformGroup.innerHTML = html;
@@ -1023,7 +1234,9 @@
     }
 
     function renderGraphLegend(typeIds, charId) {
-        var legendItems = document.getElementById('character-graph-legend-items');
+        var legendItems = document.getElementById(
+            'character-graph-legend-items'
+        );
         if (!legendItems) { return; }
         legendItems.textContent = '';
 
@@ -1036,14 +1249,19 @@
             var isDir = SocialConstants.isDirectional(typeId);
 
             var span = document.createElement('span');
-            span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-right:8px;font-size:0.7rem;';
+            span.style.cssText =
+                'display:inline-flex;align-items:center;gap:4px;' +
+                'margin-right:8px;font-size:0.7rem;';
 
             var swatch = document.createElement('span');
-            swatch.style.cssText = 'display:inline-block;width:12px;height:4px;background:' + color + ';border-radius:2px;';
+            swatch.style.cssText =
+                'display:inline-block;width:12px;height:4px;' +
+                'background:' + escapeAttribute(color) + ';' +
+                'border-radius:2px;';
             span.appendChild(swatch);
 
             var text = document.createElement('span');
-            text.textContent = label + (isDir ? ' \u2192' : '');
+            text.textContent = label + (isDir ? ' \u2192\uFE0E' : '');
             span.appendChild(text);
 
             legendItems.appendChild(span);
@@ -1054,16 +1272,18 @@
     // EXPOSE
     // ============================================================
 
-    window.CharacterViews = {
+    window.CharacterViews = Object.freeze({
         renderCharacterSocial: renderCharacterSocial,
         renderCharacterProfessional: renderCharacterProfessional,
 
         buildGraphModalHTML: buildGraphModalHTML,
         renderCharacterGraph: renderCharacterGraph,
 
-        clearCollapseState: function() {
-            _collapsedGroups = Object.create(null);
-        }
-    };
+        // Collapse state
+        isGroupCollapsed: isGroupCollapsed,
+        setGroupCollapsed: setGroupCollapsed,
+        toggleGroupCollapsed: toggleGroupCollapsed,
+        clearCollapseState: clearCollapseState
+    });
 
 })();
