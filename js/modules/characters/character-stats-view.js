@@ -1,17 +1,32 @@
 /**
  * js/modules/characters/character-stats-view.js - Combat View
- * Renders the magical section and special moves section of the Combat tab.
+ * Renders the magical section and special moves section of the
+ * Combat tab.
+ *
  * Path: js/modules/characters/character-stats-view.js
  *
  * IMPORTANT:
  *   - RENDER ONLY - domain logic is in character-stats.js
  *   - No data mutation
  *   - No persistence calls
- *   - Uses MagicConstants for definitions
- *   - Uses CharacterStats for derivation
- *   - Uses CharacterQueries for character data
- *   - Uses FormUtils for field operations
- *   - Uses DomUtils for escaping
+ *   - Uses MagicConstants for definitions (lazy)
+ *   - Uses CharacterConstants for bounds (lazy)
+ *   - Uses CharacterStats for derivation (lazy)
+ *   - Uses CharacterQueries for character data (lazy)
+ *   - Uses FormUtils for field operations (lazy)
+ *   - Uses DomUtils for escaping (lazy)
+ *
+ * LOAD ORDER:
+ *   All dependencies are resolved at call time. The module loads
+ *   cleanly regardless of script order. The HTML generators return
+ *   safe placeholders when their dependencies are absent.
+ *
+ * COLOUR SANITISATION:
+ *   Magic category colours come from MagicConstants and are
+ *   var(--...) references. They are still passed through
+ *   escapeAttribute (attribute context) and, when available,
+ *   DomUtils.sanitizeCssValue, so a hostile value cannot escape
+ *   the style attribute.
  *
  * MOVES DOM CONTRACT:
  *   Each rendered move row carries:
@@ -28,15 +43,17 @@
  *     </div>
  *
  *   collectMovesFromDOM() reads these rows back out. The id, if
- *   present, is preserved; a row without an id gets id: '' and
- *   the save path (CharacterCRUD.normaliseCharacterData) will
- *   carry it through unchanged. character-moves.js is not
- *   involved in the form's save path; the form is a direct
- *   carrier of the moves array.
+ *   present and non-empty, is preserved; a row without an id gets
+ *   id: '' and the save path (CharacterCRUD.normaliseCharacterData)
+ *   carries it through unchanged.
  *
  *   The name is stored in .special-move-name's textContent and
  *   the description in .special-move-description's textContent.
- *   Whitespace is trimmed.
+ *   Whitespace is trimmed. Rows with an empty name are dropped.
+ *
+ *   This module does NOT persist moves. CharacterMoves owns the
+ *   record-store mutations; the form is a direct carrier of the
+ *   moves array on save.
  */
 
 (function() {
@@ -48,7 +65,7 @@
     window.__characterStatsViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY ACCESS - LAZY
     // ============================================================
 
     function getMagicConstants() { return window.MagicConstants || null; }
@@ -57,12 +74,23 @@
     function getCharacterQueries() { return window.CharacterQueries || null; }
     function getFormUtils() { return window.FormUtils || null; }
     function getDomUtils() { return window.DomUtils || null; }
-    function getModal() { return window.Modal || null; }
+
+    function getMagicMax() {
+        var MC = getMagicConstants();
+        if (MC && typeof MC.MAGIC_MAX === 'number') {
+            return MC.MAGIC_MAX;
+        }
+        return 10;
+    }
+
+    // ============================================================
+    // ESCAPING
+    // ============================================================
 
     function escapeHtml(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -73,22 +101,52 @@
             .replace(/'/g, '&#039;');
     }
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-        if (!getMagicConstants()) { missing.push('MagicConstants'); }
-        if (!getCharacterConstants()) { missing.push('CharacterConstants'); }
-        if (!getCharacterStats()) { missing.push('CharacterStats'); }
-        if (!getCharacterQueries()) { missing.push('CharacterQueries'); }
-        if (!getFormUtils()) { missing.push('FormUtils'); }
-        if (missing.length > 0) {
-            console.warn('[CharacterStatsView] Missing dependencies:', missing.join(', '));
-            return false;
+    function escapeAttribute(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
         }
-        return true;
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Sanitise a colour for use in a style attribute. Prefers
+     * DomUtils.sanitizeCssValue when available; falls back to a
+     * narrow allowlist for var() references and simple colour
+     * keywords, otherwise returns a safe default.
+     */
+    function sanitiseColour(value, fallback) {
+        fallback = fallback || 'var(--accent)';
+        if (value === undefined || value === null || value === '') {
+            return fallback;
+        }
+
+        var DU = getDomUtils();
+        if (DU && typeof DU.sanitizeCssValue === 'function') {
+            var sanitised = DU.sanitizeCssValue(value);
+            if (sanitised !== '') {
+                return sanitised;
+            }
+            return fallback;
+        }
+
+        // Fallback: permit var(--…) and simple hex/keyword values.
+        if (typeof value !== 'string') { return fallback; }
+        var trimmed = value.trim();
+        if (/^var\(--[a-zA-Z0-9_-]+\)$/.test(trimmed)) {
+            return trimmed;
+        }
+        if (/^#[0-9a-fA-F]{3,8}$/.test(trimmed)) {
+            return trimmed;
+        }
+        if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(trimmed)) {
+            return trimmed;
+        }
+        return fallback;
     }
 
     // ============================================================
@@ -98,99 +156,208 @@
     function getMagicalSectionHTML(c) {
         var MC = getMagicConstants();
         if (!MC) {
-            return '<p class="empty-state">Magic constants not loaded.</p>';
+            return '<div class="combat-section" ' +
+                'style="margin-bottom:12px;padding:10px;' +
+                'background:var(--panel);border:1px solid var(--border);' +
+                'border-radius:var(--radius);">' +
+                '<p class="empty-state">Magic constants not loaded.</p>' +
+                '</div>';
         }
 
-        var magic = c.magic || {};
-        var categories = MC.getCategoryOrder ? MC.getCategoryOrder() : ['elemental', 'body', 'aether'];
+        var magic = c && c.magic ? c.magic : {};
+        var categories = (typeof MC.getCategoryOrder === 'function')
+            ? MC.getCategoryOrder()
+            : ['elemental', 'body', 'aether'];
 
         var categoriesHTML = '';
 
-        categories.forEach(function(catId) {
+        for (var ci = 0; ci < categories.length; ci++) {
+            var catId = categories[ci];
             var cat = MC.getCategory(catId);
-            if (!cat) { return; }
+            if (!cat) { continue; }
             var types = MC.getCategoryTypes(catId);
 
             var total = 0;
-            types.forEach(function(t) { total += Number(magic[t]) || 0; });
+            for (var t = 0; t < types.length; t++) {
+                total += Number(magic[types[t]]) || 0;
+            }
+
+            var safeCatColour = sanitiseColour(
+                cat.color,
+                'var(--accent)'
+            );
 
             var typeInputs = '';
-            types.forEach(function(typeKey) {
+            for (var ti = 0; ti < types.length; ti++) {
+                var typeKey = types[ti];
                 var label = MC.getTypeLabel(typeKey);
                 var value = magic[typeKey] !== undefined ? magic[typeKey] : 0;
                 var levelLabel = MC.getProficiencyLevelLabel(value);
 
-                typeInputs += `
-                    <div class="magic-type-block" style="display:flex;flex-direction:column;gap:2px;align-items:center;padding:4px;background:var(--bg);border:1px solid var(--border-soft);border-radius:4px;">
-                        <label style="font-size:0.55rem;color:var(--text-dim);font-weight:600;">${escapeHtml(label)}</label>
-                        <input type="number" id="char-magic-${typeKey}" value="${value}" min="0" max="10" data-magic-key="${typeKey}" class="magic-input" style="width:100%;padding:3px 4px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:3px;font-size:0.8rem;text-align:center;font-weight:600;">
-                        <span class="magic-level" data-magic-level="${typeKey}" style="font-size:0.5rem;color:var(--text-dim);">${escapeHtml(levelLabel)}</span>
-                    </div>
-                `;
-            });
+                typeInputs +=
+                    '<div class="magic-type-block" style="display:flex;' +
+                        'flex-direction:column;gap:2px;align-items:center;' +
+                        'padding:4px;background:var(--bg);' +
+                        'border:1px solid var(--border-soft);' +
+                        'border-radius:4px;">' +
+                        '<label style="font-size:0.55rem;' +
+                            'color:var(--text-dim);font-weight:600;">' +
+                            escapeHtml(label) +
+                        '</label>' +
+                        '<input type="number" id="char-magic-' +
+                            escapeAttribute(typeKey) + '" ' +
+                            'value="' + escapeAttribute(String(value)) + '" ' +
+                            'min="0" max="' + escapeAttribute(String(getMagicMax())) + '" ' +
+                            'data-magic-key="' + escapeAttribute(typeKey) + '" ' +
+                            'class="magic-input" ' +
+                            'style="width:100%;padding:3px 4px;' +
+                            'background:var(--panel-alt);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--text);border-radius:3px;' +
+                            'font-size:0.8rem;text-align:center;' +
+                            'font-weight:600;">' +
+                        '<span class="magic-level" ' +
+                            'data-magic-level="' + escapeAttribute(typeKey) + '" ' +
+                            'style="font-size:0.5rem;' +
+                            'color:var(--text-dim);">' +
+                            escapeHtml(levelLabel) +
+                        '</span>' +
+                    '</div>';
+            }
 
-            categoriesHTML += `
-                <div class="magic-category" style="margin-bottom:10px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                        <label style="font-size:0.7rem;color:${escapeHtml(cat.color || 'var(--accent)')};font-weight:600;">${escapeHtml(cat.label)}</label>
-                        <span style="font-size:0.6rem;color:var(--text-dim);">Total: <span data-magic-total="${catId}">${total}</span></span>
-                    </div>
-                    <div class="magic-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;">
-                        ${typeInputs}
-                    </div>
-                </div>
-            `;
-        });
+            categoriesHTML +=
+                '<div class="magic-category" style="margin-bottom:10px;">' +
+                    '<div style="display:flex;justify-content:space-between;' +
+                        'align-items:center;margin-bottom:4px;">' +
+                        '<label style="font-size:0.7rem;color:' +
+                            escapeAttribute(safeCatColour) +
+                            ';font-weight:600;">' +
+                            escapeHtml(cat.label) +
+                        '</label>' +
+                        '<span style="font-size:0.6rem;' +
+                            'color:var(--text-dim);">Total: ' +
+                            '<span data-magic-total="' +
+                                escapeAttribute(catId) + '">' +
+                                escapeHtml(String(total)) +
+                            '</span>' +
+                        '</span>' +
+                    '</div>' +
+                    '<div class="magic-grid" ' +
+                        'style="display:grid;' +
+                        'grid-template-columns:repeat(6,1fr);' +
+                        'gap:4px;">' +
+                        typeInputs +
+                    '</div>' +
+                '</div>';
+        }
 
         // Broad + fine override dropdowns
-        var broadOptions = '<option value="">— Derived —</option>';
-        var broadClasses = MC.getBroadClasses();
-        broadClasses.forEach(function(cls) {
-            broadOptions += '<option value="' + escapeHtml(cls.id) + '">' + escapeHtml(cls.label) + '</option>';
-        });
+        var broadOptions = '<option value="">\u2014 Derived \u2014</option>';
+        var broadClasses = (typeof MC.getBroadClasses === 'function')
+            ? MC.getBroadClasses()
+            : [];
+        for (var bi = 0; bi < broadClasses.length; bi++) {
+            var bc = broadClasses[bi];
+            broadOptions += '<option value="' +
+                escapeAttribute(bc.id) + '">' +
+                escapeHtml(bc.label) +
+                '</option>';
+        }
 
-        var fineOptions = '<option value="">— Derived —</option>';
-        var fineClasses = MC.getFineClasses();
-        fineClasses.forEach(function(cls) {
-            fineOptions += '<option value="' + escapeHtml(cls.id) + '">' + escapeHtml(cls.label) + '</option>';
-        });
+        var fineOptions = '<option value="">\u2014 Derived \u2014</option>';
+        var fineClasses = (typeof MC.getFineClasses === 'function')
+            ? MC.getFineClasses()
+            : [];
+        for (var fi = 0; fi < fineClasses.length; fi++) {
+            var fc = fineClasses[fi];
+            fineOptions += '<option value="' +
+                escapeAttribute(fc.id) + '">' +
+                escapeHtml(fc.label) +
+                '</option>';
+        }
 
-        return `
-            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Magical</label>
-                    <button type="button" id="roll-magic-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Roll Magic</button>
-                </div>
+        return (
+            '<div class="combat-section" style="margin-bottom:12px;' +
+                'padding:10px;background:var(--panel);' +
+                'border:1px solid var(--border);' +
+                'border-radius:var(--radius);">' +
+                '<div style="display:flex;justify-content:space-between;' +
+                    'align-items:center;margin-bottom:8px;' +
+                    'flex-wrap:wrap;gap:6px;">' +
+                    '<label style="font-size:0.8rem;color:var(--accent);' +
+                        'font-weight:600;">Magical</label>' +
+                    '<button type="button" id="roll-magic-btn" ' +
+                        'class="small secondary" ' +
+                        'style="font-size:0.65rem;padding:3px 10px;">' +
+                        '\u27f3 Roll Magic' +
+                    '</button>' +
+                '</div>' +
 
-                ${categoriesHTML}
+                categoriesHTML +
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Broad Class (derived)</label>
-                        <div id="derived-broad-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--info);border-radius:4px;font-size:0.75rem;font-weight:600;">—</div>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Fine Class (derived)</label>
-                        <div id="derived-fine-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--warning);border-radius:4px;font-size:0.75rem;font-weight:600;">—</div>
-                    </div>
-                </div>
+                '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+                    'gap:8px;margin-top:8px;">' +
+                    '<div class="form-group">' +
+                        '<label style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Broad Class (derived)' +
+                        '</label>' +
+                        '<div id="derived-broad-class" ' +
+                            'style="padding:5px 8px;background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--info);border-radius:4px;' +
+                            'font-size:0.75rem;font-weight:600;">' +
+                            '\u2014' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Fine Class (derived)' +
+                        '</label>' +
+                        '<div id="derived-fine-class" ' +
+                            'style="padding:5px 8px;background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--warning);border-radius:4px;' +
+                            'font-size:0.75rem;font-weight:600;">' +
+                            '\u2014' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Override Broad (display only)</label>
-                        <select id="broad-class-override" style="width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                            ${broadOptions}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Override Fine (raises proficiency to 8)</label>
-                        <select id="fine-class-override" style="width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                            ${fineOptions}
-                        </select>
-                    </div>
-                </div>
-            </div>
-        `;
+                '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+                    'gap:8px;margin-top:8px;">' +
+                    '<div class="form-group">' +
+                        '<label style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Override Broad (display only)' +
+                        '</label>' +
+                        '<select id="broad-class-override" ' +
+                            'style="width:100%;padding:5px 8px;' +
+                            'background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--text);border-radius:4px;' +
+                            'font-size:0.75rem;">' +
+                            broadOptions +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Override Fine (raises proficiency to 8)' +
+                        '</label>' +
+                        '<select id="fine-class-override" ' +
+                            'style="width:100%;padding:5px 8px;' +
+                            'background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--text);border-radius:4px;' +
+                            'font-size:0.75rem;">' +
+                            fineOptions +
+                        '</select>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
     }
 
     // ============================================================
@@ -198,37 +365,98 @@
     // ============================================================
 
     function getMovesSectionHTML(c) {
-        return `
-            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
-                <label style="font-size:0.8rem;color:var(--accent);font-weight:600;display:block;margin-bottom:8px;">Special Moves</label>
+        return (
+            '<div class="combat-section" style="margin-bottom:12px;' +
+                'padding:10px;background:var(--panel);' +
+                'border:1px solid var(--border);' +
+                'border-radius:var(--radius);">' +
+                '<label style="font-size:0.8rem;color:var(--accent);' +
+                    'font-weight:600;display:block;margin-bottom:8px;">' +
+                    'Special Moves' +
+                '</label>' +
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="moves-column" style="background:var(--panel-alt);padding:6px;border-radius:6px;border:1px solid var(--border-soft);">
-                        <label style="font-size:0.65rem;font-weight:600;color:var(--accent);">Physical</label>
-                        <div id="physical-moves-list" class="moves-list" style="margin-top:2px;max-height:120px;overflow-y:auto;">
-                            <p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>
-                        </div>
-                        <div class="move-input-group" style="margin-top:4px;">
-                            <input type="text" id="physical-move-name" placeholder="Move name" style="width:100%;padding:3px 5px;font-size:0.65rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;">
-                            <input type="text" id="physical-move-desc" placeholder="Description (optional)" style="width:100%;padding:3px 5px;font-size:0.65rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;">
-                            <button type="button" id="add-physical-move-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">+ Add</button>
-                        </div>
-                    </div>
+                '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+                    'gap:8px;">' +
+                    '<div class="moves-column" ' +
+                        'style="background:var(--panel-alt);padding:6px;' +
+                        'border-radius:6px;' +
+                        'border:1px solid var(--border-soft);">' +
+                        '<label style="font-size:0.65rem;font-weight:600;' +
+                            'color:var(--accent);">Physical</label>' +
+                        '<div id="physical-moves-list" class="moves-list" ' +
+                            'style="margin-top:2px;max-height:120px;' +
+                            'overflow-y:auto;">' +
+                            '<p class="empty-state" ' +
+                                'style="padding:4px;font-size:0.7rem;">' +
+                                'None' +
+                            '</p>' +
+                        '</div>' +
+                        '<div class="move-input-group" ' +
+                            'style="margin-top:4px;">' +
+                            '<input type="text" id="physical-move-name" ' +
+                                'placeholder="Move name" ' +
+                                'style="width:100%;padding:3px 5px;' +
+                                'font-size:0.65rem;background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'margin-bottom:2px;">' +
+                            '<input type="text" id="physical-move-desc" ' +
+                                'placeholder="Description (optional)" ' +
+                                'style="width:100%;padding:3px 5px;' +
+                                'font-size:0.65rem;background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'margin-bottom:2px;">' +
+                            '<button type="button" ' +
+                                'id="add-physical-move-btn" ' +
+                                'class="small primary" ' +
+                                'style="font-size:0.6rem;padding:2px 8px;">' +
+                                '+ Add' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
 
-                    <div class="moves-column" style="background:var(--panel-alt);padding:6px;border-radius:6px;border:1px solid var(--border-soft);">
-                        <label style="font-size:0.65rem;font-weight:600;color:var(--info);">Magical</label>
-                        <div id="magical-moves-list" class="moves-list" style="margin-top:2px;max-height:120px;overflow-y:auto;">
-                            <p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>
-                        </div>
-                        <div class="move-input-group" style="margin-top:4px;">
-                            <input type="text" id="magical-move-name" placeholder="Move name" style="width:100%;padding:3px 5px;font-size:0.65rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;">
-                            <input type="text" id="magical-move-desc" placeholder="Description (optional)" style="width:100%;padding:3px 5px;font-size:0.65rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;">
-                            <button type="button" id="add-magical-move-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">+ Add</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
+                    '<div class="moves-column" ' +
+                        'style="background:var(--panel-alt);padding:6px;' +
+                        'border-radius:6px;' +
+                        'border:1px solid var(--border-soft);">' +
+                        '<label style="font-size:0.65rem;font-weight:600;' +
+                            'color:var(--info);">Magical</label>' +
+                        '<div id="magical-moves-list" class="moves-list" ' +
+                            'style="margin-top:2px;max-height:120px;' +
+                            'overflow-y:auto;">' +
+                            '<p class="empty-state" ' +
+                                'style="padding:4px;font-size:0.7rem;">' +
+                                'None' +
+                            '</p>' +
+                        '</div>' +
+                        '<div class="move-input-group" ' +
+                            'style="margin-top:4px;">' +
+                            '<input type="text" id="magical-move-name" ' +
+                                'placeholder="Move name" ' +
+                                'style="width:100%;padding:3px 5px;' +
+                                'font-size:0.65rem;background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'margin-bottom:2px;">' +
+                            '<input type="text" id="magical-move-desc" ' +
+                                'placeholder="Description (optional)" ' +
+                                'style="width:100%;padding:3px 5px;' +
+                                'font-size:0.65rem;background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'margin-bottom:2px;">' +
+                            '<button type="button" ' +
+                                'id="add-magical-move-btn" ' +
+                                'class="small primary" ' +
+                                'style="font-size:0.6rem;padding:2px 8px;">' +
+                                '+ Add' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
     }
 
     // ============================================================
@@ -236,35 +464,51 @@
     // ============================================================
 
     function populateMagicalFields(char) {
-        if (!checkDependencies()) { return; }
-
         var MC = getMagicConstants();
         var FormUtils = getFormUtils();
-        if (!MC || !FormUtils) { return; }
+        if (!MC || !FormUtils) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                    '[CharacterStatsView] populateMagicalFields ' +
+                    'requires MagicConstants and FormUtils.'
+                );
+            }
+            return;
+        }
 
         var magic = char && char.magic ? char.magic : {};
         var types = MC.getTypeKeys();
 
-        types.forEach(function(type) {
+        for (var i = 0; i < types.length; i++) {
+            var type = types[i];
             var value = magic[type] !== undefined ? magic[type] : 0;
             FormUtils.setField('char-magic-' + type, value);
 
-            // Update level label
-            var levelEl = document.querySelector('[data-magic-level="' + type + '"]');
+            var levelEl = document.querySelector(
+                '[data-magic-level="' + type + '"]'
+            );
             if (levelEl) {
                 levelEl.textContent = MC.getProficiencyLevelLabel(value);
             }
-        });
+        }
 
-        // Update category totals
-        var order = MC.getCategoryOrder ? MC.getCategoryOrder() : ['elemental', 'body', 'aether'];
-        order.forEach(function(catId) {
+        var order = (typeof MC.getCategoryOrder === 'function')
+            ? MC.getCategoryOrder()
+            : ['elemental', 'body', 'aether'];
+        for (var ci = 0; ci < order.length; ci++) {
+            var catId = order[ci];
             var catTypes = MC.getCategoryTypes(catId);
             var total = 0;
-            catTypes.forEach(function(t) { total += Number(magic[t]) || 0; });
-            var totalEl = document.querySelector('[data-magic-total="' + catId + '"]');
-            if (totalEl) { totalEl.textContent = String(total); }
-        });
+            for (var t = 0; t < catTypes.length; t++) {
+                total += Number(magic[catTypes[t]]) || 0;
+            }
+            var totalEl = document.querySelector(
+                '[data-magic-total="' + catId + '"]'
+            );
+            if (totalEl) {
+                totalEl.textContent = String(total);
+            }
+        }
     }
 
     // ============================================================
@@ -278,13 +522,15 @@
 
         var magic = {};
         var types = MC.getTypeKeys();
+        var magicMax = getMagicMax();
 
-        types.forEach(function(type) {
+        for (var i = 0; i < types.length; i++) {
+            var type = types[i];
             var raw = FormUtils.getField('char-magic-' + type);
             var value = parseInt(raw, 10);
             if (isNaN(value)) { value = 0; }
-            magic[type] = Math.max(0, Math.min(MC.MAGIC_MAX, value));
-        });
+            magic[type] = Math.max(0, Math.min(magicMax, value));
+        }
 
         return magic;
     }
@@ -301,13 +547,13 @@
         if (!el) { return; }
 
         if (!char || !char.stats) {
-            el.textContent = '—';
+            el.textContent = '\u2014';
             return;
         }
 
         var result = CS.derivePhysicalClass(char.stats);
         if (!result || !result.class) {
-            el.textContent = '—';
+            el.textContent = '\u2014';
             return;
         }
 
@@ -323,17 +569,17 @@
         var fineEl = document.getElementById('derived-fine-class');
 
         if (!char || !char.magic) {
-            if (broadEl) broadEl.textContent = '—';
-            if (fineEl) fineEl.textContent = '—';
+            if (broadEl) { broadEl.textContent = '\u2014'; }
+            if (fineEl)  { fineEl.textContent = '\u2014'; }
             return;
         }
 
         var result = CS.deriveMagicalClasses(char.magic);
         if (broadEl) {
-            broadEl.textContent = result.broad ? result.broad.label : '—';
+            broadEl.textContent = result.broad ? result.broad.label : '\u2014';
         }
         if (fineEl) {
-            fineEl.textContent = result.fine ? result.fine.label : '—';
+            fineEl.textContent = result.fine ? result.fine.label : '\u2014';
         }
     }
 
@@ -351,7 +597,9 @@
         var magicalList = document.getElementById('magical-moves-list');
         if (!physicalList || !magicalList) { return; }
 
-        var moves = char && char.specialMoves ? char.specialMoves : { physical: [], magical: [] };
+        var moves = char && char.specialMoves
+            ? char.specialMoves
+            : { physical: [], magical: [] };
         var physical = Array.isArray(moves.physical) ? moves.physical : [];
         var magical = Array.isArray(moves.magical) ? moves.magical : [];
 
@@ -373,8 +621,9 @@
 
         var color = type === 'physical' ? 'var(--accent)' : 'var(--info)';
 
-        moves.forEach(function(move) {
-            if (!move || typeof move !== 'object') { return; }
+        for (var i = 0; i < moves.length; i++) {
+            var move = moves[i];
+            if (!move || typeof move !== 'object') { continue; }
 
             var moveId = move.id !== undefined && move.id !== null
                 ? String(move.id)
@@ -390,24 +639,33 @@
             var div = document.createElement('div');
             div.className = 'special-move-entry';
             div.dataset.moveId = moveId;
-            div.style.cssText = 'display:flex;flex-direction:column;gap:2px;padding:4px 6px;border-left:3px solid ' + color + ';background:var(--bg);border-radius:4px;margin-bottom:3px;font-size:0.7rem;';
+            div.style.cssText =
+                'display:flex;flex-direction:column;gap:2px;' +
+                'padding:4px 6px;border-left:3px solid ' + color + ';' +
+                'background:var(--bg);border-radius:4px;' +
+                'margin-bottom:3px;font-size:0.7rem;';
 
             var topRow = document.createElement('div');
             topRow.className = 'special-move-row-top';
-            topRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+            topRow.style.cssText =
+                'display:flex;justify-content:space-between;' +
+                'align-items:center;';
 
             var nameSpan = document.createElement('span');
             nameSpan.className = 'special-move-name';
-            nameSpan.style.cssText = 'font-weight:600;color:var(--text);';
+            nameSpan.style.cssText =
+                'font-weight:600;color:var(--text);';
             nameSpan.textContent = moveName;
             topRow.appendChild(nameSpan);
 
             var delBtn = document.createElement('button');
             delBtn.className = 'remove-special-move small';
-            delBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
+            delBtn.style.cssText =
+                'background:none;border:none;color:var(--danger);' +
+                'cursor:pointer;font-size:0.6rem;padding:0 4px;';
             delBtn.dataset.type = type;
             delBtn.dataset.moveId = moveId;
-            delBtn.textContent = '✕';
+            delBtn.textContent = '\u2715';
             delBtn.setAttribute('aria-label', 'Delete move');
             topRow.appendChild(delBtn);
 
@@ -416,13 +674,15 @@
             if (moveDesc) {
                 var desc = document.createElement('div');
                 desc.className = 'special-move-description';
-                desc.style.cssText = 'color:var(--text-dim);font-size:0.6rem;padding-left:4px;';
+                desc.style.cssText =
+                    'color:var(--text-dim);font-size:0.6rem;' +
+                    'padding-left:4px;';
                 desc.textContent = moveDesc;
                 div.appendChild(desc);
             }
 
             container.appendChild(div);
-        });
+        }
     }
 
     // ============================================================
@@ -436,9 +696,9 @@
     //
     // A row without a data-move-id produces id: '' — the
     // canonicaliser in CharacterCRUD preserves whatever is there,
-    // and the moves record store (character-moves.js) is not
-    // involved in this path. Only rows with a non-empty name are
-    // returned; an empty row is silently dropped.
+    // and CharacterMoves is not involved in this path. Only rows
+    // with a non-empty name are returned; an empty row is silently
+    // dropped.
 
     function collectMovesFromDOM() {
         function collectOne(listId) {
@@ -508,5 +768,51 @@
         // Moves
         renderMovesSection: renderMovesSection
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.CharacterStatsView;
+        var failures = [];
+
+        var required = [
+            'getMagicalSectionHTML',
+            'getMovesSectionHTML',
+            'populateMagicalFields',
+            'collectMagicalFields',
+            'collectMovesFromDOM',
+            'updatePhysicalClassDisplay',
+            'updateMagicalClassDisplay',
+            'renderMovesSection'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                failures.push('missing export: ' + required[i]);
+            }
+        }
+
+        try {
+            var moves = exports.collectMovesFromDOM();
+            if (!moves ||
+                !Array.isArray(moves.physical) ||
+                !Array.isArray(moves.magical)) {
+                failures.push(
+                    'collectMovesFromDOM returned a malformed shape'
+                );
+            }
+        } catch (e) {
+            failures.push('smoke test threw: ' + e.message);
+        }
+
+        if (failures.length > 0) {
+            throw new Error(
+                '[CharacterStatsView] Verification failed: ' +
+                failures.join('; ')
+            );
+        }
+    })();
 
 })();
