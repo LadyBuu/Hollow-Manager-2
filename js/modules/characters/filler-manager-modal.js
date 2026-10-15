@@ -19,12 +19,36 @@
  *   - It does not decide the heuristic. That lives in
  *     CharacterStrip.isFillerCandidate.
  *
- * DEPENDENCIES (MANDATORY):
+ * AUTHORED-CONTENT CHECK:
+ *   Flagging a character as filler here runs the same
+ *   CharacterStrip.hasAuthoredContent check that CharacterCRUD's
+ *   save path runs. A character with authored content is skipped
+ *   and reported, rather than silently flagged and stripped.
+ *
+ *   The two paths (this modal's bulk flag and CharacterCRUD's
+ *   save) must agree on what "filler" means. This module enforces
+ *   the check at the modal layer. CharacterCRUD.setFillerFlag is
+ *   expected to enforce it too when called from other callers; if
+ *   it does not, this modal is the only place the check runs. See
+ *   the character-crud.js batch for the matching enforcement.
+ *
+ * MODAL LIFECYCLE:
+ *   Close and outside-click handling are delegated to
+ *   Modal.modalSetup. Escape now works. Drag-release guard
+ *   applies.
+ *
+ * LOAD ORDER:
+ *   This module loads cleanly regardless of script order. All
+ *   dependencies are resolved at call time. A missing dependency
+ *   produces a clear error the first time openModal is called.
+ *
+ * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
  *   - window.CharacterStrip
  *   - window.Modal
  *   - window.NotificationSystem
+ *   - window.DomUtils (for escaping; fallback otherwise)
  */
 
 (function() {
@@ -35,46 +59,68 @@
     }
     window.__fillerManagerModalLoaded = true;
 
-    var CharacterQueries = window.CharacterQueries;
-    var CharacterCRUD = window.CharacterCRUD;
-    var CharacterStrip = window.CharacterStrip;
-    var Modal = window.Modal;
-    var NotificationSystem = window.NotificationSystem;
+    // ============================================================
+    // DEPENDENCY ACCESS - LAZY
+    // ============================================================
+
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getCharacterCRUD() { return window.CharacterCRUD || null; }
+    function getCharacterStrip() { return window.CharacterStrip || null; }
+    function getModal() { return window.Modal || null; }
+    function getNotificationSystem() { return window.NotificationSystem || null; }
+    function getDomUtils() { return window.DomUtils || null; }
+
+    // ============================================================
+    // DEPENDENCY CHECK - at open time
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacters !== 'function') {
+
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacters !== 'function') {
             missing.push('CharacterQueries.getCharacters');
         }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CQ || typeof CQ.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
-        if (!CharacterCRUD ||
-            typeof CharacterCRUD.setFillerFlag !== 'function') {
+
+        var CRUD = getCharacterCRUD();
+        if (!CRUD || typeof CRUD.setFillerFlag !== 'function') {
             missing.push('CharacterCRUD.setFillerFlag');
         }
-        if (!CharacterStrip ||
-            typeof CharacterStrip.isFillerCandidate !== 'function') {
+
+        var Strip = getCharacterStrip();
+        if (!Strip || typeof Strip.isFillerCandidate !== 'function') {
             missing.push('CharacterStrip.isFillerCandidate');
         }
-        if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal.createModal');
+        if (!Strip || typeof Strip.hasAuthoredContent !== 'function') {
+            missing.push('CharacterStrip.hasAuthoredContent');
         }
-        if (!NotificationSystem ||
-            typeof NotificationSystem.notify !== 'function') {
+
+        var M = getModal();
+        if (!M ||
+            typeof M.createModal !== 'function' ||
+            typeof M.showModal !== 'function' ||
+            typeof M.closeModal !== 'function' ||
+            typeof M.modalSetup !== 'function') {
+            missing.push('Modal API');
+        }
+
+        var NS = getNotificationSystem();
+        if (!NS || typeof NS.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
-        if (missing.length > 0) {
-            throw new Error(
-                '[FillerManagerModal] Missing mandatory ' +
-                'dependencies: ' + missing.join(', ')
-            );
-        }
-    }
 
-    checkDependencies();
+        if (missing.length > 0) {
+            var msg = '[FillerManagerModal] Missing mandatory ' +
+                'dependencies: ' + missing.join(', ');
+            console.error(msg);
+            throw new Error(msg);
+        }
+
+        return true;
+    }
 
     // ============================================================
     // MODULE STATE
@@ -89,6 +135,10 @@
     // ============================================================
 
     function escapeHtml(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
+        }
         if (value === undefined || value === null) { return ''; }
         return String(value)
             .replace(/&/g, '&amp;')
@@ -98,8 +148,36 @@
             .replace(/'/g, '&#039;');
     }
 
+    function escapeAttribute(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function notify(message, type) {
+        var NS = getNotificationSystem();
+        if (NS && typeof NS.notify === 'function') {
+            NS.notify(message, type || 'info');
+        }
+    }
+
     function getCharacters() {
-        return CharacterQueries.getCharacters() || [];
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacters !== 'function') { return []; }
+        var chars = CQ.getCharacters();
+        if (!Array.isArray(chars)) { return []; }
+        // Return a slice so callers cannot mutate the live store.
+        return chars.slice();
+    }
+
+    function hasOwnKey(obj, key) {
+        return Object.prototype.hasOwnProperty.call(obj, key);
     }
 
     // ============================================================
@@ -107,6 +185,13 @@
     // ============================================================
 
     function openModal() {
+        try {
+            checkDependencies();
+        } catch (e) {
+            notify('Filler manager is not available.', 'error');
+            return;
+        }
+
         closeModal();
 
         _checkedIds = Object.create(null);
@@ -122,12 +207,10 @@
             }
         }
 
-        var modal = Modal.createModal('filler-manager-modal');
+        var M = getModal();
+        var modal = M.createModal('filler-manager-modal');
         if (!modal) {
-            NotificationSystem.notify(
-                'Could not open filler manager.',
-                'error'
-            );
+            notify('Could not open filler manager.', 'error');
             return;
         }
         modal.id = 'filler-manager-modal';
@@ -138,20 +221,30 @@
 
         _modal = modal;
 
-        Modal.modalSetup(modal, function() {
+        M.modalSetup(modal, function() {
             closeModal();
         });
-        Modal.showModal(modal);
+        M.showModal(modal);
 
         render(modal, contentEl);
         bind(modal, contentEl);
     }
 
     function closeModal() {
-        if (_modal) {
-            try { Modal.closeModal(_modal); } catch (e) {}
-        }
+        var modal = _modal;
+
         _modal = null;
+
+        if (modal) {
+            try {
+                var M = getModal();
+                if (M && typeof M.closeModal === 'function') {
+                    M.closeModal(modal);
+                }
+            } catch (e) {
+                // Ignore.
+            }
+        }
     }
 
     // ============================================================
@@ -159,18 +252,20 @@
     // ============================================================
 
     function render(modal, contentEl) {
+        var CQ = getCharacterQueries();
+        var Strip = getCharacterStrip();
         var chars = getCharacters();
 
         // Sort: candidates first (checked or heuristic), then
-        // alphabetical. This puts the actionable rows at the top.
+        // alphabetical. Puts the actionable rows at the top.
         var sorted = chars.slice().sort(function(a, b) {
             var aChecked = _checkedIds[String(a.id)] === true;
             var bChecked = _checkedIds[String(b.id)] === true;
             if (aChecked !== bChecked) {
                 return aChecked ? -1 : 1;
             }
-            var aName = CharacterQueries.getDisplayName(a) || '';
-            var bName = CharacterQueries.getDisplayName(b) || '';
+            var aName = CQ.getDisplayName(a) || '';
+            var bName = CQ.getDisplayName(b) || '';
             return aName.localeCompare(bName);
         });
 
@@ -178,7 +273,7 @@
         var checkedCount = Object.keys(_checkedIds).length;
         var heuristicCount = 0;
         for (var h = 0; h < sorted.length; h++) {
-            if (CharacterStrip.isFillerCandidate(sorted[h])) {
+            if (Strip.isFillerCandidate(sorted[h])) {
                 heuristicCount++;
             }
         }
@@ -190,7 +285,8 @@
                     'Manage Filler Characters' +
                 '</h3>';
         html += '<button type="button" class="close-modal" ' +
-                    'id="close-filler-manager">&times;</button>';
+                    'id="close-filler-manager" ' +
+                    'aria-label="Close">&times;</button>';
         html += '</div>';
 
         html += '<div class="modal-body">';
@@ -199,7 +295,10 @@
                     'Flag characters as filler to strip their empty ' +
                     'fields on save. Flagged characters keep their ' +
                     'name, career, class, teams, eliminations, and ' +
-                    'parent links. Unchecking does not restore ' +
+                    'parent links. Characters with authored content ' +
+                    '(stats, magic, personality, notes, or HP/MP) are ' +
+                    'skipped by this tool and must be flagged from ' +
+                    'their own record. Unchecking does not restore ' +
                     'stripped fields; the next edit re-populates ' +
                     'them.' +
                 '</p>';
@@ -226,17 +325,17 @@
             if (!c || !c.id) { continue; }
             var cid = String(c.id);
             var checked = _checkedIds[cid] === true;
-            var name = CharacterQueries.getDisplayName(c) || 'Unknown';
-            var isCandidate = CharacterStrip.isFillerCandidate(c);
+            var name = CQ.getDisplayName(c) || 'Unknown';
+            var isCandidate = Strip.isFillerCandidate(c);
 
             var rowClass = 'filler-manager-row';
             if (checked) { rowClass += ' is-checked'; }
             if (isCandidate) { rowClass += ' is-candidate'; }
 
             html += '<label class="' + rowClass + '" ' +
-                        'data-character-id="' + escapeHtml(cid) + '">';
+                        'data-character-id="' + escapeAttribute(cid) + '">';
             html += '<input type="checkbox" class="filler-row-check" ' +
-                        'data-id="' + escapeHtml(cid) + '"' +
+                        'data-id="' + escapeAttribute(cid) + '"' +
                         (checked ? ' checked' : '') + '>';
             html += '<span class="filler-manager-name">' +
                         escapeHtml(name) +
@@ -269,9 +368,7 @@
     // ============================================================
 
     function bind(modal, contentEl) {
-        var closeBtn = contentEl.querySelector(
-            '#close-filler-manager'
-        );
+        var closeBtn = contentEl.querySelector('#close-filler-manager');
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
                 closeModal();
@@ -323,20 +420,15 @@
             }
             updateCounts(contentEl);
         });
-
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                closeModal();
-            }
-        });
     }
 
     function handleSelectCandidates(contentEl) {
+        var Strip = getCharacterStrip();
         var chars = getCharacters();
         for (var i = 0; i < chars.length; i++) {
             var c = chars[i];
             if (!c || !c.id) { continue; }
-            if (CharacterStrip.isFillerCandidate(c)) {
+            if (Strip.isFillerCandidate(c)) {
                 _checkedIds[String(c.id)] = true;
             }
         }
@@ -386,54 +478,86 @@
     // ============================================================
 
     function handleApply() {
-        var toFlag = [];
-        var toUnflag = [];
+        var Strip = getCharacterStrip();
+        var CRUD = getCharacterCRUD();
 
+        // Collect the union of currently-checked and
+        // initially-checked IDs. Only IDs that changed state
+        // between open and apply are acted on.
         var allIds = Object.create(null);
         var k;
-        for (k in _checkedIds) {
-            if (Object.prototype.hasOwnProperty.call(_checkedIds, k)) {
-                allIds[k] = true;
-            }
+
+        var checkedKeys = Object.keys(_checkedIds);
+        for (k = 0; k < checkedKeys.length; k++) {
+            allIds[checkedKeys[k]] = true;
         }
-        for (k in _initialCheckedIds) {
-            if (Object.prototype.hasOwnProperty.call(
-                _initialCheckedIds, k
-            )) {
-                allIds[k] = true;
-            }
+
+        var initialKeys = Object.keys(_initialCheckedIds);
+        for (k = 0; k < initialKeys.length; k++) {
+            allIds[initialKeys[k]] = true;
         }
+
+        var toFlag = [];
+        var toUnflag = [];
+        var skippedForAuthoredContent = [];
 
         var idList = Object.keys(allIds);
         for (var i = 0; i < idList.length; i++) {
             var id = idList[i];
             var nowChecked = _checkedIds[id] === true;
             var wasChecked = _initialCheckedIds[id] === true;
+
             if (nowChecked && !wasChecked) {
-                toFlag.push(id);
+                // Flagging as filler. Enforce the authored-content
+                // check that CharacterCRUD.save performs on the
+                // save path. A character with authored content is
+                // skipped and reported, not silently flagged.
+                var char = findCharacterById(id);
+                if (char && Strip.hasAuthoredContent(char)) {
+                    skippedForAuthoredContent.push(id);
+                } else {
+                    toFlag.push(id);
+                }
             } else if (!nowChecked && wasChecked) {
                 toUnflag.push(id);
             }
         }
 
-        if (toFlag.length === 0 && toUnflag.length === 0) {
-            NotificationSystem.notify('No changes to apply.', 'info');
+        if (toFlag.length === 0 &&
+            toUnflag.length === 0 &&
+            skippedForAuthoredContent.length === 0) {
+            notify('No changes to apply.', 'info');
             closeModal();
             return;
         }
 
-        // Flag first (strip), then unflag. Order matters only
-        // stylistically: they touch disjoint ids.
+        if (toFlag.length === 0 &&
+            toUnflag.length === 0 &&
+            skippedForAuthoredContent.length > 0) {
+            notify(
+                'No characters flagged: ' +
+                skippedForAuthoredContent.length +
+                ' selected character' +
+                (skippedForAuthoredContent.length === 1 ? '' : 's') +
+                ' has authored content. Flag those from their own ' +
+                'record.',
+                'warning'
+            );
+            closeModal();
+            return;
+        }
+
+        // Flag first (strip), then unflag.
         var chain = Promise.resolve();
 
         if (toFlag.length > 0) {
             chain = chain.then(function() {
-                return CharacterCRUD.setFillerFlag(toFlag, true);
+                return CRUD.setFillerFlag(toFlag, true);
             });
         }
         if (toUnflag.length > 0) {
             chain = chain.then(function() {
-                return CharacterCRUD.setFillerFlag(toUnflag, false);
+                return CRUD.setFillerFlag(toUnflag, false);
             });
         }
 
@@ -445,20 +569,36 @@
             if (toUnflag.length > 0) {
                 parts.push('unflagged ' + toUnflag.length);
             }
-            NotificationSystem.notify(
+            if (skippedForAuthoredContent.length > 0) {
+                parts.push(
+                    'skipped ' + skippedForAuthoredContent.length +
+                    ' (authored content)'
+                );
+            }
+            notify(
                 'Filler update: ' + parts.join(', ') + '.',
-                'success'
+                skippedForAuthoredContent.length > 0
+                    ? 'warning'
+                    : 'success'
             );
             closeModal();
         }).catch(function(err) {
             console.warn(
                 '[FillerManagerModal] apply failed:', err
             );
-            NotificationSystem.notify(
+            notify(
                 'Failed to update filler flags.',
                 'error'
             );
         });
+    }
+
+    function findCharacterById(id) {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            return null;
+        }
+        return CQ.getCharacterById(id);
     }
 
     // ============================================================
