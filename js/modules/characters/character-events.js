@@ -21,54 +21,49 @@
  *   - The relationship form. Delegates to SocialEvents.
  *   - The JSON import/export mechanics. CharacterJSONIO owns those.
  *
- * PROFESSIONAL STINT ACTIONS (this revision):
- *   The character Professional tab renders one row per
- *   professional stint, each carrying data-team-id and
- *   data-join-period. Open stints also carry End and Remove
- *   buttons. This module dispatches:
+ * DELEGATE SCOPE:
+ *   Every delegated listener installed by this module is scoped to
+ *   #tab-characters. A class or id that happens to exist in another
+ *   tab (Teams, Academy, ...) does NOT trigger a character handler.
+ *   The scope is passed to addSafeDelegatedListener as the first
+ *   argument.
  *
- *     end-professional-stint     -> TeamCore.endMemberInterval
- *     remove-professional-stint  -> TeamCore.purgeMemberInterval
+ * SAVE RE-RENDER POLICY:
+ *   After a successful save, CharacterForm.render(savedId) is called
+ *   unconditionally, for both creates and edits. This ensures the
+ *   form reflects what was actually stored (trimmed names, clamped
+ *   stats, recomputed deceased flag, cleared filler flag). The
+ *   re-render merge in character-form.js preserves any in-flight
+ *   edits, so this is safe.
  *
- *   After either succeeds, the character form re-renders so the
- *   tab reflects the new state, and TeamEvents.refreshUI() is
- *   called (when available) so a subsequent visit to the Teams
- *   tab shows the same change.
+ *   On a failed save, the result.message is surfaced via
+ *   NotificationSystem when present. The pipeline shows its own
+ *   toast when it runs; this covers the pre-flight validation path
+ *   where the pipeline never ran.
  *
- *   End prompts for a year. There is no inline modal for it; the
- *   prompt is intentional, matching the pattern used by the
- *   mission log and report actions.
+ * SUBMIT DELEGATION:
+ *   The form's submit handler is delegated on
+ *   #character-form-container, which is NOT replaced by
+ *   CharacterForm.render. A listener attached to #character-form
+ *   directly would be lost on re-render, causing the browser's
+ *   default form submission (a page reload).
  *
- * RELATIONSHIP MODAL OWNERSHIP:
- *   The character-tab relationship form was retired. Opening the
- *   relationship modal from the character tab now delegates to
- *   SocialEvents.handleAddRelationship.
+ * CAREER WIZARD CLOSE:
+ *   The wizard dispatches a `careerWizardClosed` CustomEvent on
+ *   document when it closes. This module listens for that event,
+ *   re-renders the character form, and removes the listener. No
+ *   polling or MutationObserver.
  *
- * MODAL LIFECYCLE:
- *   Reusable modals (relationship, graph) use Modal.hideModal, not
- *   Modal.closeModal.
+ * DEVIATIONS FROM THE MODAL PATTERN:
+ *   `window.prompt` is used for the stint End year, and
+ *   `window.confirm` is used for destructive confirmations
+ *   (delete character, remove stint, delete relationship). These
+ *   are intentional deviations from Modal. Converting them to
+ *   inline modals is a larger change that belongs in a dedicated
+ *   pass. The behaviour is: the action is destructive, the confirm
+ *   is not themable, and the pattern matches the rest of the app.
  *
- * SAVE RE-ENTRANCY:
- *   handleSave() is guarded by _saveInFlight.
- *
- * JSON IMPORT/EXPORT:
- *   #export-character-json-btn  exports the current character's
- *                               full raw record to a JSON file.
- *   #import-character-json-btn  opens a file picker and fills the
- *                               form from the selected JSON.
- *
- *   The import confirms before overwriting when a character is
- *   currently selected, because it will replace whatever the user
- *   has typed into the form. It does NOT save. The user reviews
- *   and clicks Save.
- *
- *   Both buttons live on the character form's action row (see
- *   character-form.js getCharacterFormHTML). They are only
- *   rendered when a character is being edited. The import button
- *   is also rendered on the "New Character" screen, since
- *   importing into an empty form is the primary use case.
- *
- * DEPENDENCIES (MANDATORY):
+ * DEPENDENCIES (MANDATORY at call time):
  *   - window.CharacterAggregator
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
@@ -86,23 +81,19 @@
  *   - window.Modal
  *   - window.NotificationSystem
  *
- * DEPENDENCIES (MANDATORY AT CALL TIME, WARN-ONLY AT BOOT):
- *   - window.UI_CONSTANTS.MOBILE_BREAKPOINT
- *   - window.SocialEvents (for relationship modal delegation)
- *   - window.CharacterJSONIO (for JSON import/export buttons)
- *   - window.TeamCore (for professional stint End / Remove)
- *   - window.TeamQueries (for stint resolution)
- *
- * DEPENDENCIES (OPTIONAL):
+ * DEPENDENCIES (LAZY):
+ *   - window.UI_CONSTANTS
+ *   - window.SocialEvents
+ *   - window.CharacterJSONIO
+ *   - window.TeamCore
+ *   - window.TeamQueries
+ *   - window.TeamEvents
  *   - window.CharacterList
- *   - window.SocialConstants / SocialQueries / SocialCore / SocialGraph
  *   - window.CharacterExport
  *   - window.FillerManagerModal
  *   - window.CharacterRosterExport
  *   - window.CareerStatusWizard
- *   - window.TeamQueries
  *   - window.AcademyEliminations
- *   - window.TeamEvents (refresh after stint mutations)
  */
 
 (function() {
@@ -133,7 +124,6 @@
     var FormUtils = window.FormUtils;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
-    var UI_CONSTANTS = window.UI_CONSTANTS;
 
     // ============================================================
     // STATE
@@ -143,7 +133,8 @@
     var _eventListeners = [];
     var _filterDebounceTimer = null;
     var _socialCoreInitialized = false;
-    var _characterEditListenerInstalled = false;
+    var _characterEditListener = null;
+    var _careerWizardListener = null;
     var _saveInFlight = false;
 
     var _ctModal = null;
@@ -157,6 +148,24 @@
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
     // ============================================================
+
+    function getUI_CONSTANTS() { return window.UI_CONSTANTS || null; }
+
+    function getDebounceDelay() {
+        var UI = getUI_CONSTANTS();
+        if (UI && typeof UI.DEBOUNCE_DELAY === 'number') {
+            return UI.DEBOUNCE_DELAY;
+        }
+        return 300;
+    }
+
+    function getMobileBreakpoint() {
+        var UI = getUI_CONSTANTS();
+        if (UI && typeof UI.MOBILE_BREAKPOINT === 'number') {
+            return UI.MOBILE_BREAKPOINT;
+        }
+        return 768;
+    }
 
     function getAcademyEliminations() { return window.AcademyEliminations || null; }
     function getCharacterExport() { return window.CharacterExport || null; }
@@ -178,7 +187,7 @@
     function checkDependencies() {
         var missing = [];
 
-        ['getCurrentEditId', 'setCurrentEditId', 'toggleCharacterList']
+        ['getCurrentEditId', 'setCurrentEditId']
             .forEach(function(name) {
                 if (typeof window[name] !== 'function') {
                     missing.push(name);
@@ -208,45 +217,9 @@
 
         required.forEach(function(pair) {
             if (!pair[0] || typeof pair[0][pair[1]] !== 'function') {
-                missing.push(pair[0] ? pair[0].__name || pair[1] : pair[1]);
+                missing.push(pair[1]);
             }
         });
-
-        if (!UI_CONSTANTS ||
-            typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
-            console.warn(
-                '[CharacterEvents] UI_CONSTANTS.MOBILE_BREAKPOINT ' +
-                'is missing; falling back to 768px.'
-            );
-        }
-
-        if (!window.SocialEvents ||
-            typeof window.SocialEvents.handleAddRelationship !== 'function') {
-            console.warn(
-                '[CharacterEvents] SocialEvents not loaded — ' +
-                'Add Relationship from the character tab will fail ' +
-                'until the social module is available.'
-            );
-        }
-
-        if (!window.CharacterJSONIO ||
-            typeof window.CharacterJSONIO.handleExportCurrent !== 'function' ||
-            typeof window.CharacterJSONIO.handleImportIntoForm !== 'function') {
-            console.warn(
-                '[CharacterEvents] CharacterJSONIO not loaded — ' +
-                'JSON import/export buttons will be inactive.'
-            );
-        }
-
-        if (!window.TeamCore ||
-            typeof window.TeamCore.endMemberInterval !== 'function' ||
-            typeof window.TeamCore.purgeMemberInterval !== 'function') {
-            console.warn(
-                '[CharacterEvents] TeamCore is not loaded — ' +
-                'End / Remove buttons on professional stints will ' +
-                'not work.'
-            );
-        }
 
         if (missing.length > 0) {
             console.warn(
@@ -269,11 +242,7 @@
     }
 
     function isMobile() {
-        var bp = (UI_CONSTANTS &&
-                  typeof UI_CONSTANTS.MOBILE_BREAKPOINT === 'number')
-            ? UI_CONSTANTS.MOBILE_BREAKPOINT
-            : 768;
-        return window.innerWidth < bp;
+        return window.innerWidth < getMobileBreakpoint();
     }
 
     function openSidebar() {
@@ -379,7 +348,7 @@
     // ESCAPE HELPERS
     // ============================================================
 
-    function escapeHtmlSafe(value) {
+    function escapeHtml(value) {
         if (window.DomUtils &&
             typeof window.DomUtils.escapeHtml === 'function') {
             return window.DomUtils.escapeHtml(value);
@@ -406,89 +375,195 @@
     }
 
     // ============================================================
-    // JSON IMPORT / EXPORT
+    // SAFE EVENT BINDING - with scope
     // ============================================================
 
-    function bindJsonImportExport() {
-        addSafeDelegatedListener(
-            '#export-character-json-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
-                handleCharacterJsonExport();
-            }
+    /**
+     * Attach a listener to an element and track it for cleanup.
+     */
+    function addSafeEventListener(
+        element, eventName, handler, options
+    ) {
+        if (!element) { return; }
+        element.addEventListener(
+            eventName, handler, options || false
         );
-
-        addSafeDelegatedListener(
-            '#import-character-json-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
-                handleCharacterJsonImport();
-            }
-        );
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: options || false
+        });
     }
 
-    function handleCharacterJsonExport() {
-        var JsonIo = getCharacterJSONIO();
-        if (!JsonIo ||
-            typeof JsonIo.handleExportCurrent !== 'function') {
-            notify('JSON export is not available.', 'error');
-            return;
+    /**
+     * Attach a delegated listener.
+     *
+     * @param {string|HTMLElement} scope - Selector or element to
+     *   scope the delegation to. When a string, resolved via
+     *   document.querySelector at install time; when an element, used
+     *   directly. When omitted, defaults to document.getElementById
+     *   ('tab-characters') for character-tab handlers.
+     * @param {string} selector
+     * @param {string} eventName
+     * @param {function} handler
+     */
+    function addSafeDelegatedListener(
+        scope, selector, eventName, handler
+    ) {
+        // Overload: (selector, eventName, handler) uses default scope.
+        if (typeof selector === 'string' &&
+            typeof eventName === 'function' &&
+            handler === undefined) {
+            handler = eventName;
+            eventName = selector;
+            selector = scope;
+            scope = null;
         }
 
-        try {
-            JsonIo.handleExportCurrent();
-        } catch (err) {
-            console.warn(
-                '[CharacterEvents] JSON export threw:', err
-            );
-            notify(
-                'JSON export failed: ' + err.message,
-                'error'
-            );
+        var scopeEl = null;
+        if (scope instanceof Element) {
+            scopeEl = scope;
+        } else if (typeof scope === 'string') {
+            scopeEl = document.querySelector(scope);
         }
+        if (!scopeEl) {
+            scopeEl = document.getElementById('tab-characters');
+        }
+        if (!scopeEl) { scopeEl = document; }
+
+        function wrappedHandler(e) {
+            var target = e.target.closest
+                ? e.target.closest(selector)
+                : null;
+            if (!target) { return; }
+            handler(e, target);
+        }
+
+        scopeEl.addEventListener(eventName, wrappedHandler);
+        _eventListeners.push({
+            element: scopeEl,
+            eventName: eventName,
+            handler: wrappedHandler,
+            options: false
+        });
     }
 
-    function handleCharacterJsonImport() {
-        var JsonIo = getCharacterJSONIO();
-        if (!JsonIo ||
-            typeof JsonIo.handleImportIntoForm !== 'function') {
-            notify('JSON import is not available.', 'error');
-            return;
-        }
+    function removeAllEventListeners() {
+        _eventListeners.forEach(function(item) {
+            try {
+                item.element.removeEventListener(
+                    item.eventName,
+                    item.handler,
+                    item.options
+                );
+            } catch (e) {}
+        });
+        _eventListeners = [];
 
-        // Confirm only when we are overwriting a saved character's
-        // form. Importing into the "New Character" screen is the
-        // primary use case and does not need a confirm.
-        var editId = typeof window.getCurrentEditId === 'function'
-            ? window.getCurrentEditId() : null;
+        clearTimeout(_filterDebounceTimer);
+        _filterDebounceTimer = null;
+    }
 
-        if (editId) {
-            var char = CharacterQueries.getCharacterById(editId);
-            var name = char
-                ? CharacterQueries.getDisplayName(char)
-                : 'this character';
+    // ============================================================
+    // CHARACTER EDIT EVENT
+    // ============================================================
 
-            if (!confirm(
-                'Importing will replace the form fields for "' +
-                name + '". The stored record will not change until ' +
-                'you click Save. Continue?'
-            )) {
+    function installCharacterEditListener() {
+        if (_characterEditListener) { return; }
+
+        _characterEditListener = function(e) {
+            var charId = e && e.detail ? e.detail.characterId : null;
+            if (!charId) { return; }
+
+            var char = CharacterQueries.getCharacterById(charId);
+            if (!char) {
+                notify('Character not found.', 'error');
                 return;
             }
-        }
 
-        try {
-            JsonIo.handleImportIntoForm();
-        } catch (err) {
-            console.warn(
-                '[CharacterEvents] JSON import threw:', err
+            if (typeof window.setCurrentEditId === 'function') {
+                window.setCurrentEditId(charId);
+            }
+
+            CharacterForm.render(charId);
+            refreshUI(char);
+            refreshCharacterReportButton();
+
+            var formContainer = document.getElementById(
+                'character-form-container'
             );
-            notify(
-                'JSON import failed: ' + err.message,
-                'error'
+            if (formContainer) {
+                setTimeout(function() {
+                    formContainer.scrollIntoView({
+                        block: 'nearest',
+                        behavior: 'smooth'
+                    });
+                }, 100);
+            }
+
+            closeSidebar();
+        };
+
+        document.addEventListener('characterEdit', _characterEditListener);
+        _eventListeners.push({
+            element: document,
+            eventName: 'characterEdit',
+            handler: _characterEditListener,
+            options: false
+        });
+    }
+
+    function removeCharacterEditListener() {
+        if (_characterEditListener) {
+            document.removeEventListener(
+                'characterEdit', _characterEditListener
             );
+            _characterEditListener = null;
+        }
+    }
+
+    // ============================================================
+    // CAREER WIZARD CLOSED
+    // ============================================================
+
+    function installCareerWizardListener() {
+        if (_careerWizardListener) { return; }
+
+        _careerWizardListener = function() {
+            var currentId =
+                typeof window.getCurrentEditId === 'function'
+                    ? window.getCurrentEditId()
+                    : null;
+            if (currentId) {
+                try {
+                    CharacterForm.render(currentId);
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] form re-render after ' +
+                        'career wizard close failed:', err
+                    );
+                }
+            }
+        };
+
+        document.addEventListener(
+            'careerWizardClosed', _careerWizardListener
+        );
+        _eventListeners.push({
+            element: document,
+            eventName: 'careerWizardClosed',
+            handler: _careerWizardListener,
+            options: false
+        });
+    }
+
+    function removeCareerWizardListener() {
+        if (_careerWizardListener) {
+            document.removeEventListener(
+                'careerWizardClosed', _careerWizardListener
+            );
+            _careerWizardListener = null;
         }
     }
 
@@ -564,52 +639,9 @@
         );
     }
 
-    function bindCharacterReportExport() {
-        addSafeDelegatedListener(
-            '#export-character-report-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
-                handleCharacterReportExport();
-            }
-        );
-    }
-
     // ============================================================
     // PROFESSIONAL STINT ACTIONS
     // ============================================================
-    //
-    // The character Professional tab renders one row per
-    // professional stint. Each row carries data-team-id and
-    // data-join-period. Open stints carry End and Remove.
-    //
-    // Both handlers read the (teamId, joinPeriod) pair off the
-    // button, call the TeamCore mutation, then re-render the
-    // character form. TeamEvents.refreshUI is called afterwards
-    // when available so a subsequent visit to the Teams tab shows
-    // the same change.
-
-    function bindProfessionalStintActions() {
-        addSafeDelegatedListener(
-            '[data-action="end-professional-stint"]',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                e.stopPropagation();
-                handleEndProfessionalStint(target);
-            }
-        );
-
-        addSafeDelegatedListener(
-            '[data-action="remove-professional-stint"]',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                e.stopPropagation();
-                handleRemoveProfessionalStint(target);
-            }
-        );
-    }
 
     function readStintIdentity(buttonEl) {
         if (!buttonEl || !buttonEl.dataset) { return null; }
@@ -783,114 +815,39 @@
     // CAREER WIZARD BUTTON
     // ============================================================
 
-    function bindCareerStatusWizard() {
-        addSafeDelegatedListener(
-            '#career-wizard-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
+    function handleCareerWizardOpen() {
+        var charId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId() : null;
 
-                var charId =
-                    typeof window.getCurrentEditId === 'function'
-                        ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify(
+                'Save the character before using the wizard.',
+                'error'
+            );
+            return;
+        }
 
-                if (!charId) {
-                    notify(
-                        'Save the character before using the wizard.',
-                        'error'
-                    );
-                    return;
-                }
+        var Wizard = getCareerStatusWizard();
+        if (!Wizard ||
+            typeof Wizard.openModal !== 'function') {
+            notify('Career wizard is not available.', 'error');
+            return;
+        }
 
-                var Wizard = getCareerStatusWizard();
-                if (!Wizard ||
-                    typeof Wizard.openModal !== 'function') {
-                    notify('Career wizard is not available.', 'error');
-                    return;
-                }
-
-                var opened = null;
-                try {
-                    opened = Wizard.openModal(charId);
-                } catch (err) {
-                    console.warn(
-                        '[CharacterEvents] CareerStatusWizard threw:',
-                        err
-                    );
-                    notify(
-                        'Career wizard failed: ' + err.message,
-                        'error'
-                    );
-                    return;
-                }
-
-                if (!opened) { return; }
-
-                var modalEl = opened;
-                var observer = null;
-
-                try {
-                    observer = new MutationObserver(function(mutations) {
-                        for (var i = 0; i < mutations.length; i++) {
-                            var removed = mutations[i].removedNodes;
-                            for (var j = 0; j < removed.length; j++) {
-                                if (removed[j] === modalEl) {
-                                    if (observer) {
-                                        observer.disconnect();
-                                        observer = null;
-                                    }
-                                    var current =
-                                        typeof window.getCurrentEditId ===
-                                        'function'
-                                            ? window.getCurrentEditId()
-                                            : null;
-                                    if (current) {
-                                        try {
-                                            CharacterForm.render(current);
-                                        } catch (renderErr) {
-                                            console.warn(
-                                                '[CharacterEvents] ' +
-                                                'form re-render after ' +
-                                                'wizard close failed:',
-                                                renderErr
-                                            );
-                                        }
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-                    });
-
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: false
-                    });
-                } catch (observerErr) {
-                    var poll = setInterval(function() {
-                        if (!document.body.contains(modalEl)) {
-                            clearInterval(poll);
-                            var currentId =
-                                typeof window.getCurrentEditId ===
-                                'function'
-                                    ? window.getCurrentEditId()
-                                    : null;
-                            if (currentId) {
-                                try {
-                                    CharacterForm.render(currentId);
-                                } catch (pollErr) {
-                                    console.warn(
-                                        '[CharacterEvents] form ' +
-                                        're-render after wizard ' +
-                                        'close failed:', pollErr
-                                    );
-                                }
-                            }
-                        }
-                    }, 250);
-                }
-            }
-        );
+        try {
+            Wizard.openModal(charId);
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] CareerStatusWizard threw:',
+                err
+            );
+            notify(
+                'Career wizard failed: ' + err.message,
+                'error'
+            );
+        }
+        // The wizard dispatches careerWizardClosed when it closes.
+        // The form re-render is handled by that listener.
     }
 
     // ============================================================
@@ -1006,7 +963,7 @@
 
         html += '<div class="modal-header">';
         html += '<h3>Career Transition \u2014 ' +
-                    escapeHtmlSafe(charName) +
+                    escapeHtml(charName) +
                 '</h3>';
         html += '<button type="button" class="close-modal" ' +
                     'data-ct-action="close" ' +
@@ -1034,9 +991,9 @@
             html += '<input type="radio" name="ct-status" ' +
                         'value="' + escapeAttribute(s.value) + '"' +
                         checked + '>';
-            html += '<span><strong>' + escapeHtmlSafe(s.label) +
+            html += '<span><strong>' + escapeHtml(s.label) +
                     '</strong> \u2014 ' +
-                    escapeHtmlSafe(s.hint) + '</span>';
+                    escapeHtml(s.hint) + '</span>';
             html += '</label>';
         }
 
@@ -1081,7 +1038,7 @@
             html += '<p class="csw-note">' +
                         'No open professional stints for this ' +
                         'character at year ' +
-                        escapeHtmlSafe(String(_ctState.year)) +
+                        escapeHtml(String(_ctState.year)) +
                         '. The career status will still be set.' +
                     '</p>';
         } else {
@@ -1094,7 +1051,7 @@
                     '</strong> team' +
                     (counts.teamsTouched === 1 ? '' : 's') +
                     ' at year ' +
-                    escapeHtmlSafe(String(_ctState.year)) +
+                    escapeHtml(String(_ctState.year)) +
                     '.</span>';
             html += '</div>';
         }
@@ -1337,397 +1294,6 @@
             });
     }
 
-    function bindCareerTransition() {
-        addSafeDelegatedListener(
-            '#career-transition-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
-
-                var charId =
-                    typeof window.getCurrentEditId === 'function'
-                        ? window.getCurrentEditId() : null;
-
-                if (!charId) {
-                    notify(
-                        'Save the character before marking a ' +
-                        'transition.',
-                        'error'
-                    );
-                    return;
-                }
-
-                try {
-                    openCareerTransitionModal(charId);
-                } catch (err) {
-                    console.warn(
-                        '[CharacterEvents] ' +
-                        'openCareerTransitionModal threw:', err
-                    );
-                    notify(
-                        'Failed to open career transition: ' +
-                            err.message,
-                        'error'
-                    );
-                }
-            }
-        );
-    }
-
-    // ============================================================
-    // FILLER MANAGER BUTTON
-    // ============================================================
-
-    function bindManageFillers(container) {
-        var btn = document.getElementById('manage-fillers-btn');
-        if (!btn) { return; }
-
-        addSafeEventListener(btn, 'click', function(e) {
-            e.preventDefault();
-
-            var FM = getFillerManagerModal();
-            if (!FM || typeof FM.openModal !== 'function') {
-                notify(
-                    'Filler manager is not available.', 'error'
-                );
-                return;
-            }
-
-            try {
-                FM.openModal();
-            } catch (err) {
-                console.warn(
-                    '[CharacterEvents] FillerManagerModal threw:', err
-                );
-                notify(
-                    'Failed to open the filler manager: ' +
-                        err.message,
-                    'error'
-                );
-            }
-        });
-    }
-
-    // ============================================================
-    // CHARACTER ROSTER EXPORT BUTTON (legacy — unused)
-    // ============================================================
-
-    function bindCharacterRosterExport(container) {
-        var btn = document.getElementById(
-            'export-character-roster-btn'
-        );
-        if (!btn) { return; }
-
-        addSafeEventListener(btn, 'click', function(e) {
-            e.preventDefault();
-
-            var Exporter = getCharacterRosterExport();
-            if (!Exporter ||
-                typeof Exporter.exportText !== 'function') {
-                notify(
-                    'Character roster export is not available.',
-                    'error'
-                );
-                return;
-            }
-
-            var result;
-            try {
-                result = Exporter.exportText();
-            } catch (err) {
-                console.warn(
-                    '[CharacterEvents] CharacterRosterExport threw:',
-                    err
-                );
-                notify(
-                    'Character roster export failed: ' + err.message,
-                    'error'
-                );
-                return;
-            }
-
-            if (result && result.exported) {
-                notify(
-                    'Exported ' + result.count + ' character' +
-                    (result.count === 1 ? '' : 's') + ': ' +
-                    result.filename,
-                    'success'
-                );
-                return;
-            }
-
-            notify(
-                'Character roster export failed: ' +
-                    ((result && result.error) || 'Unknown error'),
-                'error'
-            );
-        });
-    }
-
-    // ============================================================
-    // LIST-LEVEL EXPORT BUTTON
-    // ============================================================
-
-    function bindListExportButton() {
-        addSafeDelegatedListener(
-            '#export-characters-btn',
-            'click',
-            function(e) {
-                e.preventDefault();
-
-                var Picker = window.CharacterExportPicker || null;
-                if (!Picker ||
-                    typeof Picker.openModal !== 'function') {
-                    notify(
-                        'Character export is not available.',
-                        'error'
-                    );
-                    return;
-                }
-
-                var CL = getCharacterList();
-                var characterIds = null;
-
-                if (CL &&
-                    typeof CL.hasSelection === 'function' &&
-                    CL.hasSelection() &&
-                    typeof CL.getSelectedIds === 'function') {
-                    characterIds = CL.getSelectedIds();
-                }
-
-                try {
-                    Picker.openModal({
-                        characterIds: characterIds
-                    });
-                } catch (err) {
-                    console.warn(
-                        '[CharacterEvents] ' +
-                        'CharacterExportPicker.openModal threw:',
-                        err
-                    );
-                    notify(
-                        'Character export failed: ' + err.message,
-                        'error'
-                    );
-                }
-            }
-        );
-    }
-
-    // ============================================================
-    // SELECTION: CHECKBOX + CLEAR
-    // ============================================================
-
-    function bindListSelection() {
-        addSafeDelegatedListener(
-            '.char-list-checkbox',
-            'change',
-            function(e, target) {
-                if (e.stopPropagation) {
-                    e.stopPropagation();
-                }
-
-                var charId = target.dataset
-                    ? target.dataset.characterId
-                    : null;
-                if (!charId) { return; }
-
-                var CL = getCharacterList();
-                if (!CL ||
-                    typeof CL.toggleSelected !== 'function' ||
-                    typeof CL.render !== 'function') {
-                    return;
-                }
-
-                CL.toggleSelected(charId);
-                CL.render();
-            }
-        );
-
-        addSafeDelegatedListener(
-            '.char-list-checkbox-cell',
-            'click',
-            function(e) {
-                if (e.stopPropagation) {
-                    e.stopPropagation();
-                }
-            }
-        );
-
-        addSafeDelegatedListener(
-            '[data-action="char-clear-selection"]',
-            'click',
-            function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-
-                var CL = getCharacterList();
-                if (!CL ||
-                    typeof CL.clearSelection !== 'function' ||
-                    typeof CL.render !== 'function') {
-                    return;
-                }
-
-                CL.clearSelection();
-                CL.render();
-            }
-        );
-    }
-
-    // ============================================================
-    // CAREER STATUS FILTER TOGGLE
-    // ============================================================
-
-    var _careerStatusCollapsed = null;
-
-    function readCareerStatusCollapsedFromDOM() {
-        var group = document.getElementById(
-            'career-status-filter-group'
-        );
-        if (!group) { return false; }
-        return group.dataset.collapsed === 'true';
-    }
-
-    function applyCareerStatusCollapsed(collapsed) {
-        var group = document.getElementById(
-            'career-status-filter-group'
-        );
-        var body = document.getElementById('char-status-filter');
-        var toggle = document.getElementById(
-            'career-status-filter-toggle'
-        );
-        if (!group || !body || !toggle) { return; }
-
-        group.dataset.collapsed = collapsed ? 'true' : 'false';
-        toggle.setAttribute(
-            'aria-expanded', collapsed ? 'false' : 'true'
-        );
-
-        body.style.display = collapsed ? 'none' : 'grid';
-
-        var caret = toggle.querySelector('.status-filter-caret');
-        if (caret) {
-            caret.textContent = collapsed ? '\u25b8' : '\u25be';
-        }
-    }
-
-    function bindCareerStatusToggle() {
-        addSafeDelegatedListener(
-            '#career-status-filter-toggle',
-            'click',
-            function(e) {
-                e.preventDefault();
-
-                if (_careerStatusCollapsed === null) {
-                    _careerStatusCollapsed =
-                        readCareerStatusCollapsedFromDOM();
-                }
-
-                _careerStatusCollapsed = !_careerStatusCollapsed;
-                applyCareerStatusCollapsed(
-                    _careerStatusCollapsed
-                );
-            }
-        );
-    }
-
-    // ============================================================
-    // SAFE EVENT BINDING
-    // ============================================================
-
-    function addSafeEventListener(
-        element, eventName, handler, options
-    ) {
-        if (!element) { return; }
-        element.addEventListener(
-            eventName, handler, options || false
-        );
-        _eventListeners.push({
-            element: element,
-            eventName: eventName,
-            handler: handler,
-            options: options || false
-        });
-    }
-
-    function addSafeDelegatedListener(
-        selector, eventName, handler
-    ) {
-        function wrappedHandler(e) {
-            var target = e.target.closest
-                ? e.target.closest(selector)
-                : null;
-            if (!target) { return; }
-            handler(e, target);
-        }
-
-        document.addEventListener(eventName, wrappedHandler);
-        _eventListeners.push({
-            element: document,
-            eventName: eventName,
-            handler: wrappedHandler,
-            options: false
-        });
-    }
-
-    function removeAllEventListeners() {
-        _eventListeners.forEach(function(item) {
-            try {
-                item.element.removeEventListener(
-                    item.eventName,
-                    item.handler,
-                    item.options
-                );
-            } catch (e) {}
-        });
-        _eventListeners = [];
-
-        clearTimeout(_filterDebounceTimer);
-        _filterDebounceTimer = null;
-    }
-
-    // ============================================================
-    // CHARACTER EDIT EVENT
-    // ============================================================
-
-    function installCharacterEditListener() {
-        if (_characterEditListenerInstalled) { return; }
-        _characterEditListenerInstalled = true;
-
-        document.addEventListener('characterEdit', function(e) {
-            var charId = e && e.detail ? e.detail.characterId : null;
-            if (!charId) { return; }
-
-            var char = CharacterQueries.getCharacterById(charId);
-            if (!char) {
-                notify('Character not found.', 'error');
-                return;
-            }
-
-            if (typeof window.setCurrentEditId === 'function') {
-                window.setCurrentEditId(charId);
-            }
-
-            CharacterForm.render(charId);
-            refreshUI(char);
-            refreshCharacterReportButton();
-
-            var formContainer = document.getElementById(
-                'character-form-container'
-            );
-            if (formContainer) {
-                setTimeout(function() {
-                    formContainer.scrollIntoView({
-                        block: 'nearest',
-                        behavior: 'smooth'
-                    });
-                }, 100);
-            }
-
-            closeSidebar();
-        });
-    }
-
     // ============================================================
     // INIT / DESTROY
     // ============================================================
@@ -1754,6 +1320,7 @@
         removeAllEventListeners();
         ensureSocialCoreInitialized();
         installCharacterEditListener();
+        installCareerWizardListener();
 
         bindToggleList(container);
         bindAddCharacter(container);
@@ -1767,37 +1334,33 @@
         bindManageFillers(container);
         bindCharacterRosterExport(container);
 
-        bindTabSwitching();
-        bindCancelButton();
-        bindDeceasedToggle();
-        bindBirthYearListener();
-        bindRandomButtons();
-        bindFieldRandomButtons();
-        bindPreviousNameButtons();
-        bindCareerButtons();
-        bindCareerStatusWizard();
-        bindCareerTransition();
-        bindClassDropdown();
-        bindClassTagRemoval();
-        bindStandaloneElimRemoval();
-        bindCharacterReportExport();
-        bindCareerStatusToggle();
+        bindTabSwitching(container);
+        bindCancelButton(container);
+        bindDeceasedToggle(container);
+        bindBirthYearListener(container);
+        bindRandomButtons(container);
+        bindFieldRandomButtons(container);
+        bindPreviousNameButtons(container);
+        bindCareerButtons(container);
+        bindCareerStatusWizard(container);
+        bindCareerTransition(container);
+        bindClassDropdown(container);
+        bindClassTagRemoval(container);
+        bindStandaloneElimRemoval(container);
+        bindCharacterReportExport(container);
+        bindCareerStatusToggle(container);
 
-        bindCombatRollButtons();
-        bindCombatClassOverrides();
-        bindCombatLiveUpdates();
-        bindWeaponButtons();
-        bindSpecialMoveButtons();
+        bindCombatRollButtons(container);
+        bindCombatClassOverrides(container);
+        bindCombatLiveUpdates(container);
+        bindWeaponButtons(container);
+        bindSpecialMoveButtons(container);
 
-        bindSocialButtons();
+        bindSocialButtons(container);
 
-        // JSON import / export buttons on the character form
-        // action row.
-        bindJsonImportExport();
+        bindJsonImportExport(container);
 
-        // Professional stint End / Remove buttons on the
-        // Professional tab.
-        bindProfessionalStintActions();
+        bindProfessionalStintActions(container);
 
         _initialized = true;
 
@@ -1811,6 +1374,8 @@
     function destroy() {
         closeCareerTransitionModal();
         removeAllEventListeners();
+        removeCharacterEditListener();
+        removeCareerWizardListener();
         closeSidebar();
         _initialized = false;
         _saveInFlight = false;
@@ -1846,19 +1411,22 @@
     }
 
     function bindFormSubmit(container) {
-        var form = document.getElementById('character-form');
-        if (form) {
-            addSafeEventListener(form, 'submit', function(e) {
+        var formContainer = document.getElementById(
+            'character-form-container'
+        );
+        if (!formContainer) { return; }
+
+        addSafeEventListener(formContainer, 'submit', function(e) {
+            if (e.target && e.target.id === 'character-form') {
                 e.preventDefault();
                 handleSave();
-            });
-        }
+            }
+        });
     }
 
     function bindDeleteButton(container) {
         addSafeDelegatedListener(
-            '#delete-char-btn',
-            'click',
+            container, '#delete-char-btn', 'click',
             function(e) {
                 e.preventDefault();
                 var id =
@@ -1880,7 +1448,7 @@
                         'function') {
                         window.CharacterList.render();
                     }
-                }, UI_CONSTANTS.DEBOUNCE_DELAY || 300);
+                }, getDebounceDelay());
             });
         }
 
@@ -2015,6 +1583,12 @@
                 }
 
                 if (window.CharacterList &&
+                    typeof window.CharacterList.clearSelection ===
+                    'function') {
+                    window.CharacterList.clearSelection();
+                }
+
+                if (window.CharacterList &&
                     typeof window.CharacterList.render ===
                     'function') {
                     window.CharacterList.render();
@@ -2048,8 +1622,7 @@
 
     function bindCharacterList(container) {
         addSafeDelegatedListener(
-            '.char-list-item',
-            'click',
+            container, '.char-list-item', 'click',
             function(e, target) {
                 var t = e.target;
                 if (t && typeof t.closest === 'function' &&
@@ -2067,10 +1640,9 @@
     // DELEGATED BINDINGS
     // ============================================================
 
-    function bindTabSwitching() {
+    function bindTabSwitching(container) {
         addSafeDelegatedListener(
-            '.form-tab-btn',
-            'click',
+            container, '.form-tab-btn', 'click',
             function(e, target) {
                 var tab = target.dataset.tab;
                 if (tab) { CharacterForm.switchTab(tab); }
@@ -2078,10 +1650,9 @@
         );
     }
 
-    function bindCancelButton() {
+    function bindCancelButton(container) {
         addSafeDelegatedListener(
-            '#cancel-character-form',
-            'click',
+            container, '#cancel-character-form', 'click',
             function() {
                 var editId =
                     typeof window.getCurrentEditId === 'function'
@@ -2100,10 +1671,9 @@
         );
     }
 
-    function bindDeceasedToggle() {
+    function bindDeceasedToggle(container) {
         addSafeDelegatedListener(
-            '#char-deceased',
-            'change',
+            container, '#char-deceased', 'change',
             function(e, target) {
                 var deathFields =
                     document.getElementById('death-fields');
@@ -2122,10 +1692,9 @@
         );
     }
 
-    function bindBirthYearListener() {
+    function bindBirthYearListener(container) {
         addSafeDelegatedListener(
-            '#char-birthYear',
-            'input',
+            container, '#char-birthYear', 'input',
             function(e, target) {
                 var ageField = document.getElementById('char-age');
                 if (!ageField) { return; }
@@ -2147,18 +1716,16 @@
         );
     }
 
-    function bindRandomButtons() {
+    function bindRandomButtons(container) {
         addSafeDelegatedListener(
-            '#random-physical-btn',
-            'click',
+            container, '#random-physical-btn', 'click',
             function(e) {
                 e.preventDefault();
                 fillRandomPhysical();
             }
         );
         addSafeDelegatedListener(
-            '#random-personality-btn',
-            'click',
+            container, '#random-personality-btn', 'click',
             function(e) {
                 e.preventDefault();
                 fillRandomPersonality();
@@ -2213,15 +1780,14 @@
         return physical;
     }
 
-    function bindFieldRandomButtons() {
+    function bindFieldRandomButtons(container) {
         addSafeDelegatedListener(
-            '.field-random-btn',
-            'click',
+            container, '.field-random-btn', 'click',
             function(e, target) {
                 e.preventDefault();
                 e.stopPropagation();
 
-                var field = target.dataset                    ? target.dataset.field : null;
+                var field = target.dataset ? target.dataset.field : null;
                 if (!field) { return; }
 
                 var Generator = window.CharacterGenerator;
@@ -2284,10 +1850,9 @@
         );
     }
 
-    function bindPreviousNameButtons() {
+    function bindPreviousNameButtons(container) {
         addSafeDelegatedListener(
-            '#add-previous-name-btn',
-            'click',
+            container, '#add-previous-name-btn', 'click',
             function() {
                 var containerEl = document.getElementById(
                     'previous-names-container'
@@ -2315,8 +1880,7 @@
         );
 
         addSafeDelegatedListener(
-            '.remove-previous-name',
-            'click',
+            container, '.remove-previous-name', 'click',
             function(e, target) {
                 e.preventDefault();
                 var row = target.closest('.previous-name-row');
@@ -2340,8 +1904,7 @@
         );
 
         addSafeDelegatedListener(
-            '.previous-name-input',
-            'keydown',
+            container, '.previous-name-input', 'keydown',
             function(e, target) {
                 if (e.key !== 'Enter') { return; }
                 e.preventDefault();
@@ -2381,24 +1944,23 @@
         );
     }
 
-    function bindCareerButtons() {
+    function bindCareerButtons(container) {
         addSafeDelegatedListener(
-            '#add-career-entry-btn',
-            'click',
+            container, '#add-career-entry-btn', 'click',
             function(e) {
                 e.preventDefault();
-                var container = document.getElementById(
+                var container2 = document.getElementById(
                     'career-status-container'
                 );
-                if (!container) { return; }
+                if (!container2) { return; }
 
                 if (CharacterForm &&
                     typeof CharacterForm.addCareerEntryRow ===
                     'function') {
-                    CharacterForm.addCareerEntryRow(container);
+                    CharacterForm.addCareerEntryRow(container2);
                 }
 
-                var lastRow = container.querySelector(
+                var lastRow = container2.querySelector(
                     '.career-status-entry:last-child'
                 );
                 if (lastRow) {
@@ -2411,8 +1973,7 @@
         );
 
         addSafeDelegatedListener(
-            '.remove-career-entry',
-            'click',
+            container, '.remove-career-entry', 'click',
             function(e, target) {
                 e.preventDefault();
                 var row = target.closest('.career-status-entry');
@@ -2446,14 +2007,59 @@
         );
     }
 
+    function bindCareerStatusWizard(container) {
+        addSafeDelegatedListener(
+            container, '#career-wizard-btn', 'click',
+            function(e) {
+                e.preventDefault();
+                handleCareerWizardOpen();
+            }
+        );
+    }
+
+    function bindCareerTransition(container) {
+        addSafeDelegatedListener(
+            container, '#career-transition-btn', 'click',
+            function(e) {
+                e.preventDefault();
+
+                var charId =
+                    typeof window.getCurrentEditId === 'function'
+                        ? window.getCurrentEditId() : null;
+
+                if (!charId) {
+                    notify(
+                        'Save the character before marking a ' +
+                        'transition.',
+                        'error'
+                    );
+                    return;
+                }
+
+                try {
+                    openCareerTransitionModal(charId);
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] ' +
+                        'openCareerTransitionModal threw:', err
+                    );
+                    notify(
+                        'Failed to open career transition: ' +
+                            err.message,
+                        'error'
+                    );
+                }
+            }
+        );
+    }
+
     // ============================================================
     // ACADEMIC TAB
     // ============================================================
 
-    function bindClassDropdown() {
+    function bindClassDropdown(container) {
         addSafeDelegatedListener(
-            '#academic-class-add-btn',
-            'click',
+            container, '#academic-class-add-btn', 'click',
             function(e) {
                 e.preventDefault();
 
@@ -2476,10 +2082,9 @@
         );
     }
 
-    function bindClassTagRemoval() {
+    function bindClassTagRemoval(container) {
         addSafeDelegatedListener(
-            '.remove-class-tag',
-            'click',
+            container, '.remove-class-tag', 'click',
             function(e, target) {
                 e.stopPropagation();
                 var classId = target.dataset.id;
@@ -2488,10 +2093,9 @@
         );
     }
 
-    function bindStandaloneElimRemoval() {
+    function bindStandaloneElimRemoval(container) {
         addSafeDelegatedListener(
-            '[data-action="remove-standalone-elim"]',
-            'click',
+            container, '[data-action="remove-standalone-elim"]', 'click',
             function(e, target) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2554,27 +2158,27 @@
     // COMBAT
     // ============================================================
 
-    function bindCombatRollButtons() {
+    function bindCombatRollButtons(container) {
         addSafeDelegatedListener(
-            '#roll-stats-btn', 'click', function(e) {
+            container, '#roll-stats-btn', 'click', function(e) {
                 e.preventDefault();
                 handleRollStats();
             }
         );
         addSafeDelegatedListener(
-            '#roll-magic-btn', 'click', function(e) {
+            container, '#roll-magic-btn', 'click', function(e) {
                 e.preventDefault();
                 handleRollMagic();
             }
         );
         addSafeDelegatedListener(
-            '#roll-hp-btn', 'click', function(e) {
+            container, '#roll-hp-btn', 'click', function(e) {
                 e.preventDefault();
                 handleRollHP();
             }
         );
         addSafeDelegatedListener(
-            '#roll-mp-btn', 'click', function(e) {
+            container, '#roll-mp-btn', 'click', function(e) {
                 e.preventDefault();
                 handleRollMP();
             }
@@ -2592,10 +2196,11 @@
         var statKeys = CharacterStats.STAT_KEYS ||
             ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
-        statKeys.forEach(function(key) {
+        for (var i = 0; i < statKeys.length; i++) {
+            var key = statKeys[i];
             FormUtils.setField('char-stat-' + key, rolled[key]);
             updateStatModifierDisplay(key, rolled[key]);
-        });
+        }
 
         updatePhysicalClassDisplayFromInputs();
         notify('Random stats generated!', 'info');
@@ -2612,12 +2217,14 @@
         var rolled = CharacterStats.rollMagicalProficiencies();
 
         if (MagicConstants) {
-            MagicConstants.getTypeKeys().forEach(function(type) {
+            var typeKeys = MagicConstants.getTypeKeys();
+            for (var i = 0; i < typeKeys.length; i++) {
+                var type = typeKeys[i];
                 FormUtils.setField(
                     'char-magic-' + type, rolled[type]
                 );
                 updateMagicLevelDisplay(type, rolled[type]);
-            });
+            }
             updateMagicCategoryTotals(rolled);
         }
 
@@ -2651,10 +2258,9 @@
         notify('MP rolled: ' + mp, 'info');
     }
 
-    function bindCombatClassOverrides() {
+    function bindCombatClassOverrides(container) {
         addSafeDelegatedListener(
-            '#physical-class-override',
-            'change',
+            container, '#physical-class-override', 'change',
             function(e, target) {
                 var classId = target.value;
                 if (!classId) { return; }
@@ -2675,12 +2281,13 @@
 
                 var statKeys = CharacterStats.STAT_KEYS ||
                     ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-                statKeys.forEach(function(key) {
+                for (var i = 0; i < statKeys.length; i++) {
+                    var key = statKeys[i];
                     FormUtils.setField(
                         'char-stat-' + key, newStats[key]
                     );
                     updateStatModifierDisplay(key, newStats[key]);
-                });
+                }
 
                 var displayEl = document.getElementById(
                     'derived-physical-class'
@@ -2696,8 +2303,7 @@
         );
 
         addSafeDelegatedListener(
-            '#broad-class-override',
-            'change',
+            container, '#broad-class-override', 'change',
             function(e, target) {
                 var classId = target.value;
                 var displayEl = document.getElementById(
@@ -2720,8 +2326,7 @@
         );
 
         addSafeDelegatedListener(
-            '#fine-class-override',
-            'change',
+            container, '#fine-class-override', 'change',
             function(e, target) {
                 var classId = target.value;
                 if (!classId) { return; }
@@ -2744,17 +2349,17 @@
                 }
 
                 if (MagicConstants) {
-                    MagicConstants.getTypeKeys().forEach(
-                        function(type) {
-                            FormUtils.setField(
-                                'char-magic-' + type,
-                                newMagic[type]
-                            );
-                            updateMagicLevelDisplay(
-                                type, newMagic[type]
-                            );
-                        }
-                    );
+                    var typeKeys = MagicConstants.getTypeKeys();
+                    for (var i = 0; i < typeKeys.length; i++) {
+                        var type = typeKeys[i];
+                        FormUtils.setField(
+                            'char-magic-' + type,
+                            newMagic[type]
+                        );
+                        updateMagicLevelDisplay(
+                            type, newMagic[type]
+                        );
+                    }
                     updateMagicCategoryTotals(newMagic);
                 }
 
@@ -2767,10 +2372,9 @@
         );
     }
 
-    function bindCombatLiveUpdates() {
+    function bindCombatLiveUpdates(container) {
         addSafeDelegatedListener(
-            '.stat-input',
-            'input',
+            container, '.stat-input', 'input',
             function(e, target) {
                 var key = target.dataset.statKey;
                 if (!key) { return; }
@@ -2782,8 +2386,7 @@
         );
 
         addSafeDelegatedListener(
-            '.magic-input',
-            'input',
+            container, '.magic-input', 'input',
             function(e, target) {
                 var type = target.dataset.magicKey;
                 if (!type) { return; }
@@ -2798,7 +2401,9 @@
     }
 
     function updateStatModifierDisplay(key, value) {
-        var el = document.querySelector(
+        var form = document.getElementById('character-form');
+        if (!form) { return; }
+        var el = form.querySelector(
             '[data-modifier-key="' + key + '"]'
         );
         if (!el) { return; }
@@ -2820,7 +2425,9 @@
     }
 
     function updateMagicLevelDisplay(type, value) {
-        var el = document.querySelector(
+        var form = document.getElementById('character-form');
+        if (!form) { return; }
+        var el = form.querySelector(
             '[data-magic-level="' + type + '"]'
         );
         if (!el) { return; }
@@ -2835,23 +2442,27 @@
 
     function updateMagicCategoryTotals(magic) {
         if (!MagicConstants) { return; }
-        var order = MagicConstants.getCategoryOrder
+        var form = document.getElementById('character-form');
+        if (!form) { return; }
+
+        var order = (typeof MagicConstants.getCategoryOrder === 'function')
             ? MagicConstants.getCategoryOrder()
             : ['elemental', 'body', 'aether'];
 
-        order.forEach(function(catId) {
+        for (var oi = 0; oi < order.length; oi++) {
+            var catId = order[oi];
             var types = MagicConstants.getCategoryTypes(catId);
             var total = 0;
-            types.forEach(function(t) {
-                total += Number(magic[t]) || 0;
-            });
-            var totalEl = document.querySelector(
+            for (var t = 0; t < types.length; t++) {
+                total += Number(magic[types[t]]) || 0;
+            }
+            var totalEl = form.querySelector(
                 '[data-magic-total="' + catId + '"]'
             );
             if (totalEl) {
                 totalEl.textContent = String(total);
             }
-        });
+        }
     }
 
     function readStatsFromInputs() {
@@ -2859,24 +2470,27 @@
         var statKeys = CharacterStats && CharacterStats.STAT_KEYS
             ? CharacterStats.STAT_KEYS
             : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        statKeys.forEach(function(key) {
+        for (var i = 0; i < statKeys.length; i++) {
+            var key = statKeys[i];
             var value = parseInt(
                 FormUtils.getField('char-stat-' + key), 10
             );
             result[key] = isNaN(value) ? 10 : value;
-        });
+        }
         return result;
     }
 
     function readMagicFromInputs() {
         var result = {};
         if (!MagicConstants) { return result; }
-        MagicConstants.getTypeKeys().forEach(function(type) {
+        var typeKeys = MagicConstants.getTypeKeys();
+        for (var i = 0; i < typeKeys.length; i++) {
+            var type = typeKeys[i];
             var value = parseInt(
                 FormUtils.getField('char-magic-' + type), 10
             );
             result[type] = isNaN(value) ? 0 : value;
-        });
+        }
         return result;
     }
 
@@ -2920,24 +2534,23 @@
         }
     }
 
-    function bindWeaponButtons() {
+    function bindWeaponButtons(container) {
         addSafeDelegatedListener(
-            '#add-weapon-btn',
-            'click',
+            container, '#add-weapon-btn', 'click',
             function(e) {
                 e.preventDefault();
-                var container = document.getElementById(
+                var weaponsContainer = document.getElementById(
                     'weapons-container'
                 );
-                if (!container) { return; }
+                if (!weaponsContainer) { return; }
 
                 if (CharacterForm &&
                     typeof CharacterForm.addWeaponRow ===
                     'function') {
-                    CharacterForm.addWeaponRow(container);
+                    CharacterForm.addWeaponRow(weaponsContainer);
                 }
 
-                var lastRow = container.querySelector(
+                var lastRow = weaponsContainer.querySelector(
                     '.weapon-entry:last-child'
                 );
                 if (lastRow) {
@@ -2950,8 +2563,7 @@
         );
 
         addSafeDelegatedListener(
-            '.remove-weapon',
-            'click',
+            container, '.remove-weapon', 'click',
             function(e, target) {
                 e.preventDefault();
                 var row = target.closest('.weapon-entry');
@@ -2961,10 +2573,9 @@
         );
     }
 
-    function bindSpecialMoveButtons() {
+    function bindSpecialMoveButtons(container) {
         addSafeDelegatedListener(
-            '#add-physical-move-btn',
-            'click',
+            container, '#add-physical-move-btn', 'click',
             function(e) {
                 e.preventDefault();
                 handleAddMove('physical');
@@ -2972,8 +2583,7 @@
         );
 
         addSafeDelegatedListener(
-            '#add-magical-move-btn',
-            'click',
+            container, '#add-magical-move-btn', 'click',
             function(e) {
                 e.preventDefault();
                 handleAddMove('magical');
@@ -2981,8 +2591,7 @@
         );
 
         addSafeDelegatedListener(
-            '.remove-special-move',
-            'click',
+            container, '.remove-special-move', 'click',
             function(e, target) {
                 e.preventDefault();
                 var type = target.dataset.type;
@@ -3032,10 +2641,20 @@
                         'function') {
                         CharacterStatsView.renderMovesSection(char);
                     }
+                    return;
                 }
+                notify(
+                    (result && result.message) ||
+                    'Failed to add move.',
+                    'error'
+                );
             })
-            .catch(function() {
-                notify('Failed to add move.', 'error');
+            .catch(function(err) {
+                notify(
+                    'Failed to add move: ' +
+                    (err && err.message ? err.message : 'Unknown error'),
+                    'error'
+                );
             });
     }
 
@@ -3066,10 +2685,20 @@
                         'function') {
                         CharacterStatsView.renderMovesSection(char);
                     }
+                    return;
                 }
+                notify(
+                    (result && result.message) ||
+                    'Failed to remove move.',
+                    'error'
+                );
             })
-            .catch(function() {
-                notify('Failed to remove move.', 'error');
+            .catch(function(err) {
+                notify(
+                    'Failed to remove move: ' +
+                    (err && err.message ? err.message : 'Unknown error'),
+                    'error'
+                );
             });
     }
 
@@ -3077,10 +2706,9 @@
     // SOCIAL TAB
     // ============================================================
 
-    function bindSocialButtons() {
+    function bindSocialButtons(container) {
         addSafeDelegatedListener(
-            '#add-char-relationship-btn',
-            'click',
+            container, '#add-char-relationship-btn', 'click',
             function(e) {
                 e.preventDefault();
                 openRelationshipModal(null);
@@ -3088,8 +2716,7 @@
         );
 
         addSafeDelegatedListener(
-            '#view-char-social-graph',
-            'click',
+            container, '#view-char-social-graph', 'click',
             function(e) {
                 e.preventDefault();
                 openCharacterGraphModal();
@@ -3097,8 +2724,7 @@
         );
 
         addSafeDelegatedListener(
-            '.relationship-group-header',
-            'click',
+            container, '.relationship-group-header', 'click',
             function(e, target) {
                 e.preventDefault();
                 var group = target.closest('.relationship-group');
@@ -3120,8 +2746,7 @@
         );
 
         addSafeDelegatedListener(
-            '.edit-char-relationship',
-            'click',
+            container, '.edit-char-relationship', 'click',
             function(e, target) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3131,8 +2756,7 @@
         );
 
         addSafeDelegatedListener(
-            '.delete-char-relationship',
-            'click',
+            container, '.delete-char-relationship', 'click',
             function(e, target) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3142,8 +2766,7 @@
         );
 
         addSafeDelegatedListener(
-            '#close-char-graph-modal',
-            'click',
+            container, '#close-char-graph-modal', 'click',
             function(e) {
                 e.preventDefault();
                 closeCharacterGraphModal();
@@ -3151,8 +2774,7 @@
         );
 
         addSafeDelegatedListener(
-            '#character-graph-modal',
-            'click',
+            container, '#character-graph-modal', 'click',
             function(e, target) {
                 if (e.target === target) {
                     closeCharacterGraphModal();
@@ -3377,6 +2999,388 @@
     }
 
     // ============================================================
+    // JSON IMPORT / EXPORT
+    // ============================================================
+
+    function bindJsonImportExport(container) {
+        addSafeDelegatedListener(
+            container, '#export-character-json-btn', 'click',
+            function(e) {
+                e.preventDefault();
+                handleCharacterJsonExport();
+            }
+        );
+
+        addSafeDelegatedListener(
+            container, '#import-character-json-btn', 'click',
+            function(e) {
+                e.preventDefault();
+                handleCharacterJsonImport();
+            }
+        );
+    }
+
+    function handleCharacterJsonExport() {
+        var JsonIo = getCharacterJSONIO();
+        if (!JsonIo ||
+            typeof JsonIo.handleExportCurrent !== 'function') {
+            notify('JSON export is not available.', 'error');
+            return;
+        }
+
+        try {
+            JsonIo.handleExportCurrent();
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] JSON export threw:', err
+            );
+            notify(
+                'JSON export failed: ' + err.message,
+                'error'
+            );
+        }
+    }
+
+    function handleCharacterJsonImport() {
+        var JsonIo = getCharacterJSONIO();
+        if (!JsonIo ||
+            typeof JsonIo.handleImportIntoForm !== 'function') {
+            notify('JSON import is not available.', 'error');
+            return;
+        }
+
+        // Confirm when the form has any typed content or is editing
+        // a saved character, since import will overwrite it.
+        var shouldConfirm = false;
+        var editId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId() : null;
+
+        if (editId) {
+            shouldConfirm = true;
+        } else {
+            var form = document.getElementById('character-form');
+            if (form) {
+                var first = form.querySelector('#char-firstName');
+                var last = form.querySelector('#char-lastName');
+                if ((first && String(first.value || '').trim() !== '') ||
+                    (last && String(last.value || '').trim() !== '')) {
+                    shouldConfirm = true;
+                }
+            }
+        }
+
+        if (shouldConfirm) {
+            var char = editId
+                ? CharacterQueries.getCharacterById(editId)
+                : null;
+            var name = char
+                ? CharacterQueries.getDisplayName(char)
+                : 'the current form';
+
+            if (!confirm(
+                'Importing will replace ' + name +
+                '. The stored record will not change until you ' +
+                'click Save. Continue?'
+            )) {
+                return;
+            }
+        }
+
+        try {
+            JsonIo.handleImportIntoForm();
+        } catch (err) {
+            console.warn(
+                '[CharacterEvents] JSON import threw:', err
+            );
+            notify(
+                'JSON import failed: ' + err.message,
+                'error'
+            );
+        }
+    }
+
+    // ============================================================
+    // FILLER MANAGER + CHARACTER ROSTER EXPORT
+    // ============================================================
+
+    function bindManageFillers(container) {
+        var btn = document.getElementById('manage-fillers-btn');
+        if (!btn) { return; }
+
+        addSafeEventListener(btn, 'click', function(e) {
+            e.preventDefault();
+
+            var FM = getFillerManagerModal();
+            if (!FM || typeof FM.openModal !== 'function') {
+                notify(
+                    'Filler manager is not available.', 'error'
+                );
+                return;
+            }
+
+            try {
+                FM.openModal();
+            } catch (err) {
+                console.warn(
+                    '[CharacterEvents] FillerManagerModal threw:', err
+                );
+                notify(
+                    'Failed to open the filler manager: ' +
+                        err.message,
+                    'error'
+                );
+            }
+        });
+    }
+
+    function bindCharacterRosterExport(container) {
+        var btn = document.getElementById(
+            'export-character-roster-btn'
+        );
+        if (!btn) { return; }
+
+        addSafeEventListener(btn, 'click', function(e) {
+            e.preventDefault();
+
+            var Exporter = getCharacterRosterExport();
+            if (!Exporter ||
+                typeof Exporter.exportText !== 'function') {
+                notify(
+                    'Character roster export is not available.',
+                    'error'
+                );
+                return;
+            }
+
+            var result;
+            try {
+                result = Exporter.exportText();
+            } catch (err) {
+                console.warn(
+                    '[CharacterEvents] CharacterRosterExport threw:',
+                    err
+                );
+                notify(
+                    'Character roster export failed: ' + err.message,
+                    'error'
+                );
+                return;
+            }
+
+            if (result && result.exported) {
+                notify(
+                    'Exported ' + result.count + ' character' +
+                    (result.count === 1 ? '' : 's') + ': ' +
+                    result.filename,
+                    'success'
+                );
+                return;
+            }
+
+            notify(
+                'Character roster export failed: ' +
+                    ((result && result.error) || 'Unknown error'),
+                'error'
+            );
+        });
+    }
+
+    // ============================================================
+    // LIST-LEVEL EXPORT
+    // ============================================================
+
+    function bindListExportButton() {
+        addSafeDelegatedListener(
+            '#tab-characters', '#export-characters-btn', 'click',
+            function(e) {
+                e.preventDefault();
+
+                var Picker = window.CharacterExportPicker || null;
+                if (!Picker ||
+                    typeof Picker.openModal !== 'function') {
+                    notify(
+                        'Character export is not available.',
+                        'error'
+                    );
+                    return;
+                }
+
+                var CL = getCharacterList();
+                var characterIds = null;
+
+                if (CL &&
+                    typeof CL.hasSelection === 'function' &&
+                    CL.hasSelection() &&
+                    typeof CL.getSelectedIds === 'function') {
+                    characterIds = CL.getSelectedIds();
+                }
+
+                try {
+                    Picker.openModal({
+                        characterIds: characterIds
+                    });
+                } catch (err) {
+                    console.warn(
+                        '[CharacterEvents] ' +
+                        'CharacterExportPicker.openModal threw:',
+                        err
+                    );
+                    notify(
+                        'Character export failed: ' + err.message,
+                        'error'
+                    );
+                }
+            }
+        );
+    }
+
+    // ============================================================
+    // SELECTION
+    // ============================================================
+
+    function bindListSelection() {
+        addSafeDelegatedListener(
+            '#tab-characters', '.char-list-checkbox', 'change',
+            function(e, target) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+
+                var charId = target.dataset
+                    ? target.dataset.characterId
+                    : null;
+                if (!charId) { return; }
+
+                var CL = getCharacterList();
+                if (!CL ||
+                    typeof CL.toggleSelected !== 'function' ||
+                    typeof CL.render !== 'function') {
+                    return;
+                }
+
+                CL.toggleSelected(charId);
+                CL.render();
+            }
+        );
+
+        addSafeDelegatedListener(
+            '#tab-characters', '.char-list-checkbox-cell', 'click',
+            function(e) {
+                if (e.stopPropagation) {
+                    e.stopPropagation();
+                }
+            }
+        );
+
+        addSafeDelegatedListener(
+            '#tab-characters',
+            '[data-action="char-clear-selection"]',
+            'click',
+            function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                var CL = getCharacterList();
+                if (!CL ||
+                    typeof CL.clearSelection !== 'function' ||
+                    typeof CL.render !== 'function') {
+                    return;
+                }
+
+                CL.clearSelection();
+                CL.render();
+            }
+        );
+    }
+
+    // ============================================================
+    // CAREER STATUS FILTER TOGGLE
+    // ============================================================
+
+    var _careerStatusCollapsed = null;
+    var CAREER_STATUS_TOGGLE_STORAGE_KEY = 'characters_career_toggle_v1';
+
+    function readCareerStatusCollapsedFromStorage() {
+        try {
+            var raw = sessionStorage.getItem(
+                CAREER_STATUS_TOGGLE_STORAGE_KEY
+            );
+            if (raw === 'true') { return true; }
+            if (raw === 'false') { return false; }
+        } catch (e) {
+            // Ignore.
+        }
+        return null;
+    }
+
+    function writeCareerStatusCollapsedToStorage(collapsed) {
+        try {
+            sessionStorage.setItem(
+                CAREER_STATUS_TOGGLE_STORAGE_KEY,
+                collapsed ? 'true' : 'false'
+            );
+        } catch (e) {
+            // Ignore.
+        }
+    }
+
+    function readCareerStatusCollapsedFromDOM() {
+        var group = document.getElementById(
+            'career-status-filter-group'
+        );
+        if (!group) { return false; }
+        return group.dataset.collapsed === 'true';
+    }
+
+    function applyCareerStatusCollapsed(collapsed) {
+        var group = document.getElementById(
+            'career-status-filter-group'
+        );
+        var body = document.getElementById('char-status-filter');
+        var toggle = document.getElementById(
+            'career-status-filter-toggle'
+        );
+        if (!group || !body || !toggle) { return; }
+
+        group.dataset.collapsed = collapsed ? 'true' : 'false';
+        toggle.setAttribute(
+            'aria-expanded', collapsed ? 'false' : 'true'
+        );
+
+        body.style.display = collapsed ? 'none' : 'grid';
+
+        var caret = toggle.querySelector('.status-filter-caret');
+        if (caret) {
+            caret.textContent = collapsed ? '\u25b8' : '\u25be';
+        }
+    }
+
+    function bindCareerStatusToggle(container) {
+        // Seed from storage; fall back to the current DOM state.
+        var stored = readCareerStatusCollapsedFromStorage();
+        if (stored === null) {
+            _careerStatusCollapsed = readCareerStatusCollapsedFromDOM();
+            writeCareerStatusCollapsedToStorage(_careerStatusCollapsed);
+        } else {
+            _careerStatusCollapsed = stored;
+        }
+
+        addSafeDelegatedListener(
+            container, '#career-status-filter-toggle', 'click',
+            function(e) {
+                e.preventDefault();
+                _careerStatusCollapsed = !_careerStatusCollapsed;
+                writeCareerStatusCollapsedToStorage(
+                    _careerStatusCollapsed
+                );
+                applyCareerStatusCollapsed(
+                    _careerStatusCollapsed
+                );
+            }
+        );
+    }
+
+    // ============================================================
     // SAVE / DELETE / SELECT
     // ============================================================
 
@@ -3393,10 +3397,6 @@
             ? window.getCurrentEditId() : null;
         dto._editId = editId;
 
-        var wasEditing = editId !== null &&
-            editId !== undefined &&
-            editId !== '';
-
         _saveInFlight = true;
 
         CharacterCRUD.save(dto)
@@ -3410,9 +3410,11 @@
                             window.setCurrentEditId(savedId);
                         }
 
-                        if (!wasEditing) {
-                            CharacterForm.render(savedId);
-                        }
+                        // Always re-render after a successful save,
+                        // for both creates and edits. The merge logic
+                        // in character-form.js preserves in-flight
+                        // edits.
+                        CharacterForm.render(savedId);
 
                         var char =
                             CharacterQueries.getCharacterById(
@@ -3421,11 +3423,19 @@
                         refreshUI(char);
                         refreshCharacterReportButton();
                     }
+                    return;
+                }
+
+                // Failure. Notify the message if the pipeline did not.
+                if (result && result.message) {
+                    notify(result.message, 'error');
                 }
             })
-            .catch(function() {
+            .catch(function(err) {
                 notify(
-                    'An error occurred while saving.', 'error'
+                    'An error occurred while saving: ' +
+                    (err && err.message ? err.message : 'Unknown error'),
+                    'error'
                 );
             })
             .then(function() {
