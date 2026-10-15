@@ -1,5 +1,5 @@
 /**
- * shared/queries/character-queries.js - Character Queries
+ * characters/character-queries.js - Character Queries
  * Read-only character domain queries.
  *
  * Path: js/shared/queries/character-queries.js
