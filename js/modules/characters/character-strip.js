@@ -13,8 +13,11 @@
  *                                     only the non-empty, non-default
  *                                     keys.
  *   - stripEliminatedForExport(arr)   returns a NEW array in which
- *                                     every eliminated character has
- *                                     been reduced via stripEmptyFields.
+ *                                     every eliminated character
+ *                                     without authored content has
+ *                                     been reduced via
+ *                                     stripEmptyFields and flagged
+ *                                     as filler.
  *
  * WHAT THIS DOES NOT DO:
  *   - Does not mutate window.data.
@@ -36,36 +39,47 @@
  *
  *   For CONTAINER fields (personality, specialMoves, weapons,
  *   classIds), normalise re-adds a fresh container even if the
- *   stripped record had none. That changes the object identity but
- *   not the semantic content: `personality: {}` and absent
- *   personality are indistinguishable to every consumer.
+ *   stripped record had none. The strip therefore keeps empty
+ *   CONTAINERS in place, so the round trip is stable. Scalar zeros
+ *   are stripped; if normalise re-adds them, they come back as
+ *   zeros.
  *
- *   The strip therefore keeps empty CONTAINERS in place (as {} or
- *   []), so the round trip is stable and the stripped record is
- *   exactly what the next save will write. Scalar zeros are
- *   stripped; if normalise re-adds them, they come back as zeros,
- *   which is what the caller asked for.
+ * NESTED STRIP:
+ *   Containers are stripped one level deeper. personality loses
+ *   empty fields, careerStatus entries lose empty titles, weapons
+ *   entries lose empty notes, specialMoves entries lose empty
+ *   descriptions. The container itself is preserved.
  *
- *   This is a compromise between two policies that were previously
- *   in conflict: strip's "reduce to meaningful fields" and
- *   normalise's "every character has every field". Both are
- *   satisfied by keeping containers and dropping scalar defaults.
+ * EXPLICIT ZEROS:
+ *   A zero-value deathAge or deathWeek is a value, not a missing
+ *   value. Both numeric 0 and string "0" are kept.
  *
- * HAS AUTHORED CONTENT:
- *   The predicate is deliberately conservative: it is better to
- *   leave a character flagged as filler than to unflag one on a
- *   false positive. Any authored field, stat above the default,
- *   any magic above zero, any HP or MP above zero, any weapon, any
- *   special move, any personality string or array, or any of the
- *   bio strings, counts as authored.
+ * MALFORMED VALUES:
+ *   A value that is present but has the wrong shape (for example a
+ *   careerStatus that is not an array) is preserved with a
+ *   console.warn naming the field. It is not silently dropped. This
+ *   matches the "no silent repair" policy in character-moves.js.
  *
- *   character-crud.js's local fallback (used when this module is
- *   absent) is narrower — it does not inspect personality arrays.
- *   Both use this module when it is loaded, so the drift only
- *   matters in a degraded environment. In the normal load order,
- *   this implementation is authoritative.
+ * UPDATED AT:
+ *   The strip refreshes updatedAt only when it actually removed
+ *   something. A no-op strip leaves the timestamp unchanged, so the
+ *   strip is idempotent on an already-stripped record.
  *
- * DEPENDENCIES:
+ * EXPORT-TIME STRIP:
+ *   stripEliminatedForExport flags an eliminated character as
+ *   filler only when the character has no authored content. A
+ *   character with a full bio, personality or moves stays
+ *   unflagged even if eliminated, so it does not disappear behind
+ *   the default Hide Filler filter on re-import.
+ *
+ * DISPLAY PARTS:
+ *   displayParts is preserved when middleName is non-empty. The
+ *   legacy firstlast display name omits the middle name; the
+ *   default displayParts includes it. Stripping displayParts from
+ *   a character with a middle name would change the displayed name
+ *   after export and re-import.
+ *
+ * DEPENDENCIES (LAZY):
  *   - window.ObjectUtils (preferred; local fallback otherwise)
  */
 
@@ -111,10 +125,7 @@
 
     var DEFAULT_NAME_FORMAT = 'firstlast';
 
-    // Fields that survive the strip unconditionally. These define
-    // the character's identity: without them, the record is not a
-    // record. Note that `gender` is NOT here; it is a bio field and
-    // is stripped when empty, matching every other bio field.
+    // Fields that survive the strip unconditionally.
     var ALWAYS_KEEP = {
         id: true,
         firstName: true,
@@ -126,9 +137,7 @@
         updatedAt: true
     };
 
-    // Arrays that are kept only if non-empty. An empty array is
-    // equivalent to absent for these, and normalise re-adds them as
-    // empty, so stripping is stable.
+    // Arrays that are kept only if non-empty.
     var KEEP_NONEMPTY_ARRAY = {
         careerStatus: true,
         eliminations: true,
@@ -137,18 +146,18 @@
     };
 
     // Containers that are kept even when empty, so the round trip
-    // through normaliseDataStructure is a no-op. See the STRIP AND
-    // NORMALISE block above.
+    // through normaliseDataStructure is a no-op. Each entry names
+    // the empty shape to preserve.
     var KEEP_EMPTY_CONTAINER = {
-        personality: true,
-        specialMoves: true,
-        weapons: true,
-        classIds: true
+        personality:      { kind: 'object', empty: function() { return {}; } },
+        specialMoves:     { kind: 'specialMoves', empty: function() {
+                                return { physical: [], magical: [] };
+                            } },
+        weapons:          { kind: 'array', empty: function() { return []; } },
+        classIds:         { kind: 'array', empty: function() { return []; } }
     };
 
-    // Scalar and string fields that are dropped when empty. These
-    // are re-added by normalise as the same empty value, so the
-    // round trip is stable.
+    // Scalar and string fields that are dropped when empty.
     var DROP_EMPTY_STRING = {
         middleName: true,
         nickname: true,
@@ -255,6 +264,16 @@
         return false;
     }
 
+    function warnMalformed(fieldName, charId) {
+        if (typeof console === 'undefined' || !console.warn) { return; }
+        console.warn(
+            '[CharacterStrip] Preserved malformed field "' +
+            fieldName + '"' +
+            (charId ? ' on character ' + charId : '') +
+            '. The strip does not repair shape errors.'
+        );
+    }
+
     // ============================================================
     // AUTHORED CONTENT
     // ============================================================
@@ -338,6 +357,80 @@
     }
 
     // ============================================================
+    // NESTED STRIP HELPERS
+    // ============================================================
+
+    function stripPersonality(personality) {
+        if (!isPlainObject(personality)) { return personality; }
+        var out = {};
+        var keys = Object.keys(personality);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var v = personality[key];
+            if (typeof v === 'string' && v.trim() === '') { continue; }
+            if (typeof v === 'number' && v === 0) { continue; }
+            if (Array.isArray(v) && v.length === 0) { continue; }
+            if (isPlainObject(v) && Object.keys(v).length === 0) {
+                continue;
+            }
+            if (v === null || v === undefined) { continue; }
+            out[key] = v;
+        }
+        return out;
+    }
+
+    function stripCareerEntry(entry) {
+        if (!isPlainObject(entry)) { return entry; }
+        var out = {};
+        var keys = Object.keys(entry);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var v = entry[key];
+            if (key === 'title' &&
+                typeof v === 'string' && v.trim() === '') {
+                continue;
+            }
+            if (v === null || v === undefined) { continue; }
+            out[key] = v;
+        }
+        return out;
+    }
+
+    function stripWeaponEntry(weapon) {
+        if (!isPlainObject(weapon)) { return weapon; }
+        var out = {};
+        var keys = Object.keys(weapon);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var v = weapon[key];
+            if (key === 'notes' &&
+                typeof v === 'string' && v.trim() === '') {
+                continue;
+            }
+            if (v === null || v === undefined) { continue; }
+            out[key] = v;
+        }
+        return out;
+    }
+
+    function stripMoveEntry(move) {
+        if (!isPlainObject(move)) { return move; }
+        var out = {};
+        var keys = Object.keys(move);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var v = move[key];
+            if (key === 'description' &&
+                typeof v === 'string' && v.trim() === '') {
+                continue;
+            }
+            if (v === null || v === undefined) { continue; }
+            out[key] = v;
+        }
+        return out;
+    }
+
+    // ============================================================
     // STRIP
     // ============================================================
 
@@ -360,49 +453,66 @@
 
             if (KEEP_NONEMPTY_ARRAY[key]) {
                 if (Array.isArray(value) && value.length > 0) {
+                    if (key === 'careerStatus') {
+                        out[key] = value.map(stripCareerEntry);
+                    } else {
+                        out[key] = value;
+                    }
+                } else if (value !== undefined && !Array.isArray(value)) {
+                    // Malformed: preserved with a warning.
+                    warnMalformed(key, char.id);
                     out[key] = value;
                 }
                 continue;
             }
 
             if (KEEP_EMPTY_CONTAINER[key]) {
-                if (key === 'specialMoves') {
-                    // Preserve shape. A present-but-empty container
-                    // is kept as-is; an absent one is not added.
-                    // normaliseDataStructure re-adds the canonical
-                    // shape on save, so the record stays stable.
+                var spec = KEEP_EMPTY_CONTAINER[key];
+
+                if (spec.kind === 'object') {
+                    if (isPlainObject(value)) {
+                        out[key] = stripPersonality(value);
+                    }
+                    continue;
+                }
+
+                if (spec.kind === 'array') {
+                    if (Array.isArray(value)) {
+                        if (key === 'weapons') {
+                            out[key] = value.map(stripWeaponEntry);
+                        } else {
+                            // Keep the array as-is. classIds and
+                            // similar id arrays are not nested.
+                            out[key] = value;
+                        }
+                    }
+                    continue;
+                }
+
+                if (spec.kind === 'specialMoves') {
                     if (isPlainObject(value)) {
                         var hasPhys = Array.isArray(value.physical) &&
                             value.physical.length > 0;
                         var hasMagi = Array.isArray(value.magical) &&
                             value.magical.length > 0;
+
                         if (hasPhys || hasMagi) {
-                            out[key] = value;
-                        } else {
-                            // Present but empty: keep the canonical
-                            // shape so normalise does not have to
-                            // reconstruct it.
                             out[key] = {
-                                physical: [],
-                                magical: []
+                                physical: Array.isArray(value.physical)
+                                    ? value.physical.map(stripMoveEntry)
+                                    : [],
+                                magical: Array.isArray(value.magical)
+                                    ? value.magical.map(stripMoveEntry)
+                                    : []
                             };
+                        } else {
+                            // Present but empty: preserve the
+                            // canonical shape so normalise does not
+                            // have to reconstruct it.
+                            out[key] = { physical: [], magical: [] };
                         }
                     }
-                } else if (key === 'personality') {
-                    if (isPlainObject(value)) {
-                        // Keep even an empty personality object.
-                        out[key] = value;
-                    }
-                } else if (key === 'weapons') {
-                    if (Array.isArray(value)) {
-                        // Keep even an empty weapons array.
-                        out[key] = value;
-                    }
-                } else if (key === 'classIds') {
-                    if (Array.isArray(value)) {
-                        // Keep even an empty classIds array.
-                        out[key] = value;
-                    }
+                    continue;
                 }
                 continue;
             }
@@ -411,7 +521,9 @@
                 if (typeof value === 'string' && value.trim() !== '') {
                     out[key] = value;
                 } else if (typeof value === 'number') {
-                    if (value !== 0) { out[key] = value; }
+                    // Explicit zeros (deathAge: 0, deathWeek: 0) are
+                    // values, not absent values. Keep them.
+                    out[key] = value;
                 }
                 continue;
             }
@@ -433,8 +545,6 @@
 
                 case 'hp':
                 case 'mp':
-                    // Scalar zeros are dropped. normalise re-adds
-                    // them as zeros on save, which is stable.
                     if (typeof value === 'number' && value !== 0) {
                         out[key] = value;
                     }
@@ -444,6 +554,16 @@
                     if (isPlainObject(value) &&
                         !isDefaultDisplayParts(value)) {
                         out[key] = value;
+                    } else if (isPlainObject(value) &&
+                               isDefaultDisplayParts(value)) {
+                        // Preserve displayParts when the record
+                        // has a middle name, so a legacy firstlast
+                        // display does not lose it on round trip.
+                        var middle = char.middleName;
+                        if (typeof middle === 'string' &&
+                            middle.trim() !== '') {
+                            out[key] = value;
+                        }
                     }
                     continue;
 
@@ -471,6 +591,16 @@
             }
         }
 
+        // ---- Refresh updatedAt only when something was removed. ----
+        var originalCount = Object.keys(char).length;
+        var strippedCount = Object.keys(out).length;
+
+        if (strippedCount < originalCount &&
+            ALWAYS_KEEP.updatedAt &&
+            char.updatedAt !== undefined) {
+            out.updatedAt = new Date().toISOString();
+        }
+
         return out;
     }
 
@@ -492,8 +622,17 @@
                 result[i] = c;
                 continue;
             }
+
+            // Only flag as filler when the character has no
+            // authored content. An eliminated character with a
+            // full bio must not disappear behind the default
+            // Hide Filler filter on re-import.
+            var hasContent = hasAuthoredContent(c);
+
             var reduced = stripEmptyFields(c);
-            reduced.isFiller = true;
+            if (!hasContent) {
+                reduced.isFiller = true;
+            }
             result[i] = reduced;
         }
         return result;
