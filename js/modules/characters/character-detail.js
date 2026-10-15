@@ -10,28 +10,38 @@
  *   hard-coded internal constants. This is a strict invariant
  *   enforced throughout this module.
  *
- * MODAL CONTENT CONTRACT:
- *   Modal.createModal() returns a BARE `.modal` shell with no
- *   children. This module builds its own `.modal-content` wrapper.
- *   See createModal() below.
+ *   Two narrow exceptions are documented at their call sites:
+ *     - renderRow() takes a PRE-ESCAPED valueHtml. Callers must
+ *       escape before passing. renderRowEscaped is the safe
+ *       wrapper for the common case.
+ *     - CSS colour values pass through sanitizeCssValue (or
+ *       getSafeColor as a fallback) before being used in a style
+ *       attribute, in addition to escapeHtml.
+ *
+ * MODAL CONTRACT:
+ *   Modal.createModal() returns a BARE .modal shell with no
+ *   children. This module builds its own .modal-content wrapper.
+ *   Click-outside and Escape handling are delegated to
+ *   Modal.modalSetup(), which also handles the drag-release
+ *   guard. The module does NOT attach its own document-level
+ *   handlers.
  *
  * IMPORTANT:
  *   - RENDER ONLY. No mutations, no persistence.
  *   - All cross-domain data comes from CharacterAggregator.
- *   - All character-record data comes from CharacterQueries.
- *   - Stat calculations come from CharacterStats, via the
- *     aggregator.
+ *   - Stat keys come from CharacterConstants (lazy).
+ *   - Magic keys come from MagicConstants (lazy).
  *   - Modal lifecycle comes from Modal.
  *   - Escaping comes from DomUtils.
- *   - Callbacks are dispatched as DOM CustomEvents; the character
- *     event layer listens.
+ *   - Callbacks are dispatched as DOM CustomEvents.
  *
- * DEPENDENCIES (MANDATORY):
- *   - window.CharacterAggregator
- *   - window.CharacterQueries
- *   - window.DomUtils
- *   - window.Modal
- *   - window.CharacterConstants
+ * DEPENDENCIES:
+ *   - window.CharacterAggregator (mandatory)
+ *   - window.CharacterQueries (mandatory)
+ *   - window.DomUtils (mandatory)
+ *   - window.Modal (mandatory)
+ *   - window.CharacterConstants (lazy; STAT_KEYS, format labels)
+ *   - window.MagicConstants (lazy; type keys, category order)
  *
  * USAGE:
  *   var CD = window.CharacterDetail;
@@ -48,14 +58,37 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY
+    // DEPENDENCY ACCESS - LAZY
     // ============================================================
 
-    var CharacterAggregator = window.CharacterAggregator;
-    var CharacterQueries = window.CharacterQueries;
-    var DomUtils = window.DomUtils;
-    var Modal = window.Modal;
-    var CharacterConstants = window.CharacterConstants;
+    function getCharacterAggregator() { return window.CharacterAggregator || null; }
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getDomUtils() { return window.DomUtils || null; }
+    function getModal() { return window.Modal || null; }
+    function getCharacterConstants() { return window.CharacterConstants || null; }
+    function getMagicConstants() { return window.MagicConstants || null; }
+
+    function getStatKeys() {
+        var CC = getCharacterConstants();
+        if (CC && Array.isArray(CC.STAT_KEYS)) {
+            return CC.STAT_KEYS;
+        }
+        return ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    }
+
+    function getNameFormatLabels() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.getNameFormatLabels === 'function') {
+            return CC.getNameFormatLabels();
+        }
+        return {
+            'firstlast': 'First + Last',
+            'lastfirst': 'Last, First',
+            'nicklast':  'Nickname + Last',
+            'firstnick': 'First "Nickname"',
+            'alias':     'Alias'
+        };
+    }
 
     // ============================================================
     // STATE
@@ -77,17 +110,14 @@
         notes: true
     };
 
+    var TAB_ORDER = [
+        'name', 'physical', 'personality', 'career',
+        'academic', 'stats', 'social', 'notes'
+    ];
+
     // ============================================================
     // CONSTANTS
     // ============================================================
-
-    var STAT_KEYS = CharacterConstants
-        ? CharacterConstants.STAT_KEYS
-        : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
-    var MAGIC_TYPE_KEYS = CharacterConstants
-        ? CharacterConstants.MAGIC_TYPE_KEYS
-        : [];
 
     var ALLOWED_COLORS = {
         '#8cbb3a': true,
@@ -107,25 +137,26 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterAggregator ||
-            typeof CharacterAggregator.getCharacterDetail !== 'function') {
+        var Agg = getCharacterAggregator();
+        if (!Agg || typeof Agg.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
 
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacterById !== 'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CQ || typeof CQ.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+        var DU = getDomUtils();
+        if (!DU || typeof DU.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
-        if (!Modal || typeof Modal.createModal !== 'function') {
+        var M = getModal();
+        if (!M || typeof M.createModal !== 'function') {
             missing.push('Modal.createModal');
         }
 
@@ -141,14 +172,14 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
         }
-        // Emergency fallback (should never be reached).
         if (value === undefined || value === null) {
             return '';
         }
@@ -157,15 +188,46 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
-    // RELATIONSHIP HELPERS
+    // COLOR SAFETY
     // ============================================================
 
+    /**
+     * Sanitise a CSS colour value for use in a style attribute.
+     *
+     * Prefers DomUtils.sanitizeCssValue, which uses a strict
+     * allowlist (hex, rgb/rgba, hsl/hsla, safe keywords). Falls back
+     * to the local relationship-colour allowlist when sanitizeCssValue
+     * is unavailable. Returns a safe default when neither applies.
+     */
     function getSafeColor(color) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.sanitizeCssValue === 'function') {
+            var sanitised = DU.sanitizeCssValue(color);
+            if (sanitised !== '') {
+                return sanitised;
+            }
+            return '#7f8c8d';
+        }
+
+        // Fallback: allowlist-only.
         if (!color || typeof color !== 'string') {
             return '#7f8c8d';
         }
@@ -190,7 +252,8 @@
             return;
         }
 
-        var detail = CharacterAggregator.getCharacterDetail(charId);
+        var Agg = getCharacterAggregator();
+        var detail = Agg.getCharacterDetail(charId);
         if (!detail) {
             console.warn('[CharacterDetail] Character not found:', charId);
             return;
@@ -206,13 +269,14 @@
         }
 
         render(detail);
-        Modal.showModal(modal);
+        switchTab('name');
+        getModal().showModal(modal);
     }
 
     function close() {
         var modal = document.getElementById('character-detail-modal');
         if (modal) {
-            Modal.closeModal(modal);
+            getModal().closeModal(modal);
         }
         state.characterId = null;
     }
@@ -226,8 +290,13 @@
             return;
         }
 
+        var Modal = getModal();
         var modal = Modal.createModal('character-detail-modal');
         modal.id = 'character-detail-modal';
+
+        // Accessible name for the dialog comes from the title
+        // element rendered below.
+        modal.setAttribute('aria-labelledby', 'detail-character-name');
 
         // Modal.createModal returns a BARE .modal shell. We build
         // our own .modal-content wrapper here.
@@ -260,6 +329,7 @@
         // Tabs
         var tabs = document.createElement('div');
         tabs.className = 'detail-tabs';
+        tabs.setAttribute('role', 'tablist');
         tabs.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;' +
             'margin-bottom:12px;border-bottom:1px solid var(--border);' +
             'padding-bottom:8px;';
@@ -275,14 +345,18 @@
             notes: 'Notes'
         };
 
-        for (var tab in tabNames) {
-            if (!Object.prototype.hasOwnProperty.call(tabNames, tab)) {
-                continue;
-            }
+        for (var ti = 0; ti < TAB_ORDER.length; ti++) {
+            var tab = TAB_ORDER[ti];
             var btn = document.createElement('button');
             btn.className = 'detail-tab-btn' +
                 (tab === state.activeTab ? ' active' : '');
             btn.dataset.tab = tab;
+            btn.setAttribute('role', 'tab');
+            btn.setAttribute('aria-selected',
+                tab === state.activeTab ? 'true' : 'false');
+            btn.setAttribute('aria-controls', 'detail-' + tab);
+            btn.setAttribute('tabindex',
+                tab === state.activeTab ? '0' : '-1');
             btn.textContent = tabNames[tab];
             btn.style.cssText =
                 'background:transparent;border:none;' +
@@ -305,14 +379,15 @@
         var panels = document.createElement('div');
         panels.id = 'detail-tab-panels';
 
-        for (var tabName in tabNames) {
-            if (!Object.prototype.hasOwnProperty.call(tabNames, tabName)) {
-                continue;
-            }
+        for (var pi = 0; pi < TAB_ORDER.length; pi++) {
+            var tabName = TAB_ORDER[pi];
             var panel = document.createElement('div');
             panel.id = 'detail-' + tabName;
             panel.className = 'detail-tab-panel' +
                 (tabName === state.activeTab ? ' active' : '');
+            panel.setAttribute('role', 'tabpanel');
+            panel.setAttribute('aria-labelledby',
+                'detail-tab-btn-' + tabName);
             panel.style.cssText = 'display:' +
                 (tabName === state.activeTab ? 'block' : 'none') + ';';
             panels.appendChild(panel);
@@ -354,18 +429,46 @@
         document.getElementById('close-character-detail-btn')
             .addEventListener('click', close);
 
-        // Tab switching.
-        tabs.querySelectorAll('.detail-tab-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var tab = this.dataset.tab;
-                if (tab) {
-                    switchTab(tab);
-                }
-            });
+        // Tab switching: click.
+        var tabButtons = tabs.querySelectorAll('.detail-tab-btn');
+        for (var bi = 0; bi < tabButtons.length; bi++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    var tab = btn.dataset.tab;
+                    if (tab) { switchTab(tab); }
+                });
+            })(tabButtons[bi]);
+        }
+
+        // Tab switching: keyboard (Left, Right, Home, End).
+        tabs.addEventListener('keydown', function(e) {
+            var idx = TAB_ORDER.indexOf(state.activeTab);
+            if (idx === -1) { idx = 0; }
+            var next = idx;
+
+            if (e.key === 'ArrowRight') {
+                next = (idx + 1) % TAB_ORDER.length;
+            } else if (e.key === 'ArrowLeft') {
+                next = (idx - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+            } else if (e.key === 'Home') {
+                next = 0;
+            } else if (e.key === 'End') {
+                next = TAB_ORDER.length - 1;
+            } else {
+                return;
+            }
+
+            e.preventDefault();
+            switchTab(TAB_ORDER[next]);
+            var newBtn = tabs.querySelector(
+                '.detail-tab-btn[data-tab="' + TAB_ORDER[next] + '"]'
+            );
+            if (newBtn && typeof newBtn.focus === 'function') {
+                try { newBtn.focus(); } catch (err) {}
+            }
         });
 
-        // Edit button dispatches a CustomEvent. CharacterEvents
-        // listens for it.
+        // Edit button dispatches a CustomEvent.
         document.getElementById('edit-character-from-detail')
             .addEventListener('click', function() {
                 var id = state.characterId;
@@ -380,12 +483,10 @@
                 }
             });
 
-        // Outside click closes.
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                close();
-            }
-        });
+        // Click-outside and Escape are delegated to Modal.modalSetup.
+        // The shell element itself is passed so Modal's cleanup
+        // installs on this modal, not on a parent.
+        getModal().modalSetup(modal, close);
     }
 
     // ============================================================
@@ -406,6 +507,9 @@
         var tab = state.activeTab;
         var panel = document.getElementById('detail-' + tab);
         if (!panel) {
+            console.warn(
+                '[CharacterDetail] render: no panel for tab "' + tab + '"'
+            );
             return;
         }
 
@@ -417,9 +521,8 @@
             return;
         }
 
-        var detail = CharacterAggregator.getCharacterDetail(
-            state.characterId
-        );
+        var Agg = getCharacterAggregator();
+        var detail = Agg.getCharacterDetail(state.characterId);
         if (detail) {
             render(detail);
         }
@@ -442,28 +545,33 @@
         }
 
         // Update tab buttons.
-        modal.querySelectorAll('.detail-tab-btn').forEach(function(btn) {
+        var tabButtons = modal.querySelectorAll('.detail-tab-btn');
+        for (var i = 0; i < tabButtons.length; i++) {
+            var btn = tabButtons[i];
             var isActive = btn.dataset.tab === tab;
             btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            btn.setAttribute('tabindex', isActive ? '0' : '-1');
             btn.style.color = isActive
                 ? 'var(--accent)'
                 : 'var(--text-dim)';
             btn.style.borderBottomColor = isActive
                 ? 'var(--accent)'
                 : 'transparent';
-        });
+        }
 
         // Update panels.
-        modal.querySelectorAll('.detail-tab-panel').forEach(function(panel) {
+        var panels = modal.querySelectorAll('.detail-tab-panel');
+        for (var j = 0; j < panels.length; j++) {
+            var panel = panels[j];
             var panelId = panel.id.replace('detail-', '');
             panel.style.display = panelId === tab ? 'block' : 'none';
             panel.classList.toggle('active', panelId === tab);
-        });
+        }
 
         // Render content.
-        var detail = CharacterAggregator.getCharacterDetail(
-            state.characterId
-        );
+        var Agg = getCharacterAggregator();
+        var detail = Agg.getCharacterDetail(state.characterId);
         if (!detail) { return; }
 
         var panel = document.getElementById('detail-' + tab);
@@ -497,12 +605,6 @@
     // Every dynamic value entering these strings passes through
     // escapeHtml. See the file header's SECURITY CONTRACT.
 
-    // ---- Shared row styles ----
-    //
-    // These inline styles are duplicated across every detail row.
-    // They are string constants so the renderers read linearly;
-    // a future pass can hoist them into a stylesheet.
-
     var ROW_STYLE =
         'display:flex;justify-content:space-between;' +
         'padding:4px 0;border-bottom:1px solid var(--border-soft);';
@@ -513,6 +615,13 @@
     var SECTION_STYLE =
         'display:flex;flex-direction:column;gap:4px;';
 
+    /**
+     * Build a row with a pre-escaped valueHtml.
+     *
+     * CONTRACT: valueHtml MUST already be escaped. Use
+     * renderRowEscaped for the common case where the value is a
+     * plain string.
+     */
     function renderRow(label, valueHtml) {
         return '<div class="detail-row" style="' + ROW_STYLE + '">' +
                     '<span class="label" style="' + LABEL_STYLE + '">' +
@@ -523,19 +632,16 @@
     }
 
     function renderRowEscaped(label, value) {
-        return renderRow(label, escapeHtml(value));
+        var display = (value === undefined || value === null || value === '')
+            ? '-'
+            : value;
+        return renderRow(label, escapeHtml(display));
     }
 
     // ---- Name tab ----
 
     function renderNameTab(detail) {
-        var formatLabels = {
-            'firstlast': 'First + Last',
-            'lastfirst': 'Last, First',
-            'nicklast':  'Nickname + Last',
-            'firstnick': 'First "Nickname"',
-            'alias':     'Alias'
-        };
+        var formatLabels = getNameFormatLabels();
 
         var char = detail.character || {};
         var nameFormat = char.nameFormat || 'firstlast';
@@ -655,7 +761,8 @@
             'margin:4px 0 8px 0;">Career Status History</h4>';
 
         if (detail.careerHistory && detail.careerHistory.length > 0) {
-            detail.careerHistory.forEach(function(status) {
+            for (var ci = 0; ci < detail.careerHistory.length; ci++) {
+                var status = detail.careerHistory[ci];
                 var label = status.status
                     ? status.status.charAt(0).toUpperCase() +
                         status.status.slice(1)
@@ -672,7 +779,7 @@
                             escapeHtml(status.period) +
                         ')</span>' +
                     '</div>';
-            });
+            }
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No career history</p>';
@@ -686,8 +793,7 @@
             escapeHtml(detail.specialty || 'None specified') +
             '</div>';
 
-        // Three team sections. Same rendering shape; different
-        // heading, accent, and source array.
+        // Three team sections.
         html += renderTeamSection(
             'Professional Teams',
             detail.professionalTeams,
@@ -709,7 +815,8 @@
             'margin:8px 0 4px 0;">Missions</h4>';
 
         if (detail.missions && detail.missions.length > 0) {
-            detail.missions.forEach(function(m) {
+            for (var mi = 0; mi < detail.missions.length; mi++) {
+                var m = detail.missions[mi];
                 var statusColor =
                     m.status === 'completed' ? 'var(--accent)' :
                     m.status === 'cancelled' ? 'var(--danger)' :
@@ -739,7 +846,7 @@
 
                 row += '</div>';
                 html += row;
-            });
+            }
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No missions assigned</p>';
@@ -763,7 +870,8 @@
             return html;
         }
 
-        teams.forEach(function(team) {
+        for (var ti = 0; ti < teams.length; ti++) {
+            var team = teams[ti];
             var row = '<div style="padding:4px 8px;' +
                 'background:var(--bg);border-radius:4px;' +
                 'border-left:3px solid ' + accentColor + ';' +
@@ -784,7 +892,7 @@
 
             row += '</div>';
             html += row;
-        });
+        }
 
         return html;
     }
@@ -800,7 +908,8 @@
             'margin:4px 0 8px 0;">Academic Teams</h4>';
 
         if (detail.academicTeams && detail.academicTeams.length > 0) {
-            detail.academicTeams.forEach(function(team) {
+            for (var ti = 0; ti < detail.academicTeams.length; ti++) {
+                var team = detail.academicTeams[ti];
                 var row = '<div style="padding:4px 8px;' +
                     'background:var(--bg);border-radius:4px;' +
                     'border-left:3px solid var(--accent);' +
@@ -823,7 +932,7 @@
 
                 row += '</div>';
                 html += row;
-            });
+            }
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No academic teams</p>';
@@ -853,7 +962,8 @@
         if (detail.grades && detail.grades.length > 0) {
             html += '<div style="max-height:120px;overflow-y:auto;' +
                 'font-size:0.7rem;">';
-            detail.grades.forEach(function(g) {
+            for (var gi = 0; gi < detail.grades.length; gi++) {
+                var g = detail.grades[gi];
                 var statusColor = g.passing
                     ? 'var(--accent)'
                     : 'var(--danger)';
@@ -863,14 +973,14 @@
                     'justify-content:space-between;">' +
                         '<span>' +
                             escapeHtml(g.disciplineName) +
-                            ' (Wk ' + escapeHtml(g.week) + ')' +
+                            ' (Wk ' + escapeHtml(String(g.week)) + ')' +
                         '</span>' +
                         '<span style="color:' + statusColor +
                             ';font-weight:600;">' +
                             escapeHtml(g.scoreDisplay) +
                         '</span>' +
                     '</div>';
-            });
+            }
             html += '</div>';
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
@@ -883,23 +993,24 @@
 
         if (detail.tournamentEliminations &&
             detail.tournamentEliminations.length > 0) {
-            detail.tournamentEliminations.forEach(function(elim) {
-                var row = '<div style="padding:3px 8px;' +
+            for (var tei = 0; tei < detail.tournamentEliminations.length; tei++) {
+                var elim = detail.tournamentEliminations[tei];
+                var rowE = '<div style="padding:3px 8px;' +
                     'background:var(--bg);border-radius:4px;' +
                     'border-left:3px solid var(--danger);' +
                     'margin-bottom:3px;font-size:0.7rem;">' +
                         '<span><strong>' +
                             escapeHtml(elim.tournamentName) +
                         '</strong> - Week ' +
-                        escapeHtml(elim.week);
+                        escapeHtml(String(elim.week));
 
                 if (elim.reason) {
-                    row += ' (' + escapeHtml(elim.reason) + ')';
+                    rowE += ' (' + escapeHtml(elim.reason) + ')';
                 }
 
-                row += '</span></div>';
-                html += row;
-            });
+                rowE += '</span></div>';
+                html += rowE;
+            }
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No tournament eliminations</p>';
@@ -911,32 +1022,27 @@
 
         if (detail.standaloneEliminations &&
             detail.standaloneEliminations.length > 0) {
-            detail.standaloneEliminations.forEach(function(elim) {
-                var row = '<div style="padding:3px 8px;' +
+            for (var sei = 0; sei < detail.standaloneEliminations.length; sei++) {
+                var elimS = detail.standaloneEliminations[sei];
+                var rowS = '<div style="padding:3px 8px;' +
                     'background:var(--bg);border-radius:4px;' +
                     'border-left:3px solid var(--warning);' +
                     'margin-bottom:3px;font-size:0.7rem;">' +
-                        '<span>Week ' + escapeHtml(elim.week);
+                        '<span>Week ' + escapeHtml(String(elimS.week));
 
-                if (elim.reason) {
-                    row += ' - ' + escapeHtml(elim.reason);
+                if (elimS.reason) {
+                    rowS += ' - ' + escapeHtml(elimS.reason);
                 }
 
-                row += '</span></div>';
-                html += row;
-            });
+                rowS += '</span></div>';
+                html += rowS;
+            }
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No standalone eliminations</p>';
         }
 
         // Elimination status.
-        //
-        // The status string is built unescaped, then escaped once
-        // as a whole. This is XSS-safe because every user-supplied
-        // fragment (reason) is concatenated into the composite and
-        // the composite is escaped. Do not add values after the
-        // escapeHtml call.
         html += '<h4 style="color:var(--danger);font-size:0.85rem;' +
             'margin:8px 0 4px 0;">Elimination Status</h4>';
 
@@ -969,7 +1075,7 @@
         html += '<div style="padding:4px 8px;background:var(--bg);' +
             'border-radius:4px;font-size:0.75rem;">' +
             'Total classes scheduled: <strong>' +
-            (detail.scheduleCount || 0) +
+            escapeHtml(String(detail.scheduleCount || 0)) +
             '</strong></div>';
 
         html += '</div>';
@@ -999,11 +1105,14 @@
         };
 
         var stats = detail.stats || {};
+        var statKeys = getStatKeys();
 
-        for (var key in statLabels) {
-            if (!Object.prototype.hasOwnProperty.call(statLabels, key)) {
-                continue;
-            }
+        for (var si = 0; si < statKeys.length; si++) {
+            var key = statKeys[si];
+            var labelDef = statLabels[key] || {
+                label: key.toUpperCase(),
+                color: 'var(--accent)'
+            };
             var s = stats[key] || {
                 value: 10,
                 modifier: 0,
@@ -1020,8 +1129,8 @@
                 'border:1px solid var(--border-soft);' +
                 'text-align:center;">' +
                     '<div style="font-size:0.6rem;color:' +
-                        statLabels[key].color + ';">' +
-                        statLabels[key].label +
+                        labelDef.color + ';">' +
+                        labelDef.label +
                     '</div>' +
                     '<div style="font-size:1.2rem;font-weight:700;' +
                         'color:var(--accent);">' +
@@ -1036,7 +1145,7 @@
 
         html += '</div>';
 
-        // Magic stats.
+        // Magic stats. Iterate in the canonical category order.
         html += '<h4 style="color:var(--info);font-size:0.85rem;' +
             'margin:8px 0 4px 0;">Magic Stats</h4>';
         html += '<div style="display:grid;' +
@@ -1044,19 +1153,40 @@
             'margin-bottom:12px;">';
 
         var magic = detail.magic || {};
-        var magicKeys = Object.keys(magic);
+        var MC = getMagicConstants();
+        var magicKeys;
+
+        if (MC && typeof MC.getTypeKeys === 'function') {
+            var ordered = [];
+            if (typeof MC.getCategoryOrder === 'function') {
+                var catOrder = MC.getCategoryOrder();
+                for (var co = 0; co < catOrder.length; co++) {
+                    var catTypes = MC.getCategoryTypes
+                        ? MC.getCategoryTypes(catOrder[co])
+                        : [];
+                    for (var ct = 0; ct < catTypes.length; ct++) {
+                        ordered.push(catTypes[ct]);
+                    }
+                }
+            } else {
+                ordered = MC.getTypeKeys();
+            }
+            magicKeys = ordered;
+        } else {
+            magicKeys = Object.keys(magic);
+        }
 
         if (magicKeys.length === 0) {
             html += '<p class="empty-state" style="padding:4px;' +
                 'font-size:0.7rem;">No magic data</p>';
         } else {
-            magicKeys.forEach(function(mk) {
-                var m = magic[mk] || {
-                    value: 0,
-                    label: mk,
-                    level: 'Untrained',
-                    color: 'var(--border)'
-                };
+            for (var mki = 0; mki < magicKeys.length; mki++) {
+                var mk = magicKeys[mki];
+                var m = magic[mk];
+                if (!m) { continue; }
+
+                var safeColor = getSafeColor(m.color);
+
                 html += '<div style="background:var(--bg);' +
                     'padding:2px 4px;border-radius:3px;' +
                     'border:1px solid var(--border-soft);' +
@@ -1067,11 +1197,11 @@
                         '</div>' +
                         '<div style="font-size:0.85rem;' +
                             'font-weight:700;color:' +
-                            escapeHtml(m.color) + ';">' +
+                            escapeHtml(safeColor) + ';">' +
                             escapeHtml(m.value) +
                         '</div>' +
                     '</div>';
-            });
+            }
         }
 
         html += '</div>';
@@ -1109,7 +1239,8 @@
 
         if (moves && moves.length > 0) {
             html += '<div style="margin-top:4px;">';
-            moves.forEach(function(m) {
+            for (var i = 0; i < moves.length; i++) {
+                var m = moves[i];
                 var row = '<div style="padding:2px 8px;' +
                     'background:var(--bg);border-radius:3px;' +
                     'margin-bottom:2px;border-left:2px solid ' +
@@ -1127,7 +1258,7 @@
 
                 row += '</div>';
                 html += row;
-            });
+            }
             html += '</div>';
         } else {
             html += '<p class="empty-state" style="padding:4px;' +
@@ -1155,7 +1286,8 @@
             html += '<p class="empty-state" style="padding:8px;' +
                 'font-size:0.8rem;">No social connections</p>';
         } else {
-            relationships.forEach(function(rel) {
+            for (var ri = 0; ri < relationships.length; ri++) {
+                var rel = relationships[ri];
                 var safeColor = getSafeColor(rel.typeColor);
 
                 var row = '<div style="padding:4px 8px;' +
@@ -1183,8 +1315,7 @@
                 }
 
                 if (rel.notes) {
-                    // Monochrome "has notes" marker. Replaces the
-                    // previous pictographic emoji.
+                    // Monochrome "has notes" marker.
                     row += ' <span style="color:var(--text-dim);' +
                         'font-size:0.65rem;" ' +
                         'title="Has notes">' +
@@ -1194,7 +1325,7 @@
 
                 row += '</div>';
                 html += row;
-            });
+            }
         }
 
         html += '</div>';
