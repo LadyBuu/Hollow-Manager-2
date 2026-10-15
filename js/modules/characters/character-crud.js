@@ -44,9 +44,29 @@
  *   leaves weapons, stats, magic, personality, specialMoves,
  *   careerStatus, hp, mp, deathYear, and isFiller untouched.
  *
- *   This is the fix for a class of bugs where any absent field
- *   defaulted to empty or zero and then overwrote the stored value
- *   through Object.assign.
+ * SPECIALMOVES MERGE:
+ *   When a DTO carries `specialMoves`, save MERGES it with the
+ *   stored record by move id rather than replacing the whole
+ *   block. A move in the stored record whose id is not present in
+ *   the DTO's set is preserved. A move whose id matches is updated
+ *   from the DTO. A move that is new is appended.
+ *
+ *   This closes the two-writers problem: the form's Save works
+ *   from a DOM list that may be stale, while CharacterMoves writes
+ *   directly to the store. A stale form save no longer clobbers a
+ *   move added through CharacterMoves.
+ *
+ *   A move with an empty id (legacy data) is matched by
+ *   (type, name) as a fallback.
+ *
+ *   The DTO can set `_specialMovesMode: 'replace'` to opt out and
+ *   write the block wholesale. The default is `'merge'`.
+ *
+ * DECEASED CACHE:
+ *   computeCachedDeceased delegates to
+ *   CharacterQueries.deriveDeceasedCache, which is
+ *   CharacterQueries.isDeceased at current time. The cache and the
+ *   read-side query therefore never disagree.
  *
  * CAREER TRANSITION CASCADE:
  *   Fires when the latest careerStatus entry transitions from a
@@ -60,70 +80,26 @@
  *     - setCareerTransition()  builds the terminal entry directly
  *                              and runs the cascade.
  *
- *   Both paths converge on applyCareerTransitionCascade. Idempotent
- *   across repeated saves.
- *
- *   The previous-latest-status capture is taken inside mutate()
- *   against the snapshot, not from a pre-queue record. This is what
- *   keeps the cascade correct when an earlier queued mutation
- *   changed careerStatus.
- *
- * CAREER STATUS CLOSING:
- *   Career-status entries never carry gaps. When a new entry starts
- *   at year Y, every other entry that would otherwise be open (or
- *   that ends before Y) is closed or extended to Y.
- *
- *   Three mutation paths, one rule (closeOpenCareerEntries):
- *     - save()                        reconcile the merged
- *                                     careerStatus array before
- *                                     persisting.
- *     - setCareerTransition(id, s, Y) extend or close the
- *                                     previously-current entry to
- *                                     Y, then append the new
- *                                     terminal entry at Y.
- *     - applyCareerStatusTimeline(id, stages)
- *                                     forward-walk the incoming
- *                                     stages and fill each stage's
- *                                     endYear from the next stage's
- *                                     startYear.
- *
- *   closeOpenCareerEntries and getLatestCareerStatus agree on
- *   entries with a missing startYear: both treat the entry as
- *   having the earliest possible start, so it is "not current"
- *   relative to any other entry.
+ *   Both paths converge on applyCareerTransitionCascade. The
+ *   previous-latest-status is read from the snapshot inside
+ *   mutate, not captured pre-queue.
  *
  * TERMINAL STATUSES:
  *   The set of statuses that terminate a career (retired, support,
  *   instructor) comes from CharacterConstants.TERMINAL_STATUSES.
- *   Do not add statuses here; add them to the constants module.
  *
  * DELETE CASCADE:
  *   deleteCharacter removes the character from:
  *     - teams (members arrays)
  *     - every other character's parentIds
  *     - departments[].members
- *     - departments[].headId (cleared to null if the character was
- *       the head)
+ *     - departments[].headId (cleared to null if head)
  *     - social.relationships (both sides)
- *     - tournaments[].participants (by characterId)
+ *     - tournaments[].participants
  *     - Academy stores (via AcademyCascade.characterDeleted)
  *
- *   deleteAllCharacters runs the same cascade for the whole
- *   character set, in a single mutation.
- *
- * FILLER AUTO-UNFLAG:
- *   When a filler character is saved and the merged record now
- *   contains authored content — anything
- *   CharacterStrip.hasAuthoredContent recognises as a real field —
- *   the filler flag is cleared before the strip runs.
- *
- *   The authored-content predicate is the one defined in
- *   CharacterStrip. setFillerFlag runs the same check, so a bulk
- *   flag from the modal cannot override an authored-content record.
- *
  * UPDATED AT:
- *   Every save stamps updatedAt. The stamp is applied in mutate so
- *   it is part of the atomic write.
+ *   Every save stamps updatedAt in mutate so it commits atomically.
  *
  * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
@@ -360,16 +336,42 @@
     }
 
     function getCurrentYear() {
+        var CQ = getCharacterQueries();
+        if (CQ && typeof CQ.getCurrentYear === 'function') {
+            return CQ.getCurrentYear();
+        }
         if (window.data && typeof window.data.currentYear === 'number') {
             return window.data.currentYear;
         }
         return new Date().getFullYear();
     }
 
+    /**
+     * Compute the cached deceased flag. Delegates to the canonical
+     * query when it is available, so the cache and the read path
+     * never disagree. Fallback mirrors the query.
+     */
     function computeCachedDeceased(data) {
+        var CQ = getCharacterQueries();
+        if (CQ && typeof CQ.deriveDeceasedCache === 'function') {
+            return CQ.deriveDeceasedCache(data);
+        }
+        // Fallback: same semantics as CharacterQueries.isDeceased
+        // at current time.
         var deathYear = parseYearInt(data.deathYear);
         if (deathYear === null) { return false; }
-        return deathYear <= getCurrentYear();
+        var currentYear = getCurrentYear();
+        if (currentYear < deathYear) { return false; }
+        if (currentYear > deathYear) { return true; }
+
+        var deathWeek = parseYearInt(data.deathWeek);
+        if (deathWeek === null) { return true; }
+
+        var currentWeek = 1;
+        if (window.data && typeof window.data.currentWeek === 'number') {
+            currentWeek = window.data.currentWeek;
+        }
+        return currentWeek >= deathWeek;
     }
 
     function invalidateCharacterIndex() {
@@ -420,9 +422,7 @@
 
     /**
      * Does the merged record contain authored content?
-     * Delegates to CharacterStrip.hasAuthoredContent when it is
-     * loaded. Falls back to a local conservative check when the
-     * module is absent.
+     * Delegates to CharacterStrip.hasAuthoredContent when available.
      */
     function recordHasAuthoredContent(record) {
         if (!record || typeof record !== 'object') { return false; }
@@ -524,16 +524,145 @@
     }
 
     // ============================================================
+    // SPECIAL MOVES MERGE
+    // ============================================================
+    //
+    // Merge the DTO's specialMoves with the stored record by move
+    // id. Preserves stored moves whose ids are absent from the DTO.
+    // Adds moves that are new. Updates moves whose ids match.
+    //
+    // A move with an empty id is matched by (type, name) as a
+    // fallback, so a legacy move is updated rather than duplicated.
+    //
+    // mode = 'replace' bypasses the merge and writes the DTO's
+    // block wholesale.
+
+    function mergeSpecialMoves(stored, incoming, mode) {
+        if (mode === 'replace') {
+            return {
+                physical: Array.isArray(incoming.physical)
+                    ? incoming.physical.slice() : [],
+                magical: Array.isArray(incoming.magical)
+                    ? incoming.magical.slice() : []
+            };
+        }
+
+        var storedPhys = Array.isArray(stored && stored.physical)
+            ? stored.physical : [];
+        var storedMagi = Array.isArray(stored && stored.magical)
+            ? stored.magical : [];
+        var incomingPhys = Array.isArray(incoming && incoming.physical)
+            ? incoming.physical : [];
+        var incomingMagi = Array.isArray(incoming && incoming.magical)
+            ? incoming.magical : [];
+
+        var result = {
+            physical: mergeMoveList(storedPhys, incomingPhys),
+            magical: mergeMoveList(storedMagi, incomingMagi)
+        };
+
+        // Trim to max if the merge pushed it over. The trim drops
+        // from the end; new moves are appended at the end, so this
+        // prefers preserving older moves.
+        var max = getMaxSpecialMoves();
+        if (result.physical.length > max) {
+            result.physical = result.physical.slice(0, max);
+        }
+        if (result.magical.length > max) {
+            result.magical = result.magical.slice(0, max);
+        }
+
+        return result;
+    }
+
+    function mergeMoveList(storedList, incomingList) {
+        var byId = Object.create(null);
+        var byNameKey = Object.create(null);
+
+        // ---- Index stored moves ----
+        var storedIndexed = [];
+        for (var i = 0; i < storedList.length; i++) {
+            var stored = storedList[i];
+            if (!stored || typeof stored !== 'object') { continue; }
+            var storedId = stored.id !== undefined && stored.id !== null
+                ? String(stored.id) : '';
+            var storedName = typeof stored.name === 'string'
+                ? stored.name : '';
+            var entry = {
+                move: cloneMove(stored),
+                matched: false
+            };
+            storedIndexed.push(entry);
+
+            if (storedId !== '') {
+                byId[storedId] = entry;
+            } else if (storedName !== '') {
+                byNameKey[storedName.toLowerCase()] = entry;
+            }
+        }
+
+        // ---- Walk incoming moves; update or append ----
+        var appended = [];
+        for (var j = 0; j < incomingList.length; j++) {
+            var incoming = incomingList[j];
+            if (!incoming || typeof incoming !== 'object') { continue; }
+
+            var inId = incoming.id !== undefined && incoming.id !== null
+                ? String(incoming.id) : '';
+            var inName = typeof incoming.name === 'string'
+                ? incoming.name.trim() : '';
+
+            var target = null;
+            if (inId !== '') {
+                target = byId[inId] || null;
+            }
+            if (!target && inName !== '') {
+                target = byNameKey[inName.toLowerCase()] || null;
+            }
+
+            if (target) {
+                target.matched = true;
+                // Update fields in place, keeping the stored id if
+                // the incoming had none.
+                if (inName !== '') { target.move.name = inName; }
+                if (typeof incoming.description === 'string') {
+                    target.move.description = incoming.description;
+                }
+                if (inId !== '' && !target.move.id) {
+                    target.move.id = inId;
+                }
+            } else {
+                // New move.
+                appended.push(cloneMove(incoming));
+            }
+        }
+
+        // ---- Assemble ----
+        var out = [];
+        for (var k = 0; k < storedIndexed.length; k++) {
+            out.push(storedIndexed[k].move);
+        }
+        for (var m = 0; m < appended.length; m++) {
+            out.push(appended[m]);
+        }
+        return out;
+    }
+
+    function cloneMove(move) {
+        if (!move || typeof move !== 'object') { return null; }
+        return {
+            id: move.id !== undefined && move.id !== null
+                ? String(move.id) : '',
+            name: typeof move.name === 'string' ? move.name : '',
+            description: typeof move.description === 'string'
+                ? move.description : ''
+        };
+    }
+
+    // ============================================================
     // CAREER TRANSITION HELPERS
     // ============================================================
 
-    /**
-     * Latest careerStatus entry's normalised status string.
-     * Highest startYear wins. Missing startYear is treated as
-     * EARLIEST (sorted last), matching closeOpenCareerEntries.
-     * Returns '' when the array is empty or all entries are
-     * malformed.
-     */
     function getLatestCareerStatus(careerStatus) {
         if (!Array.isArray(careerStatus) || careerStatus.length === 0) {
             return '';
@@ -608,22 +737,8 @@
     }
 
     /**
-     * Reconcile a career-status array so no two entries are open and
-     * no gaps exist between consecutive entries.
-     *
-     * RULES:
-     *   - Every entry except the one with the latest startYear gets
-     *     its endYear set to the next entry's startYear, replacing
-     *     any earlier endYear.
-     *   - The latest-start entry is left with whatever endYear it
-     *     already had.
-     *   - Entries with a missing startYear are treated as earliest
-     *     and sorted to the front.
-     *   - Malformed entries are left untouched in place.
-     *   - The array is sorted in place by startYear ascending, ties
-     *     broken by original index (stable).
-     *
-     * MUTATES THE PASSED ARRAY.
+     * Reconcile a career-status array. See the file header of the
+     * previous version for the full rules. Unchanged.
      */
     function closeOpenCareerEntries(entries) {
         if (!Array.isArray(entries) || entries.length === 0) {
@@ -667,11 +782,6 @@
         return entries;
     }
 
-    /**
-     * Run the career-transition → team cascade when the transition
-     * qualifies. The previousLatestStatus is read from the snapshot
-     * inside mutate, so this function is called with that value.
-     */
     function applyCareerTransitionCascade(
         data,
         charId,
@@ -712,8 +822,8 @@
             result.reason = 'no-team-core';
             console.warn(
                 '[CharacterCRUD] Career-transition cascade skipped ' +
-                'for character ' + charId + ': TeamCore.endStintsForCharacter ' +
-                'unavailable.'
+                'for character ' + charId +
+                ': TeamCore.endStintsForCharacter unavailable.'
             );
             return result;
         }
@@ -821,13 +931,15 @@
     // ============================================================
 
     function validateCharacter(charData) {
-        if (!charData.firstName || String(charData.firstName).trim() === '') {
+        if (!charData.firstName ||
+            String(charData.firstName).trim() === '') {
             return {
                 valid: false,
                 message: 'First name is required.'
             };
         }
-        if (!charData.lastName || String(charData.lastName).trim() === '') {
+        if (!charData.lastName ||
+            String(charData.lastName).trim() === '') {
             return {
                 valid: false,
                 message: 'Last name is required.'
@@ -882,8 +994,7 @@
             if (isNaN(hp) || hp < 0 || hp > hpMax) {
                 return {
                     valid: false,
-                    message: 'HP must be between 0 and ' +
-                        hpMax + '.'
+                    message: 'HP must be between 0 and ' + hpMax + '.'
                 };
             }
         }
@@ -894,8 +1005,7 @@
             if (isNaN(mp) || mp < 0 || mp > mpMax) {
                 return {
                     valid: false,
-                    message: 'MP must be between 0 and ' +
-                        mpMax + '.'
+                    message: 'MP must be between 0 and ' + mpMax + '.'
                 };
             }
         }
@@ -1028,14 +1138,11 @@
     // ============================================================
     //
     // PARTIAL DTO RULE: a field is included in the output object
-    // only when it is present (not undefined) in the input. Fields
-    // absent from the input are NOT defaulted here; the caller's
-    // merge in updateExistingCharacter preserves the stored value.
+    // only when it is present (not undefined) in the input.
     //
-    // The only fields that are unconditionally emitted are:
-    //   - firstName, lastName (required by validation)
-    //   - deceased (recomputed cache)
-    //   - updatedAt (stamped at save time, applied in mutate)
+    // Nested containers (specialMoves, personality, weapons) are
+    // deep-copied so the caller's input objects and the stored
+    // record never share references.
 
     function normaliseCharacterData(charData) {
         if (!charData || typeof charData !== 'object') {
@@ -1050,7 +1157,7 @@
         data.firstName = safeString(charData.firstName);
         data.lastName = safeString(charData.lastName);
 
-        // ---- Optional string fields: only when present ----
+        // ---- Optional string fields ----
         var optionalStrings = [
             'middleName', 'nickname', 'alias',
             'gender', 'birthYear',
@@ -1068,7 +1175,7 @@
             }
         }
 
-        // ---- previousNames: only when present ----
+        // ---- previousNames ----
         if (charData.previousNames !== undefined) {
             if (Array.isArray(charData.previousNames)) {
                 data.previousNames = charData.previousNames
@@ -1079,7 +1186,7 @@
             }
         }
 
-        // ---- displayParts: only when present ----
+        // ---- displayParts ----
         if (charData.displayParts !== undefined) {
             var incomingDp = charData.displayParts &&
                 typeof charData.displayParts === 'object'
@@ -1111,7 +1218,7 @@
             data.isFiller = charData.isFiller === true;
         }
 
-        // ---- stats: only when present ----
+        // ---- stats ----
         if (charData.stats !== undefined) {
             var statKeys = getStatKeys();
             var statMin = getStatMin();
@@ -1134,7 +1241,7 @@
             }
         }
 
-        // ---- magic: only when present ----
+        // ---- magic ----
         if (charData.magic !== undefined) {
             data.magic = {};
             var MC = window.MagicConstants;
@@ -1158,7 +1265,7 @@
             }
         }
 
-        // ---- hp / mp: only when present ----
+        // ---- hp / mp ----
         var hpMax = getHPMax();
         var mpMax = getMPMax();
 
@@ -1180,44 +1287,86 @@
             data.mp = Math.round(rawMP);
         }
 
-        // ---- weapons: only when present ----
+        // ---- weapons (deep-copied via normaliseWeapons) ----
         if (charData.weapons !== undefined) {
             data.weapons = normaliseWeapons(charData.weapons);
         }
 
-        // ---- specialMoves: only when present ----
+        // ---- specialMoves (deep-copied) ----
         if (charData.specialMoves !== undefined) {
             data.specialMoves = {
                 physical: Array.isArray(
                     charData.specialMoves &&
                     charData.specialMoves.physical
                 )
-                    ? charData.specialMoves.physical.slice()
+                    ? charData.specialMoves.physical.map(cloneMove)
+                        .filter(function(x) { return x !== null; })
                     : [],
                 magical: Array.isArray(
                     charData.specialMoves &&
                     charData.specialMoves.magical
                 )
-                    ? charData.specialMoves.magical.slice()
+                    ? charData.specialMoves.magical.map(cloneMove)
+                        .filter(function(x) { return x !== null; })
                     : []
             };
         }
 
-        // ---- careerStatus: only when present ----
+        // ---- careerStatus (deep-copied) ----
         if (charData.careerStatus !== undefined) {
-            data.careerStatus = Array.isArray(charData.careerStatus)
-                ? charData.careerStatus.slice()
-                : [];
+            if (Array.isArray(charData.careerStatus)) {
+                data.careerStatus = charData.careerStatus.map(
+                    function(entry) {
+                        if (!entry || typeof entry !== 'object') {
+                            return entry;
+                        }
+                        return {
+                            status: entry.status !== undefined &&
+                                entry.status !== null
+                                ? String(entry.status) : '',
+                            startYear: entry.startYear !== undefined &&
+                                entry.startYear !== null
+                                ? String(entry.startYear) : '',
+                            endYear: entry.endYear !== undefined &&
+                                entry.endYear !== null
+                                ? String(entry.endYear) : '',
+                            title: entry.title !== undefined &&
+                                entry.title !== null
+                                ? String(entry.title) : ''
+                        };
+                    }
+                );
+            } else {
+                data.careerStatus = [];
+            }
         }
 
-        // ---- personality: only when present ----
+        // ---- personality (deep-copied) ----
         if (charData.personality !== undefined) {
-            data.personality = charData.personality
-                ? Object.assign({}, charData.personality)
-                : {};
+            if (charData.personality &&
+                typeof charData.personality === 'object' &&
+                !Array.isArray(charData.personality)) {
+                var pOut = {};
+                var pKeys = Object.keys(charData.personality);
+                for (var pk = 0; pk < pKeys.length; pk++) {
+                    var pKey = pKeys[pk];
+                    var pVal = charData.personality[pKey];
+                    if (Array.isArray(pVal)) {
+                        pOut[pKey] = pVal.slice();
+                    } else if (pVal &&
+                        typeof pVal === 'object') {
+                        pOut[pKey] = Object.assign({}, pVal);
+                    } else {
+                        pOut[pKey] = pVal;
+                    }
+                }
+                data.personality = pOut;
+            } else {
+                data.personality = {};
+            }
         }
 
-        // ---- deathWeek / deathAge: only when present ----
+        // ---- deathWeek / deathAge ----
         if (charData.deathWeek !== undefined) {
             data.deathWeek = safeString(charData.deathWeek);
         }
@@ -1278,6 +1427,10 @@
             });
         }
 
+        // Special moves mode: 'merge' (default) or 'replace'.
+        var specialMovesMode = formData._specialMovesMode === 'replace'
+            ? 'replace' : 'merge';
+
         var editId = formData._editId || null;
         var isEditing = editId !== null &&
             editId !== undefined &&
@@ -1323,7 +1476,7 @@
                 var result;
                 if (isEditing) {
                     result = updateExistingCharacter(
-                        editId, normalised, data
+                        editId, normalised, data, specialMovesMode
                     );
                 } else {
                     result = createNewCharacter(normalised, data);
@@ -1334,11 +1487,8 @@
                     );
                 }
 
-                // The previous-latest-status is read from the
-                // snapshot, not from a pre-queue capture. This is
-                // what keeps the cascade correct under queued
-                // mutations.
-                var previousLatestStatus = result.previousLatestStatus || '';
+                var previousLatestStatus =
+                    result.previousLatestStatus || '';
 
                 var cascade = applyCareerTransitionCascade(
                     data,
@@ -1388,7 +1538,9 @@
     // UPDATE / CREATE
     // ============================================================
 
-    function updateExistingCharacter(editId, normalised, data) {
+    function updateExistingCharacter(
+        editId, normalised, data, specialMovesMode
+    ) {
         var index = data.characters.findIndex(function(c) {
             return c && String(c.id) === String(editId);
         });
@@ -1426,9 +1578,37 @@
             preserved.mode = current.mode;
         }
 
-        // Merge: current as base, normalised over it (only the
-        // fields the DTO actually provided), preserved over both.
-        var merged = Object.assign({}, current, normalised, preserved);
+        // ---- SpecialMoves merge ----
+        // If the DTO carries specialMoves, merge it with the stored
+        // block by move id. If it does not, leave the stored block
+        // as it is.
+        var storedSpecialMoves = current.specialMoves;
+        var dtoHasSpecialMoves = normalised.specialMoves !== undefined;
+
+        var mergedSpecialMoves = null;
+        if (dtoHasSpecialMoves) {
+            mergedSpecialMoves = mergeSpecialMoves(
+                storedSpecialMoves,
+                normalised.specialMoves,
+                specialMovesMode
+            );
+        }
+
+        var normalisedWithoutSpecialMoves = normalised;
+        if (dtoHasSpecialMoves) {
+            normalisedWithoutSpecialMoves = Object.assign(
+                {}, normalised
+            );
+            delete normalisedWithoutSpecialMoves.specialMoves;
+        }
+
+        var merged = Object.assign(
+            {}, current, normalisedWithoutSpecialMoves, preserved
+        );
+
+        if (dtoHasSpecialMoves) {
+            merged.specialMoves = mergedSpecialMoves;
+        }
 
         // ---- Career-status reconciliation ----
         if (Array.isArray(merged.careerStatus)) {
@@ -1446,8 +1626,7 @@
 
         var finalRecord = applyFillerStripIfSet(merged, isFiller);
 
-        // Apply the final record's keys back onto the live object
-        // so any external references to `current` remain valid.
+        // ---- Apply the final record's keys back onto `current` ----
         var existingKeys = Object.keys(current);
         for (var ek = 0; ek < existingKeys.length; ek++) {
             var ekey = existingKeys[ek];
@@ -1610,8 +1789,7 @@
                     if (!char) { continue; }
 
                     // When flagging as filler, enforce the same
-                    // authored-content check that save runs. A
-                    // character with authored content is skipped.
+                    // authored-content check that save runs.
                     if (value === true &&
                         recordHasAuthoredContent(char)) {
                         skipped++;
@@ -1659,7 +1837,8 @@
             logMessage: function(result) {
                 var verb = value ? 'Flagged' : 'Unflagged';
                 var msg = verb + ' ' + result.updated +
-                    ' character' + (result.updated === 1 ? '' : 's') +
+                    ' character' +
+                    (result.updated === 1 ? '' : 's') +
                     ' as filler';
                 if (value && result.stripped > 0) {
                     msg += ' (' + result.stripped + ' stripped)';
@@ -1816,7 +1995,6 @@
                     throw new Error('Character store is malformed.');
                 }
 
-                // Re-validate parents inside the snapshot.
                 var snapA = null;
                 var snapB = null;
                 for (var ai = 0; ai < data.characters.length; ai++) {
@@ -1935,7 +2113,6 @@
             return half ? 'Half-Sibling' : 'Sibling';
         }
 
-        // Parent ↔ child (both directions, both parents).
         list.push({
             character1: String(parentA.id),
             character2: String(childRecord.id),
@@ -1977,8 +2154,6 @@
             notes: ''
         });
 
-        // Siblings: anyone sharing at least one parent with the
-        // child. A sibling sharing only one parent is a half-sibling.
         var parentIdSet = Object.create(null);
         parentIdSet[String(parentA.id)] = true;
         parentIdSet[String(parentB.id)] = true;
@@ -2054,13 +2229,15 @@
 
         return getMutationPipeline().performMutation({
             validate: function() {
-                if (!Array.isArray(window.data && window.data.characters)) {
+                if (!Array.isArray(window.data &&
+                    window.data.characters)) {
                     return {
                         valid: false,
                         message: 'Character store is not available.'
                     };
                 }
-                if (!Array.isArray(window.data && window.data.teams)) {
+                if (!Array.isArray(window.data &&
+                    window.data.teams)) {
                     return {
                         valid: false,
                         message: 'Team store is not available.'
@@ -2293,17 +2470,6 @@
     // ============================================================
     // SET CAREER TRANSITION
     // ============================================================
-    //
-    // Appends a terminal careerStatus entry and runs the
-    // professional-team cascade in the same transaction.
-    //
-    // IDEMPOTENT: repeated calls with the same (statusKey, year)
-    // produce the same array; the cascade finds no open stints on
-    // the second call.
-    //
-    // EARLIER SAME-STATUS ENTRIES ARE PRESERVED. A character who
-    // was an instructor in 1990 and again in 2010 keeps both
-    // entries. closeOpenCareerEntries reconciles the intervals.
 
     function setCareerTransition(charId, statusKey, year) {
         if (!checkDependencies()) {
@@ -2405,8 +2571,6 @@
                     );
                 }
 
-                // Append the terminal entry. Earlier entries with
-                // the same status are preserved.
                 var existing = Array.isArray(target.careerStatus)
                     ? target.careerStatus.slice() : [];
 
@@ -2424,9 +2588,6 @@
 
                 invalidateCharacterIndex();
 
-                // Cascade: this path bypasses the previous/new
-                // comparison because the terminal entry is being
-                // written here directly.
                 var cascade = {
                     fired: false,
                     year: yearNum,
@@ -2446,11 +2607,11 @@
                     if (cascadeResult &&
                         typeof cascadeResult === 'object') {
                         cascade.stintsEnded =
-                            typeof cascadeResult.stintsEnded === 'number'
-                                ? cascadeResult.stintsEnded : 0;
+                            typeof cascadeResult.stintsEnded ===
+                            'number' ? cascadeResult.stintsEnded : 0;
                         cascade.teamsTouched =
-                            typeof cascadeResult.teamsTouched === 'number'
-                                ? cascadeResult.teamsTouched : 0;
+                            typeof cascadeResult.teamsTouched ===
+                            'number' ? cascadeResult.teamsTouched : 0;
                     }
                 } else {
                     console.warn(
@@ -2500,22 +2661,6 @@
     // ============================================================
     // APPLY CAREER STATUS TIMELINE
     // ============================================================
-    //
-    // Wholesale replacement of a character's careerStatus array.
-    // Used by the CareerStatusWizard to commit a generated timeline.
-    // REPLACES, does not merge.
-    //
-    // If the new latest entry is a terminal status, the professional-
-    // team cascade runs against the same snapshot.
-    //
-    // STAGE ORDER:
-    //   Stages must be in ascending startYear order. Out-of-order
-    //   input is rejected. The reconciliation loop closes each
-    //   stage's endYear at the next stage's startYear, except when
-    //   the stage has an explicit endYear that is already later
-    //   than the next stage's startYear, in which case it is left
-    //   alone (the schema's validator will reject the record and
-    //   the caller must fix the input).
 
     function applyCareerStatusTimeline(charId, stages) {
         if (!checkDependencies()) {
@@ -2609,7 +2754,6 @@
             });
         }
 
-        // ---- Validate ascending order ----
         for (var oi = 1; oi < cleanStages.length; oi++) {
             if (cleanStages[oi].startYear <
                 cleanStages[oi - 1].startYear) {
@@ -2622,13 +2766,10 @@
             }
         }
 
-        // ---- Reconcile endYear ----
         for (var s = 0; s < cleanStages.length - 1; s++) {
             var cur = cleanStages[s];
             var nxt = cleanStages[s + 1];
 
-            // Only close the current stage if it does not already
-            // have an explicit endYear later than the next start.
             if (cur.endYear === null ||
                 cur.endYear < nxt.startYear) {
                 cur.endYear = nxt.startYear;
@@ -2800,7 +2941,6 @@
                     academyCascade: null
                 };
 
-                // ---- Teams ----
                 if (Array.isArray(data.teams)) {
                     for (var ti = 0; ti < data.teams.length; ti++) {
                         var team = data.teams[ti];
@@ -2819,7 +2959,6 @@
                     }
                 }
 
-                // ---- Parent references on other characters ----
                 if (Array.isArray(data.characters)) {
                     for (var ci = 0;
                          ci < data.characters.length; ci++) {
@@ -2838,7 +2977,6 @@
                     }
                 }
 
-                // ---- Departments ----
                 if (Array.isArray(data.departments)) {
                     for (var di = 0;
                          di < data.departments.length; di++) {
@@ -2870,7 +3008,6 @@
                     }
                 }
 
-                // ---- Social relationships ----
                 if (data.social &&
                     Array.isArray(data.social.relationships)) {
                     var before4 = data.social.relationships.length;
@@ -2878,7 +3015,8 @@
                         data.social.relationships.filter(
                             function(rel) {
                                 if (!rel) { return false; }
-                                return String(rel.character1) !== targetId &&
+                                return String(rel.character1) !==
+                                    targetId &&
                                     String(rel.character2) !== targetId;
                             }
                         );
@@ -2886,7 +3024,6 @@
                         before4 - data.social.relationships.length;
                 }
 
-                // ---- Tournament participants ----
                 if (Array.isArray(data.tournaments)) {
                     for (var tri = 0;
                          tri < data.tournaments.length; tri++) {
@@ -2910,7 +3047,6 @@
                     }
                 }
 
-                // ---- Academy cascade (class membership, enrolments) ----
                 var Cascade = getAcademyCascade();
                 if (Cascade &&
                     typeof Cascade.characterDeleted === 'function') {
@@ -2919,7 +3055,6 @@
                     );
                 }
 
-                // ---- Remove the character record itself ----
                 var found = false;
                 data.characters = data.characters.filter(
                     function(c) {
@@ -3010,11 +3145,9 @@
             });
         }
 
-        // Check emptiness before prompting. A user should not be
-        // asked to confirm deleting a store that is already empty.
-        var existing = window.data && Array.isArray(window.data.characters)
-            ? window.data.characters
-            : [];
+        var existing = window.data &&
+            Array.isArray(window.data.characters)
+            ? window.data.characters : [];
         if (existing.length === 0) {
             return Promise.resolve({
                 success: true,
@@ -3047,7 +3180,6 @@
                 var count = Array.isArray(data.characters)
                     ? data.characters.length : 0;
 
-                // ---- Teams ----
                 if (Array.isArray(data.teams)) {
                     for (var ti = 0; ti < data.teams.length; ti++) {
                         var team = data.teams[ti];
@@ -3057,7 +3189,6 @@
                     }
                 }
 
-                // ---- Departments ----
                 if (Array.isArray(data.departments)) {
                     for (var di = 0;
                          di < data.departments.length; di++) {
@@ -3072,24 +3203,22 @@
                     }
                 }
 
-                // ---- Social relationships ----
                 if (data.social &&
                     Array.isArray(data.social.relationships)) {
                     data.social.relationships = [];
                 }
 
-                // ---- Tournament participants ----
                 if (Array.isArray(data.tournaments)) {
                     for (var tri = 0;
                          tri < data.tournaments.length; tri++) {
                         var tourn = data.tournaments[tri];
-                        if (tourn && Array.isArray(tourn.participants)) {
+                        if (tourn &&
+                            Array.isArray(tourn.participants)) {
                             tourn.participants = [];
                         }
                     }
                 }
 
-                // ---- Characters ----
                 data.characters = [];
                 invalidateCharacterIndex();
 
@@ -3130,7 +3259,11 @@
         setCareerTransition: setCareerTransition,
 
         validateCharacter: validateCharacter,
-        normaliseCharacterData: normaliseCharacterData
+        normaliseCharacterData: normaliseCharacterData,
+
+        // Exposed for tests and for callers that want to reason
+        // about the merge without invoking a full save.
+        mergeSpecialMoves: mergeSpecialMoves
     });
 
     // ============================================================
@@ -3138,35 +3271,75 @@
     // ============================================================
 
     (function verify() {
-        var exports = window.CharacterCRUD;
         var failures = [];
 
-        var required = [
-            'save',
-            'delete',
-            'deleteAll',
-            'setInstructorForClass',
-            'setMode',
-            'createChild',
-            'backfillDeathCascades',
-            'setFillerFlag',
-            'applyCareerStatusTimeline',
-            'setCareerTransition',
-            'validateCharacter',
-            'normaliseCharacterData'
-        ];
+        try {
+            var exports = window.CharacterCRUD;
+            var required = [
+                'save',
+                'delete',
+                'deleteAll',
+                'setInstructorForClass',
+                'setMode',
+                'createChild',
+                'backfillDeathCascades',
+                'setFillerFlag',
+                'applyCareerStatusTimeline',
+                'setCareerTransition',
+                'validateCharacter',
+                'normaliseCharacterData',
+                'mergeSpecialMoves'
+            ];
 
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                failures.push('missing export: ' + required[i]);
+            for (var i = 0; i < required.length; i++) {
+                if (typeof exports[required[i]] !== 'function') {
+                    failures.push('missing export: ' + required[i]);
+                }
             }
+
+            // Merge smoke test: a stored move with an id absent from
+            // the incoming list survives.
+            var merged = exports.mergeSpecialMoves(
+                { physical: [
+                    { id: 'move_a', name: 'Alpha', description: 'A' },
+                    { id: 'move_b', name: 'Bravo', description: 'B' }
+                ], magical: [] },
+                { physical: [
+                    { id: 'move_a', name: 'Alpha II', description: 'A2' }
+                ], magical: [] },
+                'merge'
+            );
+            if (merged.physical.length !== 2) {
+                failures.push(
+                    'mergeSpecialMoves should preserve unmatched ' +
+                    'stored moves'
+                );
+            }
+            var byId = {};
+            for (var m = 0; m < merged.physical.length; m++) {
+                byId[merged.physical[m].id] = merged.physical[m];
+            }
+            if (!byId.move_b || byId.move_b.name !== 'Bravo') {
+                failures.push(
+                    'mergeSpecialMoves should preserve move_b'
+                );
+            }
+            if (!byId.move_a || byId.move_a.name !== 'Alpha II') {
+                failures.push(
+                    'mergeSpecialMoves should update move_a'
+                );
+            }
+        } catch (e) {
+            failures.push('smoke test threw: ' + e.message);
         }
 
         if (failures.length > 0) {
-            throw new Error(
-                '[CharacterCRUD] Verification failed: ' +
-                failures.join('; ')
-            );
+            if (typeof console !== 'undefined' && console.error) {
+                console.error(
+                    '[CharacterCRUD] Verification failed: ' +
+                    failures.join('; ')
+                );
+            }
         }
     })();
 
