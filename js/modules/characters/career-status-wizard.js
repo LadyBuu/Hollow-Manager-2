@@ -36,24 +36,14 @@
  *   A stage's endYear is always `startYear + duration - 1`,
  *   regardless of convention.
  *
- * REPLACE SEMANTICS (this revision):
+ * REPLACE SEMANTICS:
  *   The wizard REPLACES the character's careerStatus array with
- *   the array it produces. It does NOT preserve existing stages
- *   whose status happens to appear in the wizard's plan.
+ *   the array it produces. It does NOT preserve existing stages.
  *
- *   Previous behaviour: an existing stage with a matching status
- *   was kept (its startYear anchored the next stage) and the
- *   resulting array still contained it. That produced a "Replace
- *   Career Status" button that did not actually replace anything
- *   for the stages the user already had. It is gone.
- *
- *   Now every stage in the plan starts at the cursor, and the
- *   output array contains only the wizard's stages. The button
- *   label matches what happens.
- *
- *   The preview still warns how many existing entries will be
- *   dropped, because a wholesale replacement is exactly what the
- *   user is confirming.
+ *   The preview warns how many existing entries will be dropped,
+ *   counted per existing stage, not per status string. A character
+ *   with two `trainee` entries and a plan of `trainee, rookie,
+ *   senior` loses one of the two; the warning reports 1, not 0.
  *
  * DEATH-YEAR CLAMP:
  *   When the character has a parseable deathYear:
@@ -81,12 +71,23 @@
  *   are single clicks, not continuous input, so the focus loss
  *   is irrelevant.
  *
- * DEPENDENCIES (MANDATORY):
+ * CLOSE EVENT:
+ *   When the modal closes, the wizard dispatches a
+ *   `careerWizardClosed` CustomEvent on document. Callers that
+ *   need to re-render after the wizard closes should listen for
+ *   that event rather than polling the DOM.
+ *
+ * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
  *   - window.Modal
  *   - window.NotificationSystem
  *   - window.DomUtils  (for escaping; imported lazily)
+ *
+ * LOAD ORDER:
+ *   This module loads cleanly regardless of script order. All
+ *   dependencies are resolved at call time. A missing dependency
+ *   produces a clear error the first time the wizard is opened.
  */
 
 (function() {
@@ -95,58 +96,80 @@
     if (window.__careerStatusWizardLoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    var CharacterQueries = window.CharacterQueries;
-    var CharacterCRUD = window.CharacterCRUD;
-    var Modal = window.Modal;
-    var NotificationSystem = window.NotificationSystem;
-
-    var _missing = [];
-
-    if (!CharacterQueries ||
-        typeof CharacterQueries.getCharacterById !== 'function') {
-        _missing.push('CharacterQueries.getCharacterById');
-    }
-    if (!CharacterQueries ||
-        typeof CharacterQueries.getDisplayName !== 'function') {
-        _missing.push('CharacterQueries.getDisplayName');
-    }
-    if (!CharacterCRUD ||
-        typeof CharacterCRUD.applyCareerStatusTimeline !== 'function') {
-        _missing.push('CharacterCRUD.applyCareerStatusTimeline');
-    }
-    if (!Modal ||
-        typeof Modal.createModal !== 'function' ||
-        typeof Modal.showModal !== 'function' ||
-        typeof Modal.closeModal !== 'function' ||
-        typeof Modal.modalSetup !== 'function') {
-        _missing.push('Modal API');
-    }
-    if (!NotificationSystem ||
-        typeof NotificationSystem.notify !== 'function') {
-        _missing.push('NotificationSystem.notify');
-    }
-
-    if (_missing.length > 0) {
-        throw new Error(
-            '[CareerStatusWizard] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
-    }
-
     window.__careerStatusWizardLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY ACCESS - LAZY
+    // ============================================================
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    function getCharacterCRUD() {
+        return window.CharacterCRUD || null;
+    }
+
+    function getModal() {
+        return window.Modal || null;
+    }
+
+    function getNotificationSystem() {
+        return window.NotificationSystem || null;
+    }
+
+    function getDomUtils() {
+        return window.DomUtils || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - at open time
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CQ || typeof CQ.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        var CC = getCharacterCRUD();
+        if (!CC || typeof CC.applyCareerStatusTimeline !== 'function') {
+            missing.push('CharacterCRUD.applyCareerStatusTimeline');
+        }
+
+        var M = getModal();
+        if (!M ||
+            typeof M.createModal !== 'function' ||
+            typeof M.showModal !== 'function' ||
+            typeof M.closeModal !== 'function' ||
+            typeof M.modalSetup !== 'function') {
+            missing.push('Modal API');
+        }
+
+        var NS = getNotificationSystem();
+        if (!NS || typeof NS.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (missing.length > 0) {
+            console.error(
+                '[CareerStatusWizard] Missing mandatory dependencies: ' +
+                missing.join(', ')
+            );
+            return false;
+        }
+
+        return true;
+    }
 
     // ============================================================
     // DURATIONS
     // ============================================================
-    //
-    // Fixed durations. A stage occupies `duration` consecutive
-    // integer years, starting at its startYear. Ongoing stages
-    // have duration null.
 
     var DURATIONS = {
         trainee: 1,
@@ -163,14 +186,12 @@
     var _modal = null;
     var _contentEl = null;
     var _charId = null;
-    var _onClose = null;
 
-    // Live form state. Rebuilt from the DOM on every change.
     var _state = {
         startYear: 1900,
-        route: 'A',            // 'A' | 'B'
-        routeBJunior: true,    // meaningful only when route === 'B'
-        convention: 'exclusive' // 'inclusive' | 'exclusive'
+        route: 'A',
+        routeBJunior: true,
+        convention: 'exclusive'
     };
 
     var _contentChangeHandler = null;
@@ -182,9 +203,9 @@
     // ============================================================
 
     function escapeHtml(value) {
-        var DomUtils = window.DomUtils;
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -196,9 +217,9 @@
     }
 
     function escapeAttribute(value) {
-        var DomUtils = window.DomUtils;
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -208,18 +229,36 @@
     }
 
     function notify(message, type) {
-        NotificationSystem.notify(message, type || 'info');
+        var NS = getNotificationSystem();
+        if (NS && typeof NS.notify === 'function') {
+            NS.notify(message, type || 'info');
+        }
     }
 
     // ============================================================
     // HELPERS - character reads
     // ============================================================
 
+    /**
+     * Parse a year string into a positive integer.
+     * Returns null for anything that is not strictly digits.
+     * Matches ValidationUtils.parseOptionalInteger's strictness.
+     */
     function parseYearInt(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
-        var n = parseInt(String(value).trim(), 10);
+        if (typeof value === 'number') {
+            if (Number.isSafeInteger(value) && value >= 1) {
+                return value;
+            }
+            return null;
+        }
+        var str = String(value).trim();
+        if (str === '' || !/^\d+$/.test(str)) {
+            return null;
+        }
+        var n = parseInt(str, 10);
         if (isNaN(n) || n < 1) {
             return null;
         }
@@ -227,14 +266,19 @@
     }
 
     function getExistingCareerStatus(charId) {
-        var char = CharacterQueries.getCharacterById(charId);
+        var CQ = getCharacterQueries();
+        if (!CQ) { return []; }
+        var char = CQ.getCharacterById(charId);
         if (!char) { return []; }
         if (!Array.isArray(char.careerStatus)) { return []; }
-        return char.careerStatus;
+        // Shallow copy so callers cannot mutate the live array.
+        return char.careerStatus.slice();
     }
 
     function getDeathYear(charId) {
-        var char = CharacterQueries.getCharacterById(charId);
+        var CQ = getCharacterQueries();
+        if (!CQ) { return null; }
+        var char = CQ.getCharacterById(charId);
         if (!char) { return null; }
         return parseYearInt(char.deathYear);
     }
@@ -248,19 +292,17 @@
     //   {
     //     status:     'trainee' | 'rookie' | ...,
     //     startYear:  integer,
-    //     endYear:    integer | '',      (open-ended => '')
+    //     endYear:    integer | '',       (open-ended => '')
     //     title:      '',
-    //     dropped:    boolean            (true if the death-year
-    //                                     clamp removed it)
-    //     ongoing:    boolean            (true if the stage has no
-    //                                     end and was not dropped)
+    //     dropped:    boolean             (death-year clamp)
+    //     ongoing:    boolean             (open-ended, not dropped)
     //   }
     //
-    // The wizard REPLACES the character's careerStatus array with
-    // the stages this function produces. Existing stages are not
-    // preserved; they are overwritten. `existingNotInPlan` reports
-    // how many of the character's current entries will be removed
-    // by the replacement so the preview can warn.
+    // `existingNotInPlan` is the count of existing careerStatus
+    // entries that the wizard will drop because the plan does not
+    // cover them. It is counted PER ENTRY, not per status string.
+    // A character with two `trainee` entries and a plan of
+    // `trainee, rookie, senior` loses one, and this reports 1.
 
     function generateTimeline(charId) {
         var startYear = _state.startYear;
@@ -268,13 +310,11 @@
         var routeBJunior = _state.routeBJunior;
         var convention = _state.convention;
 
-        // Build the stage plan for the chosen route.
         var plan = ['trainee', 'rookie'];
         if (route === 'A') {
             plan.push('junior');
             plan.push('senior');
         } else {
-            // route === 'B'
             if (routeBJunior) {
                 plan.push('junior');
             }
@@ -282,15 +322,13 @@
         }
 
         var deathYear = getDeathYear(charId);
-        var result = [];
+        var rows = [];
         var cursor = startYear;
         var anyDropped = false;
 
         for (var i = 0; i < plan.length; i++) {
             var status = plan[i];
-
             var effectiveStart = cursor;
-
             var duration = DURATIONS[status];
             var endYear = '';
             var ongoing = duration === null;
@@ -298,16 +336,6 @@
             if (!ongoing) {
                 endYear = effectiveStart + duration - 1;
             }
-
-            // ---- Death-year clamp. ----
-            //
-            // Rules:
-            //   - If the stage's startYear is strictly AFTER
-            //     deathYear, drop it.
-            //   - If the stage is ongoing and deathYear exists,
-            //     end it at deathYear.
-            //   - If the stage spans deathYear, truncate at
-            //     deathYear.
 
             var dropped = false;
 
@@ -321,7 +349,7 @@
                 }
             }
 
-            result.push({
+            rows.push({
                 status: status,
                 startYear: effectiveStart,
                 endYear: endYear,
@@ -332,46 +360,29 @@
 
             if (dropped) {
                 anyDropped = true;
-                // Cursor does not advance for a dropped stage;
-                // there is nothing after it that could be
-                // reached anyway.
                 break;
             }
 
-            // ---- Advance the cursor for the next stage. ----
-            //
-            // Inclusive: next stage starts on this stage's endYear.
-            // Exclusive: next stage starts the year after.
-            //
-            // Ongoing stages (senior, support) always terminate the
-            // plan, so we never advance past them.
-
             if (ongoing) {
-                // Nothing after an ongoing stage; stop.
-                // (Plan construction never places a stage after
-                // senior or support, but keep the guard for
-                // clarity.)
+                // Nothing after an ongoing stage.
             } else {
-                if (convention === 'inclusive') {
-                    cursor = endYear;
-                } else {
-                    cursor = endYear + 1;
-                }
+                cursor = (convention === 'inclusive')
+                    ? endYear
+                    : endYear + 1;
             }
         }
 
-        // ---- Count existing stages the wizard will remove. ----
+        // ---- Count existing stages the wizard will remove ----
         //
-        // Since the wizard replaces the array wholesale, every
-        // existing entry is going to be dropped unless the
-        // wizard happens to produce the same status. We count
-        // every entry the plan does NOT cover so the warning is
-        // accurate: those are the ones that will disappear.
+        // The wizard replaces the array wholesale. Every existing
+        // entry is dropped unless the wizard happens to produce
+        // the same status. We count per-entry so a character with
+        // two `trainee` entries loses one, not zero.
 
         var existingList = getExistingCareerStatus(charId);
-        var planSet = Object.create(null);
+        var planCounts = Object.create(null);
         for (var p = 0; p < plan.length; p++) {
-            planSet[plan[p]] = true;
+            planCounts[plan[p]] = (planCounts[plan[p]] || 0) + 1;
         }
 
         var existingNotInPlan = 0;
@@ -379,13 +390,15 @@
             var entry = existingList[e];
             if (!entry || typeof entry !== 'object') { continue; }
             var s = String(entry.status || '').toLowerCase();
-            if (!planSet[s]) {
+            if (planCounts[s] && planCounts[s] > 0) {
+                planCounts[s]--;
+            } else {
                 existingNotInPlan++;
             }
         }
 
         return {
-            rows: result,
+            rows: rows,
             existingNotInPlan: existingNotInPlan,
             existingTotal: existingList.length,
             anyDropped: anyDropped,
@@ -446,19 +459,11 @@
     // ============================================================
     // RENDER - preview region only
     // ============================================================
-    //
-    // Called on start-year keystrokes. It replaces ONLY the
-    // contents of #csw-preview-region, leaving every other
-    // element in the modal (including the start-year input the
-    // user is typing into) untouched. Focus and caret position
-    // therefore survive keystrokes.
 
     function renderPreviewRegion() {
         if (!_contentEl) { return; }
 
-        var region = _contentEl.querySelector(
-            '#csw-preview-region'
-        );
+        var region = _contentEl.querySelector('#csw-preview-region');
         if (!region) { return; }
 
         var generated = generateTimeline(_charId);
@@ -476,12 +481,13 @@
         html += renderPreviewTable(rows);
 
         if (deathYear !== null) {
-            html += '<p class="csw-note">';
-            html += '\u2139 This character died in ' +
-                escapeHtml(String(deathYear)) +
-                '. Ongoing stages are clamped to that year, and ' +
-                'stages starting after it are omitted.';
-            html += '</p>';
+            html += '<p class="csw-note">' +
+                escapeHtml(
+                    'This character died in ' + deathYear +
+                    '. Ongoing stages are clamped to that year, and ' +
+                    'stages starting after it are omitted.'
+                ) +
+                '</p>';
         }
 
         html += '</div>';
@@ -490,10 +496,9 @@
     }
 
     function buildModalHTML() {
-        var char = CharacterQueries.getCharacterById(_charId);
-        var charName = char
-            ? CharacterQueries.getDisplayName(char)
-            : 'Unknown';
+        var CQ = getCharacterQueries();
+        var char = CQ.getCharacterById(_charId);
+        var charName = char ? CQ.getDisplayName(char) : 'Unknown';
 
         var generated = generateTimeline(_charId);
         var rows = generated.rows;
@@ -587,11 +592,6 @@
         html += '</div>';
 
         // ---- Preview region ----
-        //
-        // The preview lives inside its own container so keystrokes
-        // in the start-year input can refresh it without
-        // re-rendering the modal. See renderPreviewRegion().
-
         html += '<div id="csw-preview-region">';
         html += buildPreviewHTML(generated);
         html += '</div>';
@@ -740,15 +740,6 @@
         var target = e.target;
         if (!target) { return; }
 
-        // Route radio toggles the Route B sub-option visibility.
-        // The sub-option visibility is a DOM concern handled in
-        // the re-render below.
-        //
-        // This is a full re-render. Radio and checkbox changes
-        // are single clicks, so losing focus on the other
-        // controls is not a problem. Start-year keystrokes are
-        // handled by handleContentInput, which only refreshes the
-        // preview region and therefore preserves focus.
         readStateFromDOM();
         renderContent();
     }
@@ -759,10 +750,6 @@
 
         if (target.id === 'csw-start-year') {
             readStateFromDOM();
-
-            // Refresh the preview only. The start-year input is
-            // never replaced while the modal is open, so focus
-            // and caret position survive keystrokes.
             renderPreviewRegion();
         }
     }
@@ -771,20 +758,7 @@
     // APPLY
     // ============================================================
 
-    function handleApply() {
-        readStateFromDOM();
-
-        var generated = generateTimeline(_charId);
-        var rows = generated.rows;
-
-        if (rows.length === 0) {
-            notify('No stages to apply.', 'error');
-            return;
-        }
-
-        // Build the final careerStatus array. Drop the wizard-
-        // internal metadata (`dropped`, `ongoing`); only the four
-        // canonical fields survive.
+    function buildStagesForApply(rows) {
         var stages = [];
         for (var i = 0; i < rows.length; i++) {
             var r = rows[i];
@@ -798,13 +772,29 @@
                 title: r.title || ''
             });
         }
+        return stages;
+    }
+
+    function handleApply() {
+        readStateFromDOM();
+
+        var generated = generateTimeline(_charId);
+        var rows = generated.rows;
+
+        if (rows.length === 0) {
+            notify('No stages to apply.', 'error');
+            return;
+        }
+
+        var stages = buildStagesForApply(rows);
 
         if (stages.length === 0) {
             notify('All stages were omitted.', 'error');
             return;
         }
 
-        CharacterCRUD.applyCareerStatusTimeline(_charId, stages)
+        var CC = getCharacterCRUD();
+        CC.applyCareerStatusTimeline(_charId, stages)
             .then(function(result) {
                 if (result && result.success) {
                     notify(
@@ -838,12 +828,18 @@
     // ============================================================
 
     function openModal(charId) {
+        if (!checkDependencies()) {
+            notify('Career wizard is not available.', 'error');
+            return null;
+        }
+
         if (!charId) {
             notify('No character selected.', 'error');
             return null;
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
+        var CQ = getCharacterQueries();
+        var char = CQ.getCharacterById(charId);
         if (!char) {
             notify('Character not found.', 'error');
             return null;
@@ -852,14 +848,12 @@
         closeModal();
 
         _charId = String(charId);
-        _onClose = null;
 
-        // Seed the start year:
-        //   1. If the character has a trainee entry, use its
-        //      startYear. This is only a seed for the input;
-        //      the wizard does not reuse existing stages.
-        //   2. Otherwise, use birthYear + 16.
-        //   3. Otherwise, 1900.
+        // Seed start year:
+        //   1. Trainee entry's startYear, if present.
+        //   2. birthYear + 16, if birthYear is a valid positive
+        //      integer.
+        //   3. 1900.
         var existingTrainee = null;
         var list = getExistingCareerStatus(_charId);
         for (var i = 0; i < list.length; i++) {
@@ -891,7 +885,8 @@
         _state.routeBJunior = true;
         _state.convention = 'exclusive';
 
-        var shell = Modal.createModal('career-status-wizard-modal');
+        var M = getModal();
+        var shell = M.createModal('career-status-wizard-modal');
         if (!shell) {
             notify('Failed to create modal.', 'error');
             _charId = null;
@@ -916,10 +911,10 @@
 
         renderContent();
 
-        Modal.modalSetup(shell, function() {
+        M.modalSetup(shell, function() {
             closeModal();
         });
-        Modal.showModal(shell);
+        M.showModal(shell);
 
         return shell;
     }
@@ -927,6 +922,7 @@
     function closeModal() {
         var modal = _modal;
         var contentEl = _contentEl;
+        var hadModal = modal !== null;
 
         if (contentEl && _contentChangeHandler) {
             try {
@@ -960,10 +956,30 @@
 
         if (modal) {
             try {
-                Modal.closeModal(modal);
+                var M = getModal();
+                if (M && typeof M.closeModal === 'function') {
+                    M.closeModal(modal);
+                }
             } catch (e) {
                 // Ignore.
             }
+        }
+
+        if (hadModal) {
+            dispatchClosedEvent();
+        }
+    }
+
+    function dispatchClosedEvent() {
+        try {
+            var event = new CustomEvent('careerWizardClosed', {
+                detail: { timestamp: Date.now() },
+                bubbles: true,
+                cancelable: false
+            });
+            document.dispatchEvent(event);
+        } catch (e) {
+            // Ignore event dispatch errors.
         }
     }
 
@@ -975,11 +991,15 @@
         openModal: openModal,
         closeModal: closeModal,
 
-        // Exposed for testing.
-        // generateTimeline is stateful in production (it reads
-        // _state and _charId); the test helpers below set state
-        // explicitly.
+        // Exposed for testing only. These mutate module state
+        // directly and should not be called from application code.
+        // A production call logs a warning.
         _setState: function(next) {
+            if (window.NODE_ENV !== 'test' && typeof console !== 'undefined') {
+                console.warn(
+                    '[CareerStatusWizard] _setState is a test-only helper'
+                );
+            }
             if (!next || typeof next !== 'object') { return; }
             if (typeof next.startYear === 'number') {
                 _state.startYear = next.startYear;
@@ -996,6 +1016,11 @@
             }
         },
         _setCharId: function(id) {
+            if (window.NODE_ENV !== 'test' && typeof console !== 'undefined') {
+                console.warn(
+                    '[CareerStatusWizard] _setCharId is a test-only helper'
+                );
+            }
             _charId = id ? String(id) : null;
         },
         _generate: function() {
@@ -1009,19 +1034,19 @@
 
     (function verify() {
         var exports = window.CareerStatusWizard;
-        var missing = [];
+        var failures = [];
 
         var required = ['openModal', 'closeModal'];
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
+                failures.push('missing export: ' + required[i]);
             }
         }
 
-        if (missing.length > 0) {
-            console.warn(
-                '[CareerStatusWizard] Verification - some exports ' +
-                'may be missing:', missing.join(', ')
+        if (failures.length > 0) {
+            throw new Error(
+                '[CareerStatusWizard] Verification failed: ' +
+                failures.join('; ')
             );
         }
     })();
