@@ -26,49 +26,63 @@
  *   CharacterStatsView.collectMovesFromDOM(), which own the DOM
  *   shapes they render.
  *
- * NOTES:
- *   - Combat Notes (char.combatNotes) is a separate field from
- *     Notes (char.notes). They live on different tabs.
- *   - The Name tab carries a #char-is-filler checkbox; collected as
- *     dto.isFiller. CharacterCRUD uses it to decide whether to strip
- *     the record on save.
- *   - The Professional tab carries #career-wizard-btn and
- *     #career-transition-btn. Both are bound by CharacterEvents via
- *     delegation; this file only emits the markup.
+ * GENDER FIELD:
+ *   Gender is edited on the Physical tab ONLY. The Name tab does
+ *   not render a char-gender input. This is the fix for a bug where
+ *   two inputs shared the id char-gender and getElementById always
+ *   returned the Name-tab copy, so edits on the Physical tab were
+ *   never read.
+ *
+ * DEATH FIELDS:
+ *   The "deceased" checkbox state is derived from `deathYear !== ''`,
+ *   not from the cached char.deceased. A character with a planned
+ *   future death keeps the death fields enabled and persists them.
+ *   collect() reads the death fields whenever they have a value,
+ *   regardless of the checkbox; CharacterCRUD recomputes the
+ *   deceased cache.
+ *
+ * CAREER / WEAPON FALLBACK OPTIONS:
+ *   A career status or weapon type that is not in the current
+ *   CAREER_STATUS_OPTIONS or WEAPON_TYPES list is preserved by
+ *   appending a fallback <option>. This makes a round-trip through
+ *   the form lossless for legacy or imported values such as
+ *   "instructor (former)".
+ *
+ * RE-RENDER MERGE:
+ *   render() detects when the form is already showing a character
+ *   and re-rendering that same character. In that case it snapshots
+ *   the current DOM values before rebuilding, then repopulates them
+ *   after. Unsaved edits survive re-renders triggered by class
+ *   additions, stint changes, or wizard close.
+ *
+ *   Switching to a DIFFERENT character discards the snapshot, as it
+ *   should.
+ *
+ * LABEL / BUTTON SEPARATION:
+ *   renderLabelWithRandom emits a <label for="..."> and places the
+ *   reroll button OUTSIDE the label. Clicking the label focuses the
+ *   input; clicking the button rerolls. Previously the button was
+ *   nested inside the label, and clicking the label text triggered
+ *   a reroll.
+ *
+ * NUMERIC INPUT ESCAPING:
+ *   Stat, HP, MP, and abbreviation values are passed through
+ *   escapeAttribute before being interpolated into value attributes.
+ *   The rest of the file escapes via escapeHtml or escapeAttribute
+ *   consistently.
  *
  * SPECIAL MOVES:
  *   Moves live in the DOM, not in a field id. On render, the moves
- *   section is populated by CharacterStatsView.renderMovesSection
- *   (called from render() below). On save, collect() reads the
- *   moves back out via CharacterStatsView.collectMovesFromDOM(),
- *   so dto.specialMoves carries the current list into
- *   CharacterCRUD.normaliseCharacterData, which already handles
- *   the field and preserves it unchanged.
- *
- *   This is what makes an imported move list survive the Save.
+ *   section is populated by CharacterStatsView.renderMovesSection.
+ *   On save, collect() reads the moves back out via
+ *   CharacterStatsView.collectMovesFromDOM().
  *
  * ACTION ROW:
- *   The form action row (bottom of the form) carries a set of
- *   left-aligned buttons and a set of right-aligned buttons.
+ *   LEFT:  Import JSON (always), Export JSON / Export Report /
+ *          Delete (Edit only).
+ *   RIGHT: Cancel, Create / Update.
  *
- *   LEFT:
- *     Import JSON     — always present (New + Edit). Fills the form
- *                       from a JSON file via CharacterJSONIO. The
- *                       primary use case is importing into a blank
- *                       form, so the button must be there when
- *                       editId is null.
- *     Export JSON     — Edit only. Dumps the saved record to a file.
- *     Export Report   — Edit only. Human-readable text report.
- *     Delete          — Edit only.
- *
- *   RIGHT:
- *     Cancel
- *     Create / Update
- *
- *   The buttons are wired by delegation in character-events.js via
- *   their ids. This file only emits the markup.
- *
- * DEPENDENCIES (LAZILY LOADED):
+ * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
  *   - window.CharacterCRUD
  *   - window.CharacterGenerator
@@ -127,7 +141,7 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - at render time
     // ============================================================
 
     function checkDependencies() {
@@ -152,16 +166,14 @@
         return true;
     }
 
-    checkDependencies();
-
     // ============================================================
     // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -173,9 +185,9 @@
     }
 
     function escapeAttribute(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -203,17 +215,22 @@
 
     function getStatMin() {
         var CC = getCharacterConstants();
-        return CC ? CC.STAT_MIN || 1 : 1;
+        if (CC && typeof CC.STAT_MIN === 'number') { return CC.STAT_MIN; }
+        return 1;
     }
 
     function getStatMax() {
         var CC = getCharacterConstants();
-        return CC ? CC.STAT_MAX || 30 : 30;
+        if (CC && typeof CC.STAT_MAX === 'number') { return CC.STAT_MAX; }
+        return 30;
     }
 
     function getStatDefault() {
         var CC = getCharacterConstants();
-        return CC ? CC.STAT_DEFAULT || 10 : 10;
+        if (CC && typeof CC.STAT_DEFAULT === 'number') {
+            return CC.STAT_DEFAULT;
+        }
+        return 10;
     }
 
     function getPhysicalClasses() {
@@ -258,6 +275,12 @@
     // ============================================================
     // PER-FIELD RANDOM
     // ============================================================
+    //
+    // The label gets a `for` attribute pointing at the input; the
+    // reroll button is a SIBLING of the label, not a descendant.
+    // Clicking the label focuses the input. Clicking the button
+    // rerolls. This fixes a bug where a nested button was the
+    // label's implicit control.
 
     function renderFieldRandomBtn(field) {
         return '<button type="button" ' +
@@ -270,13 +293,17 @@
                 '</button>';
     }
 
-    function renderLabelWithRandom(labelText, field, extraStyle) {
+    function renderLabelWithRandom(labelText, field, inputId, extraStyle) {
         var style = extraStyle ||
             'font-size:0.7rem;color:var(--text-dim);';
-        return '<label style="' + style + '">' +
-                    escapeHtml(labelText) +
-                    ' ' + renderFieldRandomBtn(field) +
-                '</label>';
+        return '<div class="form-label-row" ' +
+                    'style="display:flex;align-items:center;gap:4px;">' +
+                    '<label for="' + escapeAttribute(inputId) + '" ' +
+                        'style="' + style + '">' +
+                        escapeHtml(labelText) +
+                    '</label>' +
+                    renderFieldRandomBtn(field) +
+                '</div>';
     }
 
     // ============================================================
@@ -317,7 +344,7 @@
             var cls = classes[i];
             if (!cls || typeof cls !== 'object') { continue; }
             var isSelected = String(cls.id) === String(selectedId);
-            html += '<option value="' + escapeHtml(cls.id) + '"' +
+            html += '<option value="' + escapeAttribute(cls.id) + '"' +
                 (isSelected ? ' selected' : '') + '>' +
                 escapeHtml(cls.name) +
                 '</option>';
@@ -382,14 +409,28 @@
 
         var options = getCareerStatusOptions();
         var currentStatus = String(entry.status || '').toLowerCase();
+        var matched = false;
+
         for (var i = 0; i < options.length; i++) {
             var opt = document.createElement('option');
             opt.value = options[i].value;
             opt.textContent = options[i].label;
             if (options[i].value === currentStatus) {
                 opt.selected = true;
+                matched = true;
             }
             select.appendChild(opt);
+        }
+
+        // Fallback option for a status not in the current list,
+        // such as "instructor (former)". Preserving the value keeps
+        // a round-trip through the form lossless.
+        if (!matched && currentStatus !== '') {
+            var fallbackOpt = document.createElement('option');
+            fallbackOpt.value = String(entry.status);
+            fallbackOpt.textContent = String(entry.status);
+            fallbackOpt.selected = true;
+            select.appendChild(fallbackOpt);
         }
 
         var startInput = document.createElement('input');
@@ -426,9 +467,7 @@
         removeBtn.type = 'button';
         removeBtn.className = 'remove-career-entry small danger';
         removeBtn.textContent = '\u2715';
-        removeBtn.setAttribute(
-            'aria-label', 'Remove status entry'
-        );
+        removeBtn.setAttribute('aria-label', 'Remove status entry');
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
 
         row.appendChild(select);
@@ -474,12 +513,26 @@
 
         var types = getWeaponTypes();
         var currentType = weapon.type || getDefaultWeaponType();
+        var typeMatched = false;
+
         for (var i = 0; i < types.length; i++) {
             var opt = document.createElement('option');
             opt.value = types[i].id;
             opt.textContent = types[i].label;
-            if (types[i].id === currentType) { opt.selected = true; }
+            if (types[i].id === currentType) {
+                opt.selected = true;
+                typeMatched = true;
+            }
             typeSelect.appendChild(opt);
+        }
+
+        // Fallback option for a type not in the current list.
+        if (!typeMatched && currentType !== '') {
+            var fallbackOpt = document.createElement('option');
+            fallbackOpt.value = String(currentType);
+            fallbackOpt.textContent = String(currentType);
+            fallbackOpt.selected = true;
+            typeSelect.appendChild(fallbackOpt);
         }
 
         var notesInput = document.createElement('input');
@@ -505,6 +558,176 @@
     }
 
     // ============================================================
+    // SNAPSHOT / RESTORE (for re-render merge)
+    // ============================================================
+    //
+    // Snapshot the current form values before a re-render so
+    // unsaved edits survive. Uses FormUtils.getField for scalar
+    // inputs, and direct DOM reads for the dynamically-rendered
+    // blocks (career entries, weapons, previous names).
+
+    function snapshotCurrentForm() {
+        var FormUtils = getFormUtils();
+        if (!FormUtils) { return null; }
+
+        var form = document.getElementById('character-form');
+        if (!form) { return null; }
+
+        var snapshot = {
+            scalars: {},
+            previousNames: [],
+            careerEntries: [],
+            weapons: []
+        };
+
+        var scalarIds = [
+            'char-firstName', 'char-middleName', 'char-lastName',
+            'char-nickname', 'char-alias',
+            'char-displayFirst', 'char-displayNickname',
+            'char-displayMiddle', 'char-displayLast', 'char-displayAlias',
+            'char-is-filler',
+            'char-birthYear',
+            'char-attraction',
+            'char-deceased', 'char-deathYear', 'char-deathAge',
+            'char-deathCause',
+            'char-gender',
+            'char-eyes', 'char-hair', 'char-skin',
+            'char-height', 'char-weight', 'char-build',
+            'char-appearanceNotes',
+            'char-personality-traits', 'char-personality-ideals',
+            'char-personality-bonds', 'char-personality-flaws',
+            'char-personality-alignment', 'char-personality-likes',
+            'char-personality-dislikes', 'char-personality-fears',
+            'char-personality-habits', 'char-personality-goals',
+            'char-personality-authority',
+            'char-personality-conflictStyle',
+            'char-personality-socialStyle',
+            'char-personality-quirks',
+            'char-specialty',
+            'char-hp', 'char-mp',
+            'char-combat-notes', 'char-notes-tab'
+        ];
+
+        var statKeys = getStatKeys();
+        for (var s = 0; s < statKeys.length; s++) {
+            scalarIds.push('char-stat-' + statKeys[s]);
+        }
+
+        for (var i = 0; i < scalarIds.length; i++) {
+            var id = scalarIds[i];
+            var el = document.getElementById(id);
+            if (!el) { continue; }
+
+            if (el.type === 'checkbox') {
+                snapshot.scalars[id] = el.checked;
+            } else if (el.type === 'radio') {
+                snapshot.scalars[id] = el.checked;
+            } else {
+                snapshot.scalars[id] = el.value;
+            }
+        }
+
+        var prevInputs = form.querySelectorAll('.previous-name-input');
+        for (var p = 0; p < prevInputs.length; p++) {
+            snapshot.previousNames.push(prevInputs[p].value);
+        }
+
+        var careerRows = form.querySelectorAll(
+            '#career-status-container .career-status-entry'
+        );
+        for (var c = 0; c < careerRows.length; c++) {
+            var crow = careerRows[c];
+            var statusEl = crow.querySelector('.career-status-select');
+            var startEl = crow.querySelector('.career-start-year');
+            var endEl = crow.querySelector('.career-end-year');
+            var titleEl = crow.querySelector('.career-title');
+
+            snapshot.careerEntries.push({
+                status: statusEl ? statusEl.value : '',
+                startYear: startEl ? startEl.value : '',
+                endYear: endEl ? endEl.value : '',
+                title: titleEl ? titleEl.value : ''
+            });
+        }
+
+        var weaponRows = form.querySelectorAll(
+            '#weapons-container .weapon-entry'
+        );
+        for (var w = 0; w < weaponRows.length; w++) {
+            var wrow = weaponRows[w];
+            var nameEl = wrow.querySelector('.weapon-name');
+            var typeEl = wrow.querySelector('.weapon-type');
+            var notesEl = wrow.querySelector('.weapon-notes');
+
+            snapshot.weapons.push({
+                id: wrow.dataset.weaponId || undefined,
+                name: nameEl ? nameEl.value : '',
+                type: typeEl ? typeEl.value : '',
+                notes: notesEl ? notesEl.value : ''
+            });
+        }
+
+        return snapshot;
+    }
+
+    function restoreSnapshot(snapshot) {
+        if (!snapshot) { return; }
+        var FormUtils = getFormUtils();
+        if (!FormUtils) { return; }
+
+        // Scalars.
+        var keys = Object.keys(snapshot.scalars);
+        for (var i = 0; i < keys.length; i++) {
+            var id = keys[i];
+            var el = document.getElementById(id);
+            if (!el) { continue; }
+
+            if (el.type === 'checkbox' || el.type === 'radio') {
+                el.checked = snapshot.scalars[id] === true;
+            } else {
+                el.value = snapshot.scalars[id];
+            }
+        }
+
+        // Previous names.
+        var prevContainer = document.getElementById(
+            'previous-names-container'
+        );
+        if (prevContainer && snapshot.previousNames.length > 0) {
+            prevContainer.textContent = '';
+            for (var p = 0; p < snapshot.previousNames.length; p++) {
+                addPreviousNameRow(
+                    prevContainer, snapshot.previousNames[p]
+                );
+            }
+        }
+
+        // Career entries.
+        var careerContainer = document.getElementById(
+            'career-status-container'
+        );
+        if (careerContainer && snapshot.careerEntries.length > 0) {
+            careerContainer.textContent = '';
+            for (var c = 0; c < snapshot.careerEntries.length; c++) {
+                addCareerEntryRow(
+                    careerContainer, snapshot.careerEntries[c]
+                );
+            }
+        }
+
+        // Weapons.
+        var weaponsContainer = document.getElementById(
+            'weapons-container'
+        );
+        if (weaponsContainer && snapshot.weapons.length > 0) {
+            weaponsContainer.textContent = '';
+            for (var w = 0; w < snapshot.weapons.length; w++) {
+                addWeaponRow(weaponsContainer, snapshot.weapons[w]);
+            }
+        }
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -527,7 +750,14 @@
         var char = null;
         if (editId) {
             char = CharacterQueries.getCharacterById(editId);
-            if (!char) { return; }
+            if (!char) {
+                console.warn(
+                    '[CharacterForm] render: character not found:',
+                    editId
+                );
+                hide();
+                return;
+            }
         }
 
         var normalizedEditId = editId === undefined ||
@@ -541,6 +771,19 @@
             _lastRenderedEditId !== null &&
             normalizedEditId === null
         );
+
+        // ---- Snapshot current form values if re-rendering the
+        // SAME character so unsaved edits survive. ----
+        var snapshot = null;
+        var isSameCharacter = (
+            _lastRenderedEditId !== undefined &&
+            _lastRenderedEditId !== null &&
+            normalizedEditId !== null &&
+            _lastRenderedEditId === normalizedEditId
+        );
+        if (isSameCharacter) {
+            snapshot = snapshotCurrentForm();
+        }
 
         if (openingNewCharacter) {
             state.currentTab = 'name';
@@ -601,6 +844,12 @@
                 weaponsContainer.textContent = '';
             }
             applyDeceasedState(false);
+        }
+
+        // ---- Restore unsaved edits after populateFormFields has
+        // written the stored values. ----
+        if (snapshot) {
+            restoreSnapshot(snapshot);
         }
 
         // ---- Combat tab delegates ----
@@ -731,13 +980,13 @@
         var fields = [
             'char-deathYear', 'char-deathAge', 'char-deathCause'
         ];
-        fields.forEach(function(id) {
-            var el = document.getElementById(id);
-            if (!el) { return; }
+        for (var i = 0; i < fields.length; i++) {
+            var el = document.getElementById(fields[i]);
+            if (!el) { continue; }
             el.disabled = !isDeceased;
             el.style.opacity = isDeceased ? '1' : '0.5';
             el.style.cursor = isDeceased ? 'text' : 'not-allowed';
-        });
+        }
     }
 
     // ============================================================
@@ -747,17 +996,6 @@
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
-        // ---- Left actions: destructive + import/export ----
-        //
-        // Import JSON is available on BOTH the New Character and
-        // Edit Character screens. Importing into a blank form is
-        // the primary use case (fill out a full profile at once
-        // from a JSON file), so the button must be present when
-        // editId is null.
-        //
-        // Export JSON, Export Report, and Delete only make sense
-        // when editing a saved character, because there is no
-        // record to export or delete otherwise.
         var leftActionsHTML = '';
 
         leftActionsHTML +=
@@ -794,7 +1032,7 @@
 
         return `
             <div class="character-form-container">
-                <div class="form-tabs" style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;">
+                <div class="form-tabs" role="tablist" style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;">
                     ${tabs}
                 </div>
                 <div class="form-tab-content" id="form-tab-content">
@@ -836,7 +1074,10 @@
             html += '<button type="button" ' +
                 'class="form-tab-btn' +
                 (isActive ? ' active' : '') + '" ' +
-                'data-tab="' + tab + '" ' +
+                'data-tab="' + escapeAttribute(tab) + '" ' +
+                'role="tab" ' +
+                'aria-selected="' + (isActive ? 'true' : 'false') + '" ' +
+                'tabindex="' + (isActive ? '0' : '-1') + '" ' +
                 'style="background:transparent;border:none;' +
                 'border-bottom:2px solid ' +
                 (isActive ? 'var(--accent)' : 'transparent') + ';' +
@@ -853,6 +1094,9 @@
     // ============================================================
     // NAME TAB
     // ============================================================
+    //
+    // NOTE: gender is NOT rendered here. It lives on the Physical
+    // tab. See the GENDER FIELD note in the header.
 
     function getNameTabHTML(c, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
@@ -864,10 +1108,14 @@
         var dpNickname = dp.nickname === true;
         var dpAlias    = dp.alias    === true;
 
-        var isDeceased = c.deceased === true;
+        // Death fields are enabled when the character has a death
+        // year on record, not based on the cached deceased boolean.
+        // A future death year must stay editable.
         var deathYear = c.deathYear || '';
         var deathAge = c.deathAge || '';
         var deathCause = c.deathCause || '';
+        var hasDeathYear = String(deathYear).trim() !== '';
+        var isDeceased = hasDeathYear;
 
         var deathFieldDisabled = isDeceased ? '' : 'disabled';
         var deathFieldOpacity = isDeceased ? '1' : '0.5';
@@ -893,7 +1141,7 @@
             <div class="tab-panel" data-tab="name" style="display:${active};">
 
                 <div class="form-group" style="margin-bottom:8px;">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Character ID</label>
+                    <label for="char-id" style="font-size:0.7rem;color:var(--text-dim);">Character ID</label>
                     <input type="text"
                            id="char-id"
                            class="char-id-input"
@@ -923,29 +1171,29 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">First Name *</label>
-                        <input type="text" id="char-firstName" value="${escapeHtml(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-firstName" style="font-size:0.7rem;color:var(--text-dim);">First Name *</label>
+                        <input type="text" id="char-firstName" value="${escapeAttribute(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Middle Name</label>
-                        <input type="text" id="char-middleName" value="${escapeHtml(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-middleName" style="font-size:0.7rem;color:var(--text-dim);">Middle Name</label>
+                        <input type="text" id="char-middleName" value="${escapeAttribute(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
-                        <input type="text" id="char-lastName" value="${escapeHtml(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-lastName" style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
+                        <input type="text" id="char-lastName" value="${escapeAttribute(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Nickname</label>
-                        <input type="text" id="char-nickname" value="${escapeHtml(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-nickname" style="font-size:0.7rem;color:var(--text-dim);">Nickname</label>
+                        <input type="text" id="char-nickname" value="${escapeAttribute(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
-                    <input type="text" id="char-alias" value="${escapeHtml(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    <label for="char-alias" style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
+                    <input type="text" id="char-alias" value="${escapeAttribute(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                 </div>
 
                 <div class="form-group" style="margin-top:8px;">
@@ -957,23 +1205,23 @@
                 <div class="form-group" style="margin-top:12px;">
                     <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:6px;">Display in List</label>
                     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:0.7rem;">
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <label for="char-displayFirst" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                             <input type="checkbox" id="char-displayFirst" ${dpFirst ? 'checked' : ''} style="accent-color:var(--accent);">
                             First
                         </label>
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <label for="char-displayNickname" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                             <input type="checkbox" id="char-displayNickname" ${dpNickname ? 'checked' : ''} style="accent-color:var(--accent);">
                             Nickname
                         </label>
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <label for="char-displayMiddle" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                             <input type="checkbox" id="char-displayMiddle" ${dpMiddle ? 'checked' : ''} style="accent-color:var(--accent);">
                             Middle
                         </label>
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <label for="char-displayLast" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                             <input type="checkbox" id="char-displayLast" ${dpLast ? 'checked' : ''} style="accent-color:var(--accent);">
                             Last
                         </label>
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <label for="char-displayAlias" style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                             <input type="checkbox" id="char-displayAlias" ${dpAlias ? 'checked' : ''} style="accent-color:var(--accent);">
                             Alias
                         </label>
@@ -983,24 +1231,21 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
-                        <input type="number" id="char-birthYear" value="${escapeHtml(c.birthYear || '')}" placeholder="e.g., 1900" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-birthYear" style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
+                        <input type="number" id="char-birthYear" value="${escapeAttribute(c.birthYear || '')}" placeholder="e.g., 1900" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
-                        <input type="text" id="char-age" value="${escapeHtml(computedAge)}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-age" style="font-size:0.7rem;color:var(--text-dim);">Age</label>
+                        <input type="text" id="char-age" value="${escapeAttribute(computedAge)}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Gender</label>
-                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <label for="char-attraction" style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
+                        <input type="text" id="char-attraction" value="${escapeAttribute(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
-                        <input type="text" id="char-attraction" value="${escapeHtml(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
+                    <div class="form-group"></div>
                 </div>
 
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
@@ -1014,18 +1259,18 @@
                     <div id="death-fields" style="display:${isDeceased ? 'block' : 'none'};padding-left:20px;border-left:2px solid var(--danger);">
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                             <div class="form-group">
-                                <label style="font-size:0.7rem;color:var(--text-dim);">Year of Death</label>
-                                <input type="number" id="char-deathYear" value="${escapeHtml(deathYear)}" placeholder="e.g., 1920" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                                <label for="char-deathYear" style="font-size:0.7rem;color:var(--text-dim);">Year of Death</label>
+                                <input type="number" id="char-deathYear" value="${escapeAttribute(deathYear)}" placeholder="e.g., 1920" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
                             </div>
                             <div class="form-group">
-                                <label style="font-size:0.7rem;color:var(--text-dim);">Age at Death</label>
-                                <input type="number" id="char-deathAge" value="${escapeHtml(deathAge)}" placeholder="Auto-filled from birth year" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                                <label for="char-deathAge" style="font-size:0.7rem;color:var(--text-dim);">Age at Death</label>
+                                <input type="number" id="char-deathAge" value="${escapeAttribute(deathAge)}" placeholder="Auto-filled from birth year" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
                             </div>
                         </div>
 
                         <div class="form-group">
-                            <label style="font-size:0.7rem;color:var(--text-dim);">Cause of Death</label>
-                            <input type="text" id="char-deathCause" value="${escapeHtml(deathCause)}" placeholder="e.g., Fell in battle" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                            <label for="char-deathCause" style="font-size:0.7rem;color:var(--text-dim);">Cause of Death</label>
+                            <input type="text" id="char-deathCause" value="${escapeAttribute(deathCause)}" placeholder="e.g., Fell in battle" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
                         </div>
 
                         <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">
@@ -1054,47 +1299,47 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Gender', 'gender')}
-                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Gender', 'gender', 'char-gender')}
+                        <input type="text" id="char-gender" value="${escapeAttribute(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        ${renderLabelWithRandom('Eyes', 'eyes')}
-                        <input type="text" id="char-eyes" value="${escapeHtml(c.eyes || '')}" placeholder="Eye color" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
-
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Hair', 'hair')}
-                        <input type="text" id="char-hair" value="${escapeHtml(c.hair || '')}" placeholder="Hair color/style" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Skin', 'skin')}
-                        <input type="text" id="char-skin" value="${escapeHtml(c.skin || '')}" placeholder="Skin tone" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Eyes', 'eyes', 'char-eyes')}
+                        <input type="text" id="char-eyes" value="${escapeAttribute(c.eyes || '')}" placeholder="Eye color" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Height', 'height')}
-                        <input type="text" id="char-height" value="${escapeHtml(c.height || '')}" placeholder="Height" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Hair', 'hair', 'char-hair')}
+                        <input type="text" id="char-hair" value="${escapeAttribute(c.hair || '')}" placeholder="Hair color/style" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        ${renderLabelWithRandom('Weight', 'weight')}
-                        <input type="text" id="char-weight" value="${escapeHtml(c.weight || '')}" placeholder="Weight" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Skin', 'skin', 'char-skin')}
+                        <input type="text" id="char-skin" value="${escapeAttribute(c.skin || '')}" placeholder="Skin tone" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Build', 'build')}
-                        <input type="text" id="char-build" value="${escapeHtml(c.build || '')}" placeholder="Body type" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Height', 'height', 'char-height')}
+                        <input type="text" id="char-height" value="${escapeAttribute(c.height || '')}" placeholder="Height" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Weight', 'weight', 'char-weight')}
+                        <input type="text" id="char-weight" value="${escapeAttribute(c.weight || '')}" placeholder="Weight" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Build', 'build', 'char-build')}
+                        <input type="text" id="char-build" value="${escapeAttribute(c.build || '')}" placeholder="Body type" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group"></div>
                 </div>
 
                 <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Appearance Notes</label>
+                    <label for="char-appearanceNotes" style="font-size:0.7rem;color:var(--text-dim);">Appearance Notes</label>
                     <textarea id="char-appearanceNotes" rows="2" placeholder="Distinguishing features, scars, tattoos..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.appearanceNotes || '')}</textarea>
                 </div>
             </div>
@@ -1117,56 +1362,56 @@
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Traits', 'traits')}
-                        <input type="text" id="char-personality-traits" value="${escapeHtml(p.traits || '')}" placeholder="e.g., Brave, Cunning, Loyal" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Traits', 'traits', 'char-personality-traits')}
+                        <input type="text" id="char-personality-traits" value="${escapeAttribute(p.traits || '')}" placeholder="e.g., Brave, Cunning, Loyal" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        ${renderLabelWithRandom('Ideals', 'ideals')}
-                        <input type="text" id="char-personality-ideals" value="${escapeHtml(p.ideals || '')}" placeholder="What they believe in" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
-
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Bonds', 'bonds')}
-                        <input type="text" id="char-personality-bonds" value="${escapeHtml(p.bonds || '')}" placeholder="Who/what they care about" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Flaws', 'flaws')}
-                        <input type="text" id="char-personality-flaws" value="${escapeHtml(p.flaws || '')}" placeholder="Weaknesses, vices" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Ideals', 'ideals', 'char-personality-ideals')}
+                        <input type="text" id="char-personality-ideals" value="${escapeAttribute(p.ideals || '')}" placeholder="What they believe in" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Alignment', 'alignment')}
-                        <input type="text" id="char-personality-alignment" value="${escapeHtml(p.alignment || '')}" placeholder="e.g., Lawful Good, Chaotic Neutral" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Bonds', 'bonds', 'char-personality-bonds')}
+                        <input type="text" id="char-personality-bonds" value="${escapeAttribute(p.bonds || '')}" placeholder="Who/what they care about" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        ${renderLabelWithRandom('Likes', 'likes')}
-                        <input type="text" id="char-personality-likes" value="${escapeHtml(p.likes || '')}" placeholder="Things they enjoy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
-
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Dislikes', 'dislikes')}
-                        <input type="text" id="char-personality-dislikes" value="${escapeHtml(p.dislikes || '')}" placeholder="Things they avoid" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        ${renderLabelWithRandom('Fears', 'fears')}
-                        <input type="text" id="char-personality-fears" value="${escapeHtml(p.fears || '')}" placeholder="What they're afraid of" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Flaws', 'flaws', 'char-personality-flaws')}
+                        <input type="text" id="char-personality-flaws" value="${escapeAttribute(p.flaws || '')}" placeholder="Weaknesses, vices" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
-                        ${renderLabelWithRandom('Habits', 'habits')}
-                        <input type="text" id="char-personality-habits" value="${escapeHtml(p.habits || '')}" placeholder="Quirks, routines" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Alignment', 'alignment', 'char-personality-alignment')}
+                        <input type="text" id="char-personality-alignment" value="${escapeAttribute(p.alignment || '')}" placeholder="e.g., Lawful Good, Chaotic Neutral" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        ${renderLabelWithRandom('Goals', 'goals')}
-                        <input type="text" id="char-personality-goals" value="${escapeHtml(p.goals || '')}" placeholder="What they want to achieve" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${renderLabelWithRandom('Likes', 'likes', 'char-personality-likes')}
+                        <input type="text" id="char-personality-likes" value="${escapeAttribute(p.likes || '')}" placeholder="Things they enjoy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Dislikes', 'dislikes', 'char-personality-dislikes')}
+                        <input type="text" id="char-personality-dislikes" value="${escapeAttribute(p.dislikes || '')}" placeholder="Things they avoid" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Fears', 'fears', 'char-personality-fears')}
+                        <input type="text" id="char-personality-fears" value="${escapeAttribute(p.fears || '')}" placeholder="What they're afraid of" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Habits', 'habits', 'char-personality-habits')}
+                        <input type="text" id="char-personality-habits" value="${escapeAttribute(p.habits || '')}" placeholder="Quirks, routines" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        ${renderLabelWithRandom('Goals', 'goals', 'char-personality-goals')}
+                        <input type="text" id="char-personality-goals" value="${escapeAttribute(p.goals || '')}" placeholder="What they want to achieve" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
 
@@ -1175,23 +1420,23 @@
 
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                         <div class="form-group">
-                            ${renderLabelWithRandom('Authority', 'authority')}
-                            <input type="text" id="char-personality-authority" value="${escapeHtml(p.authority || '')}" placeholder="Relationship to authority" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            ${renderLabelWithRandom('Authority', 'authority', 'char-personality-authority')}
+                            <input type="text" id="char-personality-authority" value="${escapeAttribute(p.authority || '')}" placeholder="Relationship to authority" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                         </div>
                         <div class="form-group">
-                            ${renderLabelWithRandom('Social', 'socialStyle')}
-                            <input type="text" id="char-personality-socialStyle" value="${escapeHtml(p.socialStyle || '')}" placeholder="How they relate to others" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            ${renderLabelWithRandom('Social', 'socialStyle', 'char-personality-socialStyle')}
+                            <input type="text" id="char-personality-socialStyle" value="${escapeAttribute(p.socialStyle || '')}" placeholder="How they relate to others" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                         </div>
                     </div>
 
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                         <div class="form-group">
-                            ${renderLabelWithRandom('Conflict', 'conflictStyle')}
-                            <input type="text" id="char-personality-conflictStyle" value="${escapeHtml(p.conflictStyle || '')}" placeholder="How they handle conflict" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            ${renderLabelWithRandom('Conflict', 'conflictStyle', 'char-personality-conflictStyle')}
+                            <input type="text" id="char-personality-conflictStyle" value="${escapeAttribute(p.conflictStyle || '')}" placeholder="How they handle conflict" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                         </div>
                         <div class="form-group">
-                            ${renderLabelWithRandom('Quirks', 'quirks')}
-                            <input type="text" id="char-personality-quirks" value="${escapeHtml(p.quirks || '')}" placeholder="A behavioural oddity" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            ${renderLabelWithRandom('Quirks', 'quirks', 'char-personality-quirks')}
+                            <input type="text" id="char-personality-quirks" value="${escapeAttribute(p.quirks || '')}" placeholder="A behavioural oddity" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                         </div>
                     </div>
                 </div>
@@ -1224,8 +1469,8 @@
             <div class="tab-panel" data-tab="professional" style="display:${active};">
 
                 <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Specialty</label>
-                    <input type="text" id="char-specialty" value="${escapeHtml(c.specialty || '')}" placeholder="e.g., herbalist, alchemist, smith" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    <label for="char-specialty" style="font-size:0.7rem;color:var(--text-dim);">Specialty</label>
+                    <input type="text" id="char-specialty" value="${escapeAttribute(c.specialty || '')}" placeholder="e.g., herbalist, alchemist, smith" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                 </div>
 
                 <div class="form-group" style="margin-top:12px;">
@@ -1275,7 +1520,7 @@
                 ${getWeaponsSectionHTML(c)}
 
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
-                    <label style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:6px;">Combat Notes</label>
+                    <label for="char-combat-notes" style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:6px;">Combat Notes</label>
                     <textarea id="char-combat-notes" rows="4" placeholder="Combat-specific notes, tactics, observations..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.combatNotes || '')}</textarea>
                 </div>
             </div>
@@ -1286,15 +1531,19 @@
         var stats = c.stats || {};
         var statKeys = getStatKeys();
         var statDefinitions = getStatDefinitions();
+        var statMin = getStatMin();
+        var statMax = getStatMax();
+        var statDefault = getStatDefault();
 
         var statInputs = '';
-        statKeys.forEach(function(key) {
+        for (var si = 0; si < statKeys.length; si++) {
+            var key = statKeys[si];
             var definition = statDefinitions[key] || {};
             var abbreviation = definition.abbreviation ||
                 key.toUpperCase();
             var value = stats[key] !== undefined
                 ? stats[key]
-                : getStatDefault();
+                : statDefault;
 
             var modifier = Math.floor((value - 10) / 2);
             var modifierDisplay =
@@ -1305,76 +1554,182 @@
                     ? 'var(--danger)'
                     : 'var(--text-dim)');
 
-            statInputs += `
-                <div class="stat-block" style="display:flex;flex-direction:column;gap:2px;align-items:center;padding:6px;background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;">
-                    <label style="font-size:0.6rem;color:var(--text-dim);font-weight:600;">${abbreviation}</label>
-                    <input type="number" id="char-stat-${key}" value="${value}" min="${getStatMin()}" max="${getStatMax()}" data-stat-key="${key}" class="stat-input" style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.9rem;font-weight:700;text-align:center;">
-                    <span class="stat-modifier" data-modifier-key="${key}" style="font-size:0.65rem;color:${modColor};font-weight:600;">${modifierDisplay}</span>
-                </div>
-            `;
-        });
+            statInputs +=
+                '<div class="stat-block" style="display:flex;' +
+                    'flex-direction:column;gap:2px;align-items:center;' +
+                    'padding:6px;background:var(--panel-alt);' +
+                    'border:1px solid var(--border);border-radius:6px;">' +
+                    '<label for="char-stat-' + escapeAttribute(key) + '" ' +
+                        'style="font-size:0.6rem;color:var(--text-dim);' +
+                        'font-weight:600;">' +
+                        escapeHtml(abbreviation) +
+                    '</label>' +
+                    '<input type="number" id="char-stat-' +
+                        escapeAttribute(key) + '" ' +
+                        'value="' + escapeAttribute(String(value)) + '" ' +
+                        'min="' + escapeAttribute(String(statMin)) + '" ' +
+                        'max="' + escapeAttribute(String(statMax)) + '" ' +
+                        'data-stat-key="' + escapeAttribute(key) + '" ' +
+                        'class="stat-input" ' +
+                        'style="width:100%;padding:4px 6px;' +
+                        'background:var(--bg);' +
+                        'border:1px solid var(--border);' +
+                        'color:var(--text);border-radius:4px;' +
+                        'font-size:0.9rem;font-weight:700;' +
+                        'text-align:center;">' +
+                    '<span class="stat-modifier" ' +
+                        'data-modifier-key="' + escapeAttribute(key) + '" ' +
+                        'style="font-size:0.65rem;color:' + modColor + ';' +
+                        'font-weight:600;">' +
+                        escapeHtml(modifierDisplay) +
+                    '</span>' +
+                '</div>';
+        }
 
         var classOptions = '<option value="">\u2014 Derived \u2014</option>';
         var physicalClasses = getPhysicalClasses();
-        physicalClasses.forEach(function(cls) {
-            classOptions += '<option value="' + escapeHtml(cls.id) +
-                '">' + escapeHtml(cls.label) + '</option>';
-        });
+        for (var pi = 0; pi < physicalClasses.length; pi++) {
+            var cls = physicalClasses[pi];
+            classOptions += '<option value="' +
+                escapeAttribute(cls.id) + '">' +
+                escapeHtml(cls.label) +
+                '</option>';
+        }
 
-        return `
-            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Physical</label>
-                    <button type="button" id="roll-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">\u27f3 Roll Stats</button>
-                </div>
+        var hpValue = c.hp || 0;
+        var mpValue = c.mp || 0;
 
-                <div class="stat-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px;">
-                    ${statInputs}
-                </div>
+        return (
+            '<div class="combat-section" ' +
+                'style="margin-bottom:12px;padding:10px;' +
+                'background:var(--panel);' +
+                'border:1px solid var(--border);' +
+                'border-radius:var(--radius);">' +
+                '<div style="display:flex;justify-content:space-between;' +
+                    'align-items:center;margin-bottom:8px;' +
+                    'flex-wrap:wrap;gap:6px;">' +
+                    '<label style="font-size:0.8rem;' +
+                        'color:var(--accent);font-weight:600;">' +
+                        'Physical' +
+                    '</label>' +
+                    '<button type="button" id="roll-stats-btn" ' +
+                        'class="small secondary" ' +
+                        'style="font-size:0.65rem;padding:3px 10px;">' +
+                        '\u27f3 Roll Stats' +
+                    '</button>' +
+                '</div>' +
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Derived Class</label>
-                        <div id="derived-physical-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:4px;font-size:0.75rem;font-weight:600;">\u2014</div>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Override (rewrites stats)</label>
-                        <select id="physical-class-override" style="width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                            ${classOptions}
-                        </select>
-                    </div>
-                </div>
+                '<div class="stat-grid" ' +
+                    'style="display:grid;' +
+                    'grid-template-columns:repeat(6,1fr);gap:6px;' +
+                    'margin-bottom:10px;">' +
+                    statInputs +
+                '</div>' +
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">HP</label>
-                        <div style="display:flex;gap:6px;">
-                            <input type="number" id="char-hp" value="${c.hp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
-                            <button type="button" id="roll-hp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">\u27f3</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">MP</label>
-                        <div style="display:flex;gap:6px;">
-                            <input type="number" id="char-mp" value="${c.mp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
-                            <button type="button" id="roll-mp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">\u27f3</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
+                '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+                    'gap:8px;margin-bottom:8px;">' +
+                    '<div class="form-group">' +
+                        '<label style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Derived Class' +
+                        '</label>' +
+                        '<div id="derived-physical-class" ' +
+                            'style="padding:5px 8px;background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--accent);border-radius:4px;' +
+                            'font-size:0.75rem;font-weight:600;">' +
+                            '\u2014' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label for="physical-class-override" ' +
+                            'style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">' +
+                            'Override (rewrites stats)' +
+                        '</label>' +
+                        '<select id="physical-class-override" ' +
+                            'style="width:100%;padding:5px 8px;' +
+                            'background:var(--bg);' +
+                            'border:1px solid var(--border);' +
+                            'color:var(--text);border-radius:4px;' +
+                            'font-size:0.75rem;">' +
+                            classOptions +
+                        '</select>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+                    'gap:8px;">' +
+                    '<div class="form-group">' +
+                        '<label for="char-hp" ' +
+                            'style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">HP</label>' +
+                        '<div style="display:flex;gap:6px;">' +
+                            '<input type="number" id="char-hp" ' +
+                                'value="' + escapeAttribute(String(hpValue)) + '" ' +
+                                'min="0" max="999" ' +
+                                'style="flex:1;padding:5px 8px;' +
+                                'background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'font-size:0.8rem;">' +
+                            '<button type="button" id="roll-hp-btn" ' +
+                                'class="small secondary" ' +
+                                'style="font-size:0.7rem;padding:4px 10px;">' +
+                                '\u27f3' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label for="char-mp" ' +
+                            'style="font-size:0.7rem;' +
+                            'color:var(--text-dim);">MP</label>' +
+                        '<div style="display:flex;gap:6px;">' +
+                            '<input type="number" id="char-mp" ' +
+                                'value="' + escapeAttribute(String(mpValue)) + '" ' +
+                                'min="0" max="999" ' +
+                                'style="flex:1;padding:5px 8px;' +
+                                'background:var(--bg);' +
+                                'border:1px solid var(--border);' +
+                                'color:var(--text);border-radius:4px;' +
+                                'font-size:0.8rem;">' +
+                            '<button type="button" id="roll-mp-btn" ' +
+                                'class="small secondary" ' +
+                                'style="font-size:0.7rem;padding:4px 10px;">' +
+                                '\u27f3' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
     }
 
     function getWeaponsSectionHTML(c) {
-        return `
-            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Weapons</label>
-                    <button type="button" id="add-weapon-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">+ Add Weapon</button>
-                </div>
-                <div id="weapons-container" style="display:flex;flex-direction:column;gap:2px;"></div>
-            </div>
-        `;
+        return (
+            '<div class="combat-section" ' +
+                'style="margin-bottom:12px;padding:10px;' +
+                'background:var(--panel);' +
+                'border:1px solid var(--border);' +
+                'border-radius:var(--radius);">' +
+                '<div style="display:flex;justify-content:space-between;' +
+                    'align-items:center;margin-bottom:8px;' +
+                    'flex-wrap:wrap;gap:6px;">' +
+                    '<label style="font-size:0.8rem;' +
+                        'color:var(--accent);font-weight:600;">' +
+                        'Weapons' +
+                    '</label>' +
+                    '<button type="button" id="add-weapon-btn" ' +
+                        'class="small secondary" ' +
+                        'style="font-size:0.65rem;padding:3px 10px;">' +
+                        '+ Add Weapon' +
+                    '</button>' +
+                '</div>' +
+                '<div id="weapons-container" ' +
+                    'style="display:flex;flex-direction:column;' +
+                    'gap:2px;"></div>' +
+            '</div>'
+        );
     }
 
     // ============================================================
@@ -1413,7 +1768,7 @@
         return `
             <div class="tab-panel" data-tab="notes" style="display:${active};">
                 <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Notes</label>
+                    <label for="char-notes-tab" style="font-size:0.7rem;color:var(--text-dim);">Notes</label>
                     <textarea id="char-notes-tab" rows="8" placeholder="General notes about this character..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
                 </div>
             </div>
@@ -1448,9 +1803,9 @@
             if (prevNames.length === 0) {
                 addPreviousNameRow(prevNamesContainer, '');
             } else {
-                prevNames.forEach(function(name) {
-                    addPreviousNameRow(prevNamesContainer, name);
-                });
+                for (var pi = 0; pi < prevNames.length; pi++) {
+                    addPreviousNameRow(prevNamesContainer, prevNames[pi]);
+                }
             }
         }
 
@@ -1471,21 +1826,25 @@
                 : '';
         }
 
+        // Gender now lives on the Physical tab only.
         FormUtils.setField('char-gender', char.gender);
         FormUtils.setField('char-attraction', char.attraction);
 
-        var isDeceased = char.deceased === true;
-        FormUtils.setField('char-deceased', isDeceased);
+        // Deceased state derives from deathYear presence, not the
+        // cached boolean, so a future death year stays editable.
+        var hasDeathYear = char.deathYear !== undefined &&
+            char.deathYear !== null &&
+            String(char.deathYear).trim() !== '';
+        FormUtils.setField('char-deceased', hasDeathYear);
         FormUtils.setField('char-deathYear', char.deathYear || '');
         FormUtils.setField('char-deathAge', char.deathAge || '');
         FormUtils.setField('char-deathCause', char.deathCause || '');
 
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
-            deathFields.style.display = isDeceased
-                ? 'block' : 'none';
+            deathFields.style.display = hasDeathYear ? 'block' : 'none';
         }
-        applyDeceasedState(isDeceased);
+        applyDeceasedState(hasDeathYear);
 
         FormUtils.setField('char-eyes', char.eyes);
         FormUtils.setField('char-hair', char.hair);
@@ -1556,20 +1915,22 @@
             if (careerEntries.length === 0) {
                 addCareerEntryRow(careerContainer);
             } else {
-                careerEntries.forEach(function(entry) {
-                    addCareerEntryRow(careerContainer, entry);
-                });
+                for (var ci = 0; ci < careerEntries.length; ci++) {
+                    addCareerEntryRow(careerContainer, careerEntries[ci]);
+                }
             }
         }
 
         var statKeys = getStatKeys();
+        var statDefault = getStatDefault();
         if (char.stats) {
-            statKeys.forEach(function(key) {
+            for (var si = 0; si < statKeys.length; si++) {
+                var key = statKeys[si];
                 var value = char.stats[key] !== undefined
                     ? char.stats[key]
-                    : getStatDefault();
+                    : statDefault;
                 FormUtils.setField('char-stat-' + key, value);
-            });
+            }
         }
 
         FormUtils.setField('char-hp', char.hp || 0);
@@ -1582,9 +1943,9 @@
             weaponsContainer.textContent = '';
             var weapons = Array.isArray(char.weapons)
                 ? char.weapons : [];
-            weapons.forEach(function(w) {
-                addWeaponRow(weaponsContainer, w);
-            });
+            for (var wi = 0; wi < weapons.length; wi++) {
+                addWeaponRow(weaponsContainer, weapons[wi]);
+            }
         }
 
         FormUtils.setField('char-combat-notes', char.combatNotes || '');
@@ -1701,23 +2062,18 @@
             alias:    FormUtils.getField('char-displayAlias') === true
         };
 
-        var isDeceased =
-            FormUtils.getField('char-deceased') === true;
-
-        var deathYear = '';
-        var deathAge = '';
-        var deathCause = '';
-
-        if (isDeceased) {
-            deathYear = FormUtils.getField('char-deathYear') || '';
-            deathAge = FormUtils.getField('char-deathAge') || '';
-            deathCause = FormUtils.getField('char-deathCause') || '';
-        }
+        // Collect death fields whenever they have a value, regardless
+        // of the checkbox state. This preserves a future death year.
+        var deathYear = FormUtils.getField('char-deathYear') || '';
+        var deathAge = FormUtils.getField('char-deathAge') || '';
+        var deathCause = FormUtils.getField('char-deathCause') || '';
 
         var birthYearRaw =
             FormUtils.getField('char-birthYear') || '';
 
-        if (isDeceased && !deathAge && birthYearRaw && deathYear) {
+        // Auto-fill deathAge from birth and death years when the
+        // user has left it blank.
+        if (!deathAge && birthYearRaw && deathYear) {
             var by = parseInt(birthYearRaw, 10);
             var dy = parseInt(deathYear, 10);
             if (!isNaN(by) && !isNaN(dy) && dy >= by) {
@@ -1741,7 +2097,7 @@
             gender: FormUtils.getField('char-gender') || '',
             attraction: FormUtils.getField('char-attraction') || '',
 
-            deceased: isDeceased,
+            deceased: FormUtils.getField('char-deceased') === true,
             deathYear: deathYear,
             deathAge: deathAge,
             deathCause: deathCause,
@@ -1806,14 +2162,15 @@
             }
         };
 
-        statKeys.forEach(function(key) {
+        for (var si = 0; si < statKeys.length; si++) {
+            var key = statKeys[si];
             var value = parseInt(
                 FormUtils.getField('char-stat-' + key), 10
             );
             dto.stats[key] = !isNaN(value)
                 ? Math.max(statMin, Math.min(statMax, value))
                 : statDefault;
-        });
+        }
 
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView &&
@@ -1832,7 +2189,7 @@
     }
 
     // ============================================================
-    // TAB SWITCHING
+    // TAB SWITCHING - scoped to #character-form
     // ============================================================
 
     function switchTab(tab) {
@@ -1840,21 +2197,30 @@
 
         state.currentTab = tab;
 
-        var btns = document.querySelectorAll('.form-tab-btn');
-        btns.forEach(function(btn) {
+        var form = document.getElementById('character-form');
+        if (!form) { return; }
+
+        var btns = form.querySelectorAll('.form-tab-btn');
+        for (var i = 0; i < btns.length; i++) {
+            var btn = btns[i];
             var isActive = btn.dataset.tab === tab;
             btn.classList.toggle('active', isActive);
+            btn.setAttribute(
+                'aria-selected', isActive ? 'true' : 'false'
+            );
+            btn.setAttribute('tabindex', isActive ? '0' : '-1');
             btn.style.color = isActive
                 ? 'var(--accent)' : 'var(--text-dim)';
             btn.style.borderBottomColor = isActive
                 ? 'var(--accent)' : 'transparent';
-        });
+        }
 
-        var panels = document.querySelectorAll('.tab-panel');
-        panels.forEach(function(panel) {
-            var isActive = panel.dataset.tab === tab;
-            panel.style.display = isActive ? 'block' : 'none';
-        });
+        var panels = form.querySelectorAll('.tab-panel');
+        for (var j = 0; j < panels.length; j++) {
+            var panel = panels[j];
+            var isPanelActive = panel.dataset.tab === tab;
+            panel.style.display = isPanelActive ? 'block' : 'none';
+        }
 
         if (tab === 'professional') {
             var CharacterQueries = getCharacterQueries();
@@ -1943,7 +2309,7 @@
 
     (function verify() {
         var exports = window.CharacterForm;
-        var missing = [];
+        var failures = [];
 
         var required = [
             'render', 'hide', 'collect', 'switchTab',
@@ -1952,14 +2318,14 @@
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
+                failures.push('missing export: ' + required[i]);
             }
         }
 
-        if (missing.length > 0) {
-            console.warn(
-                '[CharacterForm] Verification — some exports may ' +
-                'be missing:', missing.join(', ')
+        if (failures.length > 0) {
+            throw new Error(
+                '[CharacterForm] Verification failed: ' +
+                failures.join('; ')
             );
         }
     })();
