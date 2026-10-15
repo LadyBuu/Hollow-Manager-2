@@ -22,7 +22,7 @@
  *   - Uses CharacterQueries for display names
  *   - Uses DomUtils for safe escaping
  *
- * PROFESSIONAL TAB STINT ACTIONS (this revision):
+ * PROFESSIONAL TAB STINT ACTIONS:
  *   Each professional stint row carries End and Remove buttons
  *   when the stint is open. The buttons carry
  *   data-action="end-professional-stint" and
@@ -36,8 +36,23 @@
  *
  *   The mutations route through TeamCore.endMemberInterval and
  *   TeamCore.purgeMemberInterval, which are the canonical paths
- *   already used by the team Members modal. Nothing new is
- *   introduced in the domain layer.
+ *   already used by the team Members modal.
+ *
+ * TEAM SHAPE ASSUMPTION:
+ *   renderCharacterProfessional assumes:
+ *     - TeamQueries.getTeamsForCharacterAllTime(charId, 'professional')
+ *       returns one entry per team the character has EVER been on,
+ *       filtered by type
+ *     - Each entry has an id and is resolvable via
+ *       TeamQueries.getCharacterTeamMembership(teamId, charId)
+ *     - The returned member has a `member.intervals` array, one
+ *       entry per stint
+ *
+ *   If getTeamsForCharacterAllTime ever returns a "merged"
+ *   interval (one entry covering the entire membership history),
+ *   the row-per-stint invariant collapses to row-per-team. The
+ *   code does not defend against that; the caller's TeamQueries
+ *   contract is authoritative.
  *
  * RELATIONSHIP FORM OWNERSHIP:
  *   The character-tab relationship form has been RETIRED.
@@ -60,7 +75,32 @@
  *
  * GRAPH NODE COLORS:
  *   Node colors are read from --graph-node-* tokens declared in
- *   css/shared.css. Do NOT inline hex literals here.
+ *   css/shared.css:
+ *
+ *     --graph-node-accent-fill
+ *     --graph-node-info-fill
+ *     --graph-node-accent-stroke
+ *     --graph-node-info-stroke
+ *
+ *   These must exist in every theme this app supports. Do NOT
+ *   inline hex literals here.
+ *
+ * GRAPH RENDERING TIMING:
+ *   renderCharacterGraph reads container.clientWidth and
+ *   container.clientHeight at render time. If the modal is
+ *   hidden when renderCharacterGraph is called, the dimensions
+ *   are 0 and the layout falls back to 800x500. The caller
+ *   (character-events.js openCharacterGraphModal) defers the
+ *   render by 50ms to allow the modal to become visible. If
+ *   Modal.showModal's animation is extended, the delay may need
+ *   adjustment; alternatively, defer to a requestAnimationFrame
+ *   after the modal's 'visible' class is applied.
+ *
+ * DEPARTMENTS:
+ *   renderProfessionalDepartmentsSection returns an empty string
+ *   when DepartmentQueries is not loaded. It does not throw. The
+ *   Professional tab still renders, without the departments
+ *   sub-section.
  */
 
 (function() {
@@ -111,9 +151,9 @@
     // ============================================================
 
     function escapeHtml(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -125,9 +165,9 @@
     }
 
     function escapeAttribute(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
         }
         if (value === undefined || value === null) { return ''; }
         return String(value)
@@ -141,10 +181,10 @@
     // ============================================================
 
     function getCharacterName(charId) {
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || !charId) { return 'Unknown'; }
-        var char = CharacterQueries.getCharacterById(charId);
-        return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        var CQ = getCharacterQueries();
+        if (!CQ || !charId) { return 'Unknown'; }
+        var char = CQ.getCharacterById(charId);
+        return char ? CQ.getDisplayName(char) : 'Unknown';
     }
 
     function getOtherCharacterId(relationship, charId) {
@@ -290,7 +330,6 @@
         var otherName = getCharacterName(otherId);
         var arrow = getDirectionGlyph(rel, charId);
 
-        // Read two-sided clarifications with legacy fallback.
         var clar1 = rel.clarification1 !== undefined && rel.clarification1 !== null
             ? String(rel.clarification1) : '';
         var clar2 = rel.clarification2 !== undefined && rel.clarification2 !== null
@@ -435,8 +474,7 @@
             }
             if (!member) { continue; }
 
-            // One row per stint. A character who left and rejoined
-            // appears twice.
+            // One row per stint.
             var intervals = Array.isArray(member.intervals)
                 ? member.intervals
                 : [];
@@ -456,8 +494,6 @@
                 );
 
                 // Classification follows the STINT, not the member.
-                // A stint is "active at currentYear" when its window
-                // contains the current year.
                 var stintActive = false;
                 var stintFormer = false;
 
@@ -486,15 +522,12 @@
                             !isNaN(leaveNum) &&
                             leaveNum < currentYear) {
                             stintFormer = true;
-                        } else if (join !== '' &&
-                                   !isNaN(joinNum) &&
-                                   joinNum > currentYear) {
-                            // Future stint. Not currently active,
-                            // not formerly active. Not shown in
-                            // either partition today; keep it out
-                            // of the "former" bucket.
-                            stintFormer = false;
                         }
+                        // Future stints (join > currentYear) fall
+                        // through as neither active nor former;
+                        // they land in the else branch below and
+                        // are shown in the "active" bucket so the
+                        // row remains editable.
                     }
                 }
 
@@ -502,13 +535,12 @@
                     activeRows.push(row);
                 } else if (stintFormer) {
                     formerRows.push(row);
-                } else if (!canSplit) {
-                    activeRows.push(row);
                 } else {
-                    // Neither active nor former at the current year.
-                    // Fall back to the "active" bucket so the row is
-                    // still editable. A row with no bucket at all
-                    // would be invisible.
+                    // Neither active nor former, OR the split
+                    // classification is unavailable. Fall into the
+                    // active bucket so the row is still visible
+                    // and editable. This also covers future stints
+                    // and the canSplit === false case.
                     activeRows.push(row);
                 }
             }
@@ -709,15 +741,15 @@
     // ============================================================
     // PROFESSIONAL STINT ROW
     // ============================================================
-    //
-    // One row per interval. The row's data attributes carry
-    // (teamId, joinPeriod, leavePeriod) so character-events.js can
-    // dispatch the two mutations without having to re-derive the
-    // stint identity from the DOM.
 
     function buildProfessionalStintRow(team, member, interval) {
-        var teamName = team.name || 'Unnamed Team';
-        var role = member.role || 'Member';
+        var teamName = isNonEmptyString(team.name)
+            ? team.name
+            : 'Unnamed Team';
+
+        var role = isNonEmptyString(member && member.role)
+            ? String(member.role).trim()
+            : 'Member';
 
         var join = isNonEmptyString(interval.joinPeriod)
             ? String(interval.joinPeriod).trim()
@@ -744,7 +776,7 @@
                     escapeHtml(teamName) +
                 '</span>';
 
-        if (isNonEmptyString(role) && role !== 'Member') {
+        if (role && role !== 'Member') {
             html += '<span style="color:var(--info);font-size:0.65rem;' +
                         'font-style:italic;">(' +
                         escapeHtml(role) +
@@ -758,7 +790,6 @@
                     '</span>';
         }
 
-        // Push the actions to the right.
         html += '<span style="flex:1;"></span>';
 
         html += buildStintActions(team, join, leave, isOpen);
@@ -857,8 +888,8 @@
 
         var SocialQueries = getSocialQueries();
         var SocialConstants = getSocialConstants();
-        var CharacterQueries = getCharacterQueries();
-        if (!SocialQueries || !SocialConstants || !CharacterQueries) {
+        var CQ = getCharacterQueries();
+        if (!SocialQueries || !SocialConstants || !CQ) {
             transformGroup.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-dim)" font-size="14">Dependencies not loaded</text>';
             return;
         }
@@ -942,8 +973,8 @@
         nodeIds.forEach(function(id) {
             var pos = positions[id];
             if (!pos) { return; }
-            var char = CharacterQueries.getCharacterById(id);
-            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+            var char = CQ.getCharacterById(id);
+            var name = char ? CQ.getDisplayName(char) : 'Unknown';
             var isCenter = String(id) === String(charId);
 
             var connCount = 0;
