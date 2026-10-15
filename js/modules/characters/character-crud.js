@@ -14,12 +14,18 @@
  *   - Career-transition cascade into professional teams.
  *
  * WHAT THIS DOES NOT OWN:
- *   - classIds, disciplineIds, parentIds. Preserved by save, but
- *     not originated here.
+ *   - classIds, disciplineIds, parentIds, eliminations,
+ *     eliminatedWeeks. Preserved by save, but not originated here.
  *   - Death cascade implementation. Delegates to
  *     TeamCore.endStintsForCharacter.
  *   - Career-transition cascade implementation. Same.
  *   - UI. No notifications, no rendering, no DOM.
+ *
+ * LOAD ORDER:
+ *   This module loads cleanly regardless of script order. All
+ *   dependencies, including CharacterConstants, are resolved at
+ *   call time. A missing module is reported the first time a
+ *   mutation runs.
  *
  * MUTATION MODEL:
  *   Every mutation routes through MutationPipeline. Validation runs
@@ -27,6 +33,20 @@
  *   inside pipeline.validate(). The candidate is re-derived inside
  *   mutate() from the same snapshot, so the applied state never
  *   diverges from what was validated.
+ *
+ * PARTIAL DTO SEMANTICS:
+ *   normaliseCharacterData only includes a field in its output
+ *   when the field is present (not undefined) in the input DTO.
+ *   Fields absent from the DTO are left unchanged in the merge
+ *   performed by updateExistingCharacter.
+ *
+ *   A quick-edit that sends only {firstName, lastName, _editId}
+ *   leaves weapons, stats, magic, personality, specialMoves,
+ *   careerStatus, hp, mp, deathYear, and isFiller untouched.
+ *
+ *   This is the fix for a class of bugs where any absent field
+ *   defaulted to empty or zero and then overwrote the stored value
+ *   through Object.assign.
  *
  * CAREER TRANSITION CASCADE:
  *   Fires when the latest careerStatus entry transitions from a
@@ -42,6 +62,11 @@
  *
  *   Both paths converge on applyCareerTransitionCascade. Idempotent
  *   across repeated saves.
+ *
+ *   The previous-latest-status capture is taken inside mutate()
+ *   against the snapshot, not from a pre-queue record. This is what
+ *   keeps the cascade correct when an earlier queued mutation
+ *   changed careerStatus.
  *
  * CAREER STATUS CLOSING:
  *   Career-status entries never carry gaps. When a new entry starts
@@ -62,45 +87,56 @@
  *                                     endYear from the next stage's
  *                                     startYear.
  *
- *   The reconciliation is strict-in-order. A stage whose startYear
- *   is greater than the next stage's startYear is not a
- *   reconciliation opportunity; the caller is expected to have
- *   sorted them.
+ *   closeOpenCareerEntries and getLatestCareerStatus agree on
+ *   entries with a missing startYear: both treat the entry as
+ *   having the earliest possible start, so it is "not current"
+ *   relative to any other entry.
+ *
+ * TERMINAL STATUSES:
+ *   The set of statuses that terminate a career (retired, support,
+ *   instructor) comes from CharacterConstants.TERMINAL_STATUSES.
+ *   Do not add statuses here; add them to the constants module.
+ *
+ * DELETE CASCADE:
+ *   deleteCharacter removes the character from:
+ *     - teams (members arrays)
+ *     - every other character's parentIds
+ *     - departments[].members
+ *     - departments[].headId (cleared to null if the character was
+ *       the head)
+ *     - social.relationships (both sides)
+ *     - tournaments[].participants (by characterId)
+ *     - Academy stores (via AcademyCascade.characterDeleted)
+ *
+ *   deleteAllCharacters runs the same cascade for the whole
+ *   character set, in a single mutation.
  *
  * FILLER AUTO-UNFLAG:
  *   When a filler character is saved and the merged record now
- *   contains authored content — anything CharacterStrip.hasAuthoredContent
- *   recognises as a real field: bio strings, non-default stats,
- *   non-zero magic, HP/MP, weapons, special moves, personality
- *   fields — the filler flag is cleared before the strip runs. The
- *   strip is skipped for that save; the authored fields are
- *   persisted.
+ *   contains authored content — anything
+ *   CharacterStrip.hasAuthoredContent recognises as a real field —
+ *   the filler flag is cleared before the strip runs.
  *
- *   Authoring content is a stronger statement of intent than the
- *   form's filler checkbox. The checkbox is a bulk-flag leftover or
- *   an explicit bulk operation; typing a hair colour, or a stat, or
- *   a personality line, means the user wants the character kept.
+ *   The authored-content predicate is the one defined in
+ *   CharacterStrip. setFillerFlag runs the same check, so a bulk
+ *   flag from the modal cannot override an authored-content record.
  *
- *   An explicit isFiller: false from the form still clears the
- *   flag, independently of the authored-content check.
+ * UPDATED AT:
+ *   Every save stamps updatedAt. The stamp is applied in mutate so
+ *   it is part of the atomic write.
  *
- * DEATH CASCADE:
- *   Fires on every save of a character with a parseable deathYear.
- *   Closes any open professional-team stint at that year. Idempotent.
- *
- * DEPENDENCIES (MANDATORY):
+ * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
  *   - window.MutationPipeline
  *   - window.IdUtils
  *   - window.CharacterConstants
- *
- * DEPENDENCIES (LAZY):
  *   - window.TeamCore       (cascades; absent = cascade skipped)
  *   - window.AcademyCascade (deleteCharacter)
  *   - window.AcademyEnrolments (setInstructorForClass)
  *   - window.SocialCore     (createChild)
  *   - window.SocialChildFactory (createChild)
  *   - window.CharacterStrip (filler flag, hasAuthoredContent)
+ *   - window.ValidationUtils (strict parsing; local fallback)
  */
 
 (function() {
@@ -112,33 +148,165 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
-    // DEPENDENCIES
+    // DEPENDENCY ACCESS - LAZY
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries;
-    var MutationPipeline = window.MutationPipeline;
-    var IdUtils = window.IdUtils;
-    var CharacterConstants = window.CharacterConstants;
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getMutationPipeline() { return window.MutationPipeline || null; }
+    function getIdUtils() { return window.IdUtils || null; }
+    function getCharacterConstants() { return window.CharacterConstants || null; }
+    function getTeamCore() { return window.TeamCore || null; }
+    function getAcademyCascade() { return window.AcademyCascade || null; }
+    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
+    function getSocialCore() { return window.SocialCore || null; }
+    function getSocialChildFactory() { return window.SocialChildFactory || null; }
+    function getCharacterStrip() { return window.CharacterStrip || null; }
+    function getValidationUtils() { return window.ValidationUtils || null; }
+
+    // ============================================================
+    // CONSTANT ACCESSORS - LAZY
+    // ============================================================
+
+    function getStatKeys() {
+        var CC = getCharacterConstants();
+        if (CC && Array.isArray(CC.STAT_KEYS)) { return CC.STAT_KEYS; }
+        return ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    }
+
+    function getStatMin() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_MIN === 'number') { return CC.STAT_MIN; }
+        return 1;
+    }
+
+    function getStatMax() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_MAX === 'number') { return CC.STAT_MAX; }
+        return 30;
+    }
+
+    function getStatDefault() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.STAT_DEFAULT === 'number') {
+            return CC.STAT_DEFAULT;
+        }
+        return 10;
+    }
+
+    function getMaxSpecialMoves() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_SPECIAL_MOVES === 'number') {
+            return CC.MAX_SPECIAL_MOVES;
+        }
+        return 20;
+    }
+
+    function getMaxMoveNameLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_MOVE_NAME_LENGTH === 'number') {
+            return CC.MAX_MOVE_NAME_LENGTH;
+        }
+        return 100;
+    }
+
+    function getMaxMoveDescriptionLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_MOVE_DESCRIPTION_LENGTH === 'number') {
+            return CC.MAX_MOVE_DESCRIPTION_LENGTH;
+        }
+        return 500;
+    }
+
+    function getMaxWeapons() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_WEAPONS === 'number') {
+            return CC.MAX_WEAPONS;
+        }
+        return 50;
+    }
+
+    function getMaxWeaponNameLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_WEAPON_NAME_LENGTH === 'number') {
+            return CC.MAX_WEAPON_NAME_LENGTH;
+        }
+        return 100;
+    }
+
+    function getMaxWeaponNotesLength() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MAX_WEAPON_NOTES_LENGTH === 'number') {
+            return CC.MAX_WEAPON_NOTES_LENGTH;
+        }
+        return 300;
+    }
+
+    function getDefaultWeaponType() {
+        var CC = getCharacterConstants();
+        if (CC && CC.DEFAULT_WEAPON_TYPE) {
+            return CC.DEFAULT_WEAPON_TYPE;
+        }
+        return 'sharp';
+    }
+
+    function getHPMax() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.HP_MAX === 'number') { return CC.HP_MAX; }
+        return 999;
+    }
+
+    function getMPMax() {
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.MP_MAX === 'number') { return CC.MP_MAX; }
+        return 200;
+    }
+
+    function getTerminalStatuses() {
+        var CC = getCharacterConstants();
+        if (CC && Array.isArray(CC.TERMINAL_STATUSES)) {
+            return CC.TERMINAL_STATUSES;
+        }
+        return ['retired', 'support', 'instructor'];
+    }
+
+    function isTerminalStatus(status) {
+        if (!status || typeof status !== 'string') { return false; }
+        var normalised = status.toLowerCase().trim();
+        var formerIdx = normalised.indexOf(' (former)');
+        if (formerIdx !== -1) {
+            normalised = normalised.substring(0, formerIdx).trim();
+        }
+        var terminal = getTerminalStatuses();
+        return terminal.indexOf(normalised) !== -1;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacterById !== 'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getDisplayName !== 'function') {
+        if (!CQ || typeof CQ.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
-        if (!MutationPipeline ||
-            typeof MutationPipeline.performMutation !== 'function') {
+
+        var MP = getMutationPipeline();
+        if (!MP || typeof MP.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
-        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+
+        var IU = getIdUtils();
+        if (!IU || typeof IU.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
-        if (!CharacterConstants) {
+
+        var CC = getCharacterConstants();
+        if (!CC) {
             missing.push('CharacterConstants');
         }
 
@@ -153,45 +321,43 @@
     }
 
     // ============================================================
-    // CONSTANTS
+    // HELPERS - strict parsing
     // ============================================================
 
-    var STAT_KEYS = CharacterConstants.STAT_KEYS;
-    var STAT_MIN = CharacterConstants.STAT_MIN;
-    var STAT_MAX = CharacterConstants.STAT_MAX;
-    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
+    function parseYearInt(value) {
+        var VU = getValidationUtils();
+        if (VU && typeof VU.parseStrictPositiveInteger === 'function') {
+            return VU.parseStrictPositiveInteger(value);
+        }
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        if (typeof value === 'number') {
+            if (Number.isSafeInteger(value) && value >= 1) {
+                return value;
+            }
+            return null;
+        }
+        var str = String(value).trim();
+        if (str === '' || !/^\d+$/.test(str)) {
+            return null;
+        }
+        var n = parseInt(str, 10);
+        if (isNaN(n) || n < 1) { return null; }
+        return n;
+    }
 
-    var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
-    var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
-    var MAX_MOVE_DESCRIPTION_LENGTH =
-        CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
-
-    var HP_HARD_CAP = 999;
-    var MP_HARD_CAP = 999;
-
-    var MAX_WEAPONS = CharacterConstants.MAX_WEAPONS;
-    var MAX_WEAPON_NAME_LENGTH = CharacterConstants.MAX_WEAPON_NAME_LENGTH;
-    var MAX_WEAPON_NOTES_LENGTH =
-        CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
-    var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
-
-    var ROLE_STUDENT = 'student';
-    var ROLE_INSTRUCTOR = 'instructor';
-
-    // Terminal career statuses. A character whose LATEST career
-    // entry has one of these is off the active roster.
-    //
-    // `civilian` is NOT in this set. It describes a character who
-    // has not joined, not one who has left.
-    var CAREER_TRANSITION_STATUSES = {
-        'retired': true,
-        'support': true,
-        'instructor': true
-    };
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
+    function safeString(value) {
+        if (value === undefined || value === null) { return ''; }
+        if (typeof value === 'string') { return value.trim(); }
+        if (typeof value === 'number' && isFinite(value)) {
+            return String(value);
+        }
+        if (typeof value === 'boolean') {
+            return value ? 'true' : 'false';
+        }
+        return '';
+    }
 
     function getCurrentYear() {
         if (window.data && typeof window.data.currentYear === 'number') {
@@ -201,35 +367,19 @@
     }
 
     function computeCachedDeceased(data) {
-        var deathYear = parseInt(data.deathYear, 10);
-        if (isNaN(deathYear)) { return false; }
+        var deathYear = parseYearInt(data.deathYear);
+        if (deathYear === null) { return false; }
         return deathYear <= getCurrentYear();
     }
 
-    function getTeamCore() { return window.TeamCore || null; }
-    function getAcademyCascade() { return window.AcademyCascade || null; }
-    function getAcademyEnrolments() { return window.AcademyEnrolments || null; }
-    function getSocialCore() { return window.SocialCore || null; }
-    function getSocialChildFactory() { return window.SocialChildFactory || null; }
-    function getCharacterStrip() { return window.CharacterStrip || null; }
-
-    function parseYearInt(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var n = parseInt(String(value).trim(), 10);
-        if (isNaN(n) || n < 1) { return null; }
-        return n;
-    }
-
     function invalidateCharacterIndex() {
-        if (!CharacterQueries ||
-            typeof CharacterQueries.invalidateCharacterIndex !==
-            'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ ||
+            typeof CQ.invalidateCharacterIndex !== 'function') {
             return;
         }
         try {
-            CharacterQueries.invalidateCharacterIndex();
+            CQ.invalidateCharacterIndex();
         } catch (e) {
             console.warn(
                 '[CharacterCRUD] invalidateCharacterIndex threw:', e
@@ -270,14 +420,9 @@
 
     /**
      * Does the merged record contain authored content?
-     *
-     * Uses CharacterStrip.hasAuthoredContent when it is loaded.
-     * Falls back to a local check when the module is not present,
-     * so the auto-unflag still works in a degraded environment.
-     *
-     * The fallback is deliberately conservative: it is better to
-     * leave a character flagged as filler than to unflag one on a
-     * false positive.
+     * Delegates to CharacterStrip.hasAuthoredContent when it is
+     * loaded. Falls back to a local conservative check when the
+     * module is absent.
      */
     function recordHasAuthoredContent(record) {
         if (!record || typeof record !== 'object') { return false; }
@@ -295,11 +440,13 @@
         }
 
         // ---- Local fallback ----
+        var statDefault = getStatDefault();
+
         var bioFields = [
             'appearanceNotes', 'notes', 'combatNotes', 'specialty',
             'eyes', 'hair', 'skin', 'height', 'weight', 'build',
-            'attraction', 'sexuality', 'middleName', 'nickname',
-            'alias', 'deathCause'
+            'attraction', 'sexuality', 'gender', 'middleName',
+            'nickname', 'alias', 'deathCause'
         ];
         for (var b = 0; b < bioFields.length; b++) {
             var bv = record[bioFields[b]];
@@ -316,13 +463,24 @@
                 if (typeof pv === 'string' && pv.trim() !== '') {
                     return true;
                 }
+                if (typeof pv === 'number' && pv !== 0) {
+                    return true;
+                }
+                if (Array.isArray(pv) && pv.length > 0) {
+                    return true;
+                }
+                if (pv && typeof pv === 'object' &&
+                    !Array.isArray(pv) &&
+                    Object.keys(pv).length > 0) {
+                    return true;
+                }
             }
         }
 
         if (record.stats && typeof record.stats === 'object') {
             var sKeys = Object.keys(record.stats);
             for (var s = 0; s < sKeys.length; s++) {
-                if (record.stats[sKeys[s]] !== STAT_DEFAULT) {
+                if (record.stats[sKeys[s]] !== statDefault) {
                     return true;
                 }
             }
@@ -353,11 +511,11 @@
         if (record.specialMoves &&
             typeof record.specialMoves === 'object') {
             var phys = record.specialMoves.physical;
-            var mag = record.specialMoves.magical;
+            var magi = record.specialMoves.magical;
             if (Array.isArray(phys) && phys.length > 0) {
                 return true;
             }
-            if (Array.isArray(mag) && mag.length > 0) {
+            if (Array.isArray(magi) && magi.length > 0) {
                 return true;
             }
         }
@@ -371,7 +529,8 @@
 
     /**
      * Latest careerStatus entry's normalised status string.
-     * Highest startYear wins; ties break on later array index.
+     * Highest startYear wins. Missing startYear is treated as
+     * EARLIEST (sorted last), matching closeOpenCareerEntries.
      * Returns '' when the array is empty or all entries are
      * malformed.
      */
@@ -399,8 +558,8 @@
                 rawStatus = rawStatus.substring(0, formerIdx).trim();
             }
 
-            var year = parseInt(entry.startYear, 10);
-            if (isNaN(year)) { year = -Infinity; }
+            var year = parseYearInt(entry.startYear);
+            if (year === null) { year = -Infinity; }
 
             if (year > latestYear ||
                 (year === latestYear && i > latestIndex)) {
@@ -430,8 +589,8 @@
                 continue;
             }
 
-            var year = parseInt(entry.startYear, 10);
-            if (isNaN(year)) { year = -Infinity; }
+            var year = parseYearInt(entry.startYear);
+            if (year === null) { year = -Infinity; }
 
             if (year > latestYear ||
                 (year === latestYear && i > latestIndex)) {
@@ -445,8 +604,7 @@
     }
 
     function isCareerTransitionStatus(status) {
-        if (!status || typeof status !== 'string') { return false; }
-        return CAREER_TRANSITION_STATUSES[status.toLowerCase()] === true;
+        return isTerminalStatus(status);
     }
 
     /**
@@ -458,47 +616,38 @@
      *     its endYear set to the next entry's startYear, replacing
      *     any earlier endYear.
      *   - The latest-start entry is left with whatever endYear it
-     *     already had (usually blank for still-current statuses, or
-     *     set for terminal ones).
-     *   - Malformed entries are left untouched.
+     *     already had.
+     *   - Entries with a missing startYear are treated as earliest
+     *     and sorted to the front.
+     *   - Malformed entries are left untouched in place.
      *   - The array is sorted in place by startYear ascending, ties
      *     broken by original index (stable).
      *
-     * MUTATES THE PASSED ARRAY. The caller owns the array.
-     *
-     * @param {Array} entries
-     * @returns {Array} the same array, sorted and reconciled
+     * MUTATES THE PASSED ARRAY.
      */
     function closeOpenCareerEntries(entries) {
         if (!Array.isArray(entries) || entries.length === 0) {
             return entries;
         }
 
-        // Attach stable index for tie-breaking.
         var indexed = [];
         for (var i = 0; i < entries.length; i++) {
             indexed.push({ entry: entries[i], idx: i });
         }
 
         indexed.sort(function(a, b) {
-            var ay = parseInt(
-                a.entry && a.entry.startYear, 10
-            );
-            var by = parseInt(
-                b.entry && b.entry.startYear, 10
-            );
-            if (isNaN(ay)) { ay = Infinity; }
-            if (isNaN(by)) { by = Infinity; }
+            var ay = parseYearInt(a.entry && a.entry.startYear);
+            var by = parseYearInt(b.entry && b.entry.startYear);
+            if (ay === null) { ay = -Infinity; }
+            if (by === null) { by = -Infinity; }
             if (ay !== by) { return ay - by; }
             return a.idx - b.idx;
         });
 
-        // Rewrite the array in sorted order.
         for (var s = 0; s < indexed.length; s++) {
             entries[s] = indexed[s].entry;
         }
 
-        // Close everything except the last entry.
         for (var k = 0; k < entries.length - 1; k++) {
             var current = entries[k];
             var next = entries[k + 1];
@@ -506,14 +655,11 @@
             if (!current || typeof current !== 'object') { continue; }
             if (!next || typeof next !== 'object') { continue; }
 
-            var nextStart = parseInt(next.startYear, 10);
-            if (isNaN(nextStart)) { continue; }
+            var nextStart = parseYearInt(next.startYear);
+            if (nextStart === null) { continue; }
 
-            // Extend or set. If the current endYear is later than
-            // nextStart (malformed input), leave it alone rather
-            // than truncating it silently.
-            var currentEnd = parseInt(current.endYear, 10);
-            if (isNaN(currentEnd) || currentEnd < nextStart) {
+            var currentEnd = parseYearInt(current.endYear);
+            if (currentEnd === null || currentEnd < nextStart) {
                 current.endYear = String(nextStart);
             }
         }
@@ -523,15 +669,8 @@
 
     /**
      * Run the career-transition → team cascade when the transition
-     * qualifies.
-     *
-     * QUALIFIES WHEN:
-     *   - previousLatestStatus is NOT a terminal status
-     *   - new latest status IS a terminal status
-     *   - the new latest entry has a parseable startYear
-     *
-     * Returns a summary. Never throws. Missing TeamCore returns
-     * { fired: false, reason: 'no-team-core' }.
+     * qualifies. The previousLatestStatus is read from the snapshot
+     * inside mutate, so this function is called with that value.
      */
     function applyCareerTransitionCascade(
         data,
@@ -610,34 +749,39 @@
             return null;
         }
 
+        var IU = getIdUtils();
         var id = (typeof weapon.id === 'string' && weapon.id)
             ? weapon.id
-            : (IdUtils && typeof IdUtils.generateId === 'function'
-                ? IdUtils.generateId('weapon')
+            : (IU && typeof IU.generateId === 'function'
+                ? IU.generateId('weapon')
                 : 'weapon_' + Date.now() + '_' +
                     Math.random().toString(36).slice(2, 8));
 
+        var maxName = getMaxWeaponNameLength();
+        var maxNotes = getMaxWeaponNotesLength();
+
         var name = typeof weapon.name === 'string'
             ? weapon.name.trim() : '';
-        if (name.length > MAX_WEAPON_NAME_LENGTH) {
-            name = name.slice(0, MAX_WEAPON_NAME_LENGTH);
+        if (name.length > maxName) {
+            name = name.slice(0, maxName);
         }
 
         var type = typeof weapon.type === 'string' && weapon.type
             ? weapon.type
-            : DEFAULT_WEAPON_TYPE;
+            : getDefaultWeaponType();
 
-        if (CharacterConstants &&
-            typeof CharacterConstants.isValidWeaponType === 'function') {
-            if (!CharacterConstants.isValidWeaponType(type)) {
-                type = DEFAULT_WEAPON_TYPE;
+        var CC = getCharacterConstants();
+        if (CC &&
+            typeof CC.isValidWeaponType === 'function') {
+            if (!CC.isValidWeaponType(type)) {
+                type = getDefaultWeaponType();
             }
         }
 
         var notes = typeof weapon.notes === 'string'
             ? weapon.notes.trim() : '';
-        if (notes.length > MAX_WEAPON_NOTES_LENGTH) {
-            notes = notes.slice(0, MAX_WEAPON_NOTES_LENGTH);
+        if (notes.length > maxNotes) {
+            notes = notes.slice(0, maxNotes);
         }
 
         return { id: id, name: name, type: type, notes: notes };
@@ -645,6 +789,9 @@
 
     function normaliseWeapons(weapons) {
         if (!Array.isArray(weapons)) { return []; }
+
+        var maxWeapons = getMaxWeapons();
+        var IU = getIdUtils();
 
         var result = [];
         var seenIds = Object.create(null);
@@ -655,15 +802,15 @@
             if (!w.name) { continue; }
 
             if (seenIds[w.id]) {
-                w.id = (IdUtils && typeof IdUtils.generateId === 'function')
-                    ? IdUtils.generateId('weapon')
+                w.id = (IU && typeof IU.generateId === 'function')
+                    ? IU.generateId('weapon')
                     : 'weapon_' + Date.now() + '_' +
                         Math.random().toString(36).slice(2, 8);
             }
             seenIds[w.id] = true;
 
             result.push(w);
-            if (result.length >= MAX_WEAPONS) { break; }
+            if (result.length >= maxWeapons) { break; }
         }
 
         return result;
@@ -674,13 +821,13 @@
     // ============================================================
 
     function validateCharacter(charData) {
-        if (!charData.firstName || charData.firstName.trim() === '') {
+        if (!charData.firstName || String(charData.firstName).trim() === '') {
             return {
                 valid: false,
                 message: 'First name is required.'
             };
         }
-        if (!charData.lastName || charData.lastName.trim() === '') {
+        if (!charData.lastName || String(charData.lastName).trim() === '') {
             return {
                 valid: false,
                 message: 'Last name is required.'
@@ -692,11 +839,11 @@
             String(charData.deathYear).trim() !== '';
 
         if (hasDeathYear) {
-            var year = parseInt(charData.deathYear, 10);
-            if (isNaN(year) || year < 1) {
+            var year = parseYearInt(charData.deathYear);
+            if (year === null) {
                 return {
                     valid: false,
-                    message: 'Death Year must be a positive number.'
+                    message: 'Death Year must be a positive integer.'
                 };
             }
         }
@@ -725,15 +872,18 @@
             }
         }
 
+        var hpMax = getHPMax();
+        var mpMax = getMPMax();
+
         if (charData.hp !== undefined &&
             charData.hp !== null &&
             charData.hp !== '') {
             var hp = Number(charData.hp);
-            if (isNaN(hp) || hp < 0 || hp > HP_HARD_CAP) {
+            if (isNaN(hp) || hp < 0 || hp > hpMax) {
                 return {
                     valid: false,
                     message: 'HP must be between 0 and ' +
-                        HP_HARD_CAP + '.'
+                        hpMax + '.'
                 };
             }
         }
@@ -741,14 +891,18 @@
             charData.mp !== null &&
             charData.mp !== '') {
             var mp = Number(charData.mp);
-            if (isNaN(mp) || mp < 0 || mp > MP_HARD_CAP) {
+            if (isNaN(mp) || mp < 0 || mp > mpMax) {
                 return {
                     valid: false,
                     message: 'MP must be between 0 and ' +
-                        MP_HARD_CAP + '.'
+                        mpMax + '.'
                 };
             }
         }
+
+        var maxWeapons = getMaxWeapons();
+        var maxWeaponName = getMaxWeaponNameLength();
+        var maxWeaponNotes = getMaxWeaponNotesLength();
 
         if (charData.weapons !== undefined) {
             if (!Array.isArray(charData.weapons)) {
@@ -757,11 +911,11 @@
                     message: 'Weapons must be an array.'
                 };
             }
-            if (charData.weapons.length > MAX_WEAPONS) {
+            if (charData.weapons.length > maxWeapons) {
                 return {
                     valid: false,
                     message: 'Too many weapons. Maximum is ' +
-                        MAX_WEAPONS + '.'
+                        maxWeapons + '.'
                 };
             }
             for (var i = 0; i < charData.weapons.length; i++) {
@@ -775,25 +929,24 @@
                             ' is invalid.'
                     };
                 }
-                if (w.name &&
-                    w.name.length > MAX_WEAPON_NAME_LENGTH) {
+                if (w.name && String(w.name).length > maxWeaponName) {
                     return {
                         valid: false,
                         message: 'Weapon name exceeds maximum length.'
                     };
                 }
-                if (w.notes &&
-                    w.notes.length > MAX_WEAPON_NOTES_LENGTH) {
+                if (w.notes && String(w.notes).length > maxWeaponNotes) {
                     return {
                         valid: false,
                         message: 'Weapon notes exceed maximum length.'
                     };
                 }
+
+                var CC = getCharacterConstants();
                 if (w.type &&
-                    CharacterConstants &&
-                    typeof CharacterConstants.isValidWeaponType ===
-                    'function') {
-                    if (!CharacterConstants.isValidWeaponType(w.type)) {
+                    CC &&
+                    typeof CC.isValidWeaponType === 'function') {
+                    if (!CC.isValidWeaponType(w.type)) {
                         return {
                             valid: false,
                             message: 'Weapon type "' + w.type +
@@ -804,6 +957,10 @@
             }
         }
 
+        var maxSpecialMoves = getMaxSpecialMoves();
+        var maxMoveName = getMaxMoveNameLength();
+        var maxMoveDesc = getMaxMoveDescriptionLength();
+
         var physicalMoves = charData.specialMoves &&
             charData.specialMoves.physical
             ? charData.specialMoves.physical : [];
@@ -811,13 +968,13 @@
             charData.specialMoves.magical
             ? charData.specialMoves.magical : [];
 
-        if (physicalMoves.length > MAX_SPECIAL_MOVES) {
+        if (physicalMoves.length > maxSpecialMoves) {
             return {
                 valid: false,
                 message: 'Too many physical special moves.'
             };
         }
-        if (magicalMoves.length > MAX_SPECIAL_MOVES) {
+        if (magicalMoves.length > maxSpecialMoves) {
             return {
                 valid: false,
                 message: 'Too many magical special moves.'
@@ -828,15 +985,14 @@
         for (var j = 0; j < allMoves.length; j++) {
             var move = allMoves[j];
             if (move.name &&
-                move.name.length > MAX_MOVE_NAME_LENGTH) {
+                String(move.name).length > maxMoveName) {
                 return {
                     valid: false,
                     message: 'Move name exceeds maximum length.'
                 };
             }
             if (move.description &&
-                move.description.length >
-                MAX_MOVE_DESCRIPTION_LENGTH) {
+                String(move.description).length > maxMoveDesc) {
                 return {
                     valid: false,
                     message: 'Move description exceeds maximum length.'
@@ -844,19 +1000,22 @@
             }
         }
 
+        var statKeys = getStatKeys();
+        var statMin = getStatMin();
+        var statMax = getStatMax();
         var stats = charData.stats || {};
-        for (var k = 0; k < STAT_KEYS.length; k++) {
-            var key = STAT_KEYS[k];
+        for (var k = 0; k < statKeys.length; k++) {
+            var key = statKeys[k];
             var val = stats[key];
             if (val === undefined || val === null) { continue; }
             if (typeof val !== 'number' ||
                 isNaN(val) ||
-                val < STAT_MIN ||
-                val > STAT_MAX) {
+                val < statMin ||
+                val > statMax) {
                 return {
                     valid: false,
                     message: 'Stat "' + key + '" must be between ' +
-                        STAT_MIN + ' and ' + STAT_MAX + '.'
+                        statMin + ' and ' + statMax + '.'
                 };
             }
         }
@@ -867,105 +1026,123 @@
     // ============================================================
     // NORMALISATION
     // ============================================================
+    //
+    // PARTIAL DTO RULE: a field is included in the output object
+    // only when it is present (not undefined) in the input. Fields
+    // absent from the input are NOT defaulted here; the caller's
+    // merge in updateExistingCharacter preserves the stored value.
+    //
+    // The only fields that are unconditionally emitted are:
+    //   - firstName, lastName (required by validation)
+    //   - deceased (recomputed cache)
+    //   - updatedAt (stamped at save time, applied in mutate)
 
     function normaliseCharacterData(charData) {
+        if (!charData || typeof charData !== 'object') {
+            throw new Error(
+                'normaliseCharacterData: input must be an object.'
+            );
+        }
+
         var data = {};
 
-        data.firstName = charData.firstName
-            ? charData.firstName.trim() : '';
-        data.lastName = charData.lastName
-            ? charData.lastName.trim() : '';
-        data.middleName = charData.middleName
-            ? charData.middleName.trim() : '';
-        data.nickname = charData.nickname
-            ? charData.nickname.trim() : '';
-        data.alias = charData.alias
-            ? charData.alias.trim() : '';
+        // ---- Always-included required fields ----
+        data.firstName = safeString(charData.firstName);
+        data.lastName = safeString(charData.lastName);
 
-        data.previousNames = Array.isArray(charData.previousNames)
-            ? charData.previousNames
-                .map(function(n) { return String(n || '').trim(); })
-                .filter(function(n) { return n !== ''; })
-            : [];
+        // ---- Optional string fields: only when present ----
+        var optionalStrings = [
+            'middleName', 'nickname', 'alias',
+            'gender', 'birthYear',
+            'eyes', 'hair', 'skin', 'height', 'weight', 'build',
+            'appearanceNotes', 'specialty',
+            'attraction', 'sexuality',
+            'notes', 'combatNotes',
+            'deathYear', 'deathCause'
+        ];
 
-        var incomingDp = charData.displayParts &&
-            typeof charData.displayParts === 'object'
-            ? charData.displayParts
-            : null;
+        for (var i = 0; i < optionalStrings.length; i++) {
+            var key = optionalStrings[i];
+            if (charData[key] !== undefined) {
+                data[key] = safeString(charData[key]);
+            }
+        }
 
-        data.displayParts = {
-            first:    incomingDp ? incomingDp.first    !== false : true,
-            middle:   incomingDp ? incomingDp.middle   !== false : true,
-            last:     incomingDp ? incomingDp.last     !== false : true,
-            nickname: incomingDp ? incomingDp.nickname === true  : false,
-            alias:    incomingDp ? incomingDp.alias    === true  : false
-        };
+        // ---- previousNames: only when present ----
+        if (charData.previousNames !== undefined) {
+            if (Array.isArray(charData.previousNames)) {
+                data.previousNames = charData.previousNames
+                    .map(function(n) { return safeString(n); })
+                    .filter(function(n) { return n !== ''; });
+            } else {
+                data.previousNames = [];
+            }
+        }
+
+        // ---- displayParts: only when present ----
+        if (charData.displayParts !== undefined) {
+            var incomingDp = charData.displayParts &&
+                typeof charData.displayParts === 'object'
+                ? charData.displayParts
+                : null;
+
+            data.displayParts = {
+                first:    incomingDp ? incomingDp.first    !== false : true,
+                middle:   incomingDp ? incomingDp.middle   !== false : true,
+                last:     incomingDp ? incomingDp.last     !== false : true,
+                nickname: incomingDp ? incomingDp.nickname === true  : false,
+                alias:    incomingDp ? incomingDp.alias    === true  : false
+            };
+        }
 
         if (charData.nameFormat !== undefined) {
             data.nameFormat = charData.nameFormat || 'firstlast';
         }
 
-        data.gender = charData.gender ? charData.gender.trim() : '';
-        data.birthYear = charData.birthYear
-            ? String(charData.birthYear).trim() : '';
-        data.eyes = charData.eyes ? charData.eyes.trim() : '';
-        data.hair = charData.hair ? charData.hair.trim() : '';
-        data.skin = charData.skin ? charData.skin.trim() : '';
-        data.height = charData.height ? charData.height.trim() : '';
-        data.weight = charData.weight ? charData.weight.trim() : '';
-        data.build = charData.build ? charData.build.trim() : '';
-        data.appearanceNotes = charData.appearanceNotes
-            ? charData.appearanceNotes.trim() : '';
-
-        data.specialty = charData.specialty
-            ? charData.specialty.trim() : '';
-        data.attraction = charData.attraction
-            ? charData.attraction.trim() : '';
-        data.sexuality = charData.sexuality
-            ? charData.sexuality.trim() : '';
-        data.notes = charData.notes ? charData.notes.trim() : '';
-        data.combatNotes = charData.combatNotes
-            ? charData.combatNotes.trim() : '';
-
         if (charData.graduatingClassId !== undefined) {
-            data.graduatingClassId =
-                charData.graduatingClassId || null;
+            data.graduatingClassId = charData.graduatingClassId || null;
         }
         if (charData.graduatingClassInstructor !== undefined) {
             data.graduatingClassInstructor =
                 charData.graduatingClassInstructor === true;
         }
 
-        data.isFiller = charData.isFiller === true;
-
-        // NOTE: disciplineIds, classIds, parentIds, mode are NOT
-        // normalised here. They are owned by dedicated mutations.
-
-        data.stats = {};
-        for (var i = 0; i < STAT_KEYS.length; i++) {
-            var key = STAT_KEYS[i];
-            var val = charData.stats &&
-                charData.stats[key] !== undefined
-                ? charData.stats[key]
-                : STAT_DEFAULT;
-            var numeric = Number(val);
-            if (isNaN(numeric)) { numeric = STAT_DEFAULT; }
-            data.stats[key] = Math.max(
-                STAT_MIN,
-                Math.min(STAT_MAX, Math.round(numeric))
-            );
+        if (charData.isFiller !== undefined) {
+            data.isFiller = charData.isFiller === true;
         }
 
+        // ---- stats: only when present ----
+        if (charData.stats !== undefined) {
+            var statKeys = getStatKeys();
+            var statMin = getStatMin();
+            var statMax = getStatMax();
+            var statDefault = getStatDefault();
+
+            data.stats = {};
+            for (var s = 0; s < statKeys.length; s++) {
+                var skey = statKeys[s];
+                var val = charData.stats &&
+                    charData.stats[skey] !== undefined
+                    ? charData.stats[skey]
+                    : statDefault;
+                var numeric = Number(val);
+                if (isNaN(numeric)) { numeric = statDefault; }
+                data.stats[skey] = Math.max(
+                    statMin,
+                    Math.min(statMax, Math.round(numeric))
+                );
+            }
+        }
+
+        // ---- magic: only when present ----
         if (charData.magic !== undefined) {
             data.magic = {};
-            var MagicConstants = window.MagicConstants;
-            var magicKeys = MagicConstants &&
-                MagicConstants.getTypeKeys
-                ? MagicConstants.getTypeKeys()
+            var MC = window.MagicConstants;
+            var magicKeys = MC && typeof MC.getTypeKeys === 'function'
+                ? MC.getTypeKeys()
                 : Object.keys(charData.magic || {});
-            var magicMax = MagicConstants &&
-                typeof MagicConstants.MAGIC_MAX === 'number'
-                ? MagicConstants.MAGIC_MAX
+            var magicMax = MC && typeof MC.MAGIC_MAX === 'number'
+                ? MC.MAGIC_MAX
                 : 10;
             for (var m = 0; m < magicKeys.length; m++) {
                 var mKey = magicKeys[m];
@@ -981,30 +1158,34 @@
             }
         }
 
-        var rawHP = charData.hp !== undefined &&
-            charData.hp !== null &&
-            charData.hp !== ''
-            ? Number(charData.hp)
-            : 0;
-        if (isNaN(rawHP) || rawHP < 0) { rawHP = 0; }
-        if (rawHP > HP_HARD_CAP) { rawHP = HP_HARD_CAP; }
-        data.hp = Math.round(rawHP);
+        // ---- hp / mp: only when present ----
+        var hpMax = getHPMax();
+        var mpMax = getMPMax();
 
-        var rawMP = charData.mp !== undefined &&
-            charData.mp !== null &&
-            charData.mp !== ''
-            ? Number(charData.mp)
-            : 0;
-        if (isNaN(rawMP) || rawMP < 0) { rawMP = 0; }
-        if (rawMP > MP_HARD_CAP) { rawMP = MP_HARD_CAP; }
-        data.mp = Math.round(rawMP);
-
-        if (charData.weapons !== undefined) {
-            data.weapons = normaliseWeapons(charData.weapons);
-        } else {
-            data.weapons = [];
+        if (charData.hp !== undefined) {
+            var rawHP = charData.hp !== null && charData.hp !== ''
+                ? Number(charData.hp)
+                : 0;
+            if (isNaN(rawHP) || rawHP < 0) { rawHP = 0; }
+            if (rawHP > hpMax) { rawHP = hpMax; }
+            data.hp = Math.round(rawHP);
         }
 
+        if (charData.mp !== undefined) {
+            var rawMP = charData.mp !== null && charData.mp !== ''
+                ? Number(charData.mp)
+                : 0;
+            if (isNaN(rawMP) || rawMP < 0) { rawMP = 0; }
+            if (rawMP > mpMax) { rawMP = mpMax; }
+            data.mp = Math.round(rawMP);
+        }
+
+        // ---- weapons: only when present ----
+        if (charData.weapons !== undefined) {
+            data.weapons = normaliseWeapons(charData.weapons);
+        }
+
+        // ---- specialMoves: only when present ----
         if (charData.specialMoves !== undefined) {
             data.specialMoves = {
                 physical: Array.isArray(
@@ -1022,47 +1203,39 @@
             };
         }
 
+        // ---- careerStatus: only when present ----
         if (charData.careerStatus !== undefined) {
             data.careerStatus = Array.isArray(charData.careerStatus)
                 ? charData.careerStatus.slice()
                 : [];
         }
 
+        // ---- personality: only when present ----
         if (charData.personality !== undefined) {
             data.personality = charData.personality
                 ? Object.assign({}, charData.personality)
                 : {};
         }
 
-        data.deathYear = charData.deathYear
-            ? String(charData.deathYear).trim() : '';
-        data.deathCause = charData.deathCause
-            ? charData.deathCause.trim() : '';
-
+        // ---- deathWeek / deathAge: only when present ----
         if (charData.deathWeek !== undefined) {
-            data.deathWeek = charData.deathWeek
-                ? String(charData.deathWeek).trim() : '';
+            data.deathWeek = safeString(charData.deathWeek);
         }
 
         if (charData.deathAge !== undefined &&
             charData.deathAge !== null &&
             String(charData.deathAge).trim() !== '') {
-            data.deathAge = String(charData.deathAge).trim();
-        } else if (data.deathYear && data.birthYear) {
-            var birthY = parseInt(data.birthYear, 10);
-            var deathY = parseInt(data.deathYear, 10);
-            if (!isNaN(birthY) &&
-                !isNaN(deathY) &&
-                deathY >= birthY) {
-                data.deathAge = String(deathY - birthY);
-            } else {
-                data.deathAge = '';
-            }
-        } else {
+            data.deathAge = safeString(charData.deathAge);
+        } else if (charData.deathAge !== undefined) {
             data.deathAge = '';
         }
 
-        data.deceased = computeCachedDeceased(data);
+        // ---- Always-included cache: deceased ----
+        var lookupRecord = charData;
+        if (data.deathYear !== undefined) {
+            lookupRecord = data;
+        }
+        data.deceased = computeCachedDeceased(lookupRecord);
 
         return data;
     }
@@ -1086,9 +1259,18 @@
             });
         }
 
-        var normalised = normaliseCharacterData(formData);
-        var validation = validateCharacter(normalised);
+        var normalised;
+        try {
+            normalised = normaliseCharacterData(formData);
+        } catch (e) {
+            return Promise.resolve({
+                success: false,
+                message: 'Failed to normalise character data: ' +
+                    (e && e.message ? e.message : String(e))
+            });
+        }
 
+        var validation = validateCharacter(normalised);
         if (!validation.valid) {
             return Promise.resolve({
                 success: false,
@@ -1101,15 +1283,11 @@
             editId !== undefined &&
             editId !== '';
 
-        var existingChar = null;
+        var CharacterQueries = getCharacterQueries();
         var name = normalised.firstName + ' ' + normalised.lastName;
 
-        // Captured BEFORE the mutation. Used to detect a career
-        // transition inside mutate().
-        var previousLatestStatus = '';
-
         if (isEditing) {
-            existingChar = CharacterQueries.getCharacterById(editId);
+            var existingChar = CharacterQueries.getCharacterById(editId);
             if (!existingChar) {
                 return Promise.resolve({
                     success: false,
@@ -1117,14 +1295,9 @@
                 });
             }
             name = CharacterQueries.getDisplayName(existingChar);
-            previousLatestStatus = getLatestCareerStatus(
-                existingChar.careerStatus
-            );
         }
 
-        var isFiller = normalised.isFiller === true;
-
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 var reValidation = validateCharacter(normalised);
                 if (!reValidation.valid) {
@@ -1150,12 +1323,10 @@
                 var result;
                 if (isEditing) {
                     result = updateExistingCharacter(
-                        existingChar, normalised, data, isFiller
+                        editId, normalised, data
                     );
                 } else {
-                    result = createNewCharacter(
-                        normalised, data, isFiller
-                    );
+                    result = createNewCharacter(normalised, data);
                 }
                 if (!result.success) {
                     throw new Error(
@@ -1163,8 +1334,12 @@
                     );
                 }
 
-                // Career-transition cascade runs AFTER the character
-                // is written, against the same snapshot.
+                // The previous-latest-status is read from the
+                // snapshot, not from a pre-queue capture. This is
+                // what keeps the cascade correct under queued
+                // mutations.
+                var previousLatestStatus = result.previousLatestStatus || '';
+
                 var cascade = applyCareerTransitionCascade(
                     data,
                     result.id,
@@ -1213,14 +1388,9 @@
     // UPDATE / CREATE
     // ============================================================
 
-    function updateExistingCharacter(
-        existing,
-        normalised,
-        data,
-        isFiller
-    ) {
+    function updateExistingCharacter(editId, normalised, data) {
         var index = data.characters.findIndex(function(c) {
-            return c && String(c.id) === String(existing.id);
+            return c && String(c.id) === String(editId);
         });
 
         if (index === -1) {
@@ -1231,6 +1401,9 @@
         }
 
         var current = data.characters[index];
+        var previousLatestStatus = getLatestCareerStatus(
+            current.careerStatus
+        );
 
         var preserved = {
             id: current.id,
@@ -1253,51 +1426,35 @@
             preserved.mode = current.mode;
         }
 
+        // Merge: current as base, normalised over it (only the
+        // fields the DTO actually provided), preserved over both.
         var merged = Object.assign({}, current, normalised, preserved);
 
-        // ---- Career-status reconciliation. ----
-        //
-        // The form lets the user edit careerStatus rows freely.
-        // Before persisting, close any gaps the user introduced:
-        // each entry's endYear is rewritten to the next entry's
-        // startYear. The latest entry keeps its own endYear.
+        // ---- Career-status reconciliation ----
         if (Array.isArray(merged.careerStatus)) {
             merged.careerStatus = merged.careerStatus.slice();
             closeOpenCareerEntries(merged.careerStatus);
         }
 
-        // ---- Auto-unflag filler on authored content. ----
-        //
-        // If the record was previously marked filler and the
-        // merged state now contains authored content, clear the
-        // flag. Authoring content is a stronger statement of
-        // intent than the checkbox: the user typed something real,
-        // so the character is not a filler placeholder any more.
-        //
-        // Explicit isFiller === false from the form already clears
-        // the flag further down (via normalised.isFiller === false
-        // being merged in before this check runs). This branch
-        // handles the case where the checkbox is still ticked (or
-        // the field is absent from the DTO) but the user has
-        // edited a field.
-        //
-        // The check runs on the MERGED record, so it sees both the
-        // stored state and the incoming form data.
-        if (merged.isFiller === true &&
-            recordHasAuthoredContent(merged)) {
+        // ---- Auto-unflag filler on authored content ----
+        var isFiller = merged.isFiller === true;
+
+        if (isFiller && recordHasAuthoredContent(merged)) {
             merged.isFiller = false;
             isFiller = false;
         }
 
         var finalRecord = applyFillerStripIfSet(merged, isFiller);
 
+        // Apply the final record's keys back onto the live object
+        // so any external references to `current` remain valid.
         var existingKeys = Object.keys(current);
         for (var ek = 0; ek < existingKeys.length; ek++) {
-            var key = existingKeys[ek];
+            var ekey = existingKeys[ek];
             if (!Object.prototype.hasOwnProperty.call(
-                finalRecord, key
+                finalRecord, ekey
             )) {
-                delete current[key];
+                delete current[ekey];
             }
         }
 
@@ -1305,6 +1462,8 @@
         for (var mk = 0; mk < mergedKeys.length; mk++) {
             current[mergedKeys[mk]] = finalRecord[mergedKeys[mk]];
         }
+
+        current.updatedAt = new Date().toISOString();
 
         invalidateCharacterIndex();
 
@@ -1316,41 +1475,40 @@
         return {
             success: true,
             id: current.id,
-            character: current
+            character: current,
+            previousLatestStatus: previousLatestStatus
         };
     }
 
-    function createNewCharacter(normalised, data, isFiller) {
-        var id = IdUtils.generateId('char');
+    function createNewCharacter(normalised, data) {
+        var IU = getIdUtils();
+        var id = IU.generateId('char');
 
         var newChar = Object.assign({}, normalised, {
             id: id,
             classIds: [],
             parentIds: [],
-            hp: normalised.hp || 0,
-            mp: normalised.mp || 0,
+            hp: typeof normalised.hp === 'number' ? normalised.hp : 0,
+            mp: typeof normalised.mp === 'number' ? normalised.mp : 0,
             weapons: Array.isArray(normalised.weapons)
                 ? normalised.weapons : [],
             combatNotes: normalised.combatNotes || '',
             eliminations: [],
             eliminatedWeeks: [],
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
         });
 
-        // ---- Career-status reconciliation. ----
+        // ---- Career-status reconciliation ----
         if (Array.isArray(newChar.careerStatus)) {
             newChar.careerStatus = newChar.careerStatus.slice();
             closeOpenCareerEntries(newChar.careerStatus);
         }
 
-        // ---- Auto-unflag filler on authored content. ----
-        //
-        // Same rule as the update path. On create, a "filler"
-        // record that already carries authored content is a
-        // contradiction; the flag wins only when the record is
-        // otherwise empty.
-        if (newChar.isFiller === true &&
-            recordHasAuthoredContent(newChar)) {
+        // ---- Auto-unflag filler on authored content ----
+        var isFiller = newChar.isFiller === true;
+
+        if (isFiller && recordHasAuthoredContent(newChar)) {
             newChar.isFiller = false;
             isFiller = false;
         }
@@ -1365,7 +1523,12 @@
             runDeathCascade(data, id, nextDeathYear);
         }
 
-        return { success: true, id: id, character: newChar };
+        return {
+            success: true,
+            id: id,
+            character: newChar,
+            previousLatestStatus: ''
+        };
     }
 
     // ============================================================
@@ -1407,13 +1570,11 @@
         if (idList.length === 0) {
             return Promise.resolve({
                 success: true,
-                data: { updated: 0, stripped: 0 }
+                data: { updated: 0, stripped: 0, skipped: 0 }
             });
         }
 
-        var Strip = getCharacterStrip();
-
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function(data) {
                 if (!data || !Array.isArray(data.characters)) {
                     return {
@@ -1429,8 +1590,12 @@
                     throw new Error('Character store is malformed.');
                 }
 
+                var Strip = getCharacterStrip();
+                var now = new Date().toISOString();
+
                 var updated = 0;
                 var stripped = 0;
+                var skipped = 0;
 
                 for (var i = 0; i < idList.length; i++) {
                     var id = idList[i];
@@ -1444,8 +1609,17 @@
                     }
                     if (!char) { continue; }
 
+                    // When flagging as filler, enforce the same
+                    // authored-content check that save runs. A
+                    // character with authored content is skipped.
+                    if (value === true &&
+                        recordHasAuthoredContent(char)) {
+                        skipped++;
+                        continue;
+                    }
+
                     char.isFiller = value;
-                    char.updatedAt = new Date().toISOString();
+                    char.updatedAt = now;
                     updated++;
 
                     if (value === true &&
@@ -1475,25 +1649,39 @@
 
                 invalidateCharacterIndex();
 
-                return { updated: updated, stripped: stripped };
+                return {
+                    updated: updated,
+                    stripped: stripped,
+                    skipped: skipped
+                };
             },
 
             logMessage: function(result) {
                 var verb = value ? 'Flagged' : 'Unflagged';
-                return verb + ' ' + result.updated +
+                var msg = verb + ' ' + result.updated +
                     ' character' + (result.updated === 1 ? '' : 's') +
-                    ' as filler' +
-                    (value && result.stripped > 0
-                        ? ' (' + result.stripped + ' stripped)'
-                        : '') + '.';
+                    ' as filler';
+                if (value && result.stripped > 0) {
+                    msg += ' (' + result.stripped + ' stripped)';
+                }
+                if (value && result.skipped > 0) {
+                    msg += ' (' + result.skipped +
+                        ' skipped: authored content)';
+                }
+                return msg + '.';
             },
 
             successMessage: function(result) {
                 if (value) {
-                    return 'Flagged ' + result.updated +
+                    var msg = 'Flagged ' + result.updated +
                         ' character' +
                         (result.updated === 1 ? '' : 's') +
                         ' as filler.';
+                    if (result.skipped > 0) {
+                        msg += ' ' + result.skipped +
+                            ' skipped (authored content).';
+                    }
+                    return msg;
                 }
                 return 'Cleared filler flag on ' + result.updated +
                     ' character' +
@@ -1532,6 +1720,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var parentA = CharacterQueries.getCharacterById(parentAId);
         var parentB = CharacterQueries.getCharacterById(parentBId);
         if (!parentA || !parentB) {
@@ -1562,7 +1751,16 @@
             });
         }
 
-        var normalised = normaliseCharacterData(childDto);
+        var normalised;
+        try {
+            normalised = normaliseCharacterData(childDto);
+        } catch (e) {
+            return Promise.resolve({
+                success: false,
+                message: 'Failed to normalise child: ' + e.message
+            });
+        }
+
         var validation = validateCharacter(normalised);
         if (!validation.valid) {
             return Promise.resolve({
@@ -1577,24 +1775,26 @@
         var parentAName = CharacterQueries.getDisplayName(parentA);
         var parentBName = CharacterQueries.getDisplayName(parentB);
 
-        var childId = IdUtils.generateId('char');
+        var IU = getIdUtils();
+        var childId = IU.generateId('char');
         var now = new Date().toISOString();
 
         var childRecord = Object.assign({}, normalised, {
             id: childId,
             classIds: [],
             parentIds: [parentAIdStr, parentBIdStr],
-            hp: normalised.hp || 0,
-            mp: normalised.mp || 0,
+            hp: typeof normalised.hp === 'number' ? normalised.hp : 0,
+            mp: typeof normalised.mp === 'number' ? normalised.mp : 0,
             weapons: Array.isArray(normalised.weapons)
                 ? normalised.weapons : [],
             combatNotes: normalised.combatNotes || '',
             eliminations: [],
             eliminatedWeeks: [],
-            createdAt: now
+            createdAt: now,
+            updatedAt: now
         });
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 var a = CharacterQueries.getCharacterById(
                     parentAIdStr
@@ -1616,27 +1816,62 @@
                     throw new Error('Character store is malformed.');
                 }
 
+                // Re-validate parents inside the snapshot.
+                var snapA = null;
+                var snapB = null;
+                for (var ai = 0; ai < data.characters.length; ai++) {
+                    var ac = data.characters[ai];
+                    if (ac && String(ac.id) === parentAIdStr) {
+                        snapA = ac;
+                    } else if (ac && String(ac.id) === parentBIdStr) {
+                        snapB = ac;
+                    }
+                    if (snapA && snapB) { break; }
+                }
+                if (!snapA || !snapB) {
+                    throw new Error(
+                        'One or both parents no longer exist.'
+                    );
+                }
+
                 data.characters.push(childRecord);
                 invalidateCharacterIndex();
 
+                var socialFailure = null;
                 var SocialCore = getSocialCore();
                 if (SocialCore &&
                     typeof SocialCore.addRelationshipsInTransaction ===
                     'function') {
-                    var relationships = buildChildRelationships(
-                        data, childRecord, parentA, parentB
-                    );
-                    SocialCore.addRelationshipsInTransaction(
-                        data, relationships
-                    );
+                    try {
+                        var relationships = buildChildRelationships(
+                            data, childRecord, snapA, snapB
+                        );
+                        SocialCore.addRelationshipsInTransaction(
+                            data, relationships
+                        );
+                    } catch (e) {
+                        socialFailure =
+                            'Social links could not be created: ' +
+                            (e && e.message ? e.message : 'unknown error');
+                        console.warn(
+                            '[CharacterCRUD] createChild social link ' +
+                            'failure:', e
+                        );
+                    }
                 } else {
+                    socialFailure =
+                        'SocialCore unavailable; child created ' +
+                        'without social links.';
                     console.warn(
-                        '[CharacterCRUD] SocialCore unavailable; ' +
-                        'child created without social links.'
+                        '[CharacterCRUD] ' + socialFailure
                     );
                 }
 
-                return { child: childRecord, childId: childId };
+                return {
+                    child: childRecord,
+                    childId: childId,
+                    socialFailure: socialFailure
+                };
             },
 
             logMessage: function() {
@@ -1646,7 +1881,13 @@
                     childRecord.lastName;
             },
 
-            successMessage: 'Child created successfully!',
+            successMessage: function(result) {
+                if (result && result.socialFailure) {
+                    return 'Child created. Warning: ' +
+                        result.socialFailure;
+                }
+                return 'Child created successfully!';
+            },
             failureMessage: 'Failed to create child.'
         });
     }
@@ -1682,11 +1923,16 @@
             return 'Child';
         }
 
-        function siblingTermFor(char) {
+        function siblingTermFor(char, sharedParents) {
             var sex = normalisedSexOf(char);
-            if (sex === 'female') { return 'Sister'; }
-            if (sex === 'male') { return 'Brother'; }
-            return 'Sibling';
+            var half = sharedParents < 2;
+            if (sex === 'female') {
+                return half ? 'Half-Sister' : 'Sister';
+            }
+            if (sex === 'male') {
+                return half ? 'Half-Brother' : 'Brother';
+            }
+            return half ? 'Half-Sibling' : 'Sibling';
         }
 
         // Parent ↔ child (both directions, both parents).
@@ -1731,7 +1977,8 @@
             notes: ''
         });
 
-        // Siblings.
+        // Siblings: anyone sharing at least one parent with the
+        // child. A sibling sharing only one parent is a half-sibling.
         var parentIdSet = Object.create(null);
         parentIdSet[String(parentA.id)] = true;
         parentIdSet[String(parentB.id)] = true;
@@ -1742,23 +1989,28 @@
             if (!c || !c.id) { continue; }
             if (String(c.id) === String(childRecord.id)) { continue; }
             if (!Array.isArray(c.parentIds)) { continue; }
+
+            var shared = 0;
             for (var j = 0; j < c.parentIds.length; j++) {
                 if (parentIdSet[String(c.parentIds[j])]) {
-                    siblings.push(c);
-                    break;
+                    shared++;
                 }
+            }
+            if (shared > 0) {
+                siblings.push({ character: c, sharedParents: shared });
             }
         }
 
         for (var s = 0; s < siblings.length; s++) {
-            var sib = siblings[s];
+            var sib = siblings[s].character;
+            var sharedCount = siblings[s].sharedParents;
 
             list.push({
                 character1: String(childRecord.id),
                 character2: String(sib.id),
                 typeId: 'familial',
-                clarification1: siblingTermFor(sib),
-                clarification2: siblingTermFor(childRecord),
+                clarification1: siblingTermFor(sib, sharedCount),
+                clarification2: siblingTermFor(childRecord, sharedCount),
                 startYear: '',
                 endYear: '',
                 notes: ''
@@ -1767,8 +2019,8 @@
                 character1: String(sib.id),
                 character2: String(childRecord.id),
                 typeId: 'familial',
-                clarification1: siblingTermFor(childRecord),
-                clarification2: siblingTermFor(sib),
+                clarification1: siblingTermFor(childRecord, sharedCount),
+                clarification2: siblingTermFor(sib, sharedCount),
                 startYear: '',
                 endYear: '',
                 notes: ''
@@ -1800,7 +2052,7 @@
             });
         }
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 if (!Array.isArray(window.data && window.data.characters)) {
                     return {
@@ -1916,10 +2168,10 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var targetChar = String(charId);
         var targetClass = String(classId);
-        var targetRole = isInstructor
-            ? ROLE_INSTRUCTOR : ROLE_STUDENT;
+        var targetRole = isInstructor ? 'instructor' : 'student';
 
         var char = CharacterQueries.getCharacterById(targetChar);
         if (!char) {
@@ -1941,7 +2193,7 @@
 
         var name = CharacterQueries.getDisplayName(char);
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function(appData) {
                 var currentChar = null;
                 if (appData && Array.isArray(appData.characters)) {
@@ -1999,7 +2251,7 @@
             },
 
             logMessage: function(result) {
-                var label = targetRole === ROLE_INSTRUCTOR
+                var label = targetRole === 'instructor'
                     ? 'instructor' : 'student';
                 return 'Set ' + name + ' as ' + label +
                     ' for class ' + targetClass +
@@ -2010,7 +2262,7 @@
             },
 
             successMessage: function(result) {
-                var label = targetRole === ROLE_INSTRUCTOR
+                var label = targetRole === 'instructor'
                     ? 'Instructor' : 'Student';
                 if (result.intervalsChanged === 0) {
                     return label + ' role already set.';
@@ -2042,18 +2294,16 @@
     // SET CAREER TRANSITION
     // ============================================================
     //
-    // Appends (or updates) a terminal careerStatus entry and runs
-    // the professional-team cascade in the same transaction.
+    // Appends a terminal careerStatus entry and runs the
+    // professional-team cascade in the same transaction.
     //
-    // Idempotent: repeated calls with the same (statusKey, year)
+    // IDEMPOTENT: repeated calls with the same (statusKey, year)
     // produce the same array; the cascade finds no open stints on
     // the second call.
     //
-    // CLOSES THE PREVIOUS STATUS:
-    //   Before appending the new terminal entry, every other entry
-    //   that is still open (blank endYear) or that ends before the
-    //   new entry's year is extended to end at that year. This
-    //   guarantees no gaps and no two simultaneous open entries.
+    // EARLIER SAME-STATUS ENTRIES ARE PRESERVED. A character who
+    // was an instructor in 1990 and again in 2010 keeps both
+    // entries. closeOpenCareerEntries reconciles the intervals.
 
     function setCareerTransition(charId, statusKey, year) {
         if (!checkDependencies()) {
@@ -2070,6 +2320,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var targetChar = String(charId);
 
         var normalisedStatus =
@@ -2080,13 +2331,13 @@
         if (!isCareerTransitionStatus(normalisedStatus)) {
             return Promise.resolve({
                 success: false,
-                message: 'Status must be one of: retired, support, ' +
-                    'instructor.'
+                message: 'Status must be one of: ' +
+                    getTerminalStatuses().join(', ') + '.'
             });
         }
 
-        var yearNum = parseInt(year, 10);
-        if (isNaN(yearNum) || yearNum < 1) {
+        var yearNum = parseYearInt(year);
+        if (yearNum === null) {
             return Promise.resolve({
                 success: false,
                 message: 'Year must be a positive integer.'
@@ -2101,12 +2352,28 @@
                 message: 'Character not found.'
             });
         }
+
+        var latestExistingYear = getLatestCareerStatusYear(
+            char.careerStatus
+        );
+
+        if (latestExistingYear !== null &&
+            yearNum < latestExistingYear) {
+            return Promise.resolve({
+                success: false,
+                message: 'The transition year (' + yearNum +
+                    ') is earlier than the latest existing entry (' +
+                    latestExistingYear + '). A terminal status must ' +
+                    'be the most recent entry.'
+            });
+        }
+
         var name = CharacterQueries.getDisplayName(char);
 
         var statusLabel = normalisedStatus.charAt(0).toUpperCase() +
             normalisedStatus.slice(1);
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 var current =
                     CharacterQueries.getCharacterById(targetChar);
@@ -2138,45 +2405,21 @@
                     );
                 }
 
-                // Rebuild careerStatus: drop any existing entry with
-                // the same terminal status, then append the fresh
-                // one. Repeated calls with the same status + year
-                // are no-ops on the array contents.
+                // Append the terminal entry. Earlier entries with
+                // the same status are preserved.
                 var existing = Array.isArray(target.careerStatus)
-                    ? target.careerStatus : [];
-                var kept = [];
-                for (var j = 0; j < existing.length; j++) {
-                    var e = existing[j];
-                    if (!e || typeof e !== 'object') { continue; }
+                    ? target.careerStatus.slice() : [];
 
-                    var s = e.status !== undefined &&
-                        e.status !== null
-                        ? String(e.status).trim().toLowerCase()
-                        : '';
-
-                    var formerIdx = s.indexOf(' (former)');
-                    if (formerIdx !== -1) {
-                        s = s.substring(0, formerIdx).trim();
-                    }
-                    if (s === normalisedStatus) { continue; }
-                    kept.push(e);
-                }
-
-                kept.push({
+                existing.push({
                     status: normalisedStatus,
                     startYear: yearStr,
                     endYear: '',
                     title: ''
                 });
 
-                // Close every other entry at yearStr. Entries whose
-                // endYear is already earlier are extended; entries
-                // that are still open are closed. The new entry is
-                // the latest-start entry by construction, so it
-                // keeps its blank endYear after reconciliation.
-                closeOpenCareerEntries(kept);
+                closeOpenCareerEntries(existing);
 
-                target.careerStatus = kept;
+                target.careerStatus = existing;
                 target.updatedAt = new Date().toISOString();
 
                 invalidateCharacterIndex();
@@ -2265,12 +2508,14 @@
     // If the new latest entry is a terminal status, the professional-
     // team cascade runs against the same snapshot.
     //
-    // CLOSES GAPS:
-    //   Incoming stages are walked in chronological order. Each
-    //   stage's endYear is rewritten to the next stage's startYear.
-    //   The final stage keeps whatever endYear the caller supplied
-    //   (usually blank for an ongoing status). This guarantees no
-    //   gaps and no simultaneous open entries.
+    // STAGE ORDER:
+    //   Stages must be in ascending startYear order. Out-of-order
+    //   input is rejected. The reconciliation loop closes each
+    //   stage's endYear at the next stage's startYear, except when
+    //   the stage has an explicit endYear that is already later
+    //   than the next stage's startYear, in which case it is left
+    //   alone (the schema's validator will reject the record and
+    //   the caller must fix the input).
 
     function applyCareerStatusTimeline(charId, stages) {
         if (!checkDependencies()) {
@@ -2293,6 +2538,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var targetChar = String(charId);
 
         var cleanStages = [];
@@ -2320,10 +2566,8 @@
                 });
             }
 
-            var startNum = parseInt(
-                String(row.startYear || '').trim(), 10
-            );
-            if (isNaN(startNum) || startNum < 1) {
+            var startNum = parseYearInt(row.startYear);
+            if (startNum === null) {
                 return Promise.resolve({
                     success: false,
                     message: rowLabel +
@@ -2336,8 +2580,8 @@
                 ? '' : String(endRaw).trim();
             var endNum = null;
             if (endStr !== '') {
-                endNum = parseInt(endStr, 10);
-                if (isNaN(endNum) || endNum < 1) {
+                endNum = parseYearInt(endStr);
+                if (endNum === null) {
                     return Promise.resolve({
                         success: false,
                         message: rowLabel +
@@ -2356,8 +2600,8 @@
 
             cleanStages.push({
                 status: status,
-                startYear: String(startNum),
-                endYear: endNum === null ? '' : String(endNum),
+                startYear: startNum,
+                endYear: endNum,
                 title: row.title !== undefined &&
                     row.title !== null
                     ? String(row.title).trim()
@@ -2365,25 +2609,30 @@
             });
         }
 
-        // ---- Reconcile endYear against the next stage's startYear. ----
-        //
-        // The wizard produces stages in chronological order, so this
-        // is a simple forward walk. Each stage's endYear is set to
-        // the next stage's startYear. The last stage keeps its own
-        // endYear (blank means ongoing).
-        //
-        // Any stage whose endYear is explicitly set and later than
-        // the next stage's startYear is left alone; the schema's
-        // validator would reject it and there is no sensible
-        // reconciliation for an internally inconsistent input.
+        // ---- Validate ascending order ----
+        for (var oi = 1; oi < cleanStages.length; oi++) {
+            if (cleanStages[oi].startYear <
+                cleanStages[oi - 1].startYear) {
+                return Promise.resolve({
+                    success: false,
+                    message: 'Stages must be in ascending startYear ' +
+                        'order. Stage ' + (oi + 1) + ' starts before ' +
+                        'stage ' + oi + '.'
+                });
+            }
+        }
+
+        // ---- Reconcile endYear ----
         for (var s = 0; s < cleanStages.length - 1; s++) {
             var cur = cleanStages[s];
             var nxt = cleanStages[s + 1];
 
-            var nextStart = parseInt(nxt.startYear, 10);
-            if (isNaN(nextStart)) { continue; }
-
-            cur.endYear = String(nextStart);
+            // Only close the current stage if it does not already
+            // have an explicit endYear later than the next start.
+            if (cur.endYear === null ||
+                cur.endYear < nxt.startYear) {
+                cur.endYear = nxt.startYear;
+            }
         }
 
         var char = CharacterQueries.getCharacterById(targetChar);
@@ -2395,11 +2644,7 @@
         }
         var name = CharacterQueries.getDisplayName(char);
 
-        var previousLatestStatus = getLatestCareerStatus(
-            char.careerStatus
-        );
-
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 var current =
                     CharacterQueries.getCharacterById(targetChar);
@@ -2431,13 +2676,18 @@
                     );
                 }
 
-                // Deep-copy the reconciled stages before assignment.
+                var previousLatestStatus = getLatestCareerStatus(
+                    target.careerStatus
+                );
+
                 var finalStages = [];
                 for (var j = 0; j < cleanStages.length; j++) {
                     finalStages.push({
                         status: cleanStages[j].status,
-                        startYear: cleanStages[j].startYear,
-                        endYear: cleanStages[j].endYear,
+                        startYear: String(cleanStages[j].startYear),
+                        endYear: cleanStages[j].endYear === null
+                            ? ''
+                            : String(cleanStages[j].endYear),
                         title: cleanStages[j].title
                     });
                 }
@@ -2513,6 +2763,7 @@
             });
         }
 
+        var CharacterQueries = getCharacterQueries();
         var targetId = String(id);
 
         var char = CharacterQueries.getCharacterById(targetId);
@@ -2525,7 +2776,7 @@
 
         var name = CharacterQueries.getDisplayName(char);
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function() {
                 var currentChar =
                     CharacterQueries.getCharacterById(targetId);
@@ -2542,13 +2793,19 @@
                 var cascade = {
                     teamMembershipsRemoved: 0,
                     parentRefsStripped: 0,
+                    departmentMembershipsRemoved: 0,
+                    departmentHeadCleared: 0,
+                    socialRelationshipsRemoved: 0,
+                    tournamentParticipantsRemoved: 0,
                     academyCascade: null
                 };
 
+                // ---- Teams ----
                 if (Array.isArray(data.teams)) {
-                    data.teams.forEach(function(team) {
+                    for (var ti = 0; ti < data.teams.length; ti++) {
+                        var team = data.teams[ti];
                         if (!team || !Array.isArray(team.members)) {
-                            return;
+                            continue;
                         }
                         var before = team.members.length;
                         team.members = team.members.filter(
@@ -2559,9 +2816,10 @@
                         );
                         cascade.teamMembershipsRemoved +=
                             before - team.members.length;
-                    });
+                    }
                 }
 
+                // ---- Parent references on other characters ----
                 if (Array.isArray(data.characters)) {
                     for (var ci = 0;
                          ci < data.characters.length; ci++) {
@@ -2580,6 +2838,79 @@
                     }
                 }
 
+                // ---- Departments ----
+                if (Array.isArray(data.departments)) {
+                    for (var di = 0;
+                         di < data.departments.length; di++) {
+                        var dept = data.departments[di];
+                        if (!dept || typeof dept !== 'object') {
+                            continue;
+                        }
+
+                        if (dept.headId &&
+                            String(dept.headId) === targetId) {
+                            dept.headId = null;
+                            cascade.departmentHeadCleared++;
+                        }
+
+                        if (Array.isArray(dept.members)) {
+                            var before3 = dept.members.length;
+                            dept.members = dept.members.filter(
+                                function(m) {
+                                    if (!m) { return false; }
+                                    var mid = typeof m === 'string'
+                                        ? m
+                                        : m.characterId;
+                                    return String(mid) !== targetId;
+                                }
+                            );
+                            cascade.departmentMembershipsRemoved +=
+                                before3 - dept.members.length;
+                        }
+                    }
+                }
+
+                // ---- Social relationships ----
+                if (data.social &&
+                    Array.isArray(data.social.relationships)) {
+                    var before4 = data.social.relationships.length;
+                    data.social.relationships =
+                        data.social.relationships.filter(
+                            function(rel) {
+                                if (!rel) { return false; }
+                                return String(rel.character1) !== targetId &&
+                                    String(rel.character2) !== targetId;
+                            }
+                        );
+                    cascade.socialRelationshipsRemoved =
+                        before4 - data.social.relationships.length;
+                }
+
+                // ---- Tournament participants ----
+                if (Array.isArray(data.tournaments)) {
+                    for (var tri = 0;
+                         tri < data.tournaments.length; tri++) {
+                        var tourn = data.tournaments[tri];
+                        if (!tourn ||
+                            !Array.isArray(tourn.participants)) {
+                            continue;
+                        }
+                        var before5 = tourn.participants.length;
+                        tourn.participants = tourn.participants.filter(
+                            function(p) {
+                                if (!p) { return false; }
+                                var pid = typeof p === 'string'
+                                    ? p
+                                    : p.characterId;
+                                return String(pid) !== targetId;
+                            }
+                        );
+                        cascade.tournamentParticipantsRemoved +=
+                            before5 - tourn.participants.length;
+                    }
+                }
+
+                // ---- Academy cascade (class membership, enrolments) ----
                 var Cascade = getAcademyCascade();
                 if (Cascade &&
                     typeof Cascade.characterDeleted === 'function') {
@@ -2588,6 +2919,7 @@
                     );
                 }
 
+                // ---- Remove the character record itself ----
                 var found = false;
                 data.characters = data.characters.filter(
                     function(c) {
@@ -2621,6 +2953,22 @@
                 if (c.parentRefsStripped > 0) {
                     details.push(c.parentRefsStripped +
                         ' parent reference(s)');
+                }
+                if (c.departmentMembershipsRemoved > 0) {
+                    details.push(c.departmentMembershipsRemoved +
+                        ' department membership(s)');
+                }
+                if (c.departmentHeadCleared > 0) {
+                    details.push(c.departmentHeadCleared +
+                        ' department head role(s) cleared');
+                }
+                if (c.socialRelationshipsRemoved > 0) {
+                    details.push(c.socialRelationshipsRemoved +
+                        ' social relationship(s)');
+                }
+                if (c.tournamentParticipantsRemoved > 0) {
+                    details.push(c.tournamentParticipantsRemoved +
+                        ' tournament participation(s)');
                 }
 
                 if (c.academyCascade) {
@@ -2662,6 +3010,18 @@
             });
         }
 
+        // Check emptiness before prompting. A user should not be
+        // asked to confirm deleting a store that is already empty.
+        var existing = window.data && Array.isArray(window.data.characters)
+            ? window.data.characters
+            : [];
+        if (existing.length === 0) {
+            return Promise.resolve({
+                success: true,
+                message: 'No characters to delete.'
+            });
+        }
+
         if (!confirm('Delete ALL characters permanently? ' +
             'This cannot be undone.')) {
             return Promise.resolve({
@@ -2670,7 +3030,7 @@
             });
         }
 
-        return MutationPipeline.performMutation({
+        return getMutationPipeline().performMutation({
             validate: function(data) {
                 var count = Array.isArray(data.characters)
                     ? data.characters.length : 0;
@@ -2687,14 +3047,49 @@
                 var count = Array.isArray(data.characters)
                     ? data.characters.length : 0;
 
+                // ---- Teams ----
                 if (Array.isArray(data.teams)) {
-                    data.teams.forEach(function(team) {
-                        if (Array.isArray(team.members)) {
+                    for (var ti = 0; ti < data.teams.length; ti++) {
+                        var team = data.teams[ti];
+                        if (team && Array.isArray(team.members)) {
                             team.members = [];
                         }
-                    });
+                    }
                 }
 
+                // ---- Departments ----
+                if (Array.isArray(data.departments)) {
+                    for (var di = 0;
+                         di < data.departments.length; di++) {
+                        var dept = data.departments[di];
+                        if (!dept || typeof dept !== 'object') {
+                            continue;
+                        }
+                        dept.headId = null;
+                        if (Array.isArray(dept.members)) {
+                            dept.members = [];
+                        }
+                    }
+                }
+
+                // ---- Social relationships ----
+                if (data.social &&
+                    Array.isArray(data.social.relationships)) {
+                    data.social.relationships = [];
+                }
+
+                // ---- Tournament participants ----
+                if (Array.isArray(data.tournaments)) {
+                    for (var tri = 0;
+                         tri < data.tournaments.length; tri++) {
+                        var tourn = data.tournaments[tri];
+                        if (tourn && Array.isArray(tourn.participants)) {
+                            tourn.participants = [];
+                        }
+                    }
+                }
+
+                // ---- Characters ----
                 data.characters = [];
                 invalidateCharacterIndex();
 
@@ -2737,5 +3132,42 @@
         validateCharacter: validateCharacter,
         normaliseCharacterData: normaliseCharacterData
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.CharacterCRUD;
+        var failures = [];
+
+        var required = [
+            'save',
+            'delete',
+            'deleteAll',
+            'setInstructorForClass',
+            'setMode',
+            'createChild',
+            'backfillDeathCascades',
+            'setFillerFlag',
+            'applyCareerStatusTimeline',
+            'setCareerTransition',
+            'validateCharacter',
+            'normaliseCharacterData'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                failures.push('missing export: ' + required[i]);
+            }
+        }
+
+        if (failures.length > 0) {
+            throw new Error(
+                '[CharacterCRUD] Verification failed: ' +
+                failures.join('; ')
+            );
+        }
+    })();
 
 })();
