@@ -12,34 +12,34 @@
  *   - JSON import/export buttons (delegates to CharacterJSONIO).
  *   - Professional stint End / Remove buttons on the character
  *     Professional tab (delegates to TeamCore).
+ *   - Character report export button.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. All character mutations route through
  *     CharacterCRUD. Team mutations route through TeamCore.
- *   - Rendering. All HTML comes from CharacterForm / CharacterViews
- *     / CharacterClassView / CharacterList.
+ *   - Rendering. All HTML comes from CharacterForm /
+ *     CharacterViews / CharacterClassView / CharacterList.
  *   - The relationship form. Delegates to SocialEvents.
- *   - The JSON import/export mechanics. CharacterJSONIO owns those.
+ *   - The JSON import/export mechanics. CharacterJSONIO owns
+ *     those.
  *
  * DELEGATE SCOPE:
- *   Every delegated listener installed by this module is scoped to
- *   #tab-characters. A class or id that happens to exist in another
- *   tab (Teams, Academy, ...) does NOT trigger a character handler.
- *   The scope is passed to addSafeDelegatedListener as the first
- *   argument.
+ *   Every delegated listener installed by this module is scoped
+ *   to #tab-characters. A class or id that happens to exist in
+ *   another tab does NOT trigger a character handler. The scope
+ *   is passed to addSafeDelegatedListener as the first argument.
  *
  * SAVE RE-RENDER POLICY:
- *   After a successful save, CharacterForm.render(savedId) is called
- *   unconditionally, for both creates and edits. This ensures the
- *   form reflects what was actually stored (trimmed names, clamped
- *   stats, recomputed deceased flag, cleared filler flag). The
+ *   After a successful save, CharacterForm.render(savedId) is
+ *   called unconditionally, for both creates and edits. This
+ *   ensures the form reflects what was actually stored. The
  *   re-render merge in character-form.js preserves any in-flight
- *   edits, so this is safe.
+ *   edits.
  *
- *   On a failed save, the result.message is surfaced via
+ *   On a failed save, result.message is surfaced via
  *   NotificationSystem when present. The pipeline shows its own
- *   toast when it runs; this covers the pre-flight validation path
- *   where the pipeline never ran.
+ *   toast when it runs; this covers the pre-flight validation
+ *   path where the pipeline never ran.
  *
  * SUBMIT DELEGATION:
  *   The form's submit handler is delegated on
@@ -58,10 +58,7 @@
  *   `window.prompt` is used for the stint End year, and
  *   `window.confirm` is used for destructive confirmations
  *   (delete character, remove stint, delete relationship). These
- *   are intentional deviations from Modal. Converting them to
- *   inline modals is a larger change that belongs in a dedicated
- *   pass. The behaviour is: the action is destructive, the confirm
- *   is not themable, and the pattern matches the rest of the app.
+ *   are intentional deviations from Modal.
  *
  * DEPENDENCIES (MANDATORY at call time):
  *   - window.CharacterAggregator
@@ -144,6 +141,10 @@
     var _ctClickHandler = null;
     var _ctChangeHandler = null;
     var _ctInputHandler = null;
+
+    var _careerStatusCollapsed = null;
+    var CAREER_STATUS_TOGGLE_STORAGE_KEY =
+        'characters_career_toggle_v1';
 
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
@@ -327,7 +328,8 @@
             document.getElementById('academic-class-view');
         if (academicContainer &&
             CharacterClassView &&
-            typeof CharacterClassView.renderAcademicTab === 'function') {
+            typeof CharacterClassView.renderAcademicTab ===
+            'function') {
             try {
                 CharacterClassView.renderAcademicTab(
                     char, academicContainer
@@ -378,9 +380,6 @@
     // SAFE EVENT BINDING - with scope
     // ============================================================
 
-    /**
-     * Attach a listener to an element and track it for cleanup.
-     */
     function addSafeEventListener(
         element, eventName, handler, options
     ) {
@@ -396,22 +395,9 @@
         });
     }
 
-    /**
-     * Attach a delegated listener.
-     *
-     * @param {string|HTMLElement} scope - Selector or element to
-     *   scope the delegation to. When a string, resolved via
-     *   document.querySelector at install time; when an element, used
-     *   directly. When omitted, defaults to document.getElementById
-     *   ('tab-characters') for character-tab handlers.
-     * @param {string} selector
-     * @param {string} eventName
-     * @param {function} handler
-     */
     function addSafeDelegatedListener(
         scope, selector, eventName, handler
     ) {
-        // Overload: (selector, eventName, handler) uses default scope.
         if (typeof selector === 'string' &&
             typeof eventName === 'function' &&
             handler === undefined) {
@@ -505,7 +491,9 @@
             closeSidebar();
         };
 
-        document.addEventListener('characterEdit', _characterEditListener);
+        document.addEventListener(
+            'characterEdit', _characterEditListener
+        );
         _eventListeners.push({
             element: document,
             eventName: 'characterEdit',
@@ -636,6 +624,16 @@
             'Character report export failed: ' +
                 ((result && result.error) || 'Unknown error'),
             'error'
+        );
+    }
+
+    function bindCharacterReportExport(container) {
+        addSafeDelegatedListener(
+            container, '#export-character-report-btn', 'click',
+            function(e) {
+                e.preventDefault();
+                handleCharacterReportExport();
+            }
         );
     }
 
@@ -846,8 +844,6 @@
                 'error'
             );
         }
-        // The wizard dispatches careerWizardClosed when it closes.
-        // The form re-render is handled by that listener.
     }
 
     // ============================================================
@@ -1765,9 +1761,9 @@
     };
 
     function readCurrentPhysicalFromForm() {
-        var FormUtils = window.FormUtils;
-        if (!FormUtils ||
-            typeof FormUtils.getField !== 'function') {
+        var FormUtilsLocal = window.FormUtils;
+        if (!FormUtilsLocal ||
+            typeof FormUtilsLocal.getField !== 'function') {
             return {};
         }
         var physical = {};
@@ -1775,7 +1771,7 @@
         for (var i = 0; i < keys.length; i++) {
             var field = keys[i];
             var formId = PHYSICAL_FIELDS[field];
-            physical[field] = FormUtils.getField(formId) || '';
+            physical[field] = FormUtilsLocal.getField(formId) || '';
         }
         return physical;
     }
@@ -1787,12 +1783,14 @@
                 e.preventDefault();
                 e.stopPropagation();
 
-                var field = target.dataset ? target.dataset.field : null;
+                var field = target.dataset
+                    ? target.dataset.field
+                    : null;
                 if (!field) { return; }
 
                 var Generator = window.CharacterGenerator;
-                var FormUtils = window.FormUtils;
-                if (!Generator || !FormUtils) {
+                var FormUtilsLocal = window.FormUtils;
+                if (!Generator || !FormUtilsLocal) {
                     notify('Generator not available.', 'error');
                     return;
                 }
@@ -1817,7 +1815,7 @@
                         return;
                     }
 
-                    FormUtils.setField(
+                    FormUtilsLocal.setField(
                         PHYSICAL_FIELDS[field], newValue
                     );
                     return;
@@ -1840,7 +1838,7 @@
                         return;
                     }
 
-                    FormUtils.setField(
+                    FormUtilsLocal.setField(
                         PERSONALITY_FIELDS[field],
                         newPersonalityValue
                     );
@@ -2095,7 +2093,8 @@
 
     function bindStandaloneElimRemoval(container) {
         addSafeDelegatedListener(
-            container, '[data-action="remove-standalone-elim"]', 'click',
+            container, '[data-action="remove-standalone-elim"]',
+            'click',
             function(e, target) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2740,7 +2739,8 @@
                 var isHidden = body.style.display === 'none';
                 body.style.display = isHidden ? 'block' : 'none';
                 if (caret) {
-                    caret.textContent = isHidden ? '\u25be' : '\u25b8';
+                    caret.textContent = isHidden
+                        ? '\u25be' : '\u25b8';
                 }
             }
         );
@@ -2824,15 +2824,16 @@
                 window.SocialViews.refreshClarificationLabels();
             }
             if (window.SocialViews &&
-                typeof window.SocialViews.refreshRelationshipAgePreview ===
-                'function') {
+                typeof window.SocialViews
+                    .refreshRelationshipAgePreview === 'function') {
                 window.SocialViews.refreshRelationshipAgePreview();
             }
             if (window.SocialViews &&
-                typeof window.SocialViews.refreshRomanticOverlapWarning ===
-                'function') {
+                typeof window.SocialViews
+                    .refreshRomanticOverlapWarning === 'function') {
                 try {
-                    window.SocialViews.refreshRomanticOverlapWarning();
+                    window.SocialViews
+                        .refreshRomanticOverlapWarning();
                 } catch (e) {
                     console.warn(
                         '[CharacterEvents] overlap warning threw:', e
@@ -2924,7 +2925,8 @@
         if (!char) { return; }
 
         if (CharacterViews &&
-            typeof CharacterViews.renderCharacterSocial === 'function') {
+            typeof CharacterViews.renderCharacterSocial ===
+            'function') {
             try {
                 CharacterViews.renderCharacterSocial(char);
             } catch (e) {
@@ -3049,8 +3051,6 @@
             return;
         }
 
-        // Confirm when the form has any typed content or is editing
-        // a saved character, since import will overwrite it.
         var shouldConfirm = false;
         var editId = typeof window.getCurrentEditId === 'function'
             ? window.getCurrentEditId() : null;
@@ -3062,8 +3062,10 @@
             if (form) {
                 var first = form.querySelector('#char-firstName');
                 var last = form.querySelector('#char-lastName');
-                if ((first && String(first.value || '').trim() !== '') ||
-                    (last && String(last.value || '').trim() !== '')) {
+                if ((first &&
+                     String(first.value || '').trim() !== '') ||
+                    (last &&
+                     String(last.value || '').trim() !== '')) {
                     shouldConfirm = true;
                 }
             }
@@ -3297,9 +3299,6 @@
     // CAREER STATUS FILTER TOGGLE
     // ============================================================
 
-    var _careerStatusCollapsed = null;
-    var CAREER_STATUS_TOGGLE_STORAGE_KEY = 'characters_career_toggle_v1';
-
     function readCareerStatusCollapsedFromStorage() {
         try {
             var raw = sessionStorage.getItem(
@@ -3356,11 +3355,13 @@
     }
 
     function bindCareerStatusToggle(container) {
-        // Seed from storage; fall back to the current DOM state.
         var stored = readCareerStatusCollapsedFromStorage();
         if (stored === null) {
-            _careerStatusCollapsed = readCareerStatusCollapsedFromDOM();
-            writeCareerStatusCollapsedToStorage(_careerStatusCollapsed);
+            _careerStatusCollapsed =
+                readCareerStatusCollapsedFromDOM();
+            writeCareerStatusCollapsedToStorage(
+                _careerStatusCollapsed
+            );
         } else {
             _careerStatusCollapsed = stored;
         }
@@ -3410,10 +3411,6 @@
                             window.setCurrentEditId(savedId);
                         }
 
-                        // Always re-render after a successful save,
-                        // for both creates and edits. The merge logic
-                        // in character-form.js preserves in-flight
-                        // edits.
                         CharacterForm.render(savedId);
 
                         var char =
@@ -3426,7 +3423,6 @@
                     return;
                 }
 
-                // Failure. Notify the message if the pipeline did not.
                 if (result && result.message) {
                     notify(result.message, 'error');
                 }
@@ -3624,6 +3620,34 @@
                     '[CharacterEvents] handleRemoveClass error:', err
                 );
             });
+    }
+
+    // ============================================================
+    // PROFESSIONAL STINT BINDING
+    // ============================================================
+
+    function bindProfessionalStintActions(container) {
+        addSafeDelegatedListener(
+            container,
+            '[data-action="end-professional-stint"]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleEndProfessionalStint(target);
+            }
+        );
+
+        addSafeDelegatedListener(
+            container,
+            '[data-action="remove-professional-stint"]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleRemoveProfessionalStint(target);
+            }
+        );
     }
 
     // ============================================================
