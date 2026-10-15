@@ -27,19 +27,24 @@
  *   - sessionStorage-persisted under characters_sort_v1
  *   - Sort is NOT reset by the Clear filter button
  *
+ * CLEAR FILTER BUTTON:
+ *   The Clear filter button (in the sidebar) resets all filters AND
+ *   clears the selection. This is the intended "fresh start"
+ *   behaviour. A caller that needs to reset filters WITHOUT clearing
+ *   the selection should call the individual setters or restore the
+ *   filter controls directly.
+ *
  * SELECTION:
  *   Each row carries a checkbox at the far left. Clicking the
  *   checkbox toggles that character's presence in the selection
  *   set. Clicking the row body (outside the checkbox) selects the
- *   character for editing, as before.
+ *   character for editing.
  *
  *   The selection bar renders above the rows when at least one
  *   character is ticked. It shows "N selected" and a Clear button.
  *
- *   The selection is NOT persisted. It is cleared on refresh (a
- *   fresh render rebuilds the list from the current filter set,
- *   and the selection set is pruned to keep only IDs that still
- *   exist in the store).
+ *   The selection is NOT persisted. It is pruned on every render:
+ *   any ID whose character no longer exists is dropped.
  *
  *   The public API is:
  *     getSelectedIds()        -> string[]
@@ -48,12 +53,23 @@
  *     hasSelection()          -> boolean
  *     getSelectionCount()     -> number
  *
- * DEPENDENCIES (lazily loaded):
+ * FILTER SNAPSHOT:
+ *   getFilterValues() rebuilds its return object on every call.
+ *   A caller holding a returned object sees a stable snapshot; a
+ *   later filter change does not mutate the held object.
+ *
+ * LOAD ORDER:
+ *   All dependencies are resolved lazily at call time. The module
+ *   loads cleanly regardless of script order.
+ *
+ * DEPENDENCIES (LAZY):
  *   - window.CharacterAggregator
  *   - window.CharacterQueries
  *   - window.DomUtils
  *   - window.AcademyClasses
  *   - window.CalendarConstants
+ *   - window.CharacterClassView (optional; local fallback for
+ *     populateClassFilter if absent)
  *   - window.getCurrentEditId (from index.js) — resolved per render
  */
 
@@ -92,6 +108,7 @@
     function getDomUtils() { return window.DomUtils || null; }
     function getAcademyClasses() { return window.AcademyClasses || null; }
     function getCalendarConstants() { return window.CalendarConstants || null; }
+    function getCharacterClassView() { return window.CharacterClassView || null; }
 
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
@@ -108,7 +125,46 @@
     // ============================================================
 
     // Selection set: { [characterId]: true }
+    // Prototype-safe: Object.create(null).
     var _selectedIds = Object.create(null);
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function hasOwnKey(obj, key) {
+        return Object.prototype.hasOwnProperty.call(obj, key);
+    }
+
+    function escapeHtml(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
+        }
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function escapeAttribute(value) {
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
 
     // ============================================================
     // STORAGE
@@ -189,51 +245,15 @@
     }
 
     // ============================================================
-    // ESCAPING
-    // ============================================================
-
-    function escapeHtml(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
-    }
-
-    function escapeAttribute(value) {
-        var DomUtils = getDomUtils();
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
     // SELECTION
     // ============================================================
 
     function getSelectedIds() {
         var out = [];
-        for (var k in _selectedIds) {
-            if (Object.prototype.hasOwnProperty.call(
-                _selectedIds, k
-            ) && _selectedIds[k] === true) {
-                out.push(k);
+        var keys = Object.keys(_selectedIds);
+        for (var i = 0; i < keys.length; i++) {
+            if (_selectedIds[keys[i]] === true) {
+                out.push(keys[i]);
             }
         }
         return out;
@@ -257,10 +277,9 @@
     }
 
     function hasSelection() {
-        for (var k in _selectedIds) {
-            if (Object.prototype.hasOwnProperty.call(
-                _selectedIds, k
-            ) && _selectedIds[k] === true) {
+        var keys = Object.keys(_selectedIds);
+        for (var i = 0; i < keys.length; i++) {
+            if (_selectedIds[keys[i]] === true) {
                 return true;
             }
         }
@@ -268,7 +287,14 @@
     }
 
     function getSelectionCount() {
-        return getSelectedIds().length;
+        var count = 0;
+        var keys = Object.keys(_selectedIds);
+        for (var i = 0; i < keys.length; i++) {
+            if (_selectedIds[keys[i]] === true) {
+                count++;
+            }
+        }
+        return count;
     }
 
     function isSelected(id) {
@@ -295,12 +321,11 @@
     function pruneSelection() {
         var CharacterQueries = getCharacterQueries();
         if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacterById !==
-                'function') {
+            typeof CharacterQueries.getCharacterById !== 'function') {
             return;
         }
 
-        var keys = getSelectedIds();
+        var keys = Object.keys(_selectedIds);
         for (var i = 0; i < keys.length; i++) {
             var c = null;
             try {
@@ -362,6 +387,10 @@
         return DEFAULT_SORT;
     }
 
+    /**
+     * Returns a fresh snapshot of the current filter values.
+     * Rebuilt on every call; safe for callers to hold.
+     */
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
         var classFilter = document.getElementById('char-class-filter');
@@ -398,7 +427,7 @@
     // ============================================================
 
     function populateClassFilter() {
-        var ClassView = window.CharacterClassView;
+        var ClassView = getCharacterClassView();
         if (ClassView &&
             typeof ClassView.populateClassFilter === 'function') {
             ClassView.populateClassFilter();
@@ -541,7 +570,7 @@
     // ============================================================
 
     function renderRow(item, currentEditId) {
-        var isSelected = currentEditId !== null &&
+        var isCurrent = currentEditId !== null &&
             String(item.id) === String(currentEditId);
 
         var isTicked = isSelectedForExport(item.id);
@@ -560,7 +589,7 @@
         }
 
         var rowClass = 'char-list-item';
-        if (isSelected) { rowClass += ' selected'; }
+        if (isCurrent) { rowClass += ' selected'; }
         if (item.deceased) { rowClass += ' deceased'; }
         if (item.eliminated) { rowClass += ' eliminated'; }
         if (isTicked) { rowClass += ' char-list-item-ticked'; }
@@ -568,7 +597,7 @@
         var rowStyle = 'padding:4px 6px;' +
             'border-bottom:1px solid var(--border-soft);' +
             'cursor:pointer;';
-        if (isSelected) {
+        if (isCurrent) {
             rowStyle += 'background:var(--accent-soft);' +
                 'border-left:3px solid var(--accent);';
         }
@@ -617,7 +646,9 @@
 
     function isSelectedForExport(id) {
         if (id === null || id === undefined) { return false; }
-        return _selectedIds[String(id)] === true;
+        var key = String(id);
+        return hasOwnKey(_selectedIds, key) &&
+            _selectedIds[key] === true;
     }
 
     function renderBadges(item) {
@@ -760,7 +791,7 @@
 
     (function verify() {
         var exports = window.CharacterList;
-        var missing = [];
+        var failures = [];
 
         var required = [
             'render',
@@ -781,14 +812,28 @@
 
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
+                failures.push('missing export: ' + required[i]);
             }
         }
 
-        if (missing.length > 0) {
-            console.warn(
-                '[CharacterList] Verification — some exports may be ' +
-                'missing:', missing.join(', ')
+        try {
+            if (exports.hasSelection() !== false) {
+                failures.push('hasSelection() should be false initially');
+            }
+            if (exports.getSelectionCount() !== 0) {
+                failures.push('getSelectionCount() should be 0 initially');
+            }
+            if (exports.getSelectedIds().length !== 0) {
+                failures.push('getSelectedIds() should be empty initially');
+            }
+        } catch (e) {
+            failures.push('smoke test threw: ' + e.message);
+        }
+
+        if (failures.length > 0) {
+            throw new Error(
+                '[CharacterList] Verification failed: ' +
+                failures.join('; ')
             );
         }
     })();
