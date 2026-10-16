@@ -11,6 +11,7 @@
  *     stats panel, per-row selection checkboxes, and a
  *     "Create Team from Selection" action.
  *   - Timeline delegation (via TimelineView).
+ *   - Rankings delegation (via TeamRankingsView).
  *   - Modals: team form, ranking form/list.
  *   - The PERIODS editor: one row per period, each carrying its
  *     own name, start / end, tactical style, and specialisations.
@@ -100,12 +101,24 @@
  *   The row action strip carries a Kill Team button between
  *   Export and Edit.
  *
+ * VIEW MODES:
+ *   The professional tab carries four modes:
+ *
+ *     teams     the default list
+ *     pool      the Professional Pool
+ *     timeline  the year-by-year event timeline
+ *     rankings  the ranking table
+ *
+ *   The mode toggle is rendered by renderFilterBar. The body is
+ *   chosen by renderContainer.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils
  *   - window.TeamConstants
  *
  * DEPENDENCIES (LAZY):
- *   - window.TimelineView (timeline renderer)
+ *   - window.TimelineView       (timeline renderer)
+ *   - window.TeamRankingsView   (rankings tab renderer)
  */
 
 (function() {
@@ -893,6 +906,29 @@
     }
 
     // ============================================================
+    // RANKINGS (delegated)
+    // ============================================================
+
+    function renderRankingsContent(pageVM) {
+        var RV = window.TeamRankingsView;
+        if (!RV || typeof RV.renderRankingsTab !== 'function') {
+            throw new Error(
+                '[TeamRender] TeamRankingsView is not available.'
+            );
+        }
+
+        var rankingsVM = pageVM.rankingsVM;
+
+        if (!rankingsVM) {
+            throw new Error(
+                '[TeamRender] pageVM.rankingsVM is missing.'
+            );
+        }
+
+        return RV.renderRankingsTab(rankingsVM);
+    }
+
+    // ============================================================
     // EXPANDED MEMBERS
     // ============================================================
 
@@ -1121,6 +1157,15 @@
     // ============================================================
     // FILTER BAR
     // ============================================================
+    //
+    // The professional tab carries a four-way mode toggle:
+    //
+    //   Teams | Professional Pool | Timeline | Rankings
+    //
+    // The year input and the Show Inactive checkbox appear only
+    // in Teams mode. The other modes have their own controls on
+    // their own body. Rankings mode owns its year picker; the
+    // filter bar just carries the mode buttons in that mode.
 
     function renderFilterBar(filterVM) {
         if (!filterVM || !filterVM.tab) { return ''; }
@@ -1139,6 +1184,7 @@
             var viewMode = filterVM.viewMode || 'teams';
             var isPool = viewMode === 'pool';
             var isTimeline = viewMode === 'timeline';
+            var isRankings = viewMode === 'rankings';
 
             html += '<div class="filter-row filter-row-professional">';
 
@@ -1170,8 +1216,20 @@
                         'aria-selected="' +
                             (isTimeline ? 'true' : 'false') +
                         '">Timeline</button>';
+            html += '<button type="button" ' +
+                        'class="mode-btn' +
+                            (isRankings ? ' active' : '') +
+                        '" ' +
+                        'data-mode="rankings" ' +
+                        'role="tab" ' +
+                        'aria-selected="' +
+                            (isRankings ? 'true' : 'false') +
+                        '">Rankings</button>';
             html += '</div>';
 
+            // The year + inactive controls belong to Teams mode
+            // only. Pool, Timeline, and Rankings each own their
+            // own controls on their own body.
             if (viewMode === 'teams') {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
@@ -1216,8 +1274,25 @@
     }
 
     // ============================================================
-    // RANKING LIST
+    // RANKING LIST (per-team modal)
     // ============================================================
+    //
+    // The per-team ranking modal. This is the single-team view.
+    // The Rankings tab is the cross-team view.
+    //
+    // Each explicit entry renders as one row, with a small line
+    // beneath it describing the range of years it governs:
+    //
+    //   Period: 1904  Rank: #3
+    //   governs 1904–1906
+    //
+    //   Period: 1907  Rank: #5
+    //   governs 1907–present
+    //
+    // The governing range comes from `historyWithRanges` on the
+    // VM. It makes the inheritance model visible: the user sees
+    // which entry is authoritative in which years, without having
+    // to work it out from the raw list.
 
     function renderRankingList(rankVM) {
         if (!rankVM ||
@@ -1226,16 +1301,48 @@
             return '<p class="empty-state">No ranking history</p>';
         }
 
+        // Build a lookup from period -> { governsFrom, governsTo }.
+        var rangeByPeriod = Object.create(null);
+        if (Array.isArray(rankVM.historyWithRanges)) {
+            for (var r = 0; r < rankVM.historyWithRanges.length; r++) {
+                var rw = rankVM.historyWithRanges[r];
+                if (!rw || !rw.period) { continue; }
+                rangeByPeriod[String(rw.period)] = rw;
+            }
+        }
+
         var html = '';
 
         for (var i = 0; i < rankVM.history.length; i++) {
             var entry = rankVM.history[i];
             if (!entry) { continue; }
 
+            var periodStr = String(entry.period);
+            var rangeEntry = rangeByPeriod[periodStr];
+
+            var governsText = '';
+            if (rangeEntry) {
+                var from = rangeEntry.governsFrom;
+                var to = rangeEntry.governsTo;
+                if (to === null || to === undefined) {
+                    governsText = 'governs ' + from +
+                        '\u2013present';
+                } else if (to === from + 1) {
+                    governsText = 'governs ' + from + ' only';
+                } else if (to === from) {
+                    governsText = 'governs ' + from + ' only';
+                } else {
+                    governsText = 'governs ' + from +
+                        '\u2013' + (to - 1);
+                }
+            }
+
             html += '<div class="ranking-entry">';
+
+            html += '<div class="ranking-entry-main">';
             html += '<span class="ranking-entry-text">' +
                         'Period: <strong>' +
-                        escapeHtml(entry.period) +
+                        escapeHtml(periodStr) +
                         '</strong> \u2192 Rank: <strong>#' +
                         escapeHtml(String(entry.rank)) +
                         '</strong>' +
@@ -1243,9 +1350,17 @@
             html += '<button type="button" ' +
                         'class="small danger remove-ranking" ' +
                         'data-period="' +
-                            escapeAttribute(entry.period) + '">' +
+                            escapeAttribute(periodStr) + '">' +
                         '\u2715' +
                     '</button>';
+            html += '</div>';
+
+            if (governsText !== '') {
+                html += '<div class="ranking-entry-governs">' +
+                            escapeHtml(governsText) +
+                        '</div>';
+            }
+
             html += '</div>';
         }
 
@@ -1778,6 +1893,17 @@
     // ============================================================
     // CONTAINER
     // ============================================================
+    //
+    // The page shell. Dispatches to the body renderer for the
+    // current mode. The four modes:
+    //
+    //   teams     the list, with the expanded team inline
+    //   pool      the Professional Pool
+    //   timeline  the year-by-year event timeline (delegated)
+    //   rankings  the ranking table (delegated)
+    //
+    // Every mode shares the page header, the stats row, the tab
+    // nav, and the filter bar. Only the body differs.
 
     function renderContainer(pageVM) {
         if (!pageVM) {
@@ -1805,6 +1931,8 @@
             viewMode === 'pool';
         var isTimeline = activeTab === 'professional' &&
             viewMode === 'timeline';
+        var isRankings = activeTab === 'professional' &&
+            viewMode === 'rankings';
 
         var expandedMembersVM = null;
         if (expandedTeam && Array.isArray(expandedTeam.members)) {
@@ -1821,6 +1949,7 @@
 
         var selectedCount = countTrue(teamSelectedIds);
 
+        // ---- Page header ----
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
         html += '<div class="page-header-actions">';
@@ -1855,17 +1984,23 @@
         html += '</div>';
         html += '</div>';
 
+        // ---- Stats, tab nav, filter bar ----
         html += renderStats(counts);
         html += renderTabNav(activeTab, counts);
         html += '<div id="filter-container" ' +
                     'class="filter-container"></div>';
 
-        html += '<div id="team-list-container" ' +
-                    'class="team-list-container' +
-                    (isTimeline ? ' timeline-container' : '') +
-                    '">';
+        // ---- Body ----
+        var bodyClass = 'team-list-container';
+        if (isTimeline) { bodyClass += ' timeline-container'; }
+        if (isRankings) { bodyClass += ' rankings-container'; }
 
-        if (isTimeline) {
+        html += '<div id="team-list-container" ' +
+                    'class="' + bodyClass + '">';
+
+        if (isRankings) {
+            html += renderRankingsContent(pageVM);
+        } else if (isTimeline) {
             html += renderTimelineContent(pageVM);
         } else if (isPool) {
             html += renderProfessionalPool(
