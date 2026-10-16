@@ -9,6 +9,7 @@
  *   - The Professional Pool VM (getProfessionalPoolViewModel).
  *   - The Matchmaking Planner VM
  *     (getMatchmakingPlannerViewModel).
+ *   - The Team Rankings VM (getTeamRankingsViewModel).
  *   - Team list, team detail, member modal, ranking modal VMs.
  *   - The periods array on the team detail and form VMs.
  *
@@ -76,6 +77,25 @@
  *   supported storage shape. It exists so the team list, detail
  *   panel, and export all display correctly for a team that has
  *   not been re-saved since the migration.
+ *
+ * RANKINGS MODEL:
+ *   Ranks are read-time inherited. The team's `rankingHistory`
+ *   array holds EXPLICIT entries only; the rank in effect at a
+ *   year is the most recent explicit entry at or before that
+ *   year. This module delegates entirely to
+ *   TeamQueries.getEffectiveRanking for any year-scoped read.
+ *
+ *   The Rankings tab VM (getTeamRankingsViewModel) carries one
+ *   row per team visible at the requested year, with the
+ *   effective rank and the provenance of that value.
+ *
+ *   The team list VM's `currentRank` is the team's MOST RECENT
+ *   explicit rank, unchanged from before. That is a fact about
+ *   the last entry written, not about any particular year.
+ *
+ *   The ranking modal VM (getRankingModalViewModel) carries the
+ *   full explicit history and the ranges each entry governs, so
+ *   the per-team view shows both layers.
  *
  * SHORTAGE HISTORY:
  *   Each planner team row carries a `shortagePeriods` array and a
@@ -199,6 +219,24 @@
     if (!TeamQueries ||
         typeof TeamQueries.getCurrentTeamName !== 'function') {
         _missing.push('TeamQueries.getCurrentTeamName');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getPeriodForYear !== 'function') {
+        _missing.push('TeamQueries.getPeriodForYear');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getEffectiveRanking !== 'function') {
+        _missing.push('TeamQueries.getEffectiveRanking');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getRankingHistoryWithRanges !== 'function') {
+        _missing.push(
+            'TeamQueries.getRankingHistoryWithRanges'
+        );
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
+        _missing.push('TeamQueries.isTeamActiveAtPeriod');
     }
 
     if (!TeamConstants ||
@@ -1465,13 +1503,20 @@
 
         var summary = TeamQueries.getRankingSummary(team);
 
+        // The explicit entries with the range of years each one
+        // governs. Used by the modal to show the inheritance
+        // story: "entry at 1904 governs 1904–1906".
+        var historyWithRanges =
+            TeamQueries.getRankingHistoryWithRanges(team);
+
         return {
             teamId: team.id,
             teamName: TeamQueries.getCurrentTeamName(team),
             currentRank: summary.current || '',
             history: summary.history,
             historyCount: summary.total,
-            historyDisplay: getRankingHistoryDisplay(team)
+            historyDisplay: getRankingHistoryDisplay(team),
+            historyWithRanges: historyWithRanges
         };
     }
 
@@ -1490,6 +1535,143 @@
             periodLabel: getPeriodLabel(normalized),
             filterYear: filter.filterYear || '',
             filterStatus: filter.filterStatus || 'active'
+        };
+    }
+
+    // ============================================================
+    // TEAM RANKINGS VM
+    // ============================================================
+    //
+    // One row per team visible at a given year. Ranks are the
+    // EFFECTIVE value (read-time inheritance). Each row carries
+    // whether the value is explicit at this year and where it
+    // came from.
+    //
+    // Visibility:
+    //   A team is included when TeamQueries.isTeamActiveAtPeriod
+    //   returns true at `year`, OR when showInactive is set. When
+    //   showInactive is set, teams not active at the year are
+    //   included with activeAtYear: false, so the renderer can
+    //   dim them.
+
+    function getTeamRankingsViewModel(options) {
+        options = options || {};
+
+        var yearNum = TeamConstants.parsePeriod(options.year);
+        if (yearNum === null) {
+            throw new Error(
+                '[TeamAggregator] getTeamRankingsViewModel ' +
+                'requires a valid year.'
+            );
+        }
+
+        var sortMode = options.sort || 'rank';
+        if (sortMode !== 'rank' &&
+            sortMode !== 'name' &&
+            sortMode !== 'members') {
+            sortMode = 'rank';
+        }
+
+        var sortDirection = options.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
+        var showInactive = options.showInactive === true;
+
+        var teams = TeamQueries.getTeams(
+            'professional', null, showInactive
+        );
+
+        var rows = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+
+            var isActive = TeamQueries.isTeamActiveAtPeriod(
+                team, yearNum
+            );
+
+            if (!showInactive && !isActive) { continue; }
+
+            var effective = TeamQueries.getEffectiveRanking(
+                team, yearNum
+            );
+
+            var members = TeamQueries.getActiveTeamMembers(
+                team, yearNum
+            );
+
+            var rankDisplay = effective.rank === null
+                ? '\u2014'
+                : '#' + String(effective.rank);
+
+            var provenanceLabel;
+            if (effective.explicit) {
+                provenanceLabel = 'set';
+            } else if (effective.rank !== null) {
+                provenanceLabel = '(from ' +
+                    effective.sourcePeriod + ')';
+            } else {
+                provenanceLabel = '';
+            }
+
+            rows.push({
+                teamId: String(team.id),
+                name: TeamQueries.getCurrentTeamName(team),
+                rank: effective.rank,
+                explicit: effective.explicit,
+                sourcePeriod: effective.sourcePeriod,
+                effectiveDisplay: rankDisplay,
+                provenanceLabel: provenanceLabel,
+                periodDisplay: getTeamPeriodDisplay(team),
+                memberCount: members.length,
+                status: team.status || 'active',
+                activeAtYear: isActive
+            });
+        }
+
+        // ---- Sort ----
+        //
+        // Rank sort: numeric ascending by default. Teams with no
+        // effective rank sort last (treated as Infinity). Ties
+        // broken by name ascending.
+        //
+        // Name sort: alphabetical.
+        //
+        // Members sort: numeric ascending by member count. Ties
+        // broken by name ascending.
+        //
+        // Descending inverts the primary key but keeps the name
+        // tiebreak ascending, so the secondary ordering is stable
+        // and predictable.
+        rows.sort(function(a, b) {
+            var cmp;
+
+            if (sortMode === 'rank') {
+                var aR = a.rank === null ? Infinity : a.rank;
+                var bR = b.rank === null ? Infinity : b.rank;
+                cmp = aR - bR;
+                if (cmp === 0) {
+                    cmp = a.name.localeCompare(b.name);
+                }
+            } else if (sortMode === 'members') {
+                cmp = a.memberCount - b.memberCount;
+                if (cmp === 0) {
+                    cmp = a.name.localeCompare(b.name);
+                }
+            } else {
+                cmp = a.name.localeCompare(b.name);
+            }
+
+            return sortDirection === 'desc' ? -cmp : cmp;
+        });
+
+        return {
+            year: yearNum,
+            rows: rows,
+            sortMode: sortMode,
+            sortDirection: sortDirection,
+            showInactive: showInactive
         };
     }
 
@@ -2035,6 +2217,8 @@
         getMemberModalViewModel: getMemberModalViewModel,
         getRankingModalViewModel: getRankingModalViewModel,
         getFilterBarViewModel: getFilterBarViewModel,
+
+        getTeamRankingsViewModel: getTeamRankingsViewModel,
 
         getProfessionalPoolViewModel: getProfessionalPoolViewModel,
         getMatchmakingPlannerViewModel:
