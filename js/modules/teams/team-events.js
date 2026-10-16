@@ -116,20 +116,31 @@
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
  *
- * MATCHMAKING PLANNER COMMIT:
- *   The planner renders a radio group per candidate:
+ * MATCHMAKING PLANNER:
+ *   The planner is a MATRIX. Teams are columns, candidates are
+ *   rows, and each intersection carries a radio. The radio group
+ *   name is scoped per candidate:
  *
- *     <input type="radio"
- *            class="planner-assoc-radio"
- *            name="planner-cand-<candidateId>"
- *            data-team-id="..."
- *            data-character-id="..." />
+ *     name="planner-cand-<candidateId>"
  *
- *   Because the group name is scoped per candidate, at most one
- *   radio per candidate is checked. handlePlannerCommit reads
- *   every checked radio and builds one assignment per checked
- *   radio, which naturally produces at most one assignment per
- *   candidate.
+ *   so at most one team per candidate can be checked.
+ *
+ *   Below each candidate's radio row is a DETAILS STRIP: a
+ *   full-width band that holds the Join and Leave inputs for the
+ *   candidate's currently-checked team. When no radio is checked,
+ *   the strip is hidden. When a radio is checked, the strip is
+ *   populated with the team name and the two inputs, and unhidden.
+ *   Moving the check to a different team in the same row swaps
+ *   the strip's contents in place.
+ *
+ *   The strip lives in the DOM as an empty wrapper emitted by
+ *   TeamMatchmakingView. TeamEvents fills and unhides it on radio
+ *   change, and clears / hides it on radio deselect.
+ *
+ *   On commit, TeamEvents reads every checked radio in the
+ *   matrix, locates the details strip for that radio's candidate,
+ *   reads the two inputs by (teamId, characterId) pair, and
+ *   builds one assignment per checked radio.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -2532,8 +2543,33 @@
     }
 
     // ============================================================
-    // MATCHMAKING PLANNER
+    // MATCHMAKING PLANNER - MATRIX
     // ============================================================
+    //
+    // The planner is a matrix: teams are columns, candidates are
+    // rows, and each intersection carries a radio. The radio group
+    // name is scoped per candidate (`planner-cand-<candidateId>`),
+    // so at most one team per candidate can be checked.
+    //
+    // Below each candidate's radio row is a DETAILS STRIP: a
+    // full-width `<tr>` holding the Join and Leave inputs for the
+    // candidate's currently-checked team. The strip is emitted
+    // hidden and empty by TeamMatchmakingView; TeamEvents fills it
+    // in and unhides it on radio change.
+    //
+    // The strip's inputs carry data attributes:
+    //
+    //   class="planner-assoc-join"
+    //   class="planner-assoc-leave"
+    //   data-team-id="..."
+    //   data-character-id="..."
+    //
+    // On commit, TeamEvents walks every checked radio. For each,
+    // it finds the details strip in the radio's row (via
+    // data-character-id) and locates the two inputs by
+    // (teamId, characterId) pair. This pairing is what guarantees
+    // the years read for a checked radio belong to that radio's
+    // selected team, not another.
 
     function bindMatchmaking() {
         delegate('#team-matchmaking-btn', 'click', function(e) {
@@ -2625,7 +2661,32 @@
             TeamMatchmakingView.renderHTML(vm);
     }
 
+    /**
+     * Bind the planner's events. All bindings attach to the
+     * content element, not the modal shell, so a re-render of the
+     * matrix (which does not happen today, but could) would not
+     * leave orphaned listeners on the shell.
+     *
+     * The change handler is the important one. It fires on radio
+     * changes and manages the details strip:
+     *
+     *   - find the row (the <tr> that owns the radio)
+     *   - find the strip (the <tr class="planner-matrix-details-row">
+     *     that carries the same data-character-id)
+     *   - when a radio is checked:
+     *       - clear and hide every OTHER candidate's strip
+     *       - populate this candidate's strip with the team name
+     *         and the two inputs
+     *       - unhide the strip
+     *   - when a radio is unchecked:
+     *       - clear and hide this candidate's strip
+     *
+     * The strip's Join input pre-fills from the strip's
+     * data-default-join attribute, which TeamMatchmakingView wrote
+     * from the candidate's availability window.
+     */
     function bindPlannerEvents(modal, contentEl) {
+        // ---- Click: close / commit ----
         contentEl.addEventListener('click', function(e) {
             var actionEl = e.target.closest
                 ? e.target.closest('[data-action]')
@@ -2644,49 +2705,222 @@
                 return;
             }
         });
+
+        // ---- Change: radio selection manages the strip ----
+        contentEl.addEventListener('change', function(e) {
+            var target = e.target;
+            if (!target) { return; }
+            if (!target.classList ||
+                !target.classList.contains('planner-assoc-radio')) {
+                return;
+            }
+
+            handlePlannerRadioChange(contentEl, target);
+        });
     }
 
+    /**
+     * Handle a radio change in the planner matrix.
+     *
+     * A radio being CHECKED is the interesting case: it means the
+     * candidate has just picked a team. The strip for that
+     * candidate is populated and unhidden.
+     *
+     * A radio being UNCHECKED happens when the user picks a
+     * different team in the same row (the browser unchecks the
+     * previous radio and checks the new one) — in which case we
+     * do not need to do anything, because the subsequent change
+     * event for the newly-checked radio will handle it. The
+     * unchecked case also fires when the user clears the group by
+     * other means, which we do not support — so we only act on
+     * checked radios.
+     */
+    function handlePlannerRadioChange(contentEl, radio) {
+        if (!radio.checked) { return; }
+
+        var candidateId = radio.dataset.characterId;
+        var teamId = radio.dataset.teamId;
+        if (!candidateId || !teamId) { return; }
+
+        // Find the candidate's row and the strip below it.
+        var row = radio.closest
+            ? radio.closest('tr.planner-matrix-row')
+            : null;
+        var strip = findStripForCandidate(contentEl, candidateId);
+
+        if (!strip) { return; }
+
+        // Find the team's display name from the column header.
+        var teamName = findTeamNameById(contentEl, teamId);
+
+        // Build the strip's inner HTML.
+        var defaultJoin = strip.dataset.defaultJoin || '';
+
+        var stripInner = strip.querySelector(
+            '.planner-row-details'
+        );
+        if (!stripInner) { return; }
+
+        stripInner.innerHTML = buildStripHTML(
+            candidateId, teamId, teamName, defaultJoin
+        );
+
+        // Unhide the strip.
+        strip.removeAttribute('hidden');
+
+        // Focus the Join input so the user can type immediately.
+        var joinInput = stripInner.querySelector(
+            '.planner-assoc-join'
+        );
+        if (joinInput && typeof joinInput.focus === 'function') {
+            setTimeout(function() {
+                try { joinInput.focus(); } catch (err) {}
+            }, 0);
+        }
+    }
+
+    /**
+     * Find the details strip for a candidate. Strips are
+     * top-level rows keyed by data-character-id.
+     */
+    function findStripForCandidate(contentEl, candidateId) {
+        return contentEl.querySelector(
+            'tr.planner-matrix-details-row' +
+            '[data-character-id="' + cssEscape(candidateId) + '"]'
+        );
+    }
+
+    /**
+     * Look up the display name for a team in the matrix's column
+     * headers. The name is read from the header cell so the strip
+     * shows the same text the user sees at the top of the column.
+     */
+    function findTeamNameById(contentEl, teamId) {
+        var header = contentEl.querySelector(
+            'th.planner-matrix-team-header' +
+            '[data-team-id="' + cssEscape(teamId) + '"]'
+        );
+        if (!header) { return ''; }
+
+        var nameEl = header.querySelector(
+            '.planner-matrix-team-name'
+        );
+        if (!nameEl) { return ''; }
+        return String(nameEl.textContent || '').trim();
+    }
+
+    /**
+     * Build the strip's inner HTML. Two inputs plus a small
+     * label identifying the team.
+     */
+    function buildStripHTML(
+        candidateId, teamId, teamName, defaultJoin
+    ) {
+        var html = '';
+
+        html += '<span class="planner-row-details-label">' +
+                    'Assign to <strong>' +
+                        escapeHtml(teamName || 'this team') +
+                    '</strong>:' +
+                '</span>';
+
+        html += '<input type="text" ' +
+                    'class="planner-assoc-join" ' +
+                    'inputmode="numeric" ' +
+                    'placeholder="Join" ' +
+                    'value="' +
+                        escapeAttribute(String(defaultJoin)) + '" ' +
+                    'data-team-id="' +
+                        escapeAttribute(teamId) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidateId) + '">';
+
+        html += '<span class="planner-row-details-dash">' +
+                    '\u2013' +
+                '</span>';
+
+        html += '<input type="text" ' +
+                    'class="planner-assoc-leave" ' +
+                    'inputmode="numeric" ' +
+                    'placeholder="Leave" ' +
+                    'value="" ' +
+                    'data-team-id="' +
+                        escapeAttribute(teamId) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidateId) + '">';
+
+        html += '<button type="button" ' +
+                    'class="small secondary planner-row-details-clear" ' +
+                    'data-team-id="' +
+                        escapeAttribute(teamId) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidateId) + '">' +
+                    'Unselect' +
+                '</button>';
+
+        return html;
+    }
+
+    /**
+     * Read every checked radio in the matrix and build one
+     * assignment per checked radio.
+     *
+     * For each checked radio:
+     *   - read the (teamId, characterId) pair from the radio
+     *   - find the candidate's details strip
+     *   - read the two inputs by (teamId, characterId) pair
+     *     inside the strip
+     *
+     * A radio's checked state and the strip it belongs to are
+     * paired by construction: the strip lives in the candidate's
+     * row, and the inputs inside it carry the same teamId and
+     * characterId the radio does. There is no ambiguity about
+     * which years belong to which radio.
+     */
     function handlePlannerCommit(modal, contentEl) {
         var state = modal.__plannerState;
         if (!state) { return; }
 
-        // The planner emits one radio per (candidate, team) cell.
-        // The radio group's name is scoped per candidate
-        // ("planner-cand-<candidateId>"), so at most one radio is
-        // checked per candidate. Reading every checked radio
-        // therefore produces at most one assignment per
-        // candidate.
-        var boxes = contentEl.querySelectorAll(
-            '.planner-assoc-radio'
+        var checked = contentEl.querySelectorAll(
+            '.planner-assoc-radio:checked'
         );
 
         var assignments = [];
         var invalidRows = [];
 
-        for (var i = 0; i < boxes.length; i++) {
-            var box = boxes[i];
-            if (!box.checked) { continue; }
+        for (var i = 0; i < checked.length; i++) {
+            var radio = checked[i];
 
-            var teamId = box.dataset.teamId;
-            var charId = box.dataset.characterId;
+            var teamId = radio.dataset.teamId;
+            var charId = radio.dataset.characterId;
 
             if (!teamId || !charId) { continue; }
 
-            var joinEl = contentEl.querySelector(
+            var strip = findStripForCandidate(contentEl, charId);
+            if (!strip) {
+                invalidRows.push({
+                    teamId: teamId,
+                    charId: charId,
+                    reason: 'Details strip is missing.'
+                });
+                continue;
+            }
+
+            var joinEl = strip.querySelector(
                 '.planner-assoc-join' +
                 '[data-team-id="' + cssEscape(teamId) + '"]' +
-                '[data-character-id="' +
-                    cssEscape(charId) + '"]'
+                '[data-character-id="' + cssEscape(charId) + '"]'
             );
-            var leaveEl = contentEl.querySelector(
+            var leaveEl = strip.querySelector(
                 '.planner-assoc-leave' +
                 '[data-team-id="' + cssEscape(teamId) + '"]' +
-                '[data-character-id="' +
-                    cssEscape(charId) + '"]'
+                '[data-character-id="' + cssEscape(charId) + '"]'
             );
 
-            var joinRaw = joinEl ? joinEl.value.trim() : '';
-            var leaveRaw = leaveEl ? leaveEl.value.trim() : '';
+            var joinRaw = joinEl ? String(joinEl.value || '').trim() : '';
+            var leaveRaw = leaveEl
+                ? String(leaveEl.value || '').trim()
+                : '';
 
             var joinNum = parsePositiveInteger(joinRaw);
             if (joinNum === null) {
