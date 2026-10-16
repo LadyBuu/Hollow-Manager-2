@@ -25,17 +25,48 @@
  *   save path runs. A character with authored content is skipped
  *   and reported, rather than silently flagged and stripped.
  *
- *   The two paths (this modal's bulk flag and CharacterCRUD's
- *   save) must agree on what "filler" means. This module enforces
- *   the check at the modal layer. CharacterCRUD.setFillerFlag is
- *   expected to enforce it too when called from other callers; if
- *   it does not, this modal is the only place the check runs. See
- *   the character-crud.js batch for the matching enforcement.
+ *   The check runs at Apply time, against live state. The check
+ *   the CRUD runs is the authoritative one; the one here is a
+ *   pre-filter that keeps the modal from offering a row the user
+ *   cannot act on. If a character gains authored content between
+ *   the modal opening and Apply, the CRUD's check (which runs on
+ *   the same snapshot) will catch it. See the note below.
+ *
+ *   THIS MODAL IS THE ONLY PLACE THE AUTHORED-CONTENT CHECK RUNS
+ *   BEFORE A BULK FLAG. CharacterCRUD.setFillerFlag does NOT
+ *   re-check; it strips when told to. A caller that reaches
+ *   setFillerFlag directly (not through this modal) can strip a
+ *   character that has authored content. Adding the check to
+ *   setFillerFlag is the correct fix, and belongs in
+ *   character-crud.js. Until then this modal is the sole
+ *   enforcement point for bulk flagging, and the report below is
+ *   how the user learns what was skipped.
+ *
+ * FLAG/UNFLAG ARE NOT ATOMIC:
+ *   The Apply step runs flag-then-unflag as two separate
+ *   CharacterCRUD.setFillerFlag calls. Each call is its own
+ *   pipeline transaction. If the first succeeds and the second
+ *   fails, the first is committed. The modal reports that as a
+ *   partial success and does not close silently; the user sees
+ *   "flagged N, unflag failed: ..." and can retry the unflag by
+ *   reopening the modal.
+ *
+ *   Making the pair atomic requires a batch API in
+ *   CharacterCRUD. That is a domain-layer change, not a UI-layer
+ *   one; the modal deliberately does not attempt to emulate
+ *   atomicity with retries or rollbacks, because a rollback of a
+ *   committed pipeline transaction is not something this layer
+ *   can do safely.
  *
  * MODAL LIFECYCLE:
  *   Close and outside-click handling are delegated to
- *   Modal.modalSetup. Escape now works. Drag-release guard
- *   applies.
+ *   Modal.modalSetup. Escape works. Drag-release guard applies.
+ *
+ *   Render runs BEFORE show. The modal shell is created, the
+ *   content is written into it, and THEN it is shown. This
+ *   avoids the frame of empty modal that a show-then-render
+ *   sequence produces, and it makes the focus-trapping query in
+ *   modal.js see the populated body on its first focus pass.
  *
  * LOAD ORDER:
  *   This module loads cleanly regardless of script order. All
@@ -84,6 +115,9 @@
         if (!CQ || typeof CQ.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
+        if (!CQ || typeof CQ.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
 
         var CRUD = getCharacterCRUD();
         if (!CRUD || typeof CRUD.setFillerFlag !== 'function') {
@@ -127,8 +161,28 @@
     // ============================================================
 
     var _modal = null;
+    var _contentEl = null;
+
+    // The set of ids currently ticked. Keyed by string id.
     var _checkedIds = Object.create(null);
+
+    // The set of ids that were ticked when the modal opened. Used
+    // to compute the diff at Apply time: only ids whose state
+    // changed are acted on.
     var _initialCheckedIds = Object.create(null);
+
+    // The last-computed candidate set. Populated on every render,
+    // so Select-all-candidates and the "N candidates" hint use
+    // the same determination and the check runs exactly once per
+    // character per render.
+    var _candidateIds = Object.create(null);
+    var _candidateCount = 0;
+
+    // A per-row click handler and a change handler, both bound to
+    // contentEl in `bind`. Held here so `closeModal` can remove
+    // them cleanly.
+    var _contentClickHandler = null;
+    var _contentChangeHandler = null;
 
     // ============================================================
     // HELPERS
@@ -172,12 +226,16 @@
         if (!CQ || typeof CQ.getCharacters !== 'function') { return []; }
         var chars = CQ.getCharacters();
         if (!Array.isArray(chars)) { return []; }
-        // Return a slice so callers cannot mutate the live store.
         return chars.slice();
     }
 
-    function hasOwnKey(obj, key) {
-        return Object.prototype.hasOwnProperty.call(obj, key);
+    function countTrue(obj) {
+        var n = 0;
+        var keys = Object.keys(obj);
+        for (var i = 0; i < keys.length; i++) {
+            if (obj[keys[i]] === true) { n++; }
+        }
+        return n;
     }
 
     // ============================================================
@@ -196,6 +254,8 @@
 
         _checkedIds = Object.create(null);
         _initialCheckedIds = Object.create(null);
+        _candidateIds = Object.create(null);
+        _candidateCount = 0;
 
         var chars = getCharacters();
         for (var i = 0; i < chars.length; i++) {
@@ -220,20 +280,54 @@
         modal.appendChild(contentEl);
 
         _modal = modal;
+        _contentEl = contentEl;
 
         M.modalSetup(modal, function() {
             closeModal();
         });
-        M.showModal(modal);
 
+        // Render BEFORE show. The modal shell exists but is
+        // hidden; we populate its content, then show it. This is
+        // the fix for the "modal appears empty for a frame"
+        // problem, and it makes the focus-trap's first query see
+        // the fully-populated body.
         render(modal, contentEl);
         bind(modal, contentEl);
+
+        M.showModal(modal);
     }
 
     function closeModal() {
         var modal = _modal;
+        var contentEl = _contentEl;
+
+        if (contentEl && _contentClickHandler) {
+            try {
+                contentEl.removeEventListener(
+                    'click', _contentClickHandler
+                );
+            } catch (e) { /* ignore */ }
+        }
+        if (contentEl && _contentChangeHandler) {
+            try {
+                contentEl.removeEventListener(
+                    'change', _contentChangeHandler
+                );
+            } catch (e) { /* ignore */ }
+        }
 
         _modal = null;
+        _contentEl = null;
+        _contentClickHandler = null;
+        _contentChangeHandler = null;
+
+        // Retain the checked/candidate state only for the
+        // duration of a modal session. Clearing here means a
+        // subsequent open starts fresh.
+        _checkedIds = Object.create(null);
+        _initialCheckedIds = Object.create(null);
+        _candidateIds = Object.create(null);
+        _candidateCount = 0;
 
         if (modal) {
             try {
@@ -256,28 +350,88 @@
         var Strip = getCharacterStrip();
         var chars = getCharacters();
 
-        // Sort: candidates first (checked or heuristic), then
-        // alphabetical. Puts the actionable rows at the top.
+        // ---- Rebuild the candidate set exactly once. ----
+        //
+        // The previous version ran isFillerCandidate twice per
+        // character (once to count, once to render). Both
+        // determinations must agree, and both must agree with the
+        // Select-all-candidates action. Caching the set here
+        // guarantees that.
+        _candidateIds = Object.create(null);
+        _candidateCount = 0;
+
+        var candidateNameById = Object.create(null);
+        var nameById = Object.create(null);
+
+        for (var c = 0; c < chars.length; c++) {
+            var cc = chars[c];
+            if (!cc || !cc.id) { continue; }
+            var cid = String(cc.id);
+            nameById[cid] = CQ.getDisplayName(cc) || 'Unknown';
+            if (Strip.isFillerCandidate(cc)) {
+                _candidateIds[cid] = true;
+                _candidateCount++;
+                candidateNameById[cid] = nameById[cid];
+            }
+        }
+
+        // ---- Sort: checked first, then candidates, then the
+        //      rest, alphabetically within each tier. ----
+        //
+        // "Checked first" means the rows whose isFiller is
+        // currently true, at open. Ticking a row during this
+        // session does NOT reorder it. That is intentional:
+        // reordering on tick would move the row out from under
+        // the user's cursor.
         var sorted = chars.slice().sort(function(a, b) {
-            var aChecked = _checkedIds[String(a.id)] === true;
-            var bChecked = _checkedIds[String(b.id)] === true;
+            if (!a || !b || !a.id || !b.id) { return 0; }
+            var aId = String(a.id);
+            var bId = String(b.id);
+            var aChecked = _checkedIds[aId] === true;
+            var bChecked = _checkedIds[bId] === true;
             if (aChecked !== bChecked) {
                 return aChecked ? -1 : 1;
             }
-            var aName = CQ.getDisplayName(a) || '';
-            var bName = CQ.getDisplayName(b) || '';
+            var aCand = _candidateIds[aId] === true;
+            var bCand = _candidateIds[bId] === true;
+            if (aCand !== bCand) {
+                return aCand ? -1 : 1;
+            }
+            var aName = nameById[aId] || '';
+            var bName = nameById[bId] || '';
             return aName.localeCompare(bName);
         });
 
         var totalCount = sorted.length;
-        var checkedCount = Object.keys(_checkedIds).length;
-        var heuristicCount = 0;
-        for (var h = 0; h < sorted.length; h++) {
-            if (Strip.isFillerCandidate(sorted[h])) {
-                heuristicCount++;
+        var checkedCount = countTrue(_checkedIds);
+
+        // ---- Prune the checked set against live characters. ----
+        //
+        // A character deleted since the modal opened should not
+        // be counted or acted on. The count and the render both
+        // read the pruned set. Pruning is idempotent.
+        var liveIds = Object.create(null);
+        for (var li = 0; li < chars.length; li++) {
+            var lc = chars[li];
+            if (lc && lc.id) {
+                liveIds[String(lc.id)] = true;
             }
         }
+        var checkedKeys = Object.keys(_checkedIds);
+        for (var ck = 0; ck < checkedKeys.length; ck++) {
+            if (!liveIds[checkedKeys[ck]]) {
+                delete _checkedIds[checkedKeys[ck]];
+            }
+        }
+        var initialKeys = Object.keys(_initialCheckedIds);
+        for (var ik = 0; ik < initialKeys.length; ik++) {
+            if (!liveIds[initialKeys[ik]]) {
+                delete _initialCheckedIds[initialKeys[ik]];
+            }
+        }
+        checkedCount = countTrue(_checkedIds);
 
+        // ---- Build the HTML. ----
         var html = '';
 
         html += '<div class="modal-header">';
@@ -292,21 +446,23 @@
         html += '<div class="modal-body">';
 
         html += '<p class="field-hint filler-manager-hint">' +
-                    'Flag characters as filler to strip their empty ' +
-                    'fields on save. Flagged characters keep their ' +
-                    'name, career, class, teams, eliminations, and ' +
-                    'parent links. Characters with authored content ' +
-                    '(stats, magic, personality, notes, or HP/MP) are ' +
-                    'skipped by this tool and must be flagged from ' +
-                    'their own record. Unchecking does not restore ' +
-                    'stripped fields; the next edit re-populates ' +
-                    'them.' +
+                    'Flagging marks a character as filler. On save ' +
+                    'the record is stripped to its meaningful ' +
+                    'fields; its name, career, class, teams, ' +
+                    'eliminations, and parent links are kept. ' +
+                    'Characters with any authored content \u2014 ' +
+                    'stats, magic, personality, weapons, moves, ' +
+                    'bio fields, HP, or MP \u2014 are skipped by ' +
+                    'this tool and must be flagged from their own ' +
+                    'record. Unflagging clears the flag only; ' +
+                    'fields that were stripped in a previous save ' +
+                    'are not restored.' +
                 '</p>';
 
         html += '<div class="filler-manager-toolbar">';
         html += '<button type="button" id="filler-select-candidates" ' +
                     'class="small secondary">' +
-                    'Select all candidates (' + heuristicCount + ')' +
+                    'Select all candidates (' + _candidateCount + ')' +
                 '</button>';
         html += '<button type="button" id="filler-clear-all" ' +
                     'class="small secondary">Clear all</button>';
@@ -321,30 +477,30 @@
                     'id="filler-manager-list">';
 
         for (var i = 0; i < sorted.length; i++) {
-            var c = sorted[i];
-            if (!c || !c.id) { continue; }
-            var cid = String(c.id);
-            var checked = _checkedIds[cid] === true;
-            var name = CQ.getDisplayName(c) || 'Unknown';
-            var isCandidate = Strip.isFillerCandidate(c);
+            var row = sorted[i];
+            if (!row || !row.id) { continue; }
+            var rowId = String(row.id);
+            var isChecked = _checkedIds[rowId] === true;
+            var rowName = nameById[rowId] || 'Unknown';
+            var isCandidate = _candidateIds[rowId] === true;
 
             var rowClass = 'filler-manager-row';
-            if (checked) { rowClass += ' is-checked'; }
+            if (isChecked) { rowClass += ' is-checked'; }
             if (isCandidate) { rowClass += ' is-candidate'; }
 
             html += '<label class="' + rowClass + '" ' +
-                        'data-character-id="' + escapeAttribute(cid) + '">';
+                        'data-character-id="' +
+                            escapeAttribute(rowId) + '">';
             html += '<input type="checkbox" class="filler-row-check" ' +
-                        'data-id="' + escapeAttribute(cid) + '"' +
-                        (checked ? ' checked' : '') + '>';
+                        'data-id="' + escapeAttribute(rowId) + '"' +
+                        (isChecked ? ' checked' : '') + '>';
             html += '<span class="filler-manager-name">' +
-                        escapeHtml(name) +
+                        escapeHtml(rowName) +
                     '</span>';
             if (isCandidate) {
                 html += '<span class="filler-manager-badge" ' +
-                            'title="No authored content: stats, ' +
-                            'personality, and notes are all empty or ' +
-                            'default.">Candidate</span>';
+                            'title="No authored content. Can be ' +
+                            'flagged as filler.">Candidate</span>';
             }
             html += '</label>';
         }
@@ -368,69 +524,74 @@
     // ============================================================
 
     function bind(modal, contentEl) {
-        var closeBtn = contentEl.querySelector('#close-filler-manager');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', function() {
-                closeModal();
-            });
+        _contentClickHandler = function(e) {
+            handleContentClick(e, contentEl);
+        };
+        _contentChangeHandler = function(e) {
+            handleContentChange(e, contentEl);
+        };
+
+        contentEl.addEventListener('click', _contentClickHandler);
+        contentEl.addEventListener('change', _contentChangeHandler);
+    }
+
+    function handleContentClick(e, contentEl) {
+        var target = e.target;
+        if (!target || typeof target.closest !== 'function') { return; }
+
+        var btn = target.closest('button');
+        if (!btn || !btn.id) { return; }
+
+        if (btn.id === 'close-filler-manager' ||
+            btn.id === 'filler-cancel') {
+            e.preventDefault();
+            closeModal();
+            return;
         }
 
-        var cancelBtn = contentEl.querySelector('#filler-cancel');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', function() {
-                closeModal();
-            });
+        if (btn.id === 'filler-apply') {
+            e.preventDefault();
+            handleApply();
+            return;
         }
 
-        var applyBtn = contentEl.querySelector('#filler-apply');
-        if (applyBtn) {
-            applyBtn.addEventListener('click', function() {
-                handleApply();
-            });
+        if (btn.id === 'filler-select-candidates') {
+            e.preventDefault();
+            handleSelectCandidates(contentEl);
+            return;
         }
 
-        var selectCandidates = contentEl.querySelector(
-            '#filler-select-candidates'
-        );
-        if (selectCandidates) {
-            selectCandidates.addEventListener('click', function() {
-                handleSelectCandidates(contentEl);
-            });
+        if (btn.id === 'filler-clear-all') {
+            e.preventDefault();
+            handleClearAll(contentEl);
+            return;
         }
+    }
 
-        var clearAll = contentEl.querySelector('#filler-clear-all');
-        if (clearAll) {
-            clearAll.addEventListener('click', function() {
-                handleClearAll(contentEl);
-            });
+    function handleContentChange(e, contentEl) {
+        var target = e.target;
+        if (!target || !target.classList) { return; }
+        if (!target.classList.contains('filler-row-check')) {
+            return;
         }
-
-        contentEl.addEventListener('change', function(e) {
-            var target = e.target;
-            if (!target || !target.classList) { return; }
-            if (!target.classList.contains('filler-row-check')) {
-                return;
-            }
-            var id = target.dataset ? target.dataset.id : null;
-            if (!id) { return; }
-            if (target.checked) {
-                _checkedIds[id] = true;
-            } else {
-                delete _checkedIds[id];
-            }
-            updateCounts(contentEl);
-        });
+        var id = target.dataset ? target.dataset.id : null;
+        if (!id) { return; }
+        if (target.checked) {
+            _checkedIds[id] = true;
+        } else {
+            delete _checkedIds[id];
+        }
+        updateCounts(contentEl);
     }
 
     function handleSelectCandidates(contentEl) {
-        var Strip = getCharacterStrip();
-        var chars = getCharacters();
-        for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (!c || !c.id) { continue; }
-            if (Strip.isFillerCandidate(c)) {
-                _checkedIds[String(c.id)] = true;
-            }
+        // The candidate set was computed at render time. Using
+        // that set here (rather than re-running the heuristic)
+        // guarantees agreement between the badge, the count, and
+        // this action.
+        var keys = Object.keys(_candidateIds);
+        for (var i = 0; i < keys.length; i++) {
+            _checkedIds[keys[i]] = true;
         }
         syncCheckboxesFromState(contentEl);
     }
@@ -467,9 +628,7 @@
             '#filler-selected-count'
         );
         if (countEl) {
-            countEl.textContent = String(
-                Object.keys(_checkedIds).length
-            );
+            countEl.textContent = String(countTrue(_checkedIds));
         }
     }
 
@@ -477,13 +636,31 @@
     // APPLY
     // ============================================================
 
+    /**
+     * The Apply step.
+     *
+     * Ids are partitioned into three groups:
+     *
+     *   toFlag       newly checked, no authored content
+     *   toUnflag     newly unchecked
+     *   toSkip       newly checked, but has authored content
+     *
+     * The authored-content check is the same one CharacterCRUD.save
+     * runs. See the AUTHORED-CONTENT CHECK note in the header for
+     * why this modal is currently the only enforcement point for
+     * a bulk flag.
+     *
+     * Each group runs as its own CharacterCRUD.setFillerFlag call.
+     * Both calls are awaited; both results are checked. A failed
+     * step is reported, and the modal does NOT close on a partial
+     * failure.
+     */
     function handleApply() {
         var Strip = getCharacterStrip();
         var CRUD = getCharacterCRUD();
 
-        // Collect the union of currently-checked and
-        // initially-checked IDs. Only IDs that changed state
-        // between open and apply are acted on.
+        // ---- Collect the union of currently-checked and
+        //      initially-checked ids. ----
         var allIds = Object.create(null);
         var k;
 
@@ -500,6 +677,7 @@
         var toFlag = [];
         var toUnflag = [];
         var skippedForAuthoredContent = [];
+        var missingCharacterIds = [];
 
         var idList = Object.keys(allIds);
         for (var i = 0; i < idList.length; i++) {
@@ -508,29 +686,37 @@
             var wasChecked = _initialCheckedIds[id] === true;
 
             if (nowChecked && !wasChecked) {
-                // Flagging as filler. Enforce the authored-content
-                // check that CharacterCRUD.save performs on the
-                // save path. A character with authored content is
-                // skipped and reported, not silently flagged.
                 var char = findCharacterById(id);
-                if (char && Strip.hasAuthoredContent(char)) {
+                if (!char) {
+                    // Character was deleted between open and
+                    // Apply. Nothing to do; report it.
+                    missingCharacterIds.push(id);
+                    continue;
+                }
+                if (Strip.hasAuthoredContent(char)) {
                     skippedForAuthoredContent.push(id);
                 } else {
                     toFlag.push(id);
                 }
             } else if (!nowChecked && wasChecked) {
+                // Unflag path. No authored-content check: the
+                // character is currently flagged, and the CRUD
+                // will clear the flag without stripping.
                 toUnflag.push(id);
             }
         }
 
+        // ---- Nothing to do? ----
         if (toFlag.length === 0 &&
             toUnflag.length === 0 &&
-            skippedForAuthoredContent.length === 0) {
+            skippedForAuthoredContent.length === 0 &&
+            missingCharacterIds.length === 0) {
             notify('No changes to apply.', 'info');
             closeModal();
             return;
         }
 
+        // ---- Everything to do was skipped? ----
         if (toFlag.length === 0 &&
             toUnflag.length === 0 &&
             skippedForAuthoredContent.length > 0) {
@@ -547,27 +733,78 @@
             return;
         }
 
-        // Flag first (strip), then unflag.
+        // ---- Flag first, then unflag. Both results checked. ----
+        var flaggedCount = 0;
+        var unflaggedCount = 0;
+        var flagFailed = false;
+        var flagFailureMessage = '';
+        var unflagFailed = false;
+        var unflagFailureMessage = '';
+
         var chain = Promise.resolve();
 
         if (toFlag.length > 0) {
             chain = chain.then(function() {
-                return CRUD.setFillerFlag(toFlag, true);
-            });
-        }
-        if (toUnflag.length > 0) {
-            chain = chain.then(function() {
-                return CRUD.setFillerFlag(toUnflag, false);
+                return CRUD.setFillerFlag(toFlag, true)
+                    .then(function(result) {
+                        if (result && result.success) {
+                            flaggedCount = toFlag.length;
+                            return;
+                        }
+                        flagFailed = true;
+                        flagFailureMessage =
+                            (result && result.message) ||
+                            'Unknown error.';
+                    })
+                    .catch(function(err) {
+                        flagFailed = true;
+                        flagFailureMessage =
+                            (err && err.message)
+                                ? err.message
+                                : String(err);
+                    });
             });
         }
 
+        chain = chain.then(function() {
+            // If the flag step failed, do not run unflag. The
+            // two steps are not atomic, and running the second
+            // on top of a failed first would make the final
+            // state harder to reason about. Report and stop.
+            if (flagFailed) { return; }
+            if (toUnflag.length === 0) { return; }
+
+            return CRUD.setFillerFlag(toUnflag, false)
+                .then(function(result) {
+                    if (result && result.success) {
+                        unflaggedCount = toUnflag.length;
+                        return;
+                    }
+                    unflagFailed = true;
+                    unflagFailureMessage =
+                        (result && result.message) ||
+                        'Unknown error.';
+                })
+                .catch(function(err) {
+                    unflagFailed = true;
+                    unflagFailureMessage =
+                        (err && err.message)
+                            ? err.message
+                            : String(err);
+                });
+        });
+
         chain.then(function() {
+            var anyFailure = flagFailed || unflagFailed;
+
+            // ---- Build the report. ----
             var parts = [];
-            if (toFlag.length > 0) {
-                parts.push('flagged ' + toFlag.length);
+
+            if (flaggedCount > 0) {
+                parts.push('flagged ' + flaggedCount);
             }
-            if (toUnflag.length > 0) {
-                parts.push('unflagged ' + toUnflag.length);
+            if (unflaggedCount > 0) {
+                parts.push('unflagged ' + unflaggedCount);
             }
             if (skippedForAuthoredContent.length > 0) {
                 parts.push(
@@ -575,22 +812,111 @@
                     ' (authored content)'
                 );
             }
-            notify(
-                'Filler update: ' + parts.join(', ') + '.',
-                skippedForAuthoredContent.length > 0
+            if (missingCharacterIds.length > 0) {
+                parts.push(
+                    'skipped ' + missingCharacterIds.length +
+                    ' (character no longer exists)'
+                );
+            }
+            if (flagFailed) {
+                parts.push(
+                    'flag failed: ' + flagFailureMessage
+                );
+            }
+            if (unflagFailed) {
+                parts.push(
+                    'unflag failed: ' + unflagFailureMessage
+                );
+            }
+
+            var message = 'Filler update: ' +
+                (parts.length > 0
+                    ? parts.join(', ')
+                    : 'no changes') + '.';
+
+            // ---- Report detail to the console when there is a
+            //      skip or a failure the user might want to act
+            //      on. The toast carries the headline. ----
+            if (skippedForAuthoredContent.length > 0) {
+                console.warn(
+                    '[FillerManagerModal] Skipped (authored ' +
+                    'content): ' +
+                    describeIds(skippedForAuthoredContent)
+                );
+            }
+            if (missingCharacterIds.length > 0) {
+                console.warn(
+                    '[FillerManagerModal] Skipped (missing ' +
+                    'character): ' +
+                    describeIds(missingCharacterIds)
+                );
+            }
+            if (flagFailed) {
+                console.warn(
+                    '[FillerManagerModal] Flag step failed:',
+                    flagFailureMessage
+                );
+            }
+            if (unflagFailed) {
+                console.warn(
+                    '[FillerManagerModal] Unflag step failed:',
+                    unflagFailureMessage
+                );
+            }
+
+            var toastType = anyFailure
+                ? 'error'
+                : (skippedForAuthoredContent.length > 0 ||
+                   missingCharacterIds.length > 0)
                     ? 'warning'
-                    : 'success'
-            );
-            closeModal();
+                    : 'success';
+
+            notify(message, toastType);
+
+            // ---- Close only on a clean apply. ----
+            //
+            // A failure leaves the modal open so the user can
+            // retry the failed step (the diff logic keeps the
+            // state consistent: only the flag succeeded, so the
+            // retry sees the same toUnflag set). A warning-only
+            // apply closes, matching the previous behaviour for
+            // the "nothing to flag" path.
+            if (!anyFailure) {
+                closeModal();
+            }
         }).catch(function(err) {
             console.warn(
-                '[FillerManagerModal] apply failed:', err
+                '[FillerManagerModal] apply chain threw:', err
             );
             notify(
-                'Failed to update filler flags.',
+                'Filler update failed: ' +
+                (err && err.message ? err.message : String(err)),
                 'error'
             );
+            // Leave the modal open so the user can retry.
         });
+    }
+
+    /**
+     * Format a list of ids for a console line. Ids are not
+     * human-friendly, so each one is resolved to a display name
+     * when possible. Falls back to the id itself.
+     */
+    function describeIds(ids) {
+        var CQ = getCharacterQueries();
+        var out = [];
+        for (var i = 0; i < ids.length; i++) {
+            var char = CQ && typeof CQ.getCharacterById === 'function'
+                ? CQ.getCharacterById(ids[i])
+                : null;
+            if (char && typeof CQ.getDisplayName === 'function') {
+                out.push(CQ.getDisplayName(char) + ' (' +
+                    ids[i] + ')');
+            } else {
+                out.push(ids[i]);
+            }
+        }
+        return out.join(', ');
     }
 
     function findCharacterById(id) {
