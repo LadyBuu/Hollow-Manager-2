@@ -76,10 +76,26 @@
  *     class-export-graduates
  *     class-export-characters
  *
- * CHARACTER EXPORT:
- *   The character detail panel's header carries one Export button
- *   that emits `data-action="character-export"` with the character
- *   id in its own dataset. The handler reads the id off the button.
+ * CHARACTER EXPORT (this revision):
+ *   The character detail panel carries three export actions:
+ *
+ *     character-export              header report button
+ *     character-export-schedule-text
+ *                                   Schedule tab's "Export
+ *                                   Schedule" button
+ *     character-export-schedule-day Schedule tab's Mon / Tue /
+ *                                   Wed / Thu / Fri / Sat / Sun
+ *                                   day buttons
+ *
+ *   All three read the character id off the button's own dataset.
+ *   The schedule actions also read the current display week from
+ *   AcademyUI; the day action additionally reads data-day.
+ *
+ *   The two schedule actions were previously absent from
+ *   dispatchAction's switch and silently no-op'd. This revision
+ *   adds them, along with their handlers, and a default-case
+ *   warning so a future missing case is visible during
+ *   development.
  */
 
 (function() {
@@ -878,6 +894,18 @@
                 handleCharacterExport(el.dataset.characterId);
                 return;
 
+            // Character schedule exports. The character detail
+            // panel's Schedule tab carries one weekly export button
+            // and seven day buttons. Both previously fell through
+            // to the default branch and no-op'd because the switch
+            // had no case for them.
+            case 'character-export-schedule-text':
+                handleExportCharacterScheduleText(el);
+                return;
+            case 'character-export-schedule-day':
+                handleExportCharacterScheduleDay(el);
+                return;
+
             case 'character-toggle-filler':
                 handleCharacterFillerToggle(el);
                 return;
@@ -993,6 +1021,14 @@
                 return;
 
             default:
+                // A missing case is silent by default. Warn so a
+                // future omission is visible during development.
+                // The action string is the only thing worth
+                // printing; the element may be huge.
+                console.warn(
+                    '[AcademyPeopleController] Unhandled action:',
+                    action
+                );
                 return;
         }
     }
@@ -1199,6 +1235,148 @@
             'Character export failed: ' + (err || 'Unknown error'),
             'error'
         );
+    }
+
+    // ============================================================
+    // CHARACTER SCHEDULE EXPORTS
+    // ============================================================
+    //
+    // The character detail panel's Schedule tab carries:
+    //
+    //   character-export-schedule-text
+    //     one button, "Export Schedule", exports the character's
+    //     weekly grid for the currently displayed week.
+    //
+    //   character-export-schedule-day
+    //     seven buttons, Mon..Sun, each exports a single day strip
+    //     for the currently displayed week.
+    //
+    // Both actions read the character id off their own button's
+    // dataset. The day action additionally reads data-day. Neither
+    // button carries a week; the current display week is the
+    // authoritative source, exactly as it is for the class export.
+    //
+    // The target module, window.ScheduleExport, is a lazy optional
+    // dependency in this controller's accessor set. Missing module
+    // or missing method is reported to the user; the handler does
+    // not throw.
+
+    function handleExportCharacterScheduleText(el) {
+        var charId = el && el.dataset ? el.dataset.characterId : null;
+
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        if (!isFiniteNumber(week)) {
+            notify('No display week set.', 'error');
+            return;
+        }
+
+        var Exporter = getScheduleExport();
+        if (!Exporter ||
+            typeof Exporter.exportStudentScheduleText !== 'function') {
+            notify(
+                'Schedule export module is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportStudentScheduleText(
+                String(charId),
+                week
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'exportStudentScheduleText threw:', e
+            );
+            notify('Schedule export failed: ' + e.message, 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Schedule exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        var err = (result && result.error) ? result.error : '';
+        if (err === 'Character or week not found.') {
+            notify(err, 'warning');
+            return;
+        }
+        notify(err || 'Schedule export failed.', 'error');
+    }
+
+    function handleExportCharacterScheduleDay(el) {
+        var charId = el && el.dataset ? el.dataset.characterId : null;
+        var dayRaw = el && el.dataset ? el.dataset.day : null;
+
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var day = parseInt(dayRaw, 10);
+        if (isNaN(day) || day < 1 || day > 7) {
+            notify('Invalid day.', 'error');
+            return;
+        }
+
+        var week = AcademyUI.getDisplayWeek();
+        if (!isFiniteNumber(week)) {
+            notify('No display week set.', 'error');
+            return;
+        }
+
+        var Exporter = getScheduleExport();
+        if (!Exporter ||
+            typeof Exporter.exportStudentDayScheduleText !== 'function') {
+            notify(
+                'Schedule export module is not loaded.',
+                'error'
+            );
+            return;
+        }
+
+        var result;
+        try {
+            result = Exporter.exportStudentDayScheduleText(
+                String(charId),
+                week,
+                day
+            );
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'exportStudentDayScheduleText threw:', e
+            );
+            notify('Schedule export failed: ' + e.message, 'error');
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Day schedule exported: ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        var err = (result && result.error) ? result.error : '';
+        if (err === 'Character, week, or day not found.') {
+            notify(err, 'warning');
+            return;
+        }
+        notify(err || 'Schedule export failed.', 'error');
     }
 
     // ============================================================
