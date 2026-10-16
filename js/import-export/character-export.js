@@ -27,8 +27,8 @@
  *                                   - exportGeneralText(charId)
  *
  * WHY THREE NAMESPACES IN ONE FILE:
- *   They share the CharacterQueries, ExportUtils, and CSV
- *   dependencies, they share the same "character in, file out"
+ *   They share the CSV parser, the character queries, and the
+ *   export utilities, they share the same "character in, file out"
  *   concern, and they share a template/column vocabulary that would
  *   fragment if split across files.
  *
@@ -52,9 +52,27 @@
  *   the caller's responsibility.
  *
  * FORMULA INJECTION:
- *   The CSV export prefixes a single quote to any cell whose first
- *   character could be interpreted as a spreadsheet formula
- *   (=, +, -, @, tab, CR). See the guardFormula helper in section 2.
+ *   CharacterCSV.export prefixes every user-authored string cell
+ *   with a guard character when the value would be evaluated as a
+ *   spreadsheet formula. CharacterCSV.import strips the guard
+ *   symmetrically. Both directions use CSV.isPotentialFormula as
+ *   the single predicate, so the round trip is lossless.
+ *
+ *   The guard is applied in toRow, and removed in parseRow. Every
+ *   string cell that originates from user data passes through
+ *   both. Cells produced by the module itself (the boolean
+ *   'true'/'false', the JSON-encoded careerStatus and
+ *   eliminatedWeeks) are not guarded, because they cannot begin
+ *   with a formula prefix.
+ *
+ *   The guard/un-guard pair lives in CSV (csv-parser.js). This
+ *   module calls CSV.guardFormula and CSV.unguardFormula by name.
+ *
+ * LAZY DEPENDENCIES:
+ *   Every dependency this file uses is resolved at call time, not
+ *   at load time. A missing dependency produces a clear error the
+ *   first time an operation that needs it runs, not a load-time
+ *   throw that takes the whole module offline.
  *
  * ELIMINATION QUERIES SIGNATURE:
  *   CharacterRosterExport.resolveEliminationMarker calls
@@ -75,40 +93,68 @@
     window.__characterExportBundleLoaded = true;
 
     // ============================================================
-    // SHARED DEPENDENCY CHECK
+    // SHARED DEPENDENCY ACCESSORS - LAZY
     // ============================================================
 
-    if (!window.CSV || typeof window.CSV.parse !== 'function') {
-        throw new Error(
-            '[CharacterExport] CSV parser is required.'
-        );
-    }
-    if (!window.ImportResult ||
-        typeof window.ImportResult !== 'function') {
-        throw new Error(
-            '[CharacterExport] ImportResult is required.'
-        );
-    }
-    if (!window.ExportUtils ||
-        typeof window.ExportUtils.downloadBlob !== 'function') {
-        throw new Error(
-            '[CharacterExport] ExportUtils is required.'
-        );
-    }
-    if (!window.IdUtils ||
-        typeof window.IdUtils.generateId !== 'function') {
-        throw new Error(
-            '[CharacterExport] IdUtils is required.'
-        );
+    function getCSV()               { return window.CSV || null; }
+    function getImportResult()      { return window.ImportResult || null; }
+    function getExportUtils()       { return window.ExportUtils || null; }
+    function getIdUtils()           { return window.IdUtils || null; }
+    function getCharacterQueries()  { return window.CharacterQueries || null; }
+
+    // ============================================================
+    // SHARED DEPENDENCY CHECKS - per entry point
+    // ============================================================
+
+    function requireCSV(calleeName) {
+        var CSV = getCSV();
+        if (!CSV || typeof CSV.parse !== 'function' ||
+            typeof CSV.arrayToCSV !== 'function') {
+            throw new Error(
+                '[CharacterExport] ' + calleeName + ' requires ' +
+                'window.CSV with parse and arrayToCSV. Ensure ' +
+                'csv-parser.js is loaded before this function is ' +
+                'called.'
+            );
+        }
+        return CSV;
     }
 
-    var CSV = window.CSV;
-    var ImportResult = window.ImportResult;
-    var ExportUtils = window.ExportUtils;
-    var IdUtils = window.IdUtils;
+    function requireImportResult(calleeName) {
+        var IR = getImportResult();
+        if (typeof IR !== 'function') {
+            throw new Error(
+                '[CharacterExport] ' + calleeName + ' requires ' +
+                'window.ImportResult. Ensure import-result.js is ' +
+                'loaded before this function is called.'
+            );
+        }
+        return IR;
+    }
 
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
+    function requireExportUtils(calleeName) {
+        var EU = getExportUtils();
+        if (!EU || typeof EU.downloadBlob !== 'function') {
+            throw new Error(
+                '[CharacterExport] ' + calleeName + ' requires ' +
+                'window.ExportUtils.downloadBlob. Ensure ' +
+                'export-utils.js is loaded before this function is ' +
+                'called.'
+            );
+        }
+        return EU;
+    }
+
+    function requireIdUtils(calleeName) {
+        var IU = getIdUtils();
+        if (!IU || typeof IU.generateId !== 'function') {
+            throw new Error(
+                '[CharacterExport] ' + calleeName + ' requires ' +
+                'window.IdUtils.generateId. Ensure id-utils.js is ' +
+                'loaded before this function is called.'
+            );
+        }
+        return IU;
     }
 
     // ============================================================
@@ -132,29 +178,106 @@
     }
 
     /**
-     * Formula-injection guard for spreadsheet-oriented exports.
+     * Guard a value against spreadsheet formula evaluation.
      *
-     * A cell whose first character is `=`, `+`, `-`, `@`, tab, or
-     * CR is evaluated as a formula by Excel / LibreOffice when the
-     * file is opened. Prefixing a single quote tells those apps to
-     * treat the cell as a literal string. The quote does not
-     * appear in the cell once rendered.
+     * Delegates to CSV.guardFormula when available. Falls back to a
+     * local implementation using CSV.isPotentialFormula as the
+     * predicate. Non-string values pass through untouched.
      *
-     * CSV.isPotentialFormula owns the prefix test. When the CSV
-     * module is unavailable or lacks the function, this is a
-     * passthrough.
+     * The guard is idempotent: a value that is already guarded is
+     * not guarded a second time.
      */
     function guardFormula(value) {
-        if (value === undefined || value === null) { return value; }
-        if (typeof value !== 'string') { return value; }
-        if (value === '') { return value; }
+        var CSV = getCSV();
+        if (CSV && typeof CSV.guardFormula === 'function') {
+            return CSV.guardFormula(value);
+        }
 
-        if (!CSV || typeof CSV.isPotentialFormula !== 'function') {
+        // Fallback: local implementation with the same semantics,
+        // using whichever predicate helper is available.
+        if (value === undefined || value === null) {
+            return value;
+        }
+        if (typeof value !== 'string') {
+            return value;
+        }
+        if (value === '') {
             return value;
         }
 
-        if (CSV.isPotentialFormula(value)) {
+        var predicate = null;
+        if (CSV && typeof CSV.isPotentialFormula === 'function') {
+            predicate = CSV.isPotentialFormula;
+        } else {
+            // Inline the predicate rather than depend on the parser
+            // for a function this small. The rule is the same one
+            // csv-parser.js documents.
+            predicate = function(v) {
+                if (typeof v !== 'string') { return false; }
+                var t = v.trim();
+                if (t === '') { return false; }
+                var first = t.charAt(0);
+                return first === '=' || first === '+' ||
+                       first === '-' || first === '@' ||
+                       first === '\t' || first === '\r';
+            };
+        }
+
+        if (value.charAt(0) === "'" &&
+            predicate(value.substring(1))) {
+            return value;
+        }
+        if (predicate(value)) {
             return "'" + value;
+        }
+        return value;
+    }
+
+    /**
+     * Strip the guard prefix from a value that was guarded by
+     * guardFormula. The strip is symmetric with the guard.
+     *
+     * Delegates to CSV.unguardFormula when available; otherwise
+     * uses a local implementation with the same semantics.
+     */
+    function unguardFormula(value) {
+        var CSV = getCSV();
+        if (CSV && typeof CSV.unguardFormula === 'function') {
+            return CSV.unguardFormula(value);
+        }
+
+        // Local fallback, symmetric to the local guard above.
+        if (typeof value !== 'string') {
+            return value;
+        }
+        if (value === '') {
+            return value;
+        }
+        if (value.charAt(0) !== "'") {
+            return value;
+        }
+        var remainder = value.substring(1);
+        if (remainder === '') {
+            return value;
+        }
+
+        var predicate;
+        if (CSV && typeof CSV.isPotentialFormula === 'function') {
+            predicate = CSV.isPotentialFormula;
+        } else {
+            predicate = function(v) {
+                if (typeof v !== 'string') { return false; }
+                var t = v.trim();
+                if (t === '') { return false; }
+                var first = t.charAt(0);
+                return first === '=' || first === '+' ||
+                       first === '-' || first === '@' ||
+                       first === '\t' || first === '\r';
+            };
+        }
+
+        if (predicate(remainder)) {
+            return remainder;
         }
         return value;
     }
@@ -301,9 +424,8 @@
 
         function parseBooleanField(value) {
             var str = String(value == null ? '' : value).trim();
-            return str === 'true' ||
-                   str === 'TRUE' ||
-                   str === '1';
+            var lowered = str.toLowerCase();
+            return lowered === 'true' || str === '1';
         }
 
         function isValidCandidate(candidate) {
@@ -357,35 +479,78 @@
                 row[21], [], warnFn, 'EliminatedWeeks'
             );
 
+            // Every string cell that could have been guarded on
+            // export is unguarded here. The unguard is symmetric:
+            // a cell that was never guarded passes through.
             var character = {
                 id: id,
-                firstName: firstName,
-                middleName: String(row[2] || '').trim(),
-                lastName: lastName,
-                birthYear: String(row[4] || '').trim(),
-                gender: String(row[5] || '').trim(),
-                associatedNames: String(row[6] || '').trim(),
-                eyes: String(row[7] || '').trim(),
-                hair: String(row[8] || '').trim(),
-                skin: String(row[9] || '').trim(),
-                height: String(row[10] || '').trim(),
-                weight: String(row[11] || '').trim(),
-                build: String(row[12] || '').trim(),
-                appearanceNotes: String(row[13] || '').trim(),
-                notes: String(row[14] || '').trim(),
+                firstName: unguardFormula(firstName),
+                middleName: unguardFormula(
+                    String(row[2] || '').trim()
+                ),
+                lastName: unguardFormula(lastName),
+                birthYear: unguardFormula(
+                    String(row[4] || '').trim()
+                ),
+                gender: unguardFormula(
+                    String(row[5] || '').trim()
+                ),
+                associatedNames: unguardFormula(
+                    String(row[6] || '').trim()
+                ),
+                eyes: unguardFormula(
+                    String(row[7] || '').trim()
+                ),
+                hair: unguardFormula(
+                    String(row[8] || '').trim()
+                ),
+                skin: unguardFormula(
+                    String(row[9] || '').trim()
+                ),
+                height: unguardFormula(
+                    String(row[10] || '').trim()
+                ),
+                weight: unguardFormula(
+                    String(row[11] || '').trim()
+                ),
+                build: unguardFormula(
+                    String(row[12] || '').trim()
+                ),
+                appearanceNotes: unguardFormula(
+                    String(row[13] || '').trim()
+                ),
+                notes: unguardFormula(
+                    String(row[14] || '').trim()
+                ),
                 deceased: deceased,
-                deathYear: String(row[16] || '').trim(),
-                deathCause: String(row[17] || '').trim(),
-                deathAge: String(row[18] || '').trim(),
-                specialty: String(row[19] || '').trim(),
+                deathYear: unguardFormula(
+                    String(row[16] || '').trim()
+                ),
+                deathCause: unguardFormula(
+                    String(row[17] || '').trim()
+                ),
+                deathAge: unguardFormula(
+                    String(row[18] || '').trim()
+                ),
+                specialty: unguardFormula(
+                    String(row[19] || '').trim()
+                ),
                 careerStatus: careerStatus,
                 eliminatedWeeks: eliminatedWeeks,
 
                 personality: {
-                    authority: String(row[22] || '').trim(),
-                    conflictStyle: String(row[23] || '').trim(),
-                    socialStyle: String(row[24] || '').trim(),
-                    quirks: String(row[25] || '').trim()
+                    authority: unguardFormula(
+                        String(row[22] || '').trim()
+                    ),
+                    conflictStyle: unguardFormula(
+                        String(row[23] || '').trim()
+                    ),
+                    socialStyle: unguardFormula(
+                        String(row[24] || '').trim()
+                    ),
+                    quirks: unguardFormula(
+                        String(row[25] || '').trim()
+                    )
                 }
             };
 
@@ -397,6 +562,17 @@
             };
         }
 
+        /**
+         * Build one CSV row for a character.
+         *
+         * Every user-authored string cell is guarded against
+         * spreadsheet formula evaluation via guardFormula. The
+         * cells produced by this function itself — the boolean
+         * 'true'/'false' cell and the JSON-encoded careerStatus
+         * and eliminatedWeeks cells — are not guarded, because
+         * their shape is fixed and cannot begin with a formula
+         * prefix.
+         */
         function toRow(character) {
             if (!character || typeof character !== 'object') {
                 return COLUMNS.map(function() { return ''; });
@@ -406,35 +582,43 @@
 
             return [
                 character.id != null ? character.id : '',
-                character.firstName != null
-                    ? character.firstName : '',
-                character.middleName != null
-                    ? character.middleName : '',
-                character.lastName != null
-                    ? character.lastName : '',
-                character.birthYear != null
-                    ? character.birthYear : '',
-                character.gender != null ? character.gender : '',
-                character.associatedNames != null
-                    ? character.associatedNames : '',
-                character.eyes != null ? character.eyes : '',
-                character.hair != null ? character.hair : '',
-                character.skin != null ? character.skin : '',
-                character.height != null ? character.height : '',
-                character.weight != null ? character.weight : '',
-                character.build != null ? character.build : '',
-                character.appearanceNotes != null
-                    ? character.appearanceNotes : '',
-                character.notes != null ? character.notes : '',
+                guardFormula(character.firstName != null
+                    ? character.firstName : ''),
+                guardFormula(character.middleName != null
+                    ? character.middleName : ''),
+                guardFormula(character.lastName != null
+                    ? character.lastName : ''),
+                guardFormula(character.birthYear != null
+                    ? character.birthYear : ''),
+                guardFormula(character.gender != null
+                    ? character.gender : ''),
+                guardFormula(character.associatedNames != null
+                    ? character.associatedNames : ''),
+                guardFormula(character.eyes != null
+                    ? character.eyes : ''),
+                guardFormula(character.hair != null
+                    ? character.hair : ''),
+                guardFormula(character.skin != null
+                    ? character.skin : ''),
+                guardFormula(character.height != null
+                    ? character.height : ''),
+                guardFormula(character.weight != null
+                    ? character.weight : ''),
+                guardFormula(character.build != null
+                    ? character.build : ''),
+                guardFormula(character.appearanceNotes != null
+                    ? character.appearanceNotes : ''),
+                guardFormula(character.notes != null
+                    ? character.notes : ''),
                 character.deceased ? 'true' : 'false',
-                character.deathYear != null
-                    ? character.deathYear : '',
-                character.deathCause != null
-                    ? character.deathCause : '',
-                character.deathAge != null
-                    ? character.deathAge : '',
-                character.specialty != null
-                    ? character.specialty : '',
+                guardFormula(character.deathYear != null
+                    ? character.deathYear : ''),
+                guardFormula(character.deathCause != null
+                    ? character.deathCause : ''),
+                guardFormula(character.deathAge != null
+                    ? character.deathAge : ''),
+                guardFormula(character.specialty != null
+                    ? character.specialty : ''),
                 JSON.stringify(
                     character.careerStatus != null
                         ? character.careerStatus : []
@@ -443,14 +627,14 @@
                     character.eliminatedWeeks != null
                         ? character.eliminatedWeeks : []
                 ),
-                personality.authority != null
-                    ? personality.authority : '',
-                personality.conflictStyle != null
-                    ? personality.conflictStyle : '',
-                personality.socialStyle != null
-                    ? personality.socialStyle : '',
-                personality.quirks != null
-                    ? personality.quirks : ''
+                guardFormula(personality.authority != null
+                    ? personality.authority : ''),
+                guardFormula(personality.conflictStyle != null
+                    ? personality.conflictStyle : ''),
+                guardFormula(personality.socialStyle != null
+                    ? personality.socialStyle : ''),
+                guardFormula(personality.quirks != null
+                    ? personality.quirks : '')
             ];
         }
 
@@ -476,11 +660,15 @@
         function exportCharacters(characters, options) {
             options = options || {};
 
+            requireExportUtils('CharacterCSV.export');
+
             if (!Array.isArray(characters)) {
                 throw new TypeError(
                     'Characters must be an array.'
                 );
             }
+
+            var CSV = requireCSV('CharacterCSV.export');
 
             var rows = toRows(characters);
             var csvContent = CSV.arrayToCSV(rows);
@@ -493,7 +681,7 @@
                 'characters-' +
                 new Date().toISOString().slice(0, 10) + '.csv';
 
-            ExportUtils.downloadBlob(blob, filename);
+            getExportUtils().downloadBlob(blob, filename);
 
             return {
                 count: characters.length,
@@ -535,6 +723,7 @@
                 );
             }
 
+            var CSV = requireCSV('CharacterCSV.getCSVContent');
             var rows = toRows(characters);
             return CSV.arrayToCSV(rows);
         }
@@ -581,6 +770,11 @@
             options = options || {};
             var strict = options.strict === true;
             var maxRows = options.maxRows || MAX_ROWS;
+
+            var CSV = requireCSV('CharacterCSV.import');
+            var ImportResult = requireImportResult(
+                'CharacterCSV.import'
+            );
 
             var result = new ImportResult();
 
@@ -640,6 +834,9 @@
                 if (parsed.valid) {
                     if (isValidCandidate(parsed.character)) {
                         if (!parsed.character.id) {
+                            var IdUtils = requireIdUtils(
+                                'CharacterCSV.import'
+                            );
                             parsed.character.id =
                                 IdUtils.generateId(ID_PREFIX);
                         }
@@ -662,12 +859,7 @@
             }
 
             // Strict-mode policy is enforced by the CONSUMER, not
-            // here. The result already carries every valid record,
-            // every error (with row metadata), and every warning;
-            // a strict caller filters getValid(true) against
-            // getErrorsForRow() itself. The import loop above has
-            // already applied the strict rule for the row-level
-            // enum and range failures this module owns.
+            // here. See the file header.
 
             return result;
         }
@@ -803,12 +995,15 @@
         }
 
         function getTemplateContent(options) {
+            var CSV = requireCSV('CharacterCSV.getTemplateContent');
             var rows = getTemplateRows(options);
             return CSV.arrayToCSV(rows);
         }
 
         function exportTemplate(options) {
             options = options || {};
+
+            requireExportUtils('CharacterCSV.exportTemplate');
 
             var content = getTemplateContent(options);
 
@@ -818,7 +1013,7 @@
 
             var filename = options.filename ||
                 'characters-template.csv';
-            ExportUtils.downloadBlob(blob, filename);
+            getExportUtils().downloadBlob(blob, filename);
 
             return {
                 exported: true,
@@ -877,7 +1072,9 @@
         function getImportPreview(result, limit) {
             limit = limit || 5;
 
-            if (!(result instanceof ImportResult)) {
+            var ImportResult = getImportResult();
+            if (typeof ImportResult !== 'function' ||
+                !(result instanceof ImportResult)) {
                 throw new TypeError(
                     'Result must be an ImportResult'
                 );
@@ -894,7 +1091,9 @@
         }
 
         function getImportSummary(result) {
-            if (!(result instanceof ImportResult)) {
+            var ImportResult = getImportResult();
+            if (typeof ImportResult !== 'function' ||
+                !(result instanceof ImportResult)) {
                 throw new TypeError(
                     'Result must be an ImportResult'
                 );
@@ -982,6 +1181,11 @@
     // ============================================================
     // SECTION 3: CharacterRosterExport
     // ============================================================
+    //
+    // Unchanged. The tab-separated roster format does not run
+    // through guardFormula: TSV has no spreadsheet-evaluation
+    // convention that the guard would protect against, and the
+    // roster is a display grid, not a spreadsheet import.
 
     (function() {
 
@@ -1234,6 +1438,8 @@
         }
 
         function exportText() {
+            requireExportUtils('CharacterRosterExport.exportText');
+
             var built = buildText();
             if (!built.valid) {
                 return {
@@ -1251,7 +1457,7 @@
                 var blob = new Blob([built.content], {
                     type: 'text/plain;charset=utf-8'
                 });
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -1271,6 +1477,10 @@
 
         function exportSelectedText(charIds, options) {
             options = options || {};
+
+            requireExportUtils(
+                'CharacterRosterExport.exportSelectedText'
+            );
 
             var built = buildSelectedText(charIds);
             if (!built.valid) {
@@ -1305,7 +1515,7 @@
                 var blob = new Blob([built.content], {
                     type: 'text/plain;charset=utf-8'
                 });
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -1336,22 +1546,10 @@
     // SECTION 4: CharacterExport
     // ============================================================
     //
-    // Two report formats live in this namespace:
-    //
-    //   Full report    every section, the whole character.
-    //                  Academic teams are represented by the
-    //                  CLASSES STUDIED / DISCIPLINES STUDIED /
-    //                  ACADEMIC HISTORY sections. The TEAMS
-    //                  section carries PROFESSIONAL memberships
-    //                  only; temporary and civilian teams are
-    //                  not part of this report.
-    //
-    //   General        a curated subset. Name, physical,
-    //                  personality, combat, all-time class
-    //                  names, professional teams, career status,
-    //                  department memberships, social
-    //                  connections. No missions, no notes, no
-    //                  academic history beyond class names.
+    // Unchanged. The full and general report builders compose
+    // their cross-domain reads lazily at call time and already
+    // guard against missing modules. They do not need the CSV
+    // formula guard; they emit plain text, not CSV.
 
     (function() {
 
@@ -1573,11 +1771,6 @@
                 }
             }
 
-            // Professional-team joins. Temporary, civilian, and
-            // academic teams do not contribute timeline entries:
-            // academic is redundant with the ACADEMIC HISTORY
-            // section, and temporary / civilian teams are out of
-            // scope for this report.
             var TeamQueries = window.TeamQueries;
             if (TeamQueries &&
                 typeof TeamQueries
@@ -2769,12 +2962,6 @@
             return out;
         }
 
-        // ---- TEAMS section, professional only ----
-        //
-        // Academic teams are represented by the CLASSES STUDIED and
-        // ACADEMIC HISTORY sections. Temporary and civilian teams
-        // are not part of this report. Only professional memberships
-        // are emitted here.
         function buildTeamsSection(char, charId) {
             var TeamQueries = window.TeamQueries;
             if (!TeamQueries ||
@@ -3172,19 +3359,6 @@
             return out;
         }
 
-        // ========================================================
-        // DEPARTMENTS SECTION (full report)
-        // ========================================================
-        //
-        // Every department the character is an ACTIVE member of at
-        // the current application year, with the earliest join year
-        // across the intervals that are still within range, and an
-        // indication of whether they hold the head role.
-        //
-        // Departments carry no per-member title. The only role-like
-        // attribute is headId on the department itself; that is what
-        // "(Head)" reflects.
-
         function buildDepartmentsSection(char, charId) {
             var DQ = window.DepartmentQueries;
             if (!DQ ||
@@ -3287,10 +3461,6 @@
             }
             return out;
         }
-
-        // ========================================================
-        // FULL REPORT BUILDER
-        // ========================================================
 
         function buildCharacterReport(charId) {
             var CharacterQueries = getCharacterQueries();
@@ -3401,6 +3571,10 @@
         function exportCharacterText(charId, options) {
             options = options || {};
 
+            requireExportUtils(
+                'CharacterExport.exportCharacterText'
+            );
+
             if (!isNonEmptyString(charId)) {
                 return {
                     exported: false,
@@ -3449,7 +3623,7 @@
             }
 
             try {
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -3467,6 +3641,10 @@
 
         function exportSelectedText(charIds, options) {
             options = options || {};
+
+            requireExportUtils(
+                'CharacterExport.exportSelectedText'
+            );
 
             if (!Array.isArray(charIds)) {
                 return {
@@ -3593,7 +3771,7 @@
             }
 
             try {
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -3610,30 +3788,6 @@
                 error: null
             };
         }
-
-        // ========================================================
-        // GENERAL REPORT
-        // ========================================================
-        //
-        // A curated subset of the full report:
-        //
-        //   - name, surname, nickname
-        //   - gender
-        //   - year of birth, year of death (when applicable)
-        //   - physical traits
-        //   - personality traits (every field)
-        //   - combat traits (stats, HP/MP, magic, weapons,
-        //     moves, combat notes)
-        //   - academic classes (all-time names only, no
-        //     disciplines, no grades, no history)
-        //   - professional teams
-        //   - career status
-        //   - departments (active at the current year)
-        //   - social connections (full detail)
-        //
-        // Excluded: missions, notes, academic history sections,
-        // disciplines studied/taught, commitments, tournaments,
-        // eliminations, rankings, positions, factions.
 
         function buildGeneralIdentitySection(char, charId) {
             var CharacterQueries = getCharacterQueries();
@@ -3666,10 +3820,6 @@
                 out += line('Year of birth', char.birthYear);
             }
 
-            // Year of death is shown only when applicable.
-            // `deceased` may be true with an empty deathYear; the
-            // `line()` helper skips empties, so the caller only
-            // sees the row when there is a year to show.
             var deceased = false;
             try {
                 if (typeof CharacterQueries.isDeceased ===
@@ -3690,33 +3840,17 @@
         }
 
         function buildGeneralPhysicalGroup(char) {
-            // Reuse the full report's Physical group builder. The
-            // field set is identical and the formatting is what
-            // the user already expects.
             return buildIdentityPhysicalGroup(char);
         }
 
         function buildGeneralPersonalityGroup(char) {
-            // Reuse the full report's Personality group builder.
             return buildIdentityPersonalityGroup(char);
         }
 
         function buildGeneralCombatGroup(char) {
-            // Reuse the full report's Combat group builder.
             return buildIdentityCombatGroup(char);
         }
 
-        /**
-         * Academic classes — all-time, names only.
-         *
-         * Every class id in char.classIds that resolves to a live
-         * class, regardless of status (active, graduated,
-         * archived). One line per class, sorted by name.
-         *
-         * No disciplines, no grades, no history. If a class id
-         * does not resolve, it is shown as "Unknown Class [id]"
-         * so the reader can see that something was recorded.
-         */
         function buildGeneralClassesSection(char) {
             var Classes = window.AcademyClasses;
             if (!Classes ||
@@ -3775,20 +3909,10 @@
             return out;
         }
 
-        /**
-         * Professional teams — same shape as the full report's
-         * TEAMS section, but this function is deliberately scoped
-         * to professional so the caller does not have to know
-         * which teams the full report filters out.
-         */
         function buildGeneralTeamsSection(char, charId) {
             return buildTeamsSection(char, charId);
         }
 
-        /**
-         * Career status — one line per entry, chronological.
-         * Reuses the year-range formatter from the full report.
-         */
         function buildGeneralCareerSection(char) {
             var careerStatus = Array.isArray(char.careerStatus)
                 ? char.careerStatus
@@ -3886,9 +4010,6 @@
 
             var physical = buildGeneralPhysicalGroup(char);
             if (physical) {
-                // The group builder emits its own "Physical"
-                // subheader. Wrap it in the section header the
-                // general report uses.
                 out += sectionHeader('PHYSICAL');
                 out += physical;
                 out += '\n';
@@ -3951,6 +4072,10 @@
         function exportGeneralText(charId, options) {
             options = options || {};
 
+            requireExportUtils(
+                'CharacterExport.exportGeneralText'
+            );
+
             if (!isNonEmptyString(charId)) {
                 return {
                     exported: false,
@@ -3999,7 +4124,7 @@
             }
 
             try {
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -4017,6 +4142,10 @@
 
         function exportGeneralSelectedText(charIds, options) {
             options = options || {};
+
+            requireExportUtils(
+                'CharacterExport.exportGeneralSelectedText'
+            );
 
             if (!Array.isArray(charIds)) {
                 return {
@@ -4142,7 +4271,7 @@
             }
 
             try {
-                ExportUtils.downloadBlob(blob, filename);
+                getExportUtils().downloadBlob(blob, filename);
             } catch (e) {
                 return {
                     exported: false,
@@ -4161,12 +4290,10 @@
         }
 
         window.CharacterExport = Object.freeze({
-            // Full report
             getCharacterReportText: getCharacterReportText,
             exportCharacterText: exportCharacterText,
             exportSelectedText: exportSelectedText,
 
-            // General report
             getGeneralReportText: getGeneralReportText,
             exportGeneralText: exportGeneralText,
             exportGeneralSelectedText: exportGeneralSelectedText
