@@ -1,5 +1,5 @@
 /**
- * characters/character-constants.js - Character Constants
+ * shared/constants/character-constants.js - Character Constants
  * Single source of truth for all character-related constants
  *
  * STATUS TIERS:
@@ -10,69 +10,56 @@
  *   - All others fall through as civilian/unknown.
  *
  *   `senior` is a STUDENT tier. A senior is a final-year student,
- *   not a teacher. The previous classification as instructor was a
- *   legacy conflation that excluded seniors from academic team
- *   membership eligibility and from any other student-scoped query.
+ *   not a teacher.
  *
  *   `support` is its own tier. Support staff (medics, technicians,
  *   administrative roles) are neither students nor instructors.
- *   They are excluded from student-scoped and instructor-scoped
- *   queries alike.
  *
  *   `retired` is its own tier. A retired character left the
  *   organisation's active roster and did NOT take a staff role.
- *   They are neither students, nor instructors, nor support. They
- *   are also NOT civilians: `civilian` describes a character who
- *   has not joined (or has never been part of the organisation);
- *   `retired` describes a character who has left it.
+ *   They are neither students, nor instructors, nor support, and
+ *   they are NOT civilians: `civilian` describes a character who
+ *   has not joined; `retired` describes a character who has left.
  *
  *   `retired` is a MANUAL-ONLY status. The Career Wizard does not
- *   produce it. The wizard generates the on-ramp ladder (trainee,
- *   rookie, junior, senior, support); terminal post-career states
- *   are set by hand in the career-status form.
+ *   produce it.
  *
  *   The tier arrays are DISJOINT and the validator enforces this.
- *   A status string belongs to at most one tier. `teacher` and
- *   `professor` are not currently synonyms for `instructor` in the
- *   tiers, because they do not appear in CAREER_STATUS_OPTIONS and
- *   would therefore be unreachable through the form. If they are
- *   added as real statuses later, add them to both
- *   INSTRUCTOR_STATUSES and CAREER_STATUS_OPTIONS together.
+ *   `teacher` and `professor` are not currently statuses and are
+ *   deliberately absent from INSTRUCTOR_STATUSES. If they become
+ *   statuses, add them here and to CAREER_STATUS_OPTIONS together.
  *
  * PHYSICAL CLASS WEIGHT VECTORS:
  *   Each class's weights define the stat profile that class
  *   rewards. The vectors are ADVISORY-constrained: for every pair
- *   (A, B), dot(A, A) should be >= dot(A, B), so that a character
- *   whose stats were shaped by applyPhysicalClass(X) derives back
- *   to X under derivePhysicalClass. Before this constraint was
- *   enforced, three pairs (fighter/brawler, brawler/barbarian,
- *   tactician/scholar) collapsed.
+ *   (A, B), dot(A, A) should be >= dot(A, B), so a character whose
+ *   stats were shaped by applyPhysicalClass(X) derives back to X
+ *   under derivePhysicalClass.
  *
- *   The constraint is ADVISORY, not enforced. A violation produces
- *   a console.warn naming the offending pair, not a thrown error.
- *   The override UI does not depend on the derivation for display,
- *   so a marginal drift degrades gracefully rather than blocking
- *   the module.
+ *   THE CONSTRAINT IS MONITORED, NOT ENFORCED. The validator emits
+ *   a console.warn naming each pair that violates it. As of the
+ *   current vectors, exactly one pair fires:
  *
- *   As of the last review, brawler -> fighter still exceeds its
- *   self-dot. If that warning is not present in the console on
- *   reload, the vectors have been retuned since this comment was
- *   written. If it is present, either retune brawler or accept the
- *   marginal drift and update this comment.
+ *     fighter -> brawler (dot ~0.305 > self ~0.290)
  *
- *   If you edit a weight vector, re-run the collapse check (see
- *   the warning in the console on reload) before committing.
+ *   This is a genuine artefact of the two classes sharing the
+ *   str/dex/con combat profile. A tuning that eliminates the
+ *   warning distorts one or both class identities. The override UI
+ *   displays the picked class directly rather than re-deriving, so
+ *   the collapse is visible only when the derivation is asked
+ *   again.
+ *
+ *   If you edit a weight vector, the console warning on the next
+ *   load is the intended signal. Do not silence it; either accept
+ *   it or retune and confirm it stops firing.
  *
  * PHYSICAL CLASS ICONS (monochrome):
  *   Every physical class carries a single-glyph monochrome icon.
- *   The glyphs are plain Unicode symbols, not emoji. They inherit
- *   `color` from their context, so they theme correctly in dark
- *   and light modes.
+ *   The glyphs are plain Unicode symbols, not emoji.
  *
  *   Do NOT reintroduce emoji here. An emoji glyph ignores the
- *   surrounding text color, renders in its own baked-in palette,
- *   and appears identical in both themes — which is precisely the
- *   behaviour the icon vocabulary is trying to avoid.
+ *   surrounding text color and renders in its own baked-in
+ *   palette.
  *
  *   The glyph set is drawn from the same families used elsewhere
  *   in the app (the v28 stats-config normalisation in
@@ -89,14 +76,11 @@
  *     ▤  U+25A4  book block      — scholarly classes
  *
  *   Icons are shared across classes; they are family marks, not
- *   unique identifiers. Two blade classes can carry the same
- *   glyph. The header documents the vocabulary, not a rule that
- *   every class must have a distinct icon.
+ *   unique identifiers.
  *
  * deepFreeze:
- *   Imported from window.Constants when available. A local fallback
- *   is used if constants.js has not loaded yet; the two
- *   implementations are identical.
+ *   Imported from window.Constants when available. A local
+ *   fallback is used if constants.js has not loaded yet.
  *
  * DEPENDENCIES:
  *   - window.Constants (preferred; local fallback otherwise)
@@ -110,12 +94,15 @@
 
     // ---- deepFreeze: prefer the shared helper, fall back locally ----
     function localDeepFreeze(obj) {
-        if (!obj || typeof obj !== 'object' || Object.isFrozen(obj)) { return obj; }
+        if (!obj || typeof obj !== 'object' ||
+            Object.isFrozen(obj)) { return obj; }
         var keys = Object.getOwnPropertyNames(obj);
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var value = obj[key];
-            if (value && typeof value === 'object') { localDeepFreeze(value); }
+            if (value && typeof value === 'object') {
+                localDeepFreeze(value);
+            }
         }
         return Object.freeze(obj);
     }
@@ -137,7 +124,6 @@
     var STAT_MAX = 30;
     var STAT_DEFAULT = 10;
 
-    // Random generation range for physical stats
     var STAT_RANDOM_MIN = 6;
     var STAT_RANDOM_MAX = 18;
 
@@ -157,15 +143,9 @@
     // Weights sum to 1.0 per class. Higher weight = stat matters more.
     // hpBonus is added on top of the random HP roll.
     //
-    // COLLAPSE CONSTRAINT (advisory):
-    //   For every pair (A, B), dot(A.weights, A.weights) should be
-    //   >= dot(A.weights, B.weights). If not, a character shaped by
-    //   applyPhysicalClass(A) can derive to B under some jitter
-    //   rolls.
-    //
-    //   The constraint is monitored, not guaranteed. The validator
-    //   emits a console.warn for each pair that violates it. See
-    //   the header for the current status of the vectors.
+    // See the COLLAPSE CONSTRAINT section in the header. One pair,
+    // fighter -> brawler, still fires an advisory warning. It is
+    // documented, not silenced.
 
     var PHYSICAL_CLASSES = [
         {
@@ -225,7 +205,7 @@
         {
             id: 'tactician', label: 'Tactician', icon: '\u25a3',
             description: 'Strategic combatant, planning and battlefield control',
-            weights: { int: 0.35, cha: 0.30, wis: 0.25, con: 0.10, str: 0.00, dex: 0.00 },
+            weights: { int: 0.30, cha: 0.35, wis: 0.25, con: 0.10, str: 0.00, dex: 0.00 },
             hpBonus: 2
         },
         {
@@ -264,10 +244,10 @@
     // HP / MP
     // ============================================================
     //
-    // HP_MAX is the hard cap used by CharacterCRUD.normaliseCharacterData
-    // (formerly HP_HARD_CAP) and by the form's input[max]. HP_BASE_MIN
-    // and HP_BASE_MAX are the natural roll range from rollHP, before
-    // class and CON modifiers. They are separate concepts.
+    // HP_MAX is the hard cap used by CharacterCRUD's normaliser
+    // (formerly HP_HARD_CAP) and by the form's input[max].
+    // HP_BASE_MIN and HP_BASE_MAX are the natural roll range from
+    // rollHP, before class and CON modifiers.
 
     var HP_MIN = 0;
     var HP_MAX = 999;
@@ -276,9 +256,9 @@
 
     var MP_MIN = 0;
     var MP_MAX = 200;
-    var MP_BASE_DIVISOR = 5;         // totalMagic / 5 as base
-    var MP_AETHER_MULTIPLIER = 2;    // aether total × this
-    var MP_BODY_MULTIPLIER = 0.5;    // body total × this
+    var MP_BASE_DIVISOR = 5;
+    var MP_AETHER_MULTIPLIER = 2;
+    var MP_BODY_MULTIPLIER = 0.5;
     var MP_RANDOM_MAX = 10;
 
     // ============================================================
@@ -318,31 +298,20 @@
     // ============================================================
     //
     // The tiers are DISJOINT. A status string belongs to at most
-    // one tier. The predicates below are mutually exclusive.
+    // one tier.
     //
-    // `instructor` is the only teaching tier. `teacher` and
-    // `professor` are not currently statuses, and are deliberately
-    // absent from INSTRUCTOR_STATUSES. If they become statuses,
-    // add them here and to CAREER_STATUS_OPTIONS together.
+    // `instructor` is the only teaching tier.
 
     var STUDENT_STATUSES = ['trainee', 'rookie', 'junior', 'senior', 'student'];
     var INSTRUCTOR_STATUSES = ['instructor'];
     var SUPPORT_STATUSES = ['support'];
     var RETIRED_STATUSES = ['retired'];
 
-    // ---- Canonical terminal set ----
-    //
-    // A status is "terminal" when a character whose LATEST career
-    // entry has that status is off the active roster. The set is
-    // derived from the tier arrays so it stays in sync if a tier
-    // changes. `support` is terminal even though support staff are
-    // still part of the organisation, because support staff are
-    // not active competitors.
-    //
-    // character-crud.js consumes this instead of hardcoding its
-    // own set. Do not add statuses here without considering the
-    // cascade in CharacterCRUD.applyCareerTransitionCascade.
-
+    // Canonical terminal set. A status is "terminal" when a
+    // character whose LATEST career entry has that status is off
+    // the active roster. `support` is terminal even though support
+    // staff are still part of the organisation, because support
+    // staff are not active competitors.
     var TERMINAL_STATUSES = ['retired', 'support', 'instructor'];
 
     // ============================================================
@@ -359,11 +328,9 @@
     // ============================================================
     //
     // ATTRACTION_VALUES and SEXUALITY_VALUES are the canonical
-    // vocabulary. The character form currently uses free-text
-    // inputs for both, so these lists are unused by the UI. They
-    // are exported for callers that want to validate or display
-    // a dropdown. The empty string is a legitimate value (meaning
-    // "not specified").
+    // vocabulary. The character form uses free-text inputs for
+    // both, so these lists are unused by the UI. They are exported
+    // for callers that want to validate or display a dropdown.
 
     var ATTRACTION_VALUES = ['', 'Women', 'Men', 'All', 'None', 'Other'];
     var SEXUALITY_VALUES = ['', 'Heterosexual', 'Homosexual', 'Bisexual', 'Pansexual', 'Asexual', 'Questioning', 'Other'];
@@ -385,7 +352,9 @@
 
     function getStatDefinition(key) {
         if (!key || typeof key !== 'string') { return null; }
-        if (!Object.prototype.hasOwnProperty.call(STAT_DEFINITIONS, key)) {
+        if (!Object.prototype.hasOwnProperty.call(
+            STAT_DEFINITIONS, key
+        )) {
             return null;
         }
         return STAT_DEFINITIONS[key];
@@ -440,7 +409,9 @@
     // LOOKUP FUNCTIONS - Career
     // ============================================================
 
-    function getCareerStatusOptions() { return CAREER_STATUS_OPTIONS.slice(); }
+    function getCareerStatusOptions() {
+        return CAREER_STATUS_OPTIONS.slice();
+    }
 
     function getCareerStatusLabels() {
         var labels = {};
@@ -456,14 +427,6 @@
         return TERMINAL_STATUSES.indexOf(base) !== -1;
     }
 
-    // ---- Status predicates ----
-    //
-    // All four route through classifyStatus so that a status with a
-    // ' (former)' suffix classifies consistently. A former
-    // instructor is still classified as an instructor for tier
-    // purposes; if a caller wants "is currently an instructor",
-    // they should check the character's career history directly.
-
     function stripFormerSuffix(status) {
         if (!status || typeof status !== 'string') { return ''; }
         var base = status.toLowerCase();
@@ -478,10 +441,18 @@
         if (!status || typeof status !== 'string') { return null; }
         var base = stripFormerSuffix(status);
         if (base === '') { return null; }
-        if (STUDENT_STATUSES.indexOf(base) !== -1) { return 'student'; }
-        if (INSTRUCTOR_STATUSES.indexOf(base) !== -1) { return 'instructor'; }
-        if (SUPPORT_STATUSES.indexOf(base) !== -1) { return 'support'; }
-        if (RETIRED_STATUSES.indexOf(base) !== -1) { return 'retired'; }
+        if (STUDENT_STATUSES.indexOf(base) !== -1) {
+            return 'student';
+        }
+        if (INSTRUCTOR_STATUSES.indexOf(base) !== -1) {
+            return 'instructor';
+        }
+        if (SUPPORT_STATUSES.indexOf(base) !== -1) {
+            return 'support';
+        }
+        if (RETIRED_STATUSES.indexOf(base) !== -1) {
+            return 'retired';
+        }
         return null;
     }
 
@@ -505,8 +476,12 @@
     // LOOKUP FUNCTIONS - Social vocabulary
     // ============================================================
 
-    function getAttractionValues() { return ATTRACTION_VALUES.slice(); }
-    function getSexualityValues() { return SEXUALITY_VALUES.slice(); }
+    function getAttractionValues() {
+        return ATTRACTION_VALUES.slice();
+    }
+    function getSexualityValues() {
+        return SEXUALITY_VALUES.slice();
+    }
 
     function isValidNameFormat(format) {
         return NAME_FORMATS.indexOf(format) !== -1;
@@ -516,9 +491,9 @@
         return {
             'firstlast': 'First + Last',
             'lastfirst': 'Last, First',
-            'nicklast': 'Nickname + Last',
+            'nicklast':  'Nickname + Last',
             'firstnick': 'First "Nickname"',
-            'alias': 'Alias'
+            'alias':     'Alias'
         };
     }
 
@@ -529,14 +504,7 @@
     /**
      * Is this string an emoji rather than a monochrome glyph?
      *
-     * Iterates codepoints, not UTF-16 code units. An emoji above
-     * U+FFFF is two code units (a high surrogate plus a low
-     * surrogate); a code-unit scan misses it.
-     *
-     * Rejects:
-     *   - any codepoint >= U+1F000 (pictographic emoji range)
-     *   - any U+FE0F variation selector 16 (force-emoji-presentation)
-     *   - any sequence of more than two codepoints
+     * Iterates codepoints, not UTF-16 code units.
      */
     function isEmojiGlyph(str) {
         if (typeof str !== 'string' || str === '') { return true; }
@@ -544,7 +512,8 @@
         var cps = [];
         for (var i = 0; i < str.length; i++) {
             var code = str.charCodeAt(i);
-            if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+            if (code >= 0xD800 && code <= 0xDBFF &&
+                i + 1 < str.length) {
                 var next = str.charCodeAt(i + 1);
                 if (next >= 0xDC00 && next <= 0xDFFF) {
                     var cp = ((code - 0xD800) * 0x400) +
@@ -565,53 +534,57 @@
         return false;
     }
 
-    /**
-     * Validate the constant tables.
-     *
-     * Returns a boolean. On failure, logs to console.warn with a
-     * list of errors and returns false. The module still loads;
-     * a broken table does not block the app, but the warning
-     * names the offending entry so it can be fixed.
-     *
-     * Also emits an ADVISORY warning for physical-class pairs that
-     * violate the collapse constraint. That warning is not
-     * included in the boolean return; it is a diagnostic, not a
-     * validation failure.
-     */
     function validateConstants() {
         var errors = [];
 
-        if (!Array.isArray(PHYSICAL_CLASSES) || PHYSICAL_CLASSES.length === 0) {
-            errors.push('PHYSICAL_CLASSES must be a non-empty array.');
+        if (!Array.isArray(PHYSICAL_CLASSES) ||
+            PHYSICAL_CLASSES.length === 0) {
+            errors.push(
+                'PHYSICAL_CLASSES must be a non-empty array.'
+            );
         }
 
         var classIds = Object.create(null);
         PHYSICAL_CLASSES.forEach(function(cls, index) {
             if (!cls.id || typeof cls.id !== 'string') {
-                errors.push('Physical class at index ' + index + ' missing id.');
+                errors.push(
+                    'Physical class at index ' + index +
+                    ' missing id.'
+                );
                 return;
             }
             if (classIds[cls.id]) {
-                errors.push('Duplicate physical class id "' + cls.id + '".');
+                errors.push(
+                    'Duplicate physical class id "' + cls.id + '".'
+                );
             }
             classIds[cls.id] = true;
 
             if (!cls.label || typeof cls.label !== 'string') {
-                errors.push('Physical class "' + cls.id + '" missing label.');
+                errors.push(
+                    'Physical class "' + cls.id +
+                    '" missing label.'
+                );
             }
 
-            // ---- Icon must be a monochrome glyph, not emoji ----
             if (typeof cls.icon !== 'string' || cls.icon === '') {
-                errors.push('Physical class "' + cls.id + '" missing icon.');
+                errors.push(
+                    'Physical class "' + cls.id +
+                    '" missing icon.'
+                );
             } else if (isEmojiGlyph(cls.icon)) {
                 errors.push(
-                    'Physical class "' + cls.id + '" icon "' + cls.icon +
-                    '" is or resembles an emoji. Use a monochrome glyph.'
+                    'Physical class "' + cls.id + '" icon "' +
+                    cls.icon + '" is or resembles an emoji. ' +
+                    'Use a monochrome glyph.'
                 );
             }
 
             if (!cls.weights || typeof cls.weights !== 'object') {
-                errors.push('Physical class "' + cls.id + '" missing weights.');
+                errors.push(
+                    'Physical class "' + cls.id +
+                    '" missing weights.'
+                );
                 return;
             }
 
@@ -619,23 +592,35 @@
             STAT_KEYS.forEach(function(key) {
                 var w = cls.weights[key];
                 if (typeof w !== 'number' || w < 0 || w > 1) {
-                    errors.push('Physical class "' + cls.id + '" weight for "' + key + '" must be between 0 and 1.');
+                    errors.push(
+                        'Physical class "' + cls.id +
+                        '" weight for "' + key +
+                        '" must be between 0 and 1.'
+                    );
                 } else {
                     weightSum += w;
                 }
             });
             if (Math.abs(weightSum - 1.0) > 0.01) {
-                errors.push('Physical class "' + cls.id + '" weights must sum to ~1.0 (got ' + weightSum.toFixed(2) + ').');
+                errors.push(
+                    'Physical class "' + cls.id +
+                    '" weights must sum to ~1.0 (got ' +
+                    weightSum.toFixed(2) + ').'
+                );
             }
 
             if (typeof cls.hpBonus !== 'number' || cls.hpBonus < 0) {
-                errors.push('Physical class "' + cls.id + '" invalid hpBonus.');
+                errors.push(
+                    'Physical class "' + cls.id +
+                    '" invalid hpBonus.'
+                );
             }
         });
 
         // ---- Collapse constraint (advisory) ----
         // For every pair (A, B), dot(A, A) should be >= dot(A, B).
-        // A violation is a warning, not a validation error.
+        // A violation is a warning, not a validation error. See
+        // the header for the current status.
         var statKeys = STAT_KEYS;
         var collapseWarnings = [];
         function dot(a, b) {
@@ -666,27 +651,36 @@
         }
         if (collapseWarnings.length > 0) {
             console.warn(
-                '[CharacterConstants] Physical-class collapse warnings ' +
-                '(advisory, not fatal):', collapseWarnings
+                '[CharacterConstants] Physical-class collapse ' +
+                'warnings (advisory, not fatal):',
+                collapseWarnings
             );
         }
 
-        if (!Array.isArray(WEAPON_TYPES) || WEAPON_TYPES.length === 0) {
+        if (!Array.isArray(WEAPON_TYPES) ||
+            WEAPON_TYPES.length === 0) {
             errors.push('WEAPON_TYPES must be a non-empty array.');
         }
 
         var typeIds = Object.create(null);
         WEAPON_TYPES.forEach(function(t, index) {
             if (!t.id || typeof t.id !== 'string') {
-                errors.push('Weapon type at index ' + index + ' missing id.');
+                errors.push(
+                    'Weapon type at index ' + index +
+                    ' missing id.'
+                );
                 return;
             }
             if (typeIds[t.id]) {
-                errors.push('Duplicate weapon type id "' + t.id + '".');
+                errors.push(
+                    'Duplicate weapon type id "' + t.id + '".'
+                );
             }
             typeIds[t.id] = true;
             if (!t.label || typeof t.label !== 'string') {
-                errors.push('Weapon type "' + t.id + '" missing label.');
+                errors.push(
+                    'Weapon type "' + t.id + '" missing label.'
+                );
             }
         });
 
@@ -694,10 +688,16 @@
             errors.push('STAT_MIN must be less than STAT_MAX.');
         }
         if (STAT_DEFAULT < STAT_MIN || STAT_DEFAULT > STAT_MAX) {
-            errors.push('STAT_DEFAULT must be between STAT_MIN and STAT_MAX.');
+            errors.push(
+                'STAT_DEFAULT must be between STAT_MIN and STAT_MAX.'
+            );
         }
-        if (STAT_RANDOM_MIN < STAT_MIN || STAT_RANDOM_MAX > STAT_MAX) {
-            errors.push('STAT_RANDOM bounds must be within STAT_MIN and STAT_MAX.');
+        if (STAT_RANDOM_MIN < STAT_MIN ||
+            STAT_RANDOM_MAX > STAT_MAX) {
+            errors.push(
+                'STAT_RANDOM bounds must be within STAT_MIN and ' +
+                'STAT_MAX.'
+            );
         }
 
         if (HP_MIN < 0 || HP_MAX <= HP_MIN) {
@@ -708,12 +708,12 @@
         }
 
         // ---- Status tier disjointness ----
-        // The tiers must not overlap. A status string in two tiers
-        // would make classifyStatus non-deterministic.
         var studentSet = Object.create(null);
         STUDENT_STATUSES.forEach(function(s) { studentSet[s] = true; });
         var instructorSet = Object.create(null);
-        INSTRUCTOR_STATUSES.forEach(function(s) { instructorSet[s] = true; });
+        INSTRUCTOR_STATUSES.forEach(function(s) {
+            instructorSet[s] = true;
+        });
         var supportSet = Object.create(null);
         SUPPORT_STATUSES.forEach(function(s) { supportSet[s] = true; });
         var retiredSet = Object.create(null);
@@ -721,26 +721,44 @@
 
         STUDENT_STATUSES.forEach(function(s) {
             if (instructorSet[s]) {
-                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and INSTRUCTOR_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'STUDENT_STATUSES and INSTRUCTOR_STATUSES.'
+                );
             }
             if (supportSet[s]) {
-                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and SUPPORT_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'STUDENT_STATUSES and SUPPORT_STATUSES.'
+                );
             }
             if (retiredSet[s]) {
-                errors.push('Status "' + s + '" is in both STUDENT_STATUSES and RETIRED_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'STUDENT_STATUSES and RETIRED_STATUSES.'
+                );
             }
         });
         INSTRUCTOR_STATUSES.forEach(function(s) {
             if (supportSet[s]) {
-                errors.push('Status "' + s + '" is in both INSTRUCTOR_STATUSES and SUPPORT_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'INSTRUCTOR_STATUSES and SUPPORT_STATUSES.'
+                );
             }
             if (retiredSet[s]) {
-                errors.push('Status "' + s + '" is in both INSTRUCTOR_STATUSES and RETIRED_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'INSTRUCTOR_STATUSES and RETIRED_STATUSES.'
+                );
             }
         });
         SUPPORT_STATUSES.forEach(function(s) {
             if (retiredSet[s]) {
-                errors.push('Status "' + s + '" is in both SUPPORT_STATUSES and RETIRED_STATUSES.');
+                errors.push(
+                    'Status "' + s + '" is in both ' +
+                    'SUPPORT_STATUSES and RETIRED_STATUSES.'
+                );
             }
         });
 
@@ -759,7 +777,9 @@
         });
 
         if (errors.length > 0) {
-            console.warn('[CharacterConstants] Validation errors:', errors);
+            console.warn(
+                '[CharacterConstants] Validation errors:', errors
+            );
         }
         return errors.length === 0;
     }
@@ -823,7 +843,8 @@
         // Special moves
         MAX_SPECIAL_MOVES: MAX_SPECIAL_MOVES,
         MAX_MOVE_NAME_LENGTH: MAX_MOVE_NAME_LENGTH,
-        MAX_MOVE_DESCRIPTION_LENGTH: MAX_MOVE_DESCRIPTION_LENGTH,
+        MAX_MOVE_DESCRIPTION_LENGTH:
+            MAX_MOVE_DESCRIPTION_LENGTH,
 
         // Career
         CAREER_STATUS_OPTIONS: CAREER_STATUS_OPTIONS,
