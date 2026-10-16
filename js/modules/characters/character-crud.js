@@ -88,6 +88,35 @@
  *   The set of statuses that terminate a career (retired, support,
  *   instructor) comes from CharacterConstants.TERMINAL_STATUSES.
  *
+ * FILLER FLAG AND AUTHORED CONTENT:
+ *   setFillerFlag(ids, value) flips isFiller on the named
+ *   characters. When value is true, it also runs the strip pass
+ *   via CharacterStrip.stripEmptyFields.
+ *
+ *   A character with authored content (any of: non-default stats,
+ *   non-zero magic, HP > 0, MP > 0, weapons, specialMoves, or any
+ *   non-empty bio / personality field — the check lives in
+ *   CharacterStrip.hasAuthoredContent) is SKIPPED, not flagged
+ *   and not stripped.
+ *
+ *   THE AUTHORED-CONTENT CHECK RUNS INSIDE mutate(), against the
+ *   same snapshot the strip runs against. This closes a race the
+ *   previous version had: the check used to be enforced only in
+ *   filler-manager-modal.js, against live state at Apply time,
+ *   while the strip ran later against the pipeline snapshot. A
+ *   character whose content changed between the two reads could
+ *   be flagged and stripped without the check ever seeing the
+ *   content.
+ *
+ *   With the check in mutate, there is exactly one enforcement
+ *   point, and it runs at the moment of the strip. The modal's
+ *   own check (a pre-filter that keeps the user from ticking a
+ *   row they cannot act on) is now advisory; the CRUD's check is
+ *   authoritative.
+ *
+ *   The result carries `skipped` (a count) and `skippedIds` (the
+ *   ids that were skipped, in the order they were requested).
+ *
  * DELETE CASCADE:
  *   deleteCharacter removes the character from:
  *     - teams (members arrays)
@@ -106,12 +135,12 @@
  *   - window.MutationPipeline
  *   - window.IdUtils
  *   - window.CharacterConstants
+ *   - window.CharacterStrip   (filler strip + authored-content check)
  *   - window.TeamCore       (cascades; absent = cascade skipped)
  *   - window.AcademyCascade (deleteCharacter)
  *   - window.AcademyEnrolments (setInstructorForClass)
  *   - window.SocialCore     (createChild)
  *   - window.SocialChildFactory (createChild)
- *   - window.CharacterStrip (filler flag, hasAuthoredContent)
  *   - window.ValidationUtils (strict parsing; local fallback)
  */
 
@@ -423,6 +452,11 @@
     /**
      * Does the merged record contain authored content?
      * Delegates to CharacterStrip.hasAuthoredContent when available.
+     *
+     * The local fallback mirrors the same rule. It is deliberately
+     * conservative: a value that is present but ambiguous (an
+     * unknown object shape, for example) counts as content, so a
+     * character is never stripped by accident.
      */
     function recordHasAuthoredContent(record) {
         if (!record || typeof record !== 'object') { return false; }
@@ -1713,6 +1747,28 @@
     // ============================================================
     // SET FILLER FLAG
     // ============================================================
+    //
+    // Flips isFiller on the named characters. When value is true,
+    // also strips each successfully-flagged character through
+    // CharacterStrip.stripEmptyFields.
+    //
+    // AUTHORED-CONTENT CHECK:
+    //   Runs inside mutate, against the pipeline snapshot. A
+    //   character with authored content is SKIPPED (not flagged,
+    //   not stripped) and its id is added to skippedIds.
+    //
+    //   The check is the SAME rule save() uses on the write path
+    //   (recordHasAuthoredContent, which delegates to
+    //   CharacterStrip.hasAuthoredContent). It is the single
+    //   enforcement point: filler-manager-modal's own pre-filter
+    //   is now advisory.
+    //
+    //   Why mutate, not validate: validate runs against
+    //   window.data pre-flight; mutate runs against the same
+    //   snapshot the strip runs against. Reading and stripping in
+    //   the same transaction closes the race a UI-layer check
+    //   leaves open (the character could gain content between the
+    //   modal's Apply click and the pipeline's mutate pass).
 
     function setFillerFlag(ids, value) {
         if (!checkDependencies()) {
@@ -1749,7 +1805,13 @@
         if (idList.length === 0) {
             return Promise.resolve({
                 success: true,
-                data: { updated: 0, stripped: 0, skipped: 0 }
+                data: {
+                    updated: 0,
+                    stripped: 0,
+                    skipped: 0,
+                    skippedIds: [],
+                    missingIds: []
+                }
             });
         }
 
@@ -1774,25 +1836,40 @@
 
                 var updated = 0;
                 var stripped = 0;
-                var skipped = 0;
+                var skippedIds = [];
+                var missingIds = [];
+
+                // ---- Fast lookup by id, built once per mutate. ----
+                //
+                // idList is small (tens to hundreds, in practice a
+                // few dozen). A Map keeps the per-id walk O(1)
+                // rather than O(n) over the character store.
+                var byId = new Map();
+                for (var j = 0; j < data.characters.length; j++) {
+                    var c = data.characters[j];
+                    if (c && c.id !== undefined && c.id !== null) {
+                        byId.set(String(c.id), c);
+                    }
+                }
 
                 for (var i = 0; i < idList.length; i++) {
                     var id = idList[i];
-                    var char = null;
-                    for (var j = 0; j < data.characters.length; j++) {
-                        var c = data.characters[j];
-                        if (c && String(c.id) === id) {
-                            char = c;
-                            break;
-                        }
-                    }
-                    if (!char) { continue; }
+                    var char = byId.get(id) || null;
 
-                    // When flagging as filler, enforce the same
-                    // authored-content check that save runs.
+                    if (!char) {
+                        missingIds.push(id);
+                        continue;
+                    }
+
+                    // ---- Authored-content check on flag. ----
+                    //
+                    // The check runs against the snapshot record,
+                    // the same record the strip below would
+                    // process. A character with content is
+                    // skipped, not flagged, not stripped.
                     if (value === true &&
                         recordHasAuthoredContent(char)) {
-                        skipped++;
+                        skippedIds.push(id);
                         continue;
                     }
 
@@ -1800,6 +1877,11 @@
                     char.updatedAt = now;
                     updated++;
 
+                    // ---- Strip pass on flag. ----
+                    //
+                    // Only when flagging. Unflagging only clears
+                    // the flag; the strip is a save-time operation
+                    // and is not run in reverse.
                     if (value === true &&
                         Strip &&
                         typeof Strip.stripEmptyFields === 'function') {
@@ -1830,7 +1912,9 @@
                 return {
                     updated: updated,
                     stripped: stripped,
-                    skipped: skipped
+                    skipped: skippedIds.length,
+                    skippedIds: skippedIds,
+                    missingIds: missingIds
                 };
             },
 
@@ -1847,6 +1931,11 @@
                     msg += ' (' + result.skipped +
                         ' skipped: authored content)';
                 }
+                if (result.missingIds &&
+                    result.missingIds.length > 0) {
+                    msg += ' (' + result.missingIds.length +
+                        ' missing)';
+                }
                 return msg + '.';
             },
 
@@ -1859,6 +1948,11 @@
                     if (result.skipped > 0) {
                         msg += ' ' + result.skipped +
                             ' skipped (authored content).';
+                    }
+                    if (result.missingIds &&
+                        result.missingIds.length > 0) {
+                        msg += ' ' + result.missingIds.length +
+                            ' no longer exist.';
                     }
                     return msg;
                 }
