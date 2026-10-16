@@ -5,15 +5,18 @@
  * Path: js/modules/teams/team-matchmaking-view.js
  *
  * RESPONSIBILITIES:
- *   - Render the planner modal.
- *   - Render the left column: professional teams under the
- *     target size, with their existing members and each member's
- *     interval (join + leave).
- *   - Render the right column: the same canonical pool candidates
- *     as the Professional Pool, with radio buttons and per-team
- *     year inputs.
- *   - Collect planner input (selected candidates, their year
- *     inputs, and the team they are assigned to).
+ *   - Render the planner modal as a MATRIX.
+ *   - Column headers: one per understaffed team, showing the
+ *     team name, its active-window at the planning year, and its
+ *     current/required member count.
+ *   - Row headers: one per candidate, showing the candidate's
+ *     name, age, and availability window.
+ *   - Intersection cells: a radio button. At most one team per
+ *     candidate can be selected (radio group scoped per
+ *     candidate).
+ *   - Under each candidate whose row has a checked radio, render
+ *     a DETAILS STRIP with the Join and Leave inputs for that one
+ *     team. The strip moves as the selection changes.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Event binding. TeamEvents owns it.
@@ -21,9 +24,9 @@
  *   - Domain reads. Every field arrives on the view model.
  *   - Eligibility. TeamQueries owns it.
  *   - Mutations. TeamCore owns it.
- *   - Shortage history computation. TeamQueries.getTeamShortagePeriods
- *     owns it; this view only renders the display string that
- *     TeamAggregator placed on each team row.
+ *   - Shortage history computation. TeamQueries
+ *     .getTeamShortagePeriods owns it; this view only renders the
+ *     display string that TeamAggregator placed on each team row.
  *
  * PLANNER VM SHAPE:
  *   {
@@ -34,11 +37,8 @@
  *         teamId, teamName,
  *         memberCount, targetSize, remainingCapacity,
  *         periodDisplay,
- *         members: [
- *           { characterId, memberId, displayName, role,
- *             joinPeriod, leavePeriod, intervalDisplay }
- *         ],
- *         shortagePeriods: [ { from: number, to: number | null } ],
+ *         members: [ ... ],      // present but not used by matrix
+ *         shortagePeriods: [ { from, to } ],
  *         shortageDisplay: string
  *       }
  *     ],
@@ -54,58 +54,60 @@
  *     ]
  *   }
  *
- * SHORTAGE LINE:
- *   Each team card carries an optional "short" line beneath the
- *   period display. It renders `shortageDisplay` verbatim when the
- *   string is non-empty:
+ * LAYOUT:
+ *   The matrix scrolls both ways. Column headers stick to the
+ *   top; row headers stick to the left. This is what makes a
+ *   wide matrix usable — you can scroll to a candidate at the
+ *   bottom and still see which column is which team.
  *
- *     Short 1930–1931, 1935–present
+ *   A sticky header row/column needs `position: sticky` on each
+ *   header cell, and the scroll container must be the element
+ *   with `overflow: auto`. Teams.css owns the sticky rules; the
+ *   renderer emits the correct structure.
  *
- *   An empty `shortageDisplay` means the team has never been short
- *   between its start period and the planning period, and the line
- *   is omitted entirely. The row is not rendered with a placeholder.
+ * DOM CONTRACT FOR COMMIT:
+ *   Each intersection cell emits:
  *
- * PLANNER DOM CONTRACT:
- *   For each (candidate, team) association the UI renders:
+ *     <label class="planner-cell">
+ *       <input type="radio"
+ *              name="planner-cand-<candidateId>"
+ *              class="planner-assoc-radio"
+ *              data-team-id="..."
+ *              data-character-id="..." />
+ *     </label>
  *
- *     <div class="planner-team-cell" data-team-id="...">
- *       <label class="planner-team-cell-label">
- *         <input type="radio"
- *                name="planner-cand-<candidateId>"
- *                class="planner-assoc-radio"
- *                data-team-id="..."
- *                data-character-id="..." />
- *         <span class="planner-team-cell-name">Team Name</span>
- *       </label>
- *       <div class="planner-team-cell-years">
- *         <input type="text"
- *                class="planner-assoc-join"
- *                data-team-id="..."
- *                data-character-id="..." />
- *         <span class="planner-team-cell-dash">–</span>
- *         <input type="text"
- *                class="planner-assoc-leave"
- *                data-team-id="..."
- *                data-character-id="..." />
- *       </div>
+ *   The radio group name is scoped per candidate, so at most one
+ *   team is checked per candidate. TeamEvents reads every checked
+ *   radio and builds one assignment per checked radio.
+ *
+ *   The details strip emits, once per candidate whose row has a
+ *   checked radio:
+ *
+ *     <div class="planner-row-details"
+ *          data-character-id="...">
+ *       <span class="planner-row-details-label">Team X:</span>
+ *       <input class="planner-assoc-join"
+ *              data-team-id="..."
+ *              data-character-id="..." />
+ *       <span class="planner-row-details-dash">–</span>
+ *       <input class="planner-assoc-leave"
+ *              data-team-id="..."
+ *              data-character-id="..." />
  *     </div>
  *
- *   The radio group's name is scoped per candidate:
+ *   TeamEvents reads the join/leave inputs by the
+ *   (teamId, characterId) pair it took from the checked radio.
  *
- *     planner-cand-<candidateId>
+ * STAGING MODEL:
+ *   The strip renders from values carried on the modal's DOM,
+ *   not from a state object in this module. TeamEvents owns the
+ *   staging: on radio change, it re-reads the plan, decides
+ *   which strip is now visible, and re-renders the strip area
+ *   only (not the whole matrix, so the radio keeps focus).
  *
- *   This makes the radio group a single-choice control for that
- *   candidate's team assignment. Selecting one team automatically
- *   deselects every other team for the same candidate. A candidate
- *   can be assigned to at most one team at a time.
- *
- *   TeamEvents reads the checked radios on commit and builds one
- *   assignment per checked radio. Because the group permits at
- *   most one checked radio per candidate, the commit path
- *   naturally produces at most one assignment per candidate.
- *
- *   The view never reads the radios itself; it only emits the
- *   shape.
+ *   This view is a pure function of the VM. It always emits the
+ *   full structure; the swap of the visible strip is handled by
+ *   TeamEvents after the initial render.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -153,8 +155,39 @@
             : String(value);
     }
 
+    /**
+     * Default join year for a candidate in a given planning year.
+     *
+     * The rule:
+     *   - Start with the planning year.
+     *   - If the candidate's availability window opens after the
+     *     planning year, use the window's open.
+     *   - If the candidate's window closes before the planning
+     *     year, use the window's close.
+     *
+     * This is what makes the strip default to a valid year for
+     * the candidate rather than the raw planning year, which
+     * could be outside their window.
+     */
+    function defaultJoinYear(candidate, vm) {
+        if (!candidate || !candidate.availability) {
+            return String(vm.period);
+        }
+
+        var from = candidate.availability.from;
+        var to = candidate.availability.to;
+
+        if (from !== null && vm.period < from) {
+            return String(from);
+        }
+        if (to !== null && vm.period > to) {
+            return String(to);
+        }
+        return String(vm.period);
+    }
+
     // ============================================================
-    // PLANNER
+    // PLANNER - MATRIX
     // ============================================================
 
     function renderPlanner(vm) {
@@ -189,7 +222,7 @@
 
         html += '<div class="modal-body planner-body">';
 
-        html += '<p class="field-hint planner-summary">' +
+        html += '<p class="planner-summary">' +
                     'Target size: <strong>' +
                         escapeHtml(String(vm.targetSize)) +
                     '</strong>. ' +
@@ -198,15 +231,17 @@
                     '</strong>. ' +
                     'Candidates: <strong>' +
                         escapeHtml(String(vm.candidates.length)) +
-                    '</strong>.' +
+                    '</strong>. ' +
+                    'Pick one team per candidate; the years below ' +
+                    'the row apply to the team you picked.' +
                 '</p>';
 
         if (vm.teams.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No understaffed professional teams at this ' +
-                        'year. Nothing to plan.' +
+                        'No understaffed professional teams at ' +
+                        'this year. Nothing to plan.' +
                     '</p>';
-            html += '<div class="form-actions">';
+            html += '<div class="planner-actions">';
             html += '<button type="button" class="secondary" ' +
                         'data-action="matchmaking-close">' +
                         'Close' +
@@ -220,7 +255,7 @@
             html += '<p class="empty-state small">' +
                         'No candidates in the professional pool.' +
                     '</p>';
-            html += '<div class="form-actions">';
+            html += '<div class="planner-actions">';
             html += '<button type="button" class="secondary" ' +
                         'data-action="matchmaking-close">' +
                         'Close' +
@@ -230,11 +265,9 @@
             return html;
         }
 
-        html += renderPlannerTeamsPanel(vm);
+        html += renderMatrix(vm);
 
-        html += renderPlannerCandidatesPanel(vm);
-
-        html += '<div class="form-actions planner-actions">';
+        html += '<div class="planner-actions">';
         html += '<button type="button" class="secondary" ' +
                     'data-action="matchmaking-close">' +
                     'Cancel' +
@@ -250,273 +283,263 @@
     }
 
     // ============================================================
-    // PLANNER — TEAMS PANEL
+    // MATRIX
     // ============================================================
 
-    function renderPlannerTeamsPanel(vm) {
+    function renderMatrix(vm) {
         var html = '';
 
-        html += '<div class="planner-panel planner-teams-panel">';
-        html += '<div class="planner-panel-header">' +
-                    'Understaffed Teams (' +
-                    escapeHtml(String(vm.teams.length)) +
-                    ')' +
-                '</div>';
+        html += '<div class="planner-matrix-wrap">';
+        html += '<table class="planner-matrix">';
 
-        html += '<div class="planner-teams-list">';
+        html += '<thead>';
+        html += '<tr>';
 
-        for (var i = 0; i < vm.teams.length; i++) {
-            html += renderPlannerTeam(vm.teams[i]);
+        // Top-left corner cell. Sits above the row-header column
+        // and to the left of the team column headers. Empty.
+        html += '<th class="planner-matrix-corner" ' +
+                    'aria-hidden="true"></th>';
+
+        for (var t = 0; t < vm.teams.length; t++) {
+            html += renderTeamHeader(vm.teams[t], vm);
         }
 
+        html += '</tr>';
+        html += '</thead>';
+
+        html += '<tbody>';
+
+        for (var c = 0; c < vm.candidates.length; c++) {
+            html += renderCandidateRow(vm.candidates[c], vm);
+        }
+
+        html += '</tbody>';
+        html += '</table>';
         html += '</div>';
-        html += '</div>';
+
         return html;
     }
 
-    function renderPlannerTeam(team) {
+    // ------------------------------------------------------------
+    // Column headers
+    // ------------------------------------------------------------
+
+    function renderTeamHeader(team, vm) {
         var html = '';
 
-        html += '<div class="planner-team" ' +
+        html += '<th class="planner-matrix-team-header" ' +
                     'data-team-id="' +
                         escapeAttribute(team.teamId) + '">';
 
-        html += '<div class="planner-team-header">';
-        html += '<span class="planner-team-name">' +
+        html += '<div class="planner-matrix-team-name">' +
                     escapeHtml(team.teamName) +
-                '</span>';
-        html += '<span class="planner-team-count">' +
+                '</div>';
+
+        html += '<div class="planner-matrix-team-count">' +
                     escapeHtml(String(team.memberCount)) +
                     ' / ' +
                     escapeHtml(String(team.targetSize)) +
-                    ' members' +
-                '</span>';
-        html += '</div>';
-
-        html += '<div class="planner-team-meta">' +
-                    escapeHtml(team.periodDisplay) +
                 '</div>';
 
-        // ---- Shortage line. ----
-        //
-        // Rendered only when the aggregator placed a non-empty
-        // shortageDisplay on the row. An empty string means the
-        // team has never been short between its start period and
-        // the planning period, and the line is omitted.
+        if (isNonEmptyString(team.periodDisplay)) {
+            html += '<div class="planner-matrix-team-window">' +
+                        escapeHtml(team.periodDisplay) +
+                    '</div>';
+        }
+
         if (isNonEmptyString(team.shortageDisplay)) {
-            html += '<div class="planner-team-shortage">' +
+            html += '<div class="planner-matrix-team-shortage" ' +
+                        'title="Years this team has been below ' +
+                        'the target size">' +
                         'Short ' +
                         escapeHtml(team.shortageDisplay) +
                     '</div>';
         }
 
-        html += '<div class="planner-team-members">';
-
-        if (team.members.length === 0) {
-            html += '<div class="planner-team-member empty">' +
-                        'No active members.' +
-                    '</div>';
-        } else {
-            for (var i = 0; i < team.members.length; i++) {
-                html += renderPlannerTeamMember(team.members[i]);
-            }
-        }
-
-        html += '</div>';
-        html += '</div>';
+        html += '</th>';
         return html;
     }
 
-    function renderPlannerTeamMember(member) {
+    // ------------------------------------------------------------
+    // Rows
+    // ------------------------------------------------------------
+
+    /**
+     * One candidate. The row is a <tr> with:
+     *
+     *   - a row-header cell (candidate identity + availability)
+     *   - one radio cell per team
+     *
+     * The details strip is a SECOND <tr> immediately below the
+     * radio row. It carries colspan spanning the whole table, so
+     * it reads as a full-width band. It contains the Join and
+     * Leave inputs for the candidate's currently-selected team.
+     *
+     * The strip is always emitted, but its visibility is
+     * controlled by a `hidden` attribute that reflects whether
+     * any radio in the row is checked. When nothing is checked,
+     * the strip renders with `hidden` and no inputs; TeamEvents
+     * fills it in and unhides it when a radio is picked.
+     */
+    function renderCandidateRow(candidate, vm) {
         var html = '';
 
-        html += '<div class="planner-team-member" ' +
-                    'data-character-id="' +
-                        escapeAttribute(member.characterId) + '">';
-
-        html += '<span class="planner-team-member-name">' +
-                    escapeHtml(member.displayName) +
-                '</span>';
-
-        if (isNonEmptyString(member.role)) {
-            html += '<span class="planner-team-member-role">(' +
-                        escapeHtml(member.role) +
-                    ')</span>';
-        }
-
-        html += '<span class="planner-team-member-interval">' +
-                    escapeHtml(member.intervalDisplay) +
-                '</span>';
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // PLANNER — CANDIDATES PANEL
-    // ============================================================
-
-    function renderPlannerCandidatesPanel(vm) {
-        var html = '';
-
-        html += '<div class="planner-panel planner-candidates-panel">';
-        html += '<div class="planner-panel-header">' +
-                    'Available Candidates (' +
-                    escapeHtml(String(vm.candidates.length)) +
-                    ')' +
-                '</div>';
-
-        html += '<div class="planner-candidates-list">';
-
-        for (var i = 0; i < vm.candidates.length; i++) {
-            html += renderPlannerCandidateRow(vm.candidates[i], vm);
-        }
-
-        html += '</div>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderPlannerCandidateRow(candidate, vm) {
-        var bucketClass =
+        var rowClass = 'planner-matrix-row ' +
             'planner-candidate-' + candidate.availabilityBucket;
-        var statusClass = candidate.assignment.status === 'active'
-            ? ' planner-candidate-assigned'
-            : '';
+        if (candidate.assignment.status === 'active') {
+            rowClass += ' planner-candidate-assigned';
+        }
 
-        var html = '';
-
-        html += '<div class="planner-candidate-row ' +
-                    bucketClass + statusClass + '" ' +
+        html += '<tr class="' + rowClass + '" ' +
                     'data-character-id="' +
                         escapeAttribute(candidate.characterId) + '">';
 
-        // ---- Candidate identity line ----
-        html += '<div class="planner-candidate-identity">';
-        html += '<span class="planner-candidate-name">' +
-                    escapeHtml(candidate.displayName) +
-                '</span>';
-        if (isNonEmptyString(candidate.ageDisplay)) {
-            html += '<span class="planner-candidate-age">(' +
-                        escapeHtml(candidate.ageDisplay) +
-                    ')</span>';
-        }
-        html += '</div>';
+        // ---- Row header ----
+        html += renderCandidateHeader(candidate, vm);
 
-        // ---- Candidate meta line ----
-        html += '<div class="planner-candidate-meta">';
-        if (isNonEmptyString(candidate.statusAtPeriod)) {
-            html += '<span class="planner-candidate-status">' +
-                        escapeHtml(candidate.statusAtPeriod) +
-                    '</span>';
-        }
-        html += '<span class="planner-candidate-availability">' +
-                    escapeHtml(candidate.availability.display) +
-                '</span>';
-        if (isNonEmptyString(candidate.assignment.display) &&
-            candidate.assignment.display !== 'Unassigned') {
-            html += '<span class="planner-candidate-assignment">' +
-                        escapeHtml(candidate.assignment.display) +
-                    '</span>';
-        }
-        html += '</div>';
-
-        // ---- Per-team radio cells + year inputs ----
-        //
-        // Each cell carries one radio in a group scoped to this
-        // candidate. Selecting one team for a candidate
-        // automatically deselects every other team for the same
-        // candidate.
-        html += '<div class="planner-candidate-teams">';
-
+        // ---- Cells ----
         for (var t = 0; t < vm.teams.length; t++) {
-            html += renderPlannerTeamCell(
-                candidate, vm.teams[t], vm
-            );
+            html += renderCell(candidate, vm.teams[t], vm);
         }
 
-        html += '</div>';
+        html += '</tr>';
 
-        html += '</div>';
+        // ---- Details strip ----
+        html += renderDetailsStrip(candidate, vm);
+
         return html;
     }
 
-    /**
-     * Render one team cell for a candidate.
-     *
-     * The radio group name is scoped per candidate:
-     *
-     *   planner-cand-<candidateId>
-     *
-     * so a candidate can only have one team selected at a time.
-     * This matches the planner's semantics: a candidate is
-     * assigned to one team per commit.
-     */
-    function renderPlannerTeamCell(candidate, team, vm) {
-        // Default years: the intersection of the planning year
-        // and the candidate's availability window, clamped to the
-        // window if the planning year is outside it.
-        var defaultJoin = String(vm.period);
-        var defaultLeave = '';
+    function renderCandidateHeader(candidate, vm) {
+        var html = '';
 
-        if (candidate.availability.from !== null &&
-            vm.period < candidate.availability.from) {
-            defaultJoin = String(candidate.availability.from);
+        html += '<th class="planner-matrix-row-header" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.characterId) + '">';
+
+        html += '<div class="planner-matrix-candidate-name">' +
+                    escapeHtml(candidate.displayName) +
+                '</div>';
+
+        var metaParts = [];
+        if (isNonEmptyString(candidate.ageDisplay)) {
+            metaParts.push('(' + candidate.ageDisplay + ')');
         }
-        if (candidate.availability.to !== null &&
-            vm.period > candidate.availability.to) {
-            defaultJoin = String(candidate.availability.to);
+        if (isNonEmptyString(candidate.statusAtPeriod)) {
+            metaParts.push(candidate.statusAtPeriod);
         }
 
-        // One radio group per candidate. The name scopes the
-        // group, so selecting a team for this candidate
-        // automatically deselects every other team for the same
-        // candidate.
+        if (metaParts.length > 0) {
+            html += '<div class="planner-matrix-candidate-meta">' +
+                        escapeHtml(metaParts.join(' \u00b7 ')) +
+                    '</div>';
+        }
+
+        if (isNonEmptyString(candidate.availability.display)) {
+            html += '<div class="planner-matrix-candidate-window">' +
+                        'Available ' +
+                        escapeHtml(candidate.availability.display) +
+                    '</div>';
+        }
+
+        if (isNonEmptyString(candidate.assignment.display) &&
+            candidate.assignment.display !== 'Unassigned') {
+            html += '<div class="planner-matrix-candidate-assignment">' +
+                        escapeHtml(candidate.assignment.display) +
+                    '</div>';
+        }
+
+        html += '</th>';
+        return html;
+    }
+
+    // ------------------------------------------------------------
+    // Cells
+    // ------------------------------------------------------------
+
+    function renderCell(candidate, team, vm) {
         var radioGroupName = 'planner-cand-' +
             String(candidate.characterId);
 
+        // A team at capacity in this view is not possible; the
+        // aggregator excludes those from the planner VM. But
+        // guard anyway — a stale VM should not produce a
+        // selectable cell for a full team.
+        var atCapacity = team.memberCount >= team.targetSize;
+
         var html = '';
 
-        html += '<div class="planner-team-cell" ' +
+        html += '<td class="planner-matrix-cell" ' +
                     'data-team-id="' +
-                        escapeAttribute(team.teamId) + '">';
+                        escapeAttribute(team.teamId) + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.characterId) + '">';
 
-        html += '<label class="planner-team-cell-label">';
+        html += '<label class="planner-cell-label" ' +
+                    'title="Assign ' +
+                        escapeAttribute(candidate.displayName) +
+                        ' to ' + escapeAttribute(team.teamName) +
+                    '">';
+
         html += '<input type="radio" ' +
                     'name="' + escapeAttribute(radioGroupName) + '" ' +
                     'class="planner-assoc-radio" ' +
                     'data-team-id="' +
                         escapeAttribute(team.teamId) + '" ' +
                     'data-character-id="' +
-                        escapeAttribute(candidate.characterId) + '">';
-        html += '<span class="planner-team-cell-name">' +
-                    escapeHtml(team.teamName) +
-                '</span>';
+                        escapeAttribute(candidate.characterId) + '"' +
+                    (atCapacity ? ' disabled' : '') + '>';
+
         html += '</label>';
 
-        html += '<div class="planner-team-cell-years">';
-        html += '<input type="text" ' +
-                    'class="planner-assoc-join" ' +
-                    'placeholder="Join" ' +
-                    'data-team-id="' +
-                        escapeAttribute(team.teamId) + '" ' +
-                    'data-character-id="' +
-                        escapeAttribute(candidate.characterId) + '" ' +
-                    'value="' +
-                        escapeAttribute(defaultJoin) + '">';
-        html += '<span class="planner-team-cell-dash">\u2013</span>';
-        html += '<input type="text" ' +
-                    'class="planner-assoc-leave" ' +
-                    'placeholder="Leave" ' +
-                    'data-team-id="' +
-                        escapeAttribute(team.teamId) + '" ' +
-                    'data-character-id="' +
-                        escapeAttribute(candidate.characterId) + '" ' +
-                    'value="' +
-                        escapeAttribute(defaultLeave) + '">';
-        html += '</div>';
+        html += '</td>';
+        return html;
+    }
 
-        html += '</div>';
+    // ------------------------------------------------------------
+    // Details strip
+    // ------------------------------------------------------------
+    //
+    // One <tr> per candidate, immediately below the candidate's
+    // radio row. Spans the full table width.
+    //
+    // The strip is rendered with `hidden` and empty content by
+    // default. TeamEvents populates it when a radio is picked and
+    // hides it again when the selection is cleared.
+    //
+    // The default-join year is preserved on the strip via a
+    // data attribute so TeamEvents has a starting value for the
+    // Join input when it builds the strip.
+
+    function renderDetailsStrip(candidate, vm) {
+        var html = '';
+
+        html += '<tr class="planner-matrix-details-row" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.characterId) + '" ' +
+                    'data-default-join="' +
+                        escapeAttribute(
+                            defaultJoinYear(candidate, vm)
+                        ) + '" ' +
+                    'hidden>';
+
+        // Colspan = 1 (corner) + teams. The team headers are
+        // <th>, each occupying one column.
+        var colspan = vm.teams.length + 1;
+
+        html += '<td class="planner-matrix-details-cell" ' +
+                    'colspan="' + escapeAttribute(colspan) + '">';
+
+        // Content is injected by TeamEvents when a radio is
+        // picked. The empty wrapper here is the anchor.
+        html += '<div class="planner-row-details" ' +
+                    'data-character-id="' +
+                        escapeAttribute(candidate.characterId) + '">' +
+                '</div>';
+
+        html += '</td>';
+        html += '</tr>';
+
         return html;
     }
 
