@@ -139,9 +139,10 @@
          ============================================================
          Only modules that depend exclusively on the utilities
          and shared queries above. Domain-dependent import/export
-         modules (schedule-export, class-roster-export,
+         modules (team-export, team-export-picker,
+         schedule-export, class-roster-export,
          graduates-export-picker) are loaded much later, after
-         the Academy domain block.
+         the domain blocks they read from.
          ============================================================ -->
 
     <!-- Core -->
@@ -162,14 +163,6 @@
 
     <!-- Mission CSV (schema, export, import, template). -->
     <script src="js/modules/missions/mission-csv.js"></script>
-
-    <!-- Team export bundle. Installs: TeamExport. -->
-    <script src="js/import-export/team-export.js"></script>
-
-    <!-- Team export picker. Needs TeamExport (above) and
-         TeamQueries / TeamConstants / Modal / NotificationSystem /
-         DomUtils, all loaded earlier. -->
-    <script src="js/import-export/team-export-picker.js"></script>
 
     <!-- Character export picker. Reads only the character CSV /
          roster / report globals, all installed above. -->
@@ -340,6 +333,28 @@
 
     <!-- ============================================================
          Team domain
+         ============================================================
+         Full module stack. Load order within this block:
+
+           queries     -> aggregator
+           aggregator  -> render, events
+           core        -> events
+           naming      -> core (post-commit hook)
+           kill-modal  -> events (opened from .kill-team)
+           matchmaking -> view
+           timeline    -> aggregator
+           rankings    -> aggregator
+           rankings-view -> render (renderContainer delegates)
+           member-adapter-teams -> events (passed to MemberManager)
+           verifier    -> verifier-view -> events
+           export      -> export-picker -> events
+           render + events -> index
+
+         team-export.js and team-export-picker.js are members of
+         the team domain: they read TeamQueries, TeamConstants,
+         and CharacterQueries, all loaded earlier. They sit here
+         rather than in the generic import/export block so the
+         whole team surface loads as one unit.
          ============================================================ -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
@@ -362,6 +377,13 @@
     <script src="js/modules/teams/timeline-queries.js"></script>
     <script src="js/modules/teams/timeline-view.js"></script>
 
+    <!-- Rankings view. renderContainer delegates to
+         TeamRankingsView.renderRankingsTab, so this must load
+         before team-render.js's render path is invoked. Scripted
+         here so the whole rankings surface loads with the rest
+         of the team domain. -->
+    <script src="js/modules/teams/team-rankings-view.js"></script>
+
     <script src="js/modules/teams/member-adapter-teams.js"></script>
 
     <!-- Team verifier. Loads before team-events so its public API
@@ -378,6 +400,16 @@
                                       TeamEvents lazily -->
     <script src="js/modules/teams/team-verifier.js"></script>
     <script src="js/modules/teams/team-verifier-view.js"></script>
+
+    <!-- Team export bundle. Installs: TeamExport. Reads
+         TeamQueries, TeamConstants, CharacterQueries, and
+         ExportUtils; all loaded above. -->
+    <script src="js/import-export/team-export.js"></script>
+
+    <!-- Team export picker. Needs TeamExport (above) and
+         TeamQueries / TeamConstants / Modal / NotificationSystem /
+         DomUtils, all loaded earlier. -->
+    <script src="js/import-export/team-export-picker.js"></script>
 
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
@@ -444,7 +476,7 @@
     <script src="js/modules/missions/index.js"></script>
 
     <!-- ============================================================
-         IMPORT / EXPORT (DOMAIN-DEPENDENT)
+         IMPORT / EXPORT (DOMAIN-DEPENDENT, ACADEMY)
          ============================================================
          These modules read from the Academy domain at load time,
          so they must load after the Academy block above. They are
