@@ -2,8 +2,8 @@
  * css/teams.css - Hollow Blades Manager
  *
  * The Teams tab (Professional / Civilian), the professional
- * tab's Professional Pool view, and the professional tab's
- * Timeline view.
+ * tab's Professional Pool view, the professional tab's Timeline
+ * view, and the professional tab's Rankings view.
  *
  * Covers:
  *   - Team list header + rows (#team-list-container,
@@ -16,10 +16,12 @@
  *   - Team cards (.team-card)
  *   - Team tab nav (.tab-nav, .tab-btn)
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
- *     including the professional tab's three-way mode toggle
+ *     including the professional tab's four-way mode toggle
  *     (.mode-toggle, .mode-btn)
  *   - Professional Pool view (.pool-*)
  *   - Timeline view (.timeline-*)
+ *   - Rankings view (.rankings-*)
+ *   - Ranking modal (.ranking-*) — per-team view
  *   - Stats row (.stats-grid, .stat-card)
  *   - Shared member manager (.member-*)
  *   - Team Matchmaking modal (.matchmaking-*)
@@ -3051,6 +3053,471 @@
 }
 
 /* ============================================================
+   RANKINGS VIEW
+   ============================================================
+   The professional tab's Rankings view. A table of every
+   professional team at a chosen year, ordered by effective
+   rank. Ranks are read-time inherited: an entry written at
+   1904 governs 1904 until the next explicit entry.
+
+   Cells carry a state class:
+
+     .ranking-rank-explicit    the value was written at this year
+     .ranking-rank-inherited   the value comes from an earlier year
+     .ranking-rank-empty       no entry at or before this year
+
+   Click any rank cell to edit in place.
+   ============================================================ */
+
+.rankings-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* ---------- Header ---------- */
+
+.rankings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.rankings-header-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.rankings-header-group label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.rankings-year-input {
+    width: 84px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.rankings-year-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.rankings-summary {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    margin-right: 8px;
+}
+
+.rankings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.rankings-toggle input {
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ---------- Table ---------- */
+
+.rankings-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--panel);
+}
+
+.rankings-table-header,
+.rankings-table-row {
+    display: grid;
+    grid-template-columns: 80px 2fr 1fr 70px 80px 40px;
+    gap: 8px;
+    padding: 6px 12px;
+    align-items: center;
+}
+
+.rankings-table-header {
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.rankings-table-header button {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    font-weight: inherit;
+    font-size: inherit;
+}
+
+.rankings-table-header button:hover {
+    color: var(--text);
+}
+
+.rankings-table-header button.is-sorted {
+    color: var(--accent);
+}
+
+.rankings-table-row {
+    border-bottom: 1px solid var(--border-soft);
+    transition: background 0.1s;
+}
+
+.rankings-table-row:last-child {
+    border-bottom: none;
+}
+
+.rankings-table-row:hover {
+    background: var(--panel-alt);
+}
+
+.rankings-table-row.is-inactive {
+    opacity: 0.55;
+}
+
+/* ---------- Rank cell ---------- */
+
+.ranking-row-rank {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    transition: background 0.12s, border-color 0.12s;
+    width: fit-content;
+    min-width: 44px;
+}
+
+.ranking-row-rank:hover {
+    background: var(--bg);
+    border-color: var(--border-soft);
+}
+
+.ranking-row-rank.is-editing {
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+.ranking-rank-value {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.ranking-rank-explicit .ranking-rank-value {
+    color: var(--accent);
+}
+
+.ranking-rank-inherited .ranking-rank-value {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.ranking-rank-empty .ranking-rank-value {
+    color: var(--text-dim);
+    font-weight: 400;
+}
+
+.ranking-rank-provenance {
+    font-size: 0.58rem;
+    color: var(--text-dim);
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.ranking-rank-explicit .ranking-rank-provenance {
+    color: var(--accent);
+    font-style: normal;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.55rem;
+}
+
+.ranking-inline-input {
+    width: 60px;
+    padding: 3px 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.ranking-inline-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Other cells ---------- */
+
+.rankings-col-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rankings-col-period {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.rankings-col-members {
+    font-size: 0.72rem;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.rankings-col-status {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.rankings-col-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.rankings-clear-rank {
+    font-size: 0.6rem;
+    padding: 1px 6px;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 700px) {
+    .rankings-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .rankings-header-group {
+        justify-content: space-between;
+    }
+
+    .rankings-table-header {
+        display: none;
+    }
+
+    .rankings-table-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            "name    rank"
+            "period  members"
+            "status  actions";
+        gap: 4px 8px;
+        padding: 10px 12px;
+    }
+
+    .rankings-col-rank {
+        grid-area: rank;
+        justify-self: end;
+    }
+
+    .rankings-col-name {
+        grid-area: name;
+        white-space: normal;
+    }
+
+    .rankings-col-period {
+        grid-area: period;
+    }
+
+    .rankings-col-members {
+        grid-area: members;
+        text-align: right;
+    }
+
+    .rankings-col-status {
+        grid-area: status;
+    }
+
+    .rankings-col-actions {
+        grid-area: actions;
+        justify-content: flex-end;
+    }
+}
+
+/* ============================================================
+   RANKING MODAL (per-team view)
+   ============================================================
+   The single-team ranking modal. Opened from a team row's
+   Rankings button. This is distinct from the Rankings tab,
+   which is the cross-team view.
+
+   Each explicit entry renders as one row, with a small line
+   beneath it describing the range of years it governs. That
+   line is what makes the inheritance model visible: the user
+   sees which entry is authoritative in which years, without
+   having to work it out from the raw list.
+
+   HTML class surface:
+
+     .ranking-form                    the add-entry row
+     .ranking-period-input            the period field
+     .ranking-rank-input              the rank field
+     #add-ranking-btn                 commit button
+     #ranking-list                    the entry stack
+     .ranking-entry                   one entry + governs line
+     .ranking-entry-main              top row (text + remove)
+     .ranking-entry-text              the entry text
+     .ranking-entry-governs           the "(governs ...)" line
+     .remove-ranking                  the per-row remove button
+   ============================================================ */
+
+.ranking-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 8px;
+    align-items: stretch;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.ranking-period-input,
+.ranking-rank-input {
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.ranking-period-input {
+    font-variant-numeric: normal;
+}
+
+.ranking-rank-input {
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.ranking-period-input:focus,
+.ranking-rank-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#add-ranking-btn {
+    padding: 5px 14px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+#ranking-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 45vh;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.ranking-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+}
+
+.ranking-entry-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ranking-entry-text {
+    font-size: 0.75rem;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.ranking-entry-text strong {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.ranking-entry-governs {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    font-style: italic;
+    padding-left: 2px;
+}
+
+.remove-ranking {
+    font-size: 0.6rem;
+    padding: 1px 8px;
+    flex: 0 0 auto;
+}
+
+/* ============================================================
    MOBILE — TEAM LIST CARD LAYOUT + POOL COLLAPSE
    ============================================================ */
 
@@ -3418,5 +3885,26 @@
 
     .member-manager-footer button {
         width: 100%;
+    }
+
+    /* ---------- Ranking modal ---------- */
+
+    .ranking-form {
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas:
+            "period rank"
+            "add    add";
+    }
+
+    .ranking-period-input { grid-area: period; }
+    .ranking-rank-input   { grid-area: rank; }
+    #add-ranking-btn      { grid-area: add; width: 100%; }
+
+    #ranking-list {
+        max-height: none;
+    }
+
+    .remove-ranking {
+        align-self: flex-end;
     }
 }
