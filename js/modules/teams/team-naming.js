@@ -32,19 +32,32 @@
  *   When the suffix changes (a new distinct member crosses a
  *   threshold), the naming module performs a ROLLOVER:
  *
- *     1. Close the current period at (joinYear - 1).
- *     2. Open a new period at joinYear, inheriting the previous
- *        period's tacticalStyle and specialisations.
+ *     1. Close the current period at the year the new period opens
+ *        (the trigger year). The half-open convention in
+ *        team-core.js means a period that ends at year Y and
+ *        another that starts at year Y do not overlap; the
+ *        boundary year belongs to the LATER period.
+ *     2. Open a new period at the trigger year, inheriting the
+ *        previous period's tacticalStyle and specialisations.
  *     3. Set the new period's name to the recomputed suffix name.
  *
- *   The inheritance is a starting point, not a lock. The user can
- *   edit the new period's tacticalStyle and specialisations
- *   afterwards; the naming module does not re-run once the period
- *   is user-edited. Its job is to keep the CURRENT period's name
- *   in sync with the distinct-member count, and to close / open
- *   periods when that count crosses a threshold.
+ *   This produces, for a team founded in 1900 whose fourth
+ *   distinct member joined in 1905:
  *
- * JOIN YEAR:
+ *     Rapid     1900–1905
+ *     Rapid II  1905–present
+ *
+ *   And for a team founded in 1900 whose fourth distinct member
+ *   joined in 1900:
+ *
+ *     Rapid     1900–1900
+ *     Rapid II  1900–present
+ *
+ *   Both are legal under the half-open rule. The same-year case
+ *   is not an error; it is the correct representation of "the
+ *   rename happened in the same year the team was founded."
+ *
+ * THE TRIGGER YEAR:
  *   The year the new period opens is the EARLIEST joinPeriod
  *   across the stints of the distinct member who triggered the
  *   suffix change — the (suffixNumber + 1)-th distinct member in
@@ -53,6 +66,12 @@
  *   A member with no parseable join period does not participate
  *   in suffix computation; they are still counted as a distinct
  *   person, but their join cannot be used to date a boundary.
+ *
+ *   Because the trigger year is a member's join year, it is by
+ *   construction >= the team's first period's start year. If it
+ *   is not — because the periods array was manually edited and
+ *   the sort is wrong — the rollover refuses rather than
+ *   producing an inverted range.
  *
  * WHY THE ROLLOVER IS ONE-WAY:
  *   The distinct count is over "characters who have ever been a
@@ -73,6 +92,15 @@
  *   "The earliest three" are decided by the character's EARLIEST
  *   joinPeriod across all their stints on the team. Ties are
  *   broken by characterId for stability.
+ *
+ * MULTI-LEVEL SKIPS:
+ *   A single applyTeamName call produces AT MOST ONE new period,
+ *   for the current suffix level. If a rollover was missed in an
+ *   earlier session (say the team is at "II" but should be at
+ *   "IV"), the call produces "IV" with one new period and warns
+ *   that intermediate levels were skipped. It does not backfill
+ *   intermediate periods, because inventing history is not a
+ *   naming decision.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Team reads. TeamQueries owns them.
@@ -460,17 +488,51 @@
     //
     // Build the next periods array.
     //
-    // The current (last) period closes at (triggerJoinYear - 1).
-    // A new period opens at triggerJoinYear, inheriting the
+    // The current (last) period closes at the trigger year. A new
+    // period opens at the same trigger year, inheriting the
     // previous period's tacticalStyle and specialisations and
     // taking the recomputed name.
     //
-    // If the current period's startPeriod is already equal to
-    // triggerJoinYear (the period opened the same year the new
-    // member joined), there is nothing to close and open; instead
-    // the current period's name is rewritten in place. That
-    // happens when a team is created mid-year and a member joins
-    // in the same year as the founding member.
+    // The half-open convention in team-core.js means a period
+    // ending at year Y and another starting at year Y do NOT
+    // overlap: the boundary year belongs to the LATER period.
+    // That is what makes the same-year rollover legal:
+    //
+    //   Rapid     1900–1900
+    //   Rapid II  1900–present
+    //
+    // The same year sees both the founding and the rename. Both
+    // periods name it. Under the half-open rule, 1900 belongs to
+    // Rapid II.
+    //
+    // THREE CASES:
+    //
+    //   1. lastStart < triggerYear
+    //        Normal case. The current period closes at
+    //        (triggerYear - 1). The gap between the end and the
+    //        new start is zero.
+    //
+    //   2. lastStart === triggerYear
+    //        Same-year rollover. The current period closes AT
+    //        the trigger year. Under the half-open rule, the
+    //        current period ends 1900, the new period starts
+    //        1900, and 1900 belongs to the new period.
+    //
+    //   3. lastStart > triggerYear
+    //        Data inconsistency. The periods array is sorted
+    //        ascending, so the last period's start should be the
+    //        latest. If it is not, closing at (triggerYear - 1)
+    //        would produce an inverted range that the
+    //        canonicaliser rejects. Refuse and log; the caller
+    //        falls back to a rewrite-in-place.
+    //
+    // WHAT THIS FUNCTION DOES NOT DO:
+    //   It does not backfill intermediate suffix levels. If a
+    //   rollover was missed and the computed suffix is more than
+    //   one above the current one, a single new period is
+    //   produced for the current level. The caller logs the
+    //   skip. Inventing intermediate periods would be inventing
+    //   history.
 
     function buildRolloverPeriods(team, computed) {
         if (!Array.isArray(team.periods) ||
@@ -480,6 +542,9 @@
         if (computed.triggerJoinYear === null) {
             return null;
         }
+
+        var triggerYear = computed.triggerJoinYear;
+        var triggerStr = String(triggerYear);
 
         var periods = [];
         for (var i = 0; i < team.periods.length; i++) {
@@ -497,41 +562,67 @@
         }
 
         var last = periods[periods.length - 1];
-        var triggerYear = computed.triggerJoinYear;
-
         var lastStartNum = parsePeriodNum(last.startPeriod);
-        var triggerStr = String(triggerYear);
 
-        if (lastStartNum !== null && lastStartNum === triggerYear) {
-            // The current period already starts at the trigger
-            // year. Nothing to close; rewrite the name in place.
-            last.name = computed.displayName;
-            return periods;
+        if (lastStartNum === null) {
+            console.warn(
+                '[TeamNaming] Cannot rollover: current period has ' +
+                'no parseable start period.'
+            );
+            return null;
         }
 
-        // ---- Close the current period. ----
-        //
-        // The end period is (triggerYear - 1). If the trigger year
-        // is 1, the period would close at 0, which is invalid;
-        // in that case the current period is dropped entirely and
-        // the new one takes its place. (This is a defensive path;
-        // a trigger year of 1 means the whole team history is one
-        // year, which the canonicaliser would have folded into a
-        // single period anyway.)
-        if (triggerYear <= 1) {
-            periods.pop();
+        if (lastStartNum > triggerYear) {
+            console.warn(
+                '[TeamNaming] Cannot rollover: current period ' +
+                'starts in ' + last.startPeriod +
+                ' but trigger year is ' + triggerYear + '. The ' +
+                'periods array may be unsorted or manually edited. ' +
+                'The current period name will be rewritten in ' +
+                'place instead.'
+            );
+            return null;
+        }
+
+        if (lastStartNum === triggerYear) {
+            // Same-year rollover. Close AT the trigger year; the
+            // boundary year belongs to the new period under the
+            // half-open rule.
+            last.endPeriod = triggerStr;
         } else {
-            last.endPeriod = String(triggerYear - 1);
+            // Normal rollover. The current period closes at the
+            // year before the new period opens.
+            if (triggerYear <= 1) {
+                // Degenerate case: trigger year is 1 and current
+                // period starts before 1, which cannot happen.
+                // Drop the current period entirely; the new one
+                // takes its place.
+                periods.pop();
+            } else {
+                last.endPeriod = String(triggerYear - 1);
+            }
         }
 
         // ---- Open the new period. ----
+        //
+        // The inherited tacticalStyle and specialisations come
+        // from the (possibly-closed) last period, not from a
+        // mutated copy. If last was popped in the degenerate
+        // branch above, we have no source; use empty defaults.
+        var inheritFrom = periods.length > 0
+            ? periods[periods.length - 1]
+            : null;
+
         periods.push({
             startPeriod: triggerStr,
             endPeriod: '',
             name: computed.displayName,
-            tacticalStyle: last.tacticalStyle || '',
-            specialisations: Array.isArray(last.specialisations)
-                ? last.specialisations.slice()
+            tacticalStyle: inheritFrom
+                ? (inheritFrom.tacticalStyle || '')
+                : '',
+            specialisations: inheritFrom &&
+                Array.isArray(inheritFrom.specialisations)
+                ? inheritFrom.specialisations.slice()
                 : []
         });
 
@@ -588,16 +679,11 @@
         // A rollover happens when the current period's name is
         // being replaced by a name whose suffix number is one
         // higher than the current one, AND we have a trigger
-        // year to open the new period at. Otherwise, the change
-        // is a simple rename (the base name itself changed, or
-        // a manual edit is being normalised).
+        // year to open the new period at.
         //
-        // In practice the simple-rename case is rare: naming is
-        // driven by member additions, and a member addition
-        // either does nothing to the name or crosses a
-        // threshold. A first-period rename without a member
-        // change would come from an explicit updateTeam call,
-        // not from here.
+        // A jump of more than one suffix level (say from "II"
+        // directly to "IV") still produces ONE new period, at
+        // the current computed level. The caller logs the skip.
         var currentSuffix = 0;
         if (Array.isArray(team.periods) && team.periods.length > 0) {
             var currentName = team.periods[team.periods.length - 1].name;
@@ -616,6 +702,24 @@
         var requiresRollover =
             computed.suffixNumber > currentSuffix &&
             computed.triggerJoinYear !== null;
+
+        // ---- Warn on skipped levels ----
+        //
+        // The rollover below produces a single new period, for
+        // the current computed suffix. If the jump is more than
+        // one level, intermediate periods are not created.
+        // Surface that so the user can add them manually.
+        if (requiresRollover &&
+            computed.suffixNumber > currentSuffix + 1) {
+            console.warn(
+                '[TeamNaming] Skipped suffix levels on team ' +
+                teamId + ': current name is "' +
+                (team.name || '') + '", computed is "' +
+                computed.displayName + '". A single new period ' +
+                'will be produced. Add intervening periods ' +
+                'manually in the team form if needed.'
+            );
+        }
 
         var newPeriods = null;
         if (requiresRollover) {
