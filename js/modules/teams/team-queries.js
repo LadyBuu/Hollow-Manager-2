@@ -9,7 +9,8 @@
  *   - Membership predicates (interval, active, former).
  *   - Team-scoped membership reads.
  *   - Character membership reads (all-time, current).
- *   - Ranking queries.
+ *   - Ranking queries, including the read-time inheritance
+ *     model described below.
  *   - Period-scoped readers: getPeriods, getCurrentPeriod,
  *     getPeriodForYear, getActiveTeamMembersForPeriod,
  *     getRankingsForPeriod.
@@ -35,7 +36,7 @@
  *   isMemberActive(member, period)
  *   isMemberFormer(member, period)
  *
- * PERIODS MODEL (this revision):
+ * PERIODS MODEL:
  *   A team carries a `periods` array. Each entry is a self-
  *   contained description of what the team was during a range of
  *   years:
@@ -85,7 +86,8 @@
  *   year the identity changed belongs to the NEW period, not the
  *   old one.
  *
- * RANKING RULE:
+ * RANKING RULE (the same half-open contract, applied to a single
+ * year):
  *
  *   A ranking entry is included in a period iff:
  *
@@ -93,6 +95,42 @@
  *
  *   Same strict upper bound, same infinity for a blank
  *   period.end. A 1905 ranking belongs to Rapid II, not Rapid.
+ *
+ * RANKING INHERITANCE:
+ *   The `rankingHistory` array holds EXPLICIT entries only —
+ *   the values the user actually wrote:
+ *
+ *     { period: '1905', rank: 3 }
+ *
+ *   The rank in effect for a team at year Y is the rank of the
+ *   most recent explicit entry at or before Y. If no entry is at
+ *   or before Y, the rank is null.
+ *
+ *   A team ranked #3 at 1904 and #5 at 1907 reads:
+ *
+ *     1903  null      (no entry at or before 1903)
+ *     1904  #3        (explicit)
+ *     1905  #3        (inherited from 1904)
+ *     1906  #3        (inherited from 1904)
+ *     1907  #5        (explicit)
+ *     1908  #5        (inherited from 1907)
+ *
+ *   Writing a new entry at 1905 (#4, say) shadows 1904 for
+ *   1905–1906 without touching 1907:
+ *
+ *     1904  #3        (explicit)
+ *     1905  #4        (explicit, written)
+ *     1906  #4        (inherited from 1905)
+ *     1907  #5        (explicit)
+ *
+ *   That is "change it in time and keep the previous records."
+ *   The 1904 entry survives untouched; it just stops governing
+ *   1905.
+ *
+ *   getRankAtPeriod returns the EFFECTIVE rank; it does not
+ *   distinguish explicit from inherited. Callers that need the
+ *   distinction use getEffectiveRanking, which returns
+ *   { rank, explicit, sourcePeriod }.
  *
  * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
@@ -1820,7 +1858,210 @@
     // ============================================================
     // RANKINGS
     // ============================================================
+    //
+    // RANKING MODEL:
+    //   A team carries a `rankingHistory` array of EXPLICIT
+    //   entries — the values the user actually wrote:
+    //
+    //     { period: '1905', rank: 3 }
+    //
+    //   The array describes the years on which the user acted,
+    //   not every year.
+    //
+    // READ-TIME INHERITANCE:
+    //   The rank in effect for a team at year Y is the rank of
+    //   the most recent explicit entry at or before Y. If no
+    //   entry is at or before Y, the rank is null.
+    //
+    //   A team ranked #3 at 1904 and #5 at 1907 reads:
+    //
+    //     1903  null      (no entry at or before 1903)
+    //     1904  #3        (explicit)
+    //     1905  #3        (inherited from 1904)
+    //     1906  #3        (inherited from 1904)
+    //     1907  #5        (explicit)
+    //     1908  #5        (inherited from 1907)
+    //
+    //   Writing a new entry at 1905 (#4, say) shadows 1904 for
+    //   1905–1906 without touching 1907:
+    //
+    //     1904  #3        (explicit)
+    //     1905  #4        (explicit, written)
+    //     1906  #4        (inherited from 1905)
+    //     1907  #5        (explicit)
+    //
+    //   That is "change it in time and keep the previous records."
+    //   The 1904 entry survives untouched; it just stops governing
+    //   1905.
+    //
+    // getRankAtPeriod RETURNS THE EFFECTIVE RANK. It does not
+    // distinguish explicit from inherited. Callers that need the
+    // distinction use getEffectiveRanking.
 
+    /**
+     * Get the rank in effect for a team at a given year.
+     *
+     * Read-time inheritance: returns the most recent entry at
+     * or before `year`. Returns null when the team has no entry
+     * at or before the year, or when the year is invalid.
+     *
+     * @param {object} team
+     * @param {string|number} period
+     * @returns {number|null}
+     */
+    function getRankAtPeriod(team, period) {
+        var effective = getEffectiveRanking(team, period);
+        return effective.rank;
+    }
+
+    /**
+     * Get the effective ranking at a year, with the provenance
+     * of the value.
+     *
+     * @param {object} team
+     * @param {string|number} period
+     * @returns {object} {
+     *   rank: number|null,
+     *   explicit: boolean,
+     *   sourcePeriod: string|null
+     * }
+     */
+    function getEffectiveRanking(team, period) {
+        var result = {
+            rank: null,
+            explicit: false,
+            sourcePeriod: null
+        };
+
+        if (!team || !Array.isArray(team.rankingHistory)) {
+            return result;
+        }
+
+        var periodNum = parsePeriod(period);
+        if (periodNum === null) {
+            return result;
+        }
+
+        var bestYear = -Infinity;
+        var bestRank = null;
+
+        for (var i = 0; i < team.rankingHistory.length; i++) {
+            var entry = team.rankingHistory[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var entryPeriod = parsePeriod(entry.period);
+            if (entryPeriod === null) { continue; }
+            if (entryPeriod > periodNum) { continue; }
+
+            var rank = parsePeriod(entry.rank);
+            if (rank === null) { continue; }
+
+            if (entryPeriod > bestYear) {
+                bestYear = entryPeriod;
+                bestRank = rank;
+            }
+        }
+
+        if (bestRank === null) {
+            return result;
+        }
+
+        result.rank = bestRank;
+        result.sourcePeriod = String(bestYear);
+        result.explicit = (bestYear === periodNum);
+
+        return result;
+    }
+
+    /**
+     * Does the team have an explicit entry at exactly this year?
+     *
+     * @param {object} team
+     * @param {string|number} period
+     * @returns {boolean}
+     */
+    function hasExplicitRankingAt(team, period) {
+        return getEffectiveRanking(team, period).explicit === true;
+    }
+
+    /**
+     * Get the team's explicit ranking entries, each tagged with
+     * the range of years it governs.
+     *
+     * The range of an entry is [entry.period, nextEntry.period).
+     * The last entry's range extends to Infinity. This is the
+     * same half-open rule the periods model uses.
+     *
+     * Returns [] when the team has no ranking history. Order is
+     * ascending by year.
+     *
+     * @param {object} team
+     * @returns {array} [
+     *   {
+     *     period:       '1905',
+     *     rank:         3,
+     *     governsFrom:  1905,
+     *     governsTo:    1906 | null    (null = unbounded)
+     *   }
+     * ]
+     */
+    function getRankingHistoryWithRanges(team) {
+        if (!team || !Array.isArray(team.rankingHistory)) {
+            return [];
+        }
+
+        var cleaned = [];
+        var seenYears = Object.create(null);
+
+        for (var i = 0; i < team.rankingHistory.length; i++) {
+            var entry = team.rankingHistory[i];
+            if (!entry || typeof entry !== 'object') { continue; }
+
+            var year = parsePeriod(entry.period);
+            if (year === null) { continue; }
+
+            var rank = parsePeriod(entry.rank);
+            if (rank === null) { continue; }
+
+            if (seenYears[year]) { continue; }
+            seenYears[year] = true;
+
+            cleaned.push({
+                period: String(year),
+                rank: rank,
+                yearNum: year
+            });
+        }
+
+        cleaned.sort(function(a, b) {
+            return a.yearNum - b.yearNum;
+        });
+
+        var result = [];
+        for (var j = 0; j < cleaned.length; j++) {
+            var current = cleaned[j];
+            var next = cleaned[j + 1];
+
+            result.push({
+                period: current.period,
+                rank: current.rank,
+                governsFrom: current.yearNum,
+                governsTo: next ? next.yearNum : null
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Get the team's explicit ranking entries, sorted ascending
+     * by year. Returns [{ period, rank }, ...].
+     *
+     * This is the raw list. A caller that wants the effective
+     * rank at a year uses getEffectiveRanking; a caller that
+     * wants the governing range of each entry uses
+     * getRankingHistoryWithRanges.
+     */
     function getSortedRankings(team) {
         if (!team || !Array.isArray(team.rankingHistory)) {
             return [];
@@ -1850,6 +2091,15 @@
         return history;
     }
 
+    /**
+     * Get the most recent explicit entry, or null.
+     *
+     * "Most recent" means "the entry with the highest year."
+     * This is the entry written at the latest date in the
+     * team's history. It is not the same as the effective rank
+     * at the current application year — that requires knowing
+     * the year and using getEffectiveRanking.
+     */
     function getMostRecentRanking(team) {
         var history = getSortedRankings(team);
         return history.length > 0
@@ -1857,34 +2107,17 @@
             : null;
     }
 
+    /**
+     * The most recent explicit rank, as a display string, or ''
+     * when the team has no ranking history.
+     *
+     * This is what the team list shows. It is a fact about the
+     * team's most recent entry, not a claim about the current
+     * year.
+     */
     function getCurrentRank(team) {
         var most = getMostRecentRanking(team);
         return most ? String(most.rank) : '';
-    }
-
-    function getRankAtPeriod(team, period) {
-        if (!team || !Array.isArray(team.rankingHistory)) {
-            return null;
-        }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return null; }
-
-        var target = String(periodNum);
-        var history = team.rankingHistory;
-
-        for (var i = 0; i < history.length; i++) {
-            var entry = history[i];
-            if (!entry) { continue; }
-            var entryPeriod = parsePeriod(entry.period);
-            if (entryPeriod !== null &&
-                String(entryPeriod) === target) {
-                var rank = parsePeriod(entry.rank);
-                if (rank !== null) { return rank; }
-            }
-        }
-
-        return null;
     }
 
     function hasRankings(team) {
@@ -1892,6 +2125,17 @@
         return getSortedRankings(team).length > 0;
     }
 
+    /**
+     * A summary of the team's ranking state.
+     *
+     *   total      the number of explicit entries
+     *   current    the most recent explicit rank as a string
+     *   mostRecent the most recent entry object, or null
+     *   history    the full sorted list of explicit entries
+     *
+     * Consumers that want the effective rank at a specific year
+     * use getEffectiveRanking instead.
+     */
     function getRankingSummary(team) {
         if (!team) {
             return {
@@ -2045,12 +2289,18 @@
         isCharacterStaffAtYear: isCharacterStaffAtYear,
         getStaffInfoAtYear: getStaffInfoAtYear,
 
+        // ---- Rankings ----
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
         getRankAtPeriod: getRankAtPeriod,
         hasRankings: hasRankings,
-        getRankingSummary: getRankingSummary
+        getRankingSummary: getRankingSummary,
+
+        // Read-time inheritance
+        getEffectiveRanking: getEffectiveRanking,
+        hasExplicitRankingAt: hasExplicitRankingAt,
+        getRankingHistoryWithRanges: getRankingHistoryWithRanges
     });
 
     // ============================================================
@@ -2085,7 +2335,9 @@
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
             'getSortedRankings', 'getMostRecentRanking',
             'getCurrentRank', 'getRankAtPeriod', 'hasRankings',
-            'getRankingSummary'
+            'getRankingSummary',
+            'getEffectiveRanking', 'hasExplicitRankingAt',
+            'getRankingHistoryWithRanges'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -2212,6 +2464,102 @@
             if (rankingInPeriod('1904', RII_START, RII_END) !== false) {
                 missing.push(
                     'ranking: 1904 should NOT be in Rapid II'
+                );
+            }
+
+            // ---- Ranking inheritance smoke test ----
+            //
+            // The worked example from the file header.
+            var mockTeam = {
+                rankingHistory: [
+                    { period: '1904', rank: 3 },
+                    { period: '1907', rank: 5 }
+                ]
+            };
+
+            // 1903: no entry at or before 1903 -> null.
+            var e1903 = getEffectiveRanking(mockTeam, '1903');
+            if (e1903.rank !== null) {
+                missing.push(
+                    'inheritance: 1903 should be null, got ' +
+                    e1903.rank
+                );
+            }
+
+            // 1904: explicit #3.
+            var e1904 = getEffectiveRanking(mockTeam, '1904');
+            if (e1904.rank !== 3 || e1904.explicit !== true) {
+                missing.push(
+                    'inheritance: 1904 should be explicit #3'
+                );
+            }
+
+            // 1905: inherited #3.
+            var e1905 = getEffectiveRanking(mockTeam, '1905');
+            if (e1905.rank !== 3 || e1905.explicit !== false) {
+                missing.push(
+                    'inheritance: 1905 should inherit #3'
+                );
+            }
+
+            // 1906: inherited #3.
+            if (getEffectiveRanking(mockTeam, '1906').rank !== 3) {
+                missing.push(
+                    'inheritance: 1906 should inherit #3'
+                );
+            }
+
+            // 1907: explicit #5.
+            var e1907 = getEffectiveRanking(mockTeam, '1907');
+            if (e1907.rank !== 5 || e1907.explicit !== true) {
+                missing.push(
+                    'inheritance: 1907 should be explicit #5'
+                );
+            }
+
+            // 1908: inherited #5.
+            if (getEffectiveRanking(mockTeam, '1908').rank !== 5) {
+                missing.push(
+                    'inheritance: 1908 should inherit #5'
+                );
+            }
+
+            // getRankAtPeriod returns the same value as
+            // getEffectiveRanking's rank.
+            if (getRankAtPeriod(mockTeam, '1905') !== 3) {
+                missing.push(
+                    'getRankAtPeriod(1905) should be 3'
+                );
+            }
+            if (getRankAtPeriod(mockTeam, '1907') !== 5) {
+                missing.push(
+                    'getRankAtPeriod(1907) should be 5'
+                );
+            }
+
+            // hasExplicitRankingAt distinguishes the two.
+            if (hasExplicitRankingAt(mockTeam, '1904') !== true) {
+                missing.push(
+                    'hasExplicitRankingAt(1904) should be true'
+                );
+            }
+            if (hasExplicitRankingAt(mockTeam, '1905') !== false) {
+                missing.push(
+                    'hasExplicitRankingAt(1905) should be false'
+                );
+            }
+
+            // Ranges: entry at 1904 governs [1904, 1907), entry
+            // at 1907 governs [1907, null).
+            var ranges = getRankingHistoryWithRanges(mockTeam);
+            if (ranges.length !== 2 ||
+                ranges[0].governsFrom !== 1904 ||
+                ranges[0].governsTo !== 1907 ||
+                ranges[1].governsFrom !== 1907 ||
+                ranges[1].governsTo !== null) {
+                missing.push(
+                    'ranking ranges: expected [1904->1907, ' +
+                    '1907->null], got ' + JSON.stringify(ranges)
                 );
             }
         } catch (e) {
