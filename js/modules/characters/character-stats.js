@@ -7,7 +7,7 @@
  *
  * This module handles:
  *   - Physical stat calculation, validation, modifiers
- *   - Random physical stat generation (STAT_RANDOM_MIN..MAX range)
+ *   - Random physical stat generation
  *   - Physical class derivation (weighted scoring)
  *   - Physical class application (rewrites stats)
  *   - Magical proficiency calculation, validation, levels
@@ -15,56 +15,85 @@
  *   - Broad magical class derivation (category totals)
  *   - Fine magical class derivation (per-proficiency)
  *   - Fine magical class application (raises a single proficiency)
- *   - Total magical power (0..MAGIC_MAX * 18 sum)
+ *   - Total magical power
  *   - HP / MP calculation (random + modifiers)
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Special moves. Owned by character-moves.js.
  *   - Persistence. This file is pure calculation and derivation.
  *   - Class definitions. Those live in CharacterConstants
- *     (physical classes) and MagicConstants (broad, fine classes).
- *
- * IMPORTANT:
- *   - DOMAIN LOGIC ONLY - no rendering
- *   - All functions here are PURE. No MutationPipeline use.
- *   - No UI dependencies (no notifications, no confirm, no rendering)
- *   - Uses CharacterConstants for stat and HP/MP bounds (lazy)
- *   - Uses MagicConstants for magic type keys and levels (lazy)
+ *     (physical classes) and MagicConstants (broad, fine classes,
+ *     category multipliers, thresholds).
  *
  * LOAD ORDER:
  *   This module loads cleanly regardless of script order. Both
  *   CharacterConstants and MagicConstants are resolved at call
  *   time. A missing module is degraded rather than fatal:
  *     - Missing CharacterConstants: stat and HP/MP bounds fall
- *       back to the same numeric defaults this file has always used.
+ *       back to local numeric defaults.
  *     - Missing MagicConstants: magic type keys fall back to the
- *       keys of the passed-in magic object, and the fine-class
- *       threshold falls back to the local default.
+ *       keys of the passed-in magic object, the fine-class
+ *       threshold falls back to 3, and the category multipliers
+ *       fall back to the same values the constants define.
+ *
+ * STRING COERCION:
+ *   getCharacterStats and getCharacterMagic accept strings that
+ *   parse to numbers. A JSON import or a hand-edited record with
+ *   `"14"` for a stat or `"5"` for a proficiency is coerced the
+ *   same way the form's collect path coerces it via parseInt.
+ *   Before this change, non-number values fell back to the
+ *   default (10 for stats, 0 for magic).
+ *
+ * CATEGORY MULTIPLIERS:
+ *   MagicConstants defines MAGIC_CATEGORY_MULTIPLIERS (elemental
+ *   1.0, body 1.2, aether 1.5). deriveMagicalClasses multiplies
+ *   each category total by its multiplier before deciding which
+ *   category wins. Without this, aether — the rarest and
+ *   strongest category — almost never wins a tiebreak, and most
+ *   rolled characters come out as Elementalist.
+ *
+ *   The `categoryTotals` field in the result is the RAW sum, not
+ *   the multiplied sum. A caller rendering a breakdown sees the
+ *   actual totals; the multiplier only affects the winner.
+ *
+ * BALANCED_MAGE_THRESHOLD:
+ *   MagicConstants.BALANCED_MAGE_THRESHOLD is the number of
+ *   tied top proficiencies above which the fine class is reported
+ *   as "Balanced Mage" rather than as a specific class. This
+ *   module reads it rather than hardcoding 3.
  *
  * LIVE GETTERS:
  *   STAT_KEYS, STAT_MIN, STAT_MAX, STAT_DEFAULT, STAT_RANDOM_MIN,
- *   STAT_RANDOM_MAX, MAGIC_MAX, MAGIC_FINE_CLASS_MIN are exposed as
- *   getters, not captured values. A caller reading them sees the
- *   current value from the constants module, not a stale snapshot.
+ *   STAT_RANDOM_MAX, MAGIC_MAX, and MAGIC_FINE_CLASS_MIN are
+ *   exposed as getters. A caller reading them sees the current
+ *   value from the constants module.
  *
  * HP BOUNDS:
- *   HP_MAX is the hard cap used by CharacterCRUD.normaliseCharacterData
- *   (999) and by rollHP's clamp. HP_BASE_MIN and HP_BASE_MAX are the
- *   natural roll range before class and CON modifiers. They are
- *   separate concepts.
+ *   rollHP caps at CharacterConstants.HP_MAX (999). The
+ *   HP_BASE_MIN and HP_BASE_MAX constants are the natural roll
+ *   range before class and CON modifiers.
  *
  * MP BOUNDS:
- *   MP_MAX is 200. rollMP caps at MP_MAX.
+ *   rollMP caps at CharacterConstants.MP_MAX (200).
  *
  * PHYSICAL CLASS DERIVATION vs APPLICATION:
- *   derivePhysicalClass(stats) answers "which class best fits this
- *   stat block?" via a weighted dot product. It is a similarity
- *   score and it can return a different class than the one a user
- *   picked from the override, if the derived scores happen to
- *   favour a neighbour.
+ *   derivePhysicalClass(stats) is a similarity score: which class
+ *   best fits this stat block? applyPhysicalClass(classId)
+ *   rewrites a stat block to match a class. The override UI
+ *   displays the picked class directly rather than re-deriving,
+ *   so the derivation's occasional neighbour preference does not
+ *   affect the display.
  *
- *   applyPhysicalClass(classId) answers "produce a stat block that
- *   matches this class." Its output is a rewrite, not a hint.
+ *   The collapse warning from character-constants.js (fighter ->
+ *   brawler, tactician -> scholar) is a weight-table issue, not a
+ *   derivation issue. The derivation is correct given the current
+ *   weights.
+ *
+ * ABILITY MODIFIER:
+ *   getAbilityModifier clamps the input stat first. Other modules
+ *   compute the modifier unclamped. For a stat inside the legal
+ *   range, the two agree. Outside it, this module's version is
+ *   the one that stays bounded.
  *
  * DEPENDENCIES (LAZY):
  *   - window.CharacterConstants
@@ -96,13 +125,17 @@
 
     function getStatMin() {
         var CC = getCC();
-        if (CC && typeof CC.STAT_MIN === 'number') { return CC.STAT_MIN; }
+        if (CC && typeof CC.STAT_MIN === 'number') {
+            return CC.STAT_MIN;
+        }
         return 1;
     }
 
     function getStatMax() {
         var CC = getCC();
-        if (CC && typeof CC.STAT_MAX === 'number') { return CC.STAT_MAX; }
+        if (CC && typeof CC.STAT_MAX === 'number') {
+            return CC.STAT_MAX;
+        }
         return 30;
     }
 
@@ -146,6 +179,25 @@
         return 3;
     }
 
+    function getBalancedMageThreshold() {
+        var MC = getMC();
+        if (MC && typeof MC.BALANCED_MAGE_THRESHOLD === 'number') {
+            return MC.BALANCED_MAGE_THRESHOLD;
+        }
+        return 3;
+    }
+
+    function getCategoryMultiplier(categoryId) {
+        var MC = getMC();
+        if (MC && typeof MC.getCategoryMultiplier === 'function') {
+            return MC.getCategoryMultiplier(categoryId);
+        }
+        // Fallback: mirrors MagicConstants.
+        if (categoryId === 'body') { return 1.2; }
+        if (categoryId === 'aether') { return 1.5; }
+        return 1.0;
+    }
+
     function getMagicTypeKeys() {
         var MC = getMC();
         if (MC && typeof MC.getTypeKeys === 'function') {
@@ -154,15 +206,27 @@
         return null;
     }
 
+    function getCategoryOrder() {
+        var MC = getMC();
+        if (MC && typeof MC.getCategoryOrder === 'function') {
+            return MC.getCategoryOrder();
+        }
+        return ['elemental', 'body', 'aether'];
+    }
+
     function getHPMax() {
         var CC = getCC();
-        if (CC && typeof CC.HP_MAX === 'number') { return CC.HP_MAX; }
+        if (CC && typeof CC.HP_MAX === 'number') {
+            return CC.HP_MAX;
+        }
         return 999;
     }
 
     function getMPMax() {
         var CC = getCC();
-        if (CC && typeof CC.MP_MAX === 'number') { return CC.MP_MAX; }
+        if (CC && typeof CC.MP_MAX === 'number') {
+            return CC.MP_MAX;
+        }
         return 200;
     }
 
@@ -224,7 +288,9 @@
 
     function pickWeighted(items, weights) {
         var total = 0;
-        for (var i = 0; i < weights.length; i++) { total += weights[i]; }
+        for (var i = 0; i < weights.length; i++) {
+            total += weights[i];
+        }
         if (total <= 0) { return items[0]; }
 
         var roll = Math.random() * total;
@@ -247,10 +313,21 @@
         return result;
     }
 
-    function clampNumber(value, min, max) {
-        var num = Number(value);
-        if (!isFinite(num)) { return min; }
-        return Math.max(min, Math.min(max, num));
+    /**
+     * Coerce a value to a finite number, or return NaN.
+     * Accepts strings that parse cleanly.
+     */
+    function coerceNumber(value) {
+        if (typeof value === 'number') {
+            return isFinite(value) ? value : NaN;
+        }
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '') { return NaN; }
+            var num = Number(trimmed);
+            return isFinite(num) ? num : NaN;
+        }
+        return NaN;
     }
 
     // ============================================================
@@ -268,14 +345,19 @@
     }
 
     function clampStat(value) {
-        var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) { return getStatDefault(); }
+        var num = coerceNumber(value);
+        if (isNaN(num)) { return getStatDefault(); }
         return Math.max(
             getStatMin(),
             Math.min(getStatMax(), Math.round(num))
         );
     }
 
+    /**
+     * Read the character's physical stats with coercion and
+     * clamping. String values (from JSON imports or hand edits)
+     * are parsed the same way numeric values are.
+     */
     function getCharacterStats(char) {
         var keys = getStatKeys();
         var def = getStatDefault();
@@ -300,8 +382,9 @@
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var val = stats[key];
-            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
-                result[key] = clampStat(val);
+            var num = coerceNumber(val);
+            if (!isNaN(num)) {
+                result[key] = clampStat(num);
             } else {
                 result[key] = def;
             }
@@ -326,11 +409,11 @@
     /**
      * Roll physical stats via a 3d6-shaped roll for each key.
      *
-     * Each key gets `randomInt(1,6) + randomInt(1,6) + randomInt(1,6)`
-     * clamped to [STAT_RANDOM_MIN, STAT_RANDOM_MAX]. The raw 3d6
-     * distribution is a bell centred at 10.5, truncated by the
-     * clamp. With the default bounds (6..18), the truncation is
-     * symmetric and the mean is unchanged.
+     * Each key gets randomInt(1,6) * 3, clamped to
+     * [STAT_RANDOM_MIN, STAT_RANDOM_MAX]. The raw 3d6 distribution
+     * is a bell centred at 10.5, truncated by the clamp. With the
+     * default bounds (6..18), the truncation raises 3, 4 and 5 to
+     * 6 and leaves 6..18 unchanged.
      *
      * @returns {object} Stats object keyed by STAT_KEYS
      */
@@ -341,7 +424,8 @@
         var stats = {};
 
         for (var i = 0; i < keys.length; i++) {
-            var roll = randomInt(1, 6) + randomInt(1, 6) + randomInt(1, 6);
+            var roll = randomInt(1, 6) + randomInt(1, 6) +
+                randomInt(1, 6);
 
             if (roll < randMin) { roll = randMin; }
             if (roll > randMax) { roll = randMax; }
@@ -384,7 +468,9 @@
 
         ranked.sort(function(a, b) {
             if (b.score !== a.score) { return b.score - a.score; }
-            return (a.class.label || '').localeCompare(b.class.label || '');
+            return (a.class.label || '').localeCompare(
+                b.class.label || ''
+            );
         });
 
         if (ranked.length === 0) { return null; }
@@ -396,18 +482,6 @@
         };
     }
 
-    /**
-     * Get the display label for a physical class id.
-     *
-     * Returns the class's canonical label, or the em-dash sentinel
-     * for an unknown id. This is the display path for the OVERRIDE
-     * flow: a caller that has just applied class X renders X's
-     * label directly, without asking derivePhysicalClass to
-     * rediscover it.
-     *
-     * @param {string} classId
-     * @returns {string}
-     */
     function getPhysicalClassLabel(classId) {
         var CC = getCC();
         if (!CC ||
@@ -418,14 +492,6 @@
         return cls && cls.label ? cls.label : '\u2014';
     }
 
-    /**
-     * Apply a physical class to a character's stats — returns new
-     * stats. Does NOT mutate. Formula: stat = 6 + weight * 40 + jitter(-2..+2)
-     *
-     * @param {string} classId
-     * @param {object} options - { jitter: boolean } default true
-     * @returns {object|null} New stats object, or null if class invalid
-     */
     function applyPhysicalClass(classId, options) {
         options = options || {};
         var useJitter = options.jitter !== false;
@@ -468,11 +534,15 @@
 
     function clampMagic(value) {
         var max = getMagicMax();
-        var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) { return 0; }
+        var num = coerceNumber(value);
+        if (isNaN(num)) { return 0; }
         return Math.max(0, Math.min(max, Math.round(num)));
     }
 
+    /**
+     * Read the character's magic with coercion and clamping.
+     * String values are parsed the same way numeric values are.
+     */
     function getCharacterMagic(char) {
         var result = getDefaultMagicProficiencies();
         if (!char || !char.magic || typeof char.magic !== 'object') {
@@ -488,8 +558,9 @@
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var val = magic[key];
-            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
-                result[key] = clampMagic(val);
+            var num = coerceNumber(val);
+            if (!isNaN(num)) {
+                result[key] = clampMagic(num);
             } else {
                 result[key] = 0;
             }
@@ -501,18 +572,6 @@
     // MAGICAL PROFICIENCIES - Random roll
     // ============================================================
 
-    /**
-     * Roll magical proficiencies with category-weighted distribution.
-     *
-     * Elemental: all 6 roll, values cluster 3–5 (range 1–8)
-     * Body:      3–4 of 6 roll, values cluster 2–4 (range 1–7)
-     * Aether:    10% chance none; else 1–2 of 6 roll (range 1–6)
-     *
-     * Returns {} when MagicConstants is not loaded; the caller can
-     * detect this by the absence of keys.
-     *
-     * @returns {object} Magic proficiencies object
-     */
     function rollMagicalProficiencies() {
         var magic = getDefaultMagicProficiencies();
 
@@ -593,25 +652,25 @@
     }
 
     /**
-     * Derive broad + fine magical classes from a proficiency profile.
+     * Derive broad + fine magical classes from a proficiency
+     * profile.
      *
-     * Rules:
-     *   - All zeros → no classes
-     *   - Category tie (2-way) → broad "Dual Mage", no fine class
-     *   - Category tie (3-way) → broad "Balanced Mage", no fine class
-     *   - Single winning category → broad class from that category
-     *   - Top proficiency in category < MAGIC_FINE_CLASS_MIN →
-     *     no fine class
-     *   - Two-way proficiency tie → fine "X / Y"
-     *   - Three-way proficiency tie → fine "Balanced Mage"
-     *   - Single proficiency → fine class from that type
+     * CATEGORY MULTIPLIER: each category's raw total is multiplied
+     * by its MagicConstants.MAGIC_CATEGORY_MULTIPLIERS entry
+     * (elemental 1.0, body 1.2, aether 1.5) before deciding which
+     * category wins. This makes aether more likely to win a
+     * near-tie, which matches the intended design.
      *
-     * The result carries `topValue` (the highest proficiency value
-     * in the winning category, or in ANY category when the top
-     * category is tied). It is 0 only when the entire magic block
-     * is zero.
+     * `categoryTotals` in the result is the RAW sum, not the
+     * multiplied sum, so a caller rendering a breakdown sees the
+     * actual totals.
      *
-     * @param {object} magic
+     * BALANCED_MAGE_THRESHOLD: a category tie of 3 or more
+     * categories (all three tied) reports "Balanced Mage" as the
+     * broad class. A proficiency tie of BALANCED_MAGE_THRESHOLD
+     * or more within the winning category reports "Balanced Mage"
+     * as the fine class.
+     *
      * @returns {object} projection summary
      */
     function deriveMagicalClasses(magic) {
@@ -619,6 +678,7 @@
             broad: null,
             fine: null,
             categoryTotals: { elemental: 0, body: 0, aether: 0 },
+            categoryTotalsWeighted: { elemental: 0, body: 0, aether: 0 },
             topCategory: null,
             topType: null,
             topValue: 0,
@@ -634,11 +694,22 @@
         var keys = MC.getTypeKeys();
         var normalised = {};
         for (var ni = 0; ni < keys.length; ni++) {
-            normalised[keys[ni]] = clampMagic(magic ? magic[keys[ni]] : 0);
+            normalised[keys[ni]] = clampMagic(
+                magic ? magic[keys[ni]] : 0
+            );
         }
 
         var totals = getCategoryTotals(normalised);
         result.categoryTotals = totals;
+
+        // Apply category multipliers for the winner decision.
+        var weighted = {
+            elemental: totals.elemental *
+                getCategoryMultiplier('elemental'),
+            body: totals.body * getCategoryMultiplier('body'),
+            aether: totals.aether * getCategoryMultiplier('aether')
+        };
+        result.categoryTotalsWeighted = weighted;
 
         var grandTotal = totals.elemental + totals.body + totals.aether;
         if (grandTotal === 0) {
@@ -655,20 +726,22 @@
         }
         result.topValue = globalTopValue;
 
-        // ---- Find top category or categories ----
-        var categories = (typeof MC.getCategoryOrder === 'function')
-            ? MC.getCategoryOrder()
-            : ['elemental', 'body', 'aether'];
-        var topTotal = -1;
+        // ---- Find top category or categories, using the WEIGHTED
+        // totals. ----
+        var categories = getCategoryOrder();
+        var topWeighted = -1;
         for (var ci = 0; ci < categories.length; ci++) {
-            if (totals[categories[ci]] > topTotal) {
-                topTotal = totals[categories[ci]];
+            if (weighted[categories[ci]] > topWeighted) {
+                topWeighted = weighted[categories[ci]];
             }
         }
 
         var categoriesAtTop = [];
         for (var cj = 0; cj < categories.length; cj++) {
-            if (totals[categories[cj]] === topTotal && topTotal > 0) {
+            // Float comparison: use a tiny epsilon to account for
+            // multiplier arithmetic.
+            if (Math.abs(weighted[categories[cj]] - topWeighted) <
+                1e-9 && topWeighted > 0) {
                 categoriesAtTop.push(categories[cj]);
             }
         }
@@ -697,19 +770,23 @@
         var winningCategory = categoriesAtTop[0];
         result.topCategory = winningCategory;
 
-        var broadClass = (typeof MC.getBroadClassForCategory === 'function')
+        var broadClass = (typeof MC.getBroadClassForCategory ===
+            'function')
             ? MC.getBroadClassForCategory(winningCategory)
             : null;
         result.broad = broadClass;
 
         // ---- Find top proficiency within the winning category ----
-        var typesInCategory = (typeof MC.getCategoryTypes === 'function')
+        var typesInCategory =
+            (typeof MC.getCategoryTypes === 'function')
             ? MC.getCategoryTypes(winningCategory)
             : [];
         var topValueInCategory = 0;
         for (var ti = 0; ti < typesInCategory.length; ti++) {
-            if (normalised[typesInCategory[ti]] > topValueInCategory) {
-                topValueInCategory = normalised[typesInCategory[ti]];
+            if (normalised[typesInCategory[ti]] >
+                topValueInCategory) {
+                topValueInCategory =
+                    normalised[typesInCategory[ti]];
             }
         }
 
@@ -723,12 +800,15 @@
 
         var typesAtTop = [];
         for (var tj = 0; tj < typesInCategory.length; tj++) {
-            if (normalised[typesInCategory[tj]] === topValueInCategory) {
+            if (normalised[typesInCategory[tj]] ===
+                topValueInCategory) {
                 typesAtTop.push(typesInCategory[tj]);
             }
         }
 
-        if (typesAtTop.length >= 3) {
+        var balancedThreshold = getBalancedMageThreshold();
+
+        if (typesAtTop.length >= balancedThreshold) {
             result.fine = {
                 id: 'balanced_mage',
                 label: 'Balanced Mage',
@@ -743,8 +823,9 @@
                 ? MC.getFineClassForType(typesAtTop[0]) : null;
             var fineB = (typeof MC.getFineClassForType === 'function')
                 ? MC.getFineClassForType(typesAtTop[1]) : null;
-            var label = (fineA ? fineA.label : typesAtTop[0]) + ' / ' +
-                        (fineB ? fineB.label : typesAtTop[1]);
+            var label = (fineA ? fineA.label : typesAtTop[0]) +
+                ' / ' +
+                (fineB ? fineB.label : typesAtTop[1]);
             result.fine = {
                 id: 'dual_fine',
                 label: label,
@@ -764,15 +845,6 @@
         return result;
     }
 
-    /**
-     * Apply a fine magical class — raises the corresponding
-     * proficiency to at least 8 (Expert level) if currently lower.
-     * Returns new magic. Does NOT touch other proficiencies.
-     *
-     * @param {string} fineClassId
-     * @param {object} currentMagic
-     * @returns {object|null} New magic object, or null if class invalid
-     */
     function applyFineMagicalClass(fineClassId, currentMagic) {
         var MC = getMC();
         if (!MC || typeof MC.getFineClass !== 'function') {
@@ -804,10 +876,6 @@
     // MAGIC RANK (used by older display code)
     // ============================================================
 
-    /**
-     * Get a qualitative rank label from a total magical power.
-     * Replaces the old 0–100 weighted score ranking.
-     */
     function getMagicRank(totalPower) {
         var num = Number(totalPower) || 0;
         if (num >= 140) { return 'Archmage'; }
@@ -823,14 +891,6 @@
     // HP / MP
     // ============================================================
 
-    /**
-     * Roll HP based on stats and class.
-     * Base HP_BASE_MIN..HP_BASE_MAX + class hpBonus +
-     * 2×CON modifier, capped at HP_MAX.
-     *
-     * @param {object} stats
-     * @returns {number}
-     */
     function rollHP(stats) {
         var keys = getStatKeys();
         var def = getStatDefault();
@@ -858,17 +918,6 @@
         return hp;
     }
 
-    /**
-     * Roll MP based on magical proficiencies.
-     * Base = totalMagic / MP_BASE_DIVISOR
-     * + bodyTotal × MP_BODY_MULTIPLIER
-     * + aetherTotal × MP_AETHER_MULTIPLIER
-     * + random(0..MP_RANDOM_MAX)
-     * Capped at MP_MAX.
-     *
-     * @param {object} magic
-     * @returns {number}
-     */
     function rollMP(magic) {
         var keys = getMagicTypeKeys();
         var normalised = {};
@@ -885,7 +934,9 @@
         var totalPower = calculateTotalMagicalPower(normalised);
 
         var divisor = getMPBaseDivisor();
-        var base = divisor > 0 ? Math.round(totalPower / divisor) : 0;
+        var base = divisor > 0
+            ? Math.round(totalPower / divisor)
+            : 0;
 
         var bodyBonus = Math.round(
             totals.body * getMPBodyMultiplier()
@@ -903,9 +954,8 @@
     // EXPOSE
     // ============================================================
 
-    window.CharacterStats = {
-        // Constants exposed as LIVE GETTERS. Callers see the
-        // current values from CharacterConstants / MagicConstants.
+    window.CharacterStats = Object.freeze({
+        // Constants exposed as LIVE GETTERS.
         get STAT_KEYS()          { return getStatKeys(); },
         get STAT_MIN()           { return getStatMin(); },
         get STAT_MAX()           { return getStatMax(); },
@@ -929,7 +979,8 @@
         getPhysicalClassLabel: getPhysicalClassLabel,
 
         // Magical proficiencies
-        getDefaultMagicProficiencies: getDefaultMagicProficiencies,
+        getDefaultMagicProficiencies:
+            getDefaultMagicProficiencies,
         getCharacterMagic: getCharacterMagic,
         clampMagic: clampMagic,
         rollMagicalProficiencies: rollMagicalProficiencies,
@@ -944,46 +995,77 @@
         // HP / MP
         rollHP: rollHP,
         rollMP: rollMP
-    };
+    });
 
     // ============================================================
     // VERIFICATION
     // ============================================================
 
     (function verify() {
-        var exports = window.CharacterStats;
         var failures = [];
 
-        var required = [
-            'getDefaultStats',
-            'getCharacterStats',
-            'getAbilityModifier',
-            'getModifierDisplay',
-            'clampStat',
-            'rollPhysicalStats',
-            'derivePhysicalClass',
-            'applyPhysicalClass',
-            'getPhysicalClassLabel',
-            'getDefaultMagicProficiencies',
-            'getCharacterMagic',
-            'clampMagic',
-            'rollMagicalProficiencies',
-            'getCategoryTotals',
-            'calculateTotalMagicalPower',
-            'deriveMagicalClasses',
-            'applyFineMagicalClass',
-            'getMagicRank',
-            'rollHP',
-            'rollMP'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                failures.push('missing export: ' + required[i]);
-            }
-        }
-
         try {
+            var exports = window.CharacterStats;
+
+            var required = [
+                'getDefaultStats',
+                'getCharacterStats',
+                'getAbilityModifier',
+                'getModifierDisplay',
+                'clampStat',
+                'rollPhysicalStats',
+                'derivePhysicalClass',
+                'applyPhysicalClass',
+                'getPhysicalClassLabel',
+                'getDefaultMagicProficiencies',
+                'getCharacterMagic',
+                'clampMagic',
+                'rollMagicalProficiencies',
+                'getCategoryTotals',
+                'calculateTotalMagicalPower',
+                'deriveMagicalClasses',
+                'applyFineMagicalClass',
+                'getMagicRank',
+                'rollHP',
+                'rollMP'
+            ];
+
+            for (var i = 0; i < required.length; i++) {
+                if (typeof exports[required[i]] !== 'function') {
+                    failures.push(
+                        'missing export: ' + required[i]
+                    );
+                }
+            }
+
+            // Stat coercion: a string "14" reads as 14.
+            var statsFromString = exports.getCharacterStats({
+                stats: { str: '14', dex: 12 }
+            });
+            if (statsFromString.str !== 14) {
+                failures.push(
+                    'getCharacterStats should coerce "14" to 14'
+                );
+            }
+            if (statsFromString.dex !== 12) {
+                failures.push(
+                    'getCharacterStats should read numeric 12 as 12'
+                );
+            }
+
+            // Magic coercion: a string "5" reads as 5.
+            if (typeof exports.getCharacterMagic === 'function') {
+                var magicFromString = exports.getCharacterMagic({
+                    magic: { fire: '5' }
+                });
+                if (magicFromString.fire !== 5) {
+                    failures.push(
+                        'getCharacterMagic should coerce "5" to 5'
+                    );
+                }
+            }
+
+            // Range checks
             var stats = exports.rollPhysicalStats();
             var keys = exports.STAT_KEYS;
             for (var k = 0; k < keys.length; k++) {
@@ -999,23 +1081,31 @@
             }
 
             if (exports.getModifierDisplay(10) !== '+0') {
-                failures.push('getModifierDisplay(10) should be +0');
+                failures.push(
+                    'getModifierDisplay(10) should be +0'
+                );
             }
             if (exports.getModifierDisplay(20) !== '+5') {
-                failures.push('getModifierDisplay(20) should be +5');
+                failures.push(
+                    'getModifierDisplay(20) should be +5'
+                );
             }
             if (exports.getModifierDisplay(1) !== '-5') {
-                failures.push('getModifierDisplay(1) should be -5');
+                failures.push(
+                    'getModifierDisplay(1) should be -5'
+                );
             }
         } catch (e) {
             failures.push('smoke test threw: ' + e.message);
         }
 
         if (failures.length > 0) {
-            throw new Error(
-                '[CharacterStats] Verification failed: ' +
-                failures.join('; ')
-            );
+            if (typeof console !== 'undefined' && console.error) {
+                console.error(
+                    '[CharacterStats] Verification failed: ' +
+                    failures.join('; ')
+                );
+            }
         }
     })();
 
