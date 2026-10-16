@@ -23,19 +23,19 @@
  *   - Function parameters marked "developer-controlled" are still
  *     the caller's responsibility. The guards catch the common
  *     XSS shapes, not every possible one.
- *   - Domain utilities do not belong here. This module is
- *     UI-focused.
  *
  * ESCAPING CONTEXT:
- *   - escapeHtml           — HTML text and quoted attribute values
- *   - escapeAttribute      — quoted attribute values (extra
- *                            defensive; escapes backticks)
- *   - encodeUrlComponent   — URL component or query parameter
- *                            values. Does NOT validate the scheme
- *                            of a full URL.
- *   - sanitizeCssValue     — a CSS declaration value. Uses a strict
- *                            allowlist; rejects calc(), var(),
- *                            url(), and expression().
+ *   - escapeHtml           HTML text and quoted attribute values
+ *   - escapeAttribute      quoted attribute values (extra
+ *                          defensive; escapes backticks)
+ *   - encodeUrlComponent   URL component or query parameter
+ *                          values. Does NOT validate the scheme
+ *                          of a full URL.
+ *   - sanitizeCssValue     a CSS declaration value. Accepts hex,
+ *                          rgb/rgba, hsl/hsla, var(--token),
+ *                          a narrow calc() subset, and safe CSS
+ *                          keywords. Rejects url(), expression(),
+ *                          attr().
  *
  * SAFE HTML COMPOSITION:
  *   safeHtml returns a SafeHtml instance, not a raw string. When
@@ -69,11 +69,6 @@
     // SAFE HTML WRAPPER
     // ============================================================
 
-    /**
-     * Marker class for HTML strings produced by safeHtml. When a
-     * SafeHtml instance is interpolated into another safeHtml
-     * template, it is inserted raw.
-     */
     function SafeHtml(html) {
         this._html = html;
     }
@@ -85,13 +80,6 @@
         return value instanceof SafeHtml;
     }
 
-    /**
-     * Explicit escape hatch: mark a raw HTML string as safe.
-     *
-     * DANGER: only call this on HTML that was constructed from
-     * developer-controlled markup, or from a value that has already
-     * been escaped. Do not pass user input.
-     */
     function rawHtml(html) {
         return new SafeHtml(String(html));
     }
@@ -126,9 +114,8 @@
     /**
      * Escape HTML for use in quoted attribute values.
      *
-     * More defensive than escapeHtml: also escapes backtick, in
-     * case the attribute value ends up in a template literal or a
-     * JS string at some point in the pipeline.
+     * Also escapes backtick, in case the attribute value ends up
+     * in a template literal or a JS string downstream.
      *
      * @param {*} value
      * @returns {string}
@@ -162,13 +149,135 @@
     }
 
     // ============================================================
+    // CSS VALUE SANITISER
+    // ============================================================
+
+    /**
+     * Validate a value for use in a CSS declaration.
+     *
+     * Accepted forms:
+     *   - hex colours: #fff, #ffffff, #ffffffff
+     *   - rgb() / rgba() with numeric / comma / percent content
+     *   - hsl() / hsla() with numeric / comma / percent content
+     *   - var(--token) with a single CSS custom property name
+     *   - a narrow calc() subset: numbers with units and
+     *     var(--token) references, combined with + - * /
+     *   - a numeric value with a small set of units
+     *     (px, em, rem, %, vh, vw, pt, ch, ex, cm, mm, in)
+     *   - a safe CSS identifier (letters, digits, hyphens,
+     *     underscores)
+     *
+     * Rejected: url(), expression(), attr(), and anything else.
+     *
+     * The `var(--token)` acceptance is critical: the app's
+     * theme-aware colours are var() references. A function that
+     * rejects var() flattens every themed value to a fallback.
+     *
+     * @param {*} value
+     * @returns {string} Safe value, or '' if unsafe
+     */
+    function sanitizeCssValue(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+
+        var str = String(value).trim();
+        if (str === '') return '';
+
+        // Hex colours
+        if (/^#[0-9a-fA-F]{3,8}$/.test(str)) {
+            return str;
+        }
+
+        // rgb() / rgba()
+        if (/^rgba?\(\s*[\d\s.,%]+\)$/.test(str)) {
+            return str;
+        }
+
+        // hsl() / hsla()
+        if (/^hsla?\(\s*[\d\s.,%]+\)$/.test(str)) {
+            return str;
+        }
+
+        // var(--token)
+        if (/^var\(--[a-zA-Z0-9_-]+\)$/.test(str)) {
+            return str;
+        }
+
+        // calc() with a narrow operand set. Rejects nested calc,
+        // url(), expression(), attr(), and anything with
+        // parentheses other than a single var(--token).
+        if (/^calc\(\s*[-+*/\d\s.%a-zA-Z()_-]+\s*\)$/.test(str)) {
+            // One more check: the interior must contain only
+            // numeric values, units, operators, whitespace, and
+            // var(--token) references.
+            var interior = str.substring(5, str.length - 1);
+            // Reject if it contains a bare word that is not a
+            // var() reference or a length unit.
+            var tokens = interior.split(/\s*[-+*/]\s*/);
+            var safeTokens = true;
+            for (var i = 0; i < tokens.length; i++) {
+                var tok = tokens[i].trim();
+                if (tok === '') { continue; }
+                if (/^-?\d+(\.\d+)?(px|em|rem|%|vh|vw|pt|ch|ex|cm|mm|in)?$/.test(tok)) {
+                    continue;
+                }
+                if (/^var\(--[a-zA-Z0-9_-]+\)$/.test(tok)) {
+                    continue;
+                }
+                safeTokens = false;
+                break;
+            }
+            if (safeTokens) {
+                return str;
+            }
+        }
+
+        // Numeric with a small set of units
+        if (/^-?\d+(\.\d+)?(px|em|rem|%|vh|vw|pt|ch|ex|cm|mm|in)?$/.test(str)) {
+            return str;
+        }
+
+        // Safe CSS identifier
+        if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(str)) {
+            return str;
+        }
+
+        return '';
+    }
+
+    /**
+     * Sanitise a whole `style` attribute string. Splits on `;`,
+     * validates each declaration's property name and value
+     * through sanitizeCssValue.
+     */
+    function sanitizeStyleString(styleString) {
+        var parts = String(styleString).split(';');
+        var out = [];
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i].trim();
+            if (part === '') continue;
+            var colon = part.indexOf(':');
+            if (colon === -1) continue;
+            var prop = part.substring(0, colon).trim();
+            var val = part.substring(colon + 1).trim();
+            if (!/^[a-zA-Z-]+$/.test(prop)) continue;
+            var safe = sanitizeCssValue(val);
+            if (safe !== '') {
+                out.push(prop + ': ' + safe);
+            }
+        }
+        return out.join('; ');
+    }
+
+    // ============================================================
     // URL SCHEME ALLOWLIST
     // ============================================================
 
-    var SAFE_URL_SCHEMES = ['http:', 'https:', 'mailto:', 'tel:', 'data:'];
+    var SAFE_URL_SCHEMES = [
+        'http:', 'https:', 'mailto:', 'tel:', 'data:'
+    ];
 
-    // Attributes whose value is treated as a URL and must pass the
-    // scheme check.
     var URL_ATTRIBUTES = {
         'href': true,
         'src': true,
@@ -182,12 +291,8 @@
 
     /**
      * Return true if the given URL value has an allowed scheme.
-     *
-     * Relative URLs (no colon before the first slash or query) are
-     * allowed. Absolute URLs must match an entry in
-     * SAFE_URL_SCHEMES. `data:` URLs are allowed but should be used
-     * with care; they can contain HTML or script payloads that
-     * some browsers will execute in certain contexts.
+     * Relative URLs (no colon before the first slash or query)
+     * are allowed.
      */
     function isSafeUrlValue(value) {
         if (value === undefined || value === null) {
@@ -199,8 +304,8 @@
             return true;
         }
 
-        // Normalise whitespace and control characters that browsers
-        // ignore when parsing URLs (e.g. "java\tscript:").
+        // Normalise whitespace and control characters that
+        // browsers ignore when parsing URLs.
         var normalised = str.replace(/[\s\u0000-\u001F]/g, '');
 
         // Find a scheme: letters, digits, +, -, . followed by ':'
@@ -222,10 +327,6 @@
         return false;
     }
 
-    /**
-     * Reject attribute names that create inline script handlers.
-     * Names are case-insensitive.
-     */
     function isEventHandlerName(name) {
         if (typeof name !== 'string') {
             return false;
@@ -265,8 +366,6 @@
                 if (isSafeHtml(arg)) {
                     result += arg.toString();
                 } else if (Array.isArray(arg)) {
-                    // Arrays of SafeHtml / strings: join, escaping
-                    // non-SafeHtml entries.
                     for (var j = 0; j < arg.length; j++) {
                         if (isSafeHtml(arg[j])) {
                             result += arg[j].toString();
@@ -301,8 +400,8 @@
         if (isEventHandlerName(name)) {
             if (typeof console !== 'undefined' && console.warn) {
                 console.warn(
-                    '[DomUtils.safeAttr] refusing event-handler attribute: ' +
-                    name
+                    '[DomUtils.safeAttr] refusing event-handler ' +
+                    'attribute: ' + name
                 );
             }
             return '';
@@ -321,12 +420,6 @@
         return ' ' + name + '="' + escapeAttribute(value) + '"';
     }
 
-    /**
-     * Build multiple attribute strings. Same validation as safeAttr.
-     *
-     * @param {object} attrs
-     * @returns {string}
-     */
     function safeAttrs(attrs) {
         if (!attrs || typeof attrs !== 'object') {
             return '';
@@ -345,10 +438,6 @@
     // SAFE ELEMENT CREATION
     // ============================================================
 
-    /**
-     * Apply an attributes object to an element, with URL and
-     * event-handler guards.
-     */
     function applyAttributes(el, attributes) {
         if (!attributes) return;
 
@@ -394,92 +483,6 @@
         }
     }
 
-    /**
-     * Sanitise a style string by splitting on ';' and running each
-     * declaration's value through sanitizeCssValue.
-     */
-    function sanitizeStyleString(styleString) {
-        var parts = String(styleString).split(';');
-        var out = [];
-        for (var i = 0; i < parts.length; i++) {
-            var part = parts[i].trim();
-            if (part === '') continue;
-            var colon = part.indexOf(':');
-            if (colon === -1) continue;
-            var prop = part.substring(0, colon).trim();
-            var val = part.substring(colon + 1).trim();
-            if (!/^[a-zA-Z-]+$/.test(prop)) continue;
-            var safe = sanitizeCssValue(val);
-            if (safe !== '') {
-                out.push(prop + ': ' + safe);
-            }
-        }
-        return out.join('; ');
-    }
-
-    /**
-     * Validate that a value is safe for use in a CSS declaration.
-     * Uses a strict allowlist.
-     *
-     * Allows:
-     *   - hex colours (#fff, #ffffff, #ffffffff)
-     *   - rgb(a) and hsl(a) with numeric/comma/percent content
-     *   - simple numeric values with a unit (10px, 1.5em, 100%)
-     *   - safe CSS keywords (auto, none, inherit, solid, ...)
-     *
-     * Rejects: calc(), var(), url(), expression(), attr(), and
-     * anything else.
-     *
-     * @param {*} value
-     * @returns {string} Safe value, or '' if unsafe
-     */
-    function sanitizeCssValue(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-
-        var str = String(value).trim();
-        if (str === '') return '';
-
-        // Hex colours
-        if (/^#[0-9a-fA-F]{3,8}$/.test(str)) {
-            return str;
-        }
-
-        // rgb() / rgba() / hsl() / hsla()
-        if (/^rgba?\(\s*[\d\s.,%]+\)$/.test(str)) {
-            return str;
-        }
-        if (/^hsla?\(\s*[\d\s.,%]+\)$/.test(str)) {
-            return str;
-        }
-
-        // Numeric with a small set of units
-        if (/^-?\d+(\.\d+)?(px|em|rem|%|vh|vw|pt|ch|ex|cm|mm|in)?$/.test(str)) {
-            return str;
-        }
-
-        // Safe CSS keywords
-        if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(str)) {
-            return str;
-        }
-
-        return '';
-    }
-
-    /**
-     * Create a DOM element with text content (safe).
-     *
-     * Attribute names and URL/event-handler values are validated
-     * by applyAttributes. Attribute values are set via
-     * setAttribute, so they are always treated as strings.
-     *
-     * @param {string} tag
-     * @param {string|string[]} className
-     * @param {*} text - set as textContent
-     * @param {object} attributes
-     * @returns {HTMLElement}
-     */
     function createElement(tag, className, text, attributes) {
         var el = document.createElement(tag);
 
@@ -507,10 +510,6 @@
         return createElement('div', className, text, attributes);
     }
 
-    /**
-     * Create a button. Defaults to type="button" unless the caller
-     * supplied a type in `attributes`.
-     */
     function createButton(className, text, attributes) {
         var attrs = attributes ? Object.assign({}, attributes) : {};
         if (attrs.type === undefined) {
@@ -554,12 +553,15 @@
         if (Array.isArray(options)) {
             options.forEach(function(opt) {
                 var option = document.createElement('option');
-                option.value = opt.value !== undefined && opt.value !== null
+                option.value = opt.value !== undefined &&
+                    opt.value !== null
                     ? String(opt.value)
                     : '';
-                var label = opt.label !== undefined ? opt.label
+                var label = opt.label !== undefined
+                    ? opt.label
                     : (opt.text !== undefined ? opt.text : opt.value);
-                option.textContent = label !== undefined && label !== null
+                option.textContent = label !== undefined &&
+                    label !== null
                     ? String(label)
                     : '';
 
@@ -577,7 +579,9 @@
 
     function createOption(value, label, selected) {
         var el = document.createElement('option');
-        el.value = value !== undefined && value !== null ? String(value) : '';
+        el.value = value !== undefined && value !== null
+            ? String(value)
+            : '';
         el.textContent = label !== undefined && label !== null
             ? String(label)
             : el.value;
@@ -616,20 +620,12 @@
         return el.querySelector(selector);
     }
 
-    /**
-     * Get a data attribute value.
-     * Returns null when the attribute is absent (matching the docs).
-     */
     function getData(el, key) {
         if (!el || !el.dataset) return null;
         var value = el.dataset[key];
         return value === undefined ? null : value;
     }
 
-    /**
-     * Set a data attribute value.
-     * A null value removes the attribute.
-     */
     function setData(el, key, value) {
         if (!el) return;
         if (value === null) {
@@ -663,14 +659,15 @@
     /**
      * Delegate events to a parent element.
      *
-     * NOTE: Only works with events that bubble. Delegating 'focus',
-     * 'blur', 'mouseenter', or 'mouseleave' will silently never
-     * fire; attach those directly to the target element.
+     * NOTE: Only works with events that bubble. Delegating
+     * 'focus', 'blur', 'mouseenter', or 'mouseleave' will
+     * silently never fire; attach those directly.
      *
      * @returns {Function} Cleanup function
      */
     function delegate(parent, selector, eventName, handler) {
-        if (!parent || !selector || !eventName || typeof handler !== 'function') {
+        if (!parent || !selector || !eventName ||
+            typeof handler !== 'function') {
             return function() {};
         }
 
@@ -685,7 +682,8 @@
                 ? target.closest(selector)
                 : closest(target, selector);
 
-            if (matched && matched !== parent && parent.contains(matched)) {
+            if (matched && matched !== parent &&
+                parent.contains(matched)) {
                 handler(e, matched);
             }
         }
@@ -768,7 +766,9 @@
     function removeClass(el, className) {
         if (!el || !el.classList) return;
         if (Array.isArray(className)) {
-            className.forEach(function(c) { el.classList.remove(c); });
+            className.forEach(function(c) {
+                el.classList.remove(c);
+            });
         } else {
             el.classList.remove(className);
         }
@@ -785,12 +785,12 @@
 
     function scrollIntoView(el, options) {
         if (!el) return;
-        options = options || { block: 'nearest', behavior: 'smooth' };
+        options = options || {
+            block: 'nearest', behavior: 'smooth'
+        };
         try {
             el.scrollIntoView(options);
         } catch (e) {
-            // Environment without options support; try the boolean
-            // form once, then give up rather than throwing.
             try {
                 el.scrollIntoView(false);
             } catch (e2) {
@@ -802,7 +802,9 @@
     function scrollToTop(options) {
         options = options || { behavior: 'smooth' };
         try {
-            window.scrollTo({ top: 0, left: 0, behavior: options.behavior });
+            window.scrollTo({
+                top: 0, left: 0, behavior: options.behavior
+            });
         } catch (e) {
             try {
                 window.scrollTo(0, 0);
@@ -821,8 +823,10 @@
         options = options || {};
 
         var rect = el.getBoundingClientRect();
-        var viewHeight = window.innerHeight || document.documentElement.clientHeight;
-        var viewWidth = window.innerWidth || document.documentElement.clientWidth;
+        var viewHeight = window.innerHeight ||
+            document.documentElement.clientHeight;
+        var viewWidth = window.innerWidth ||
+            document.documentElement.clientWidth;
 
         var verticalMargin = options.verticalMargin || 0;
         var horizontalMargin = options.horizontalMargin || 0;
@@ -832,15 +836,18 @@
         var left = rect.left + horizontalMargin;
         var right = rect.right - horizontalMargin;
 
-        return top < viewHeight && bottom > 0 && left < viewWidth && right > 0;
+        return top < viewHeight && bottom > 0 &&
+               left < viewWidth && right > 0;
     }
 
     function isFullyVisible(el) {
         if (!el) return false;
 
         var rect = el.getBoundingClientRect();
-        var viewHeight = window.innerHeight || document.documentElement.clientHeight;
-        var viewWidth = window.innerWidth || document.documentElement.clientWidth;
+        var viewHeight = window.innerHeight ||
+            document.documentElement.clientHeight;
+        var viewWidth = window.innerWidth ||
+            document.documentElement.clientWidth;
 
         return rect.top >= 0 && rect.bottom <= viewHeight &&
                rect.left >= 0 && rect.right <= viewWidth;
@@ -856,9 +863,6 @@
      * Values are NOT sanitised by default, because callers pass
      * developer-controlled styles. Set values from user input via
      * sanitizeCssValue first.
-     *
-     * @param {HTMLElement} el
-     * @param {object} styles - Key-value pairs of CSS properties
      */
     function setStyles(el, styles) {
         if (!el || !styles) return;
@@ -872,7 +876,8 @@
     function getStyle(el, property) {
         if (!el) return '';
         try {
-            return window.getComputedStyle(el).getPropertyValue(property);
+            return window.getComputedStyle(el)
+                .getPropertyValue(property);
         } catch (e) {
             return '';
         }
@@ -891,10 +896,12 @@
             get: function() {
                 if (!warnedEscapeHtml) {
                     warnedEscapeHtml = true;
-                    if (typeof console !== 'undefined' && console.warn) {
+                    if (typeof console !== 'undefined' &&
+                        console.warn) {
                         console.warn(
-                            '[DomUtils] window.escapeHtml is deprecated. ' +
-                            'Use DomUtils.escapeHtml instead.'
+                            '[DomUtils] window.escapeHtml is ' +
+                            'deprecated. Use DomUtils.escapeHtml ' +
+                            'instead.'
                         );
                     }
                 }
@@ -907,11 +914,12 @@
             get: function() {
                 if (!warnedEscapeAttribute) {
                     warnedEscapeAttribute = true;
-                    if (typeof console !== 'undefined' && console.warn) {
+                    if (typeof console !== 'undefined' &&
+                        console.warn) {
                         console.warn(
                             '[DomUtils] window.escapeAttribute is ' +
-                            'deprecated. Use DomUtils.escapeAttribute ' +
-                            'instead.'
+                            'deprecated. Use ' +
+                            'DomUtils.escapeAttribute instead.'
                         );
                     }
                 }
