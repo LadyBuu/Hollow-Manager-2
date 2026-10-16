@@ -15,6 +15,7 @@
  *   - Own the professional tab's view mode.
  *   - Own the timeline's range and expanded-years state.
  *   - Own the professional pool's expansion and selection state.
+ *   - Own the rankings tab's year, sort, and expanded state.
  *   - Own the TEAM LIST's selection set (for bulk export).
  *   - Own the periods editor's DOM-only staging.
  *   - Open the team export picker and the candidate export.
@@ -34,10 +35,12 @@
  *   - The single-file bulk export. TeamExport owns it.
  *   - The specialisation vocabulary. MissionConstants owns it.
  *   - The periods shape. TeamCore owns the schema.
+ *   - The rankings tab body. TeamRankingsView owns it.
  *
  * VIEW MODES:
- *   'teams' | 'pool' | 'timeline'. Module-level. Forced to 'teams'
- *   on non-professional tabs. Reset on init and destroy.
+ *   'teams' | 'pool' | 'timeline' | 'rankings'. Module-level.
+ *   Forced to 'teams' on non-professional tabs. Reset on init and
+ *   destroy.
  *
  * POOL STATE:
  *   _poolExpandedIds  { [characterId]: true }
@@ -45,6 +48,12 @@
  *
  * TEAM SELECTION STATE:
  *   _teamSelectedIds  { [teamId]: true }
+ *
+ * RANKINGS STATE:
+ *   _rankingsYear            the year the rankings tab is viewing
+ *   _rankingsSortMode        'rank' | 'name' | 'members'
+ *   _rankingsSortDirection   'asc' | 'desc'
+ *   _rankingsShowInactive    whether inactive teams are visible
  *
  * PERIODS EDITOR:
  *   The team form's periods editor is a DOM-only staging area.
@@ -71,6 +80,25 @@
  *   container delegation chain. The form is its own modal shell
  *   and is not a descendant of the teams container.
  *
+ * RANKINGS TAB:
+ *   The professional tab's fourth view mode. Delegated to
+ *   TeamRankingsView for the table body; TeamEvents owns the
+ *   interactions:
+ *
+ *     #rankings-apply-year-btn        commit the year input
+ *     #rankings-year-input (Enter)    same
+ *     #rankings-show-inactive         toggle inactive teams
+ *     #rankings-export-year-btn       call TeamExport.exportTeamsByYear
+ *     .rankings-table-header button[data-sort-key]
+ *                                     cycle sort key / direction
+ *     .ranking-row-rank                click-to-edit the rank
+ *     .rankings-clear-rank             remove the explicit entry
+ *
+ *   The rank editor opens inline. Enter commits, Escape cancels,
+ *   blur commits. A blank value with an original value present
+ *   calls TeamCore.removeRanking; a blank value with no original
+ *   is a no-op.
+ *
  * EXPORT BUTTONS:
  *   Page header Export button (#team-export-btn)
  *     Bulk. Exports every ticked team into ONE file.
@@ -79,6 +107,11 @@
  *     Single team. Exports that team directly with no picker
  *     when it has one period; opens the picker when it has more
  *     than one, so the user chooses which period to export.
+ *
+ *   Rankings tab Export year button (#rankings-export-year-btn)
+ *     Calls TeamExport.exportTeamsByYear with the current
+ *     rankings year. Separate from the page-header Export,
+ *     which is selection-driven.
  *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
@@ -111,7 +144,7 @@
  *   - window.NotificationSystem
  *
  * DEPENDENCIES (LAZY, at click time):
- *   - window.TeamExport       (bulk and single-team export)
+ *   - window.TeamExport       (bulk, single-team, and by-year export)
  *   - window.TeamExportPicker (per-row single-team export)
  *   - window.CandidateExport
  *   - window.TeamVerifierView
@@ -210,6 +243,11 @@
         typeof TeamAggregator.getTimelineViewModel !==
         'function') {
         _missing.push('TeamAggregator.getTimelineViewModel');
+    }
+    if (!TeamAggregator ||
+        typeof TeamAggregator.getTeamRankingsViewModel !==
+        'function') {
+        _missing.push('TeamAggregator.getTeamRankingsViewModel');
     }
 
     if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
@@ -400,6 +438,11 @@
 
     var _teamSelectedIds = Object.create(null);
 
+    var _rankingsYear = null;
+    var _rankingsSortMode = 'rank';
+    var _rankingsSortDirection = 'asc';
+    var _rankingsShowInactive = false;
+
     var _pendingTeamMemberIds = null;
 
     // ============================================================
@@ -483,6 +526,10 @@
             _viewMode = 'teams';
             _poolExpandedIds = Object.create(null);
             _poolSelectedIds = Object.create(null);
+            _rankingsYear = null;
+            _rankingsSortMode = 'rank';
+            _rankingsSortDirection = 'asc';
+            _rankingsShowInactive = false;
         }
 
         var pageVM = TeamAggregator.getTeamPageViewModel({
@@ -531,6 +578,24 @@
         } else {
             pageVM.timelineVM = null;
             pageVM.timelineExpandedYears = null;
+        }
+
+        if (currentTab === 'professional' &&
+            _viewMode === 'rankings') {
+            if (_rankingsYear === null) {
+                _rankingsYear = period !== null
+                    ? period
+                    : getApplicationYear();
+            }
+            pageVM.rankingsVM =
+                TeamAggregator.getTeamRankingsViewModel({
+                    year: _rankingsYear,
+                    sort: _rankingsSortMode,
+                    sortDirection: _rankingsSortDirection,
+                    showInactive: _rankingsShowInactive
+                });
+        } else {
+            pageVM.rankingsVM = null;
         }
 
         _container.innerHTML = TeamRender.renderContainer(pageVM);
@@ -591,6 +656,10 @@
         _poolExpandedIds = Object.create(null);
         _poolSelectedIds = Object.create(null);
         _teamSelectedIds = Object.create(null);
+        _rankingsYear = null;
+        _rankingsSortMode = 'rank';
+        _rankingsSortDirection = 'asc';
+        _rankingsShowInactive = false;
         _pendingTeamMemberIds = null;
 
         bindTabSwitching();
@@ -606,6 +675,7 @@
         bindFilters();
         bindTimelineActions();
         bindPoolActions();
+        bindRankingsActions();
 
         _initialized = true;
     }
@@ -639,6 +709,10 @@
         _poolExpandedIds = Object.create(null);
         _poolSelectedIds = Object.create(null);
         _teamSelectedIds = Object.create(null);
+        _rankingsYear = null;
+        _rankingsSortMode = 'rank';
+        _rankingsSortDirection = 'asc';
+        _rankingsShowInactive = false;
         _pendingTeamMemberIds = null;
     }
 
@@ -660,6 +734,10 @@
                 _viewMode = 'teams';
                 _poolExpandedIds = Object.create(null);
                 _poolSelectedIds = Object.create(null);
+                _rankingsYear = null;
+                _rankingsSortMode = 'rank';
+                _rankingsSortDirection = 'asc';
+                _rankingsShowInactive = false;
             }
 
             TeamUI.setCurrentTab(tab);
@@ -670,6 +748,12 @@
     // ============================================================
     // MODE TOGGLE
     // ============================================================
+    //
+    // The professional tab carries four modes:
+    //   teams | pool | timeline | rankings
+    //
+    // Switching modes clears state that belongs to the mode being
+    // left, so a return to that mode starts fresh.
 
     function bindModeToggle() {
         delegate('.mode-btn', 'click', function(e, target) {
@@ -682,7 +766,8 @@
             var mode = target.dataset.mode;
             if (mode !== 'teams' &&
                 mode !== 'pool' &&
-                mode !== 'timeline') {
+                mode !== 'timeline' &&
+                mode !== 'rankings') {
                 return;
             }
 
@@ -699,6 +784,12 @@
             }
             if (_viewMode !== 'timeline') {
                 _timelineExpandedYears = Object.create(null);
+            }
+            if (_viewMode !== 'rankings') {
+                _rankingsYear = null;
+                _rankingsSortMode = 'rank';
+                _rankingsSortDirection = 'asc';
+                _rankingsShowInactive = false;
             }
 
             refreshUI();
@@ -962,6 +1053,309 @@
                 }
             }
         );
+    }
+
+    // ============================================================
+    // RANKINGS TAB ACTIONS
+    // ============================================================
+    //
+    // The Rankings tab body is rendered by TeamRankingsView. This
+    // section owns the interactions:
+    //
+    //   - year picker: commit input on Apply or Enter
+    //   - inactive toggle: rebuild the VM
+    //   - sort headers: cycle sort key / direction
+    //   - rank cell: click to open an inline editor
+    //   - clear button: remove an explicit entry
+    //   - export-year button: call TeamExport.exportTeamsByYear
+    //
+    // The rank editor commits on Enter or blur, cancels on Escape.
+    // A blank value on commit calls TeamCore.removeRanking when a
+    // value existed; a blank with no prior value is a no-op.
+
+    function bindRankingsActions() {
+        delegate('#rankings-apply-year-btn', 'click', function(e) {
+            e.preventDefault();
+            applyRankingsYear();
+        });
+
+        delegate('#rankings-year-input', 'keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                applyRankingsYear();
+            }
+        });
+
+        delegate(
+            '#rankings-show-inactive',
+            'change',
+            function(e, target) {
+                _rankingsShowInactive = target.checked === true;
+                refreshUI();
+            }
+        );
+
+        delegate(
+            '#rankings-export-year-btn',
+            'click',
+            function(e) {
+                e.preventDefault();
+                handleRankingsExportYear();
+            }
+        );
+
+        delegate(
+            '.rankings-table-header button[data-sort-key]',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                var key = target.dataset.sortKey;
+                if (!key) { return; }
+
+                if (_rankingsSortMode === key) {
+                    _rankingsSortDirection =
+                        _rankingsSortDirection === 'asc'
+                            ? 'desc' : 'asc';
+                } else {
+                    _rankingsSortMode = key;
+                    _rankingsSortDirection = 'asc';
+                }
+
+                refreshUI();
+            }
+        );
+
+        delegate('.ranking-row-rank', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+            openRankEditor(target);
+        });
+
+        delegate('.rankings-clear-rank', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+            clearRankAtYear(target);
+        });
+
+        // Commit / cancel the inline rank editor. The editor
+        // input is created by openRankEditor, so its class is not
+        // present in the initial DOM; the delegation runs on the
+        // container and picks it up once it exists.
+        delegate('.ranking-inline-input', 'blur', function(e, target) {
+            commitRankEditor(target);
+        });
+
+        delegate(
+            '.ranking-inline-input',
+            'keydown',
+            function(e, target) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitRankEditor(target);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelRankEditor(target);
+                }
+            }
+        );
+    }
+
+    function applyRankingsYear() {
+        if (!_container) { return; }
+
+        var input = _container.querySelector('#rankings-year-input');
+        if (!input) { return; }
+
+        var n = parsePositiveInteger(input.value);
+        if (n === null) {
+            notify('Year must be a positive integer.', 'error');
+            return;
+        }
+
+        _rankingsYear = n;
+        refreshUI();
+    }
+
+    function handleRankingsExportYear() {
+        var Exporter = window.TeamExport || null;
+        if (!Exporter ||
+            typeof Exporter.exportTeamsByYear !== 'function') {
+            notify('Team export is not available.', 'error');
+            return;
+        }
+
+        if (_rankingsYear === null) {
+            notify('No year selected.', 'error');
+            return;
+        }
+
+        var result = null;
+        try {
+            result = Exporter.exportTeamsByYear(_rankingsYear);
+        } catch (err) {
+            console.warn(
+                '[TeamEvents] exportTeamsByYear threw:', err
+            );
+            notify(
+                'Export failed: ' +
+                (err && err.message ? err.message : String(err)),
+                'error'
+            );
+            return;
+        }
+
+        if (result && result.exported) {
+            notify(
+                'Exported ' + result.count + ' team' +
+                (result.count === 1 ? '' : 's') +
+                ' active in ' + _rankingsYear +
+                ': ' + result.filename,
+                'success'
+            );
+            return;
+        }
+
+        notify(
+            'Export failed: ' +
+            ((result && result.error) || 'Unknown error'),
+            'error'
+        );
+    }
+
+    function openRankEditor(span) {
+        // Close any other open editor first.
+        var existing = _container
+            ? _container.querySelector('.ranking-inline-input')
+            : null;
+        if (existing) {
+            commitRankEditor(existing);
+        }
+
+        var teamId = span.dataset.teamId;
+        var year = span.dataset.year;
+        var currentRank = span.dataset.currentRank || '';
+
+        if (!teamId || !year) { return; }
+
+        var input = document.createElement('input');
+        input.type = 'number';
+        input.className = 'ranking-inline-input';
+        input.min = '1';
+        input.value = currentRank;
+        input.dataset.teamId = teamId;
+        input.dataset.year = year;
+        input.dataset.originalRank = currentRank;
+
+        span.textContent = '';
+        span.appendChild(input);
+        span.classList.add('is-editing');
+
+        setTimeout(function() {
+            try {
+                input.focus();
+                input.select();
+            } catch (e) { /* ignore */ }
+        }, 0);
+    }
+
+    function commitRankEditor(input) {
+        if (!input || !input.parentNode) { return; }
+
+        var teamId = input.dataset.teamId;
+        var year = parseInt(input.dataset.year, 10);
+        var originalRank = input.dataset.originalRank || '';
+        var raw = String(input.value || '').trim();
+
+        if (!teamId || isNaN(year)) { return; }
+
+        // Empty means "clear the entry at this year" if one
+        // existed. Otherwise, no-op.
+        if (raw === '') {
+            if (originalRank === '') {
+                refreshUI();
+                return;
+            }
+            clearRankAtYearInternal(teamId, year);
+            return;
+        }
+
+        var rank = parsePositiveInteger(raw);
+        if (rank === null) {
+            notify(
+                'Rank must be a positive integer.',
+                'error'
+            );
+            refreshUI();
+            return;
+        }
+
+        if (String(rank) === originalRank) {
+            refreshUI();
+            return;
+        }
+
+        TeamCore.addRanking(teamId, year, rank)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    notify(
+                        'Failed to set rank: ' +
+                        ((result && result.message) ||
+                            'Unknown error'),
+                        'error'
+                    );
+                }
+                refreshUI();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[TeamEvents] addRanking failed:', err
+                );
+                notify('Failed to set rank.', 'error');
+                refreshUI();
+            });
+    }
+
+    function cancelRankEditor(input) {
+        if (!input || !input.parentNode) { return; }
+        refreshUI();
+    }
+
+    function clearRankAtYear(button) {
+        var teamId = button.dataset.teamId;
+        var year = parseInt(button.dataset.year, 10);
+        if (!teamId || isNaN(year)) { return; }
+        clearRankAtYearInternal(teamId, year);
+    }
+
+    function clearRankAtYearInternal(teamId, year) {
+        if (!confirm(
+            'Remove the ranking entry at year ' + year + '? ' +
+            'The team will fall back to its previous explicit ' +
+            'ranking.'
+        )) {
+            refreshUI();
+            return;
+        }
+
+        TeamCore.removeRanking(teamId, year)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    notify(
+                        'Failed to remove rank: ' +
+                        ((result && result.message) ||
+                            'Unknown error'),
+                        'error'
+                    );
+                }
+                refreshUI();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[TeamEvents] removeRanking failed:', err
+                );
+                notify('Failed to remove rank.', 'error');
+                refreshUI();
+            });
     }
 
     // ============================================================
@@ -2801,8 +3195,12 @@
     }
 
     // ============================================================
-    // RANKING MODAL
+    // RANKING MODAL (per-team)
     // ============================================================
+    //
+    // The single-team ranking modal. The Rankings tab is the
+    // cross-team view; this modal remains useful for looking at
+    // one team's history with its governing ranges.
 
     function showRankingModal(teamId) {
         var vm = TeamAggregator.getRankingModalViewModel(teamId);
