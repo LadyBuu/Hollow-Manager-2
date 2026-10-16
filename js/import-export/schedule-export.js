@@ -176,6 +176,27 @@
     window.__scheduleExportLoaded = true;
 
     // ============================================================
+    // DEBUG FLAG
+    // ============================================================
+    //
+    // Set to false to silence the [ScheduleExport DEBUG] logs once
+    // the failing argument has been identified. The logs are
+    // intentionally unconditional on call, not gated behind a
+    // console filter, because the failure mode being diagnosed is
+    // a silent no-op and the caller has no other signal.
+
+    var DEBUG = true;
+
+    function debugLog(label, payload) {
+        if (!DEBUG) { return; }
+        try {
+            console.log('[ScheduleExport DEBUG] ' + label, payload);
+        } catch (e) {
+            // Logging must never break the export.
+        }
+    }
+
+    // ============================================================
     // MANDATORY DEPENDENCIES
     // ============================================================
 
@@ -1056,11 +1077,43 @@
     // ============================================================
 
     function getStudentScheduleExport(charId, week) {
+        debugLog('getStudentScheduleExport', {
+            charId: charId,
+            typeofCharId: typeof charId,
+            week: week,
+            typeofWeek: typeof week
+        });
+
         var char = resolveCharacter(charId);
-        if (!char) { return null; }
+        if (!char) {
+            debugLog('resolveCharacter -> null', {
+                charId: charId,
+                reason: 'isNonEmptyString failed OR ' +
+                    'CharacterQueries.getCharacterById returned null'
+            });
+            return null;
+        }
+
+        debugLog('resolveCharacter -> ok', {
+            id: char.id,
+            name: (function() {
+                try {
+                    return CharacterQueries.getDisplayName(char);
+                } catch (e) { return '?'; }
+            })()
+        });
 
         var weekNum = resolveWeek(week);
-        if (weekNum === null) { return null; }
+        if (weekNum === null) {
+            debugLog('resolveWeek -> null', {
+                week: week,
+                typeofWeek: typeof week,
+                reason: 'CalendarValidation.parseWeek returned null'
+            });
+            return null;
+        }
+
+        debugLog('resolveWeek -> ok', { weekNum: weekNum });
 
         // collectStudentSessionsForWeek returns [] when the
         // projector is unavailable (logged). The projection
@@ -1072,6 +1125,11 @@
         var commitments = collectStudentCommitmentsForWeek(
             char.id, weekNum
         );
+
+        debugLog('collected blocks', {
+            sessions: sessions.length,
+            commitments: commitments.length
+        });
 
         var allBlocks = sessions.concat(commitments);
 
@@ -1356,19 +1414,67 @@
     // ============================================================
 
     function getStudentDayScheduleExport(charId, week, day) {
+        debugLog('getStudentDayScheduleExport', {
+            charId: charId,
+            typeofCharId: typeof charId,
+            week: week,
+            typeofWeek: typeof week,
+            day: day,
+            typeofDay: typeof day
+        });
+
         var char = resolveCharacter(charId);
-        if (!char) { return null; }
+        if (!char) {
+            debugLog('resolveCharacter -> null (day)', {
+                charId: charId,
+                reason: 'isNonEmptyString failed OR ' +
+                    'CharacterQueries.getCharacterById returned null'
+            });
+            return null;
+        }
 
         var weekNum = resolveWeek(week);
-        if (weekNum === null) { return null; }
+        if (weekNum === null) {
+            debugLog('resolveWeek -> null (day)', {
+                week: week,
+                typeofWeek: typeof week,
+                reason: 'CalendarValidation.parseWeek returned null'
+            });
+            return null;
+        }
 
         var dayNum = CalendarValidation.parseDay(day);
-        if (dayNum === null) { return null; }
-        if (dayNum < MIN_DAY || dayNum > MAX_DAY) { return null; }
+        if (dayNum === null) {
+            debugLog('parseDay -> null', {
+                day: day,
+                typeofDay: typeof day,
+                reason: 'CalendarValidation.parseDay returned null'
+            });
+            return null;
+        }
+        if (dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            debugLog('parseDay out of range', {
+                day: day,
+                dayNum: dayNum,
+                min: MIN_DAY,
+                max: MAX_DAY
+            });
+            return null;
+        }
+
+        debugLog('day resolved ok', {
+            charId: char.id,
+            weekNum: weekNum,
+            dayNum: dayNum
+        });
 
         var blocks = collectStudentDayBlocksForWeek(
             char.id, weekNum, dayNum
         );
+
+        debugLog('day blocks collected', {
+            count: blocks.length
+        });
 
         return {
             characterId: String(char.id),
@@ -1488,9 +1594,18 @@
     function exportClassScheduleText(classId, week, options) {
         options = options || {};
 
+        debugLog('exportClassScheduleText', {
+            classId: classId,
+            week: week
+        });
+
         var vm = getClassScheduleExport(classId, week);
 
         if (!vm) {
+            debugLog('exportClassScheduleText -> null VM', {
+                classId: classId,
+                week: week
+            });
             return {
                 exported: false,
                 filename: null,
@@ -1541,7 +1656,20 @@
     function exportStudentScheduleText(charId, week, options) {
         options = options || {};
 
+        debugLog('exportStudentScheduleText called', {
+            charId: charId,
+            typeofCharId: typeof charId,
+            week: week,
+            typeofWeek: typeof week,
+            options: options
+        });
+
         var vm = getStudentScheduleExport(charId, week);
+
+        debugLog('exportStudentScheduleText VM', {
+            vmIsNull: vm === null,
+            vm: vm
+        });
 
         if (!vm) {
             return {
@@ -1595,7 +1723,21 @@
     function exportStudentDayScheduleText(charId, week, day, options) {
         options = options || {};
 
+        debugLog('exportStudentDayScheduleText called', {
+            charId: charId,
+            typeofCharId: typeof charId,
+            week: week,
+            typeofWeek: typeof week,
+            day: day,
+            typeofDay: typeof day
+        });
+
         var vm = getStudentDayScheduleExport(charId, week, day);
+
+        debugLog('exportStudentDayScheduleText VM', {
+            vmIsNull: vm === null,
+            vm: vm
+        });
 
         if (!vm) {
             return {
