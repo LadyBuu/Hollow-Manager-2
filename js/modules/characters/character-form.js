@@ -28,10 +28,18 @@
  *
  * GENDER FIELD:
  *   Gender is edited on the Physical tab ONLY. The Name tab does
- *   not render a char-gender input. This is the fix for a bug where
- *   two inputs shared the id char-gender and getElementById always
- *   returned the Name-tab copy, so edits on the Physical tab were
- *   never read.
+ *   not render a char-gender input.
+ *
+ *   This is the fix for a bug where two inputs shared the id
+ *   char-gender. The Name tab's copy came first in document order,
+ *   so getElementById always returned it, and edits typed into the
+ *   Physical-tab input were never read on save. The Name-tab copy
+ *   has been removed entirely; the Physical tab is the only
+ *   gender field in the form.
+ *
+ *   Do NOT reintroduce a second char-gender input. If a caller
+ *   ever needs to move gender to another tab, remove it from the
+ *   Physical tab in the same change.
  *
  * DEATH FIELDS:
  *   The "deceased" checkbox state is derived from `deathYear !== ''`,
@@ -40,6 +48,15 @@
  *   collect() reads the death fields whenever they have a value,
  *   regardless of the checkbox; CharacterCRUD recomputes the
  *   deceased cache.
+ *
+ *   After a snapshot restore (the re-render merge path), the
+ *   renderer re-synchronises the deceased checkbox, the
+ *   #death-fields display, and the per-field disabled state to
+ *   whatever the restored checkbox says. Without this, a restore
+ *   could leave the checkbox unchecked while the death fields
+ *   remained enabled (or vice versa), because populateFormFields
+ *   wrote the *stored* state before restoreSnapshot overwrote the
+ *   checkbox.
  *
  * CAREER / WEAPON FALLBACK OPTIONS:
  *   A career status or weapon type that is not in the current
@@ -848,8 +865,30 @@
 
         // ---- Restore unsaved edits after populateFormFields has
         // written the stored values. ----
+        //
+        // After restore, re-synchronise the deceased checkbox, the
+        // #death-fields display, and the per-field disabled state
+        // to whatever the restored checkbox says. populateFormFields
+        // wrote the *stored* state before restoreSnapshot
+        // overwrote the checkbox; without this step the fields
+        // could end up disabled while the checkbox is unchecked,
+        // or enabled while it is checked.
         if (snapshot) {
             restoreSnapshot(snapshot);
+
+            var FormUtilsLocal = getFormUtils();
+            if (FormUtilsLocal) {
+                var restoredDeceased =
+                    FormUtilsLocal.getField('char-deceased') === true;
+                applyDeceasedState(restoredDeceased);
+                var deathFieldsEl = document.getElementById(
+                    'death-fields'
+                );
+                if (deathFieldsEl) {
+                    deathFieldsEl.style.display = restoredDeceased
+                        ? 'block' : 'none';
+                }
+            }
         }
 
         // ---- Combat tab delegates ----
@@ -1096,7 +1135,9 @@
     // ============================================================
     //
     // NOTE: gender is NOT rendered here. It lives on the Physical
-    // tab. See the GENDER FIELD note in the header.
+    // tab. See the GENDER FIELD note in the header. A second
+    // char-gender input here would shadow the Physical-tab one via
+    // getElementById and make Physical-tab edits invisible on save.
 
     function getNameTabHTML(c, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
@@ -1245,7 +1286,6 @@
                         <label for="char-attraction" style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
                         <input type="text" id="char-attraction" value="${escapeAttribute(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
-                    <div class="form-group"></div>
                 </div>
 
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
@@ -1826,7 +1866,9 @@
                 : '';
         }
 
-        // Gender now lives on the Physical tab only.
+        // Gender now lives on the Physical tab only. The Name tab
+        // does not render a char-gender input, so this setField
+        // reaches the single Physical-tab input.
         FormUtils.setField('char-gender', char.gender);
         FormUtils.setField('char-attraction', char.attraction);
 
@@ -2297,9 +2339,12 @@
         setCurrentEditId: setCurrentEditId
     };
 
-    window.showCharacterForm = function(editId) {
-        render(editId);
-    };
+    // NOTE: window.showCharacterForm is owned by index.js (which also
+    // owns getCurrentEditId / setCurrentEditId). This file no longer
+    // defines it. character-events.js still has a shadowing copy at
+    // the moment; that will be removed when the character-events.js
+    // semantic fixes land, restoring index.js's definition as the
+    // single source.
 
     window.hideCharacterForm = hide;
 
