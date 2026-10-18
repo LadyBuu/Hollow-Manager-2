@@ -44,21 +44,26 @@
  *     </div>
  *
  *   collectMovesFromDOM() reads these rows back out:
- *     - id, if the row's data-move-id is non-empty
- *     - name, from .special-move-name textContent (trimmed)
+ *     - id, from data-move-id (row-level; falls back to the
+ *       delete button's data-move-id)
+ *     - name, from .special-move-name textContent (trimmed;
+ *       may be empty)
  *     - description, from .special-move-description textContent
+ *       (trimmed; may be empty)
  *
- *   A row with an EMPTY name is dropped by collect. A nameless
- *   legacy move renders as an empty name, stays in the DOM as an
- *   empty name, and is not rescued by a placeholder. This keeps
- *   the round trip stable: the placeholder was previously read
- *   back as a real name and saved.
+ *   A row with an EMPTY name is PRESERVED, not dropped. The row
+ *   is a real record on the character; the merge in
+ *   character-crud.js decides whether it survives the save. An
+ *   id-less move with an empty name is a data condition that the
+ *   reader reports honestly; it does not invent a name and it
+ *   does not silently delete the row.
  *
- *   A row without a data-move-id produces id: ''. That is honest
- *   — the id is genuinely absent. character-crud.js's save
- *   merge-by-id matches a legacy id-less move by (type, name) as
- *   a fallback, so an id-less move with a name survives the
- *   merge.
+ *   Why this matters: the previous behaviour dropped empty-name
+ *   rows, which meant a save could silently delete a legacy move
+ *   whose name had been blanked. The CRUD merge matches a legacy
+ *   id-less move by (type, name), so an empty name would match
+ *   nothing and the move would be removed from the stored record
+ *   without warning.
  *
  * COLLECTING MAGIC:
  *   collectMagicalFields returns undefined when MagicConstants or
@@ -809,11 +814,21 @@
     // Read the two rendered move lists back into an array of
     // { id, name, description } entries.
     //
-    // A row with an EMPTY name is dropped. A row without a
-    // data-move-id produces id: ''. The id may be genuinely
-    // absent (a legacy move); character-crud.js's save merge
-    // matches a legacy id-less move by (type, name) as a
-    // fallback, so an id-less move with a name survives.
+    // A row is PRESERVED even when its name is empty. The row is a
+    // real record on the character; the merge in character-crud.js
+    // decides whether it survives the save. The reader does not
+    // invent a name and does not silently delete the row.
+    //
+    // This closes a silent-delete hole: a legacy id-less move
+    // whose name had been blanked would previously be dropped
+    // here, and the CRUD merge (which matches legacy id-less
+    // moves by (type, name)) could not rescue it. The move would
+    // be removed from the stored record without warning.
+    //
+    // id resolution order:
+    //   1. row.dataset.moveId
+    //   2. the delete button's dataset.moveId (legacy DOM shape)
+    //   3. ''
 
     function collectMovesFromDOM() {
         function collectOne(listId) {
@@ -834,7 +849,6 @@
                 var name = nameEl
                     ? String(nameEl.textContent || '').trim()
                     : '';
-                if (name === '') { continue; }
 
                 var descEl = row.querySelector(
                     '.special-move-description'
@@ -846,6 +860,15 @@
                 var id = '';
                 if (row.dataset && row.dataset.moveId) {
                     id = String(row.dataset.moveId);
+                } else {
+                    var delBtn = row.querySelector(
+                        '.remove-special-move'
+                    );
+                    if (delBtn &&
+                        delBtn.dataset &&
+                        delBtn.dataset.moveId) {
+                        id = String(delBtn.dataset.moveId);
+                    }
                 }
 
                 out.push({
