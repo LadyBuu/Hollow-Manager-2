@@ -51,6 +51,12 @@
  *   appends "(M hidden by filters)". This makes it clear what an
  *   export would cover.
  *
+ *   The selection bar renders BEFORE the empty-state check, so the
+ *   user can always see and clear a selection that a filter has
+ *   hidden. Previously the empty-state early return skipped the
+ *   selection bar entirely, leaving the user unable to see or
+ *   clear a selection that was still live.
+ *
  *   The selection is NOT persisted. It is pruned on every render:
  *   any ID whose character no longer exists is dropped. Filtered-
  *   out IDs are kept — the user ticked them on purpose, and
@@ -580,8 +586,12 @@
 
         var html = '';
 
-        // Selection bar renders FIRST, so it stays visible when
-        // the filter matches nothing.
+        // The selection bar renders FIRST, before the empty-state
+        // early return. This keeps the user's selection visible and
+        // clearable even when the current filter matches no rows.
+        // Without this ordering, a filter change can hide a live
+        // selection behind an empty-state paragraph, and the next
+        // bulk export would act on characters the user cannot see.
         html += renderSelectionBar(items);
 
         if (items.length === 0) {
