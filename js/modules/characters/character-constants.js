@@ -53,6 +53,12 @@
  *   load is the intended signal. Do not silence it; either accept
  *   it or retune and confirm it stops firing.
  *
+ *   THE VERIFICATION BLOCK AT THE END OF THIS FILE TABULATES EVERY
+ *   PAIR'S dot VALUES. That table is the audit trail: it tells you
+ *   exactly which pairs fire, by how much, and (implicitly) what
+ *   would need to move to fix them. Read the table before touching
+ *   a weight vector.
+ *
  * PHYSICAL CLASS ICONS (monochrome):
  *   Every physical class carries a single-glyph monochrome icon.
  *   The glyphs are plain Unicode symbols, not emoji.
@@ -896,5 +902,91 @@
 
         validateConstants: validateConstants
     });
+
+    // ============================================================
+    // VERIFICATION: COLLAPSE AUDIT TABLE
+    // ============================================================
+    //
+    // Emits a single console.info with a table of every pair whose
+    // dot(A, B) exceeds dot(A, A). This is the audit trail for the
+    // documented collapse warning. The table is:
+    //
+    //   CLASS PAIR           SELF    CROSS   MARGIN
+    //   fighter -> brawler   0.290   0.305   -0.015
+    //
+    // Read the table before touching a weight vector. A pair that
+    // does not appear in the table satisfies the constraint. A
+    // pair that does appear fails it; the margin tells you how
+    // much movement is required to fix it.
+    //
+    // This block does NOT emit a warning or an error: the warning
+    // is emitted by validateConstants above. This block only
+    // reports the specific numbers so the warning can be audited
+    // without re-deriving the math by hand.
+
+    (function collapseAudit() {
+        if (typeof console === 'undefined' ||
+            typeof console.info !== 'function') {
+            return;
+        }
+
+        var keys = STAT_KEYS;
+
+        function dot(a, b) {
+            var s = 0;
+            for (var k = 0; k < keys.length; k++) {
+                var key = keys[k];
+                s += (a[key] || 0) * (b[key] || 0);
+            }
+            return s;
+        }
+
+        var rows = [];
+
+        for (var ai = 0; ai < PHYSICAL_CLASSES.length; ai++) {
+            var A = PHYSICAL_CLASSES[ai];
+            if (!A.weights) { continue; }
+            var selfDot = dot(A.weights, A.weights);
+
+            for (var bi = 0; bi < PHYSICAL_CLASSES.length; bi++) {
+                if (bi === ai) { continue; }
+                var B = PHYSICAL_CLASSES[bi];
+                if (!B.weights) { continue; }
+                var crossDot = dot(A.weights, B.weights);
+                if (crossDot > selfDot + 1e-6) {
+                    rows.push({
+                        pair: A.id + ' -> ' + B.id,
+                        self: selfDot,
+                        cross: crossDot,
+                        margin: selfDot - crossDot
+                    });
+                }
+            }
+        }
+
+        if (rows.length === 0) { return; }
+
+        if (typeof console.groupCollapsed === 'function') {
+            console.groupCollapsed(
+                '[CharacterConstants] Collapse audit ' +
+                '(' + rows.length + ' pair' +
+                (rows.length === 1 ? '' : 's') + ')'
+            );
+        }
+
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            console.info(
+                '  ' + row.pair +
+                '  self=' + row.self.toFixed(3) +
+                '  cross=' + row.cross.toFixed(3) +
+                '  margin=' + row.margin.toFixed(3)
+            );
+        }
+
+        if (typeof console.groupEnd === 'function') {
+            console.groupEnd();
+        }
+    })();
 
 })();
