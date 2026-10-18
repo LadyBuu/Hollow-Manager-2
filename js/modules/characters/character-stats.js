@@ -41,8 +41,16 @@
  *   parse to numbers. A JSON import or a hand-edited record with
  *   `"14"` for a stat or `"5"` for a proficiency is coerced the
  *   same way the form's collect path coerces it via parseInt.
- *   Before this change, non-number values fell back to the
- *   default (10 for stats, 0 for magic).
+ *
+ *   The coercion is centralised in coerceNumber(value), which
+ *   accepts a finite number or a string that trims to a valid
+ *   Number(...). Everything else (non-numeric strings, null,
+ *   undefined, NaN, objects, booleans) becomes NaN, and each
+ *   caller falls back to its field's default.
+ *
+ *   clampStat and clampMagic route through the same helper, so
+ *   a string reaching any of the stat or magic readers gets the
+ *   same answer regardless of which function handles it.
  *
  * CATEGORY MULTIPLIERS:
  *   MagicConstants defines MAGIC_CATEGORY_MULTIPLIERS (elemental
@@ -315,7 +323,21 @@
 
     /**
      * Coerce a value to a finite number, or return NaN.
-     * Accepts strings that parse cleanly.
+     *
+     * Accepts:
+     *   - finite numbers
+     *   - strings that trim to a valid Number(...)
+     *
+     * Rejects (returns NaN):
+     *   - non-numeric strings
+     *   - empty / whitespace-only strings
+     *   - NaN, ±Infinity
+     *   - null, undefined
+     *   - objects, arrays, booleans, functions
+     *
+     * Every stat and magic reader routes through this helper, so
+     * a numeric string gets the same answer regardless of which
+     * function handles it.
      */
     function coerceNumber(value) {
         if (typeof value === 'number') {
@@ -356,7 +378,8 @@
     /**
      * Read the character's physical stats with coercion and
      * clamping. String values (from JSON imports or hand edits)
-     * are parsed the same way numeric values are.
+     * are parsed the same way numeric values are. Anything that
+     * does not parse falls back to STAT_DEFAULT.
      */
     function getCharacterStats(char) {
         var keys = getStatKeys();
@@ -542,6 +565,7 @@
     /**
      * Read the character's magic with coercion and clamping.
      * String values are parsed the same way numeric values are.
+     * Anything that does not parse falls back to 0.
      */
     function getCharacterMagic(char) {
         var result = getDefaultMagicProficiencies();
@@ -1053,6 +1077,30 @@
                 );
             }
 
+            // Non-numeric stat falls back to the default.
+            var statsFromGarbage = exports.getCharacterStats({
+                stats: { str: 'nope' }
+            });
+            if (statsFromGarbage.str !== exports.STAT_DEFAULT) {
+                failures.push(
+                    'getCharacterStats should fall back to ' +
+                    'STAT_DEFAULT for a non-numeric string'
+                );
+            }
+
+            // clampStat coercion.
+            if (exports.clampStat('14') !== 14) {
+                failures.push(
+                    'clampStat should coerce "14" to 14'
+                );
+            }
+            if (exports.clampStat('nope') !== exports.STAT_DEFAULT) {
+                failures.push(
+                    'clampStat should fall back to STAT_DEFAULT ' +
+                    'for a non-numeric string'
+                );
+            }
+
             // Magic coercion: a string "5" reads as 5.
             if (typeof exports.getCharacterMagic === 'function') {
                 var magicFromString = exports.getCharacterMagic({
@@ -1061,6 +1109,16 @@
                 if (magicFromString.fire !== 5) {
                     failures.push(
                         'getCharacterMagic should coerce "5" to 5'
+                    );
+                }
+
+                var magicFromGarbage = exports.getCharacterMagic({
+                    magic: { fire: 'nope' }
+                });
+                if (magicFromGarbage.fire !== 0) {
+                    failures.push(
+                        'getCharacterMagic should fall back to 0 ' +
+                        'for a non-numeric string'
                     );
                 }
             }
