@@ -54,6 +54,26 @@
  *   re-renders the character form, and removes the listener. No
  *   polling or MutationObserver.
  *
+ * MOBILE DRAWER:
+ *   On mobile the character list is an overlay drawer. The drawer
+ *   opens on first mount and re-opens every time the tab is
+ *   re-entered, so the user never sees an empty tab. See
+ *   index.js's mountCharacters for the open-on-mount call.
+ *
+ *   The drawer closes ONLY when the user selects a character
+ *   (handleCharacterSelect). Tapping outside the drawer does not
+ *   close it on mobile; that would return the user to the empty
+ *   form area, which is the state the drawer exists to avoid.
+ *   The burger button (#toggle-char-list) is the sole toggle on
+ *   mobile.
+ *
+ *   The desktop sidebar is always visible (two-column layout) and
+ *   is unaffected by the drawer state.
+ *
+ *   openSidebar / closeSidebar / toggleSidebar are exported so
+ *   index.js can drive the initial open without duplicating the
+ *   .open class name.
+ *
  * DEVIATIONS FROM THE MODAL PATTERN:
  *   `window.prompt` is used for the stint End year, and
  *   `window.confirm` is used for destructive confirmations
@@ -235,6 +255,16 @@
     // ============================================================
     // SIDEBAR DRAWER HELPERS
     // ============================================================
+    //
+    // The sidebar drawer is a mobile-only overlay. On desktop the
+    // sidebar is always visible (two-column layout) and the
+    // burger is hidden by CSS. On mobile, the burger
+    // (#toggle-char-list) is the only way to open or close the
+    // drawer.
+    //
+    // openSidebar / closeSidebar / toggleSidebar are exported on
+    // window.CharacterEvents so index.js can drive the initial
+    // open on mount without duplicating the .open class name.
 
     function getSidebar() {
         var container = document.getElementById('tab-characters');
@@ -1593,26 +1623,32 @@
         }
     }
 
+    /**
+     * Mobile drawer outside-click.
+     *
+     * On mobile, the drawer is the ONLY way to see the character
+     * list. Tapping outside the drawer would return the user to
+     * the empty form area, which is the exact state the drawer
+     * exists to avoid. So the outside-click close is deliberately
+     * NOT applied on mobile.
+     *
+     * The drawer closes only via:
+     *   - selecting a character (handleCharacterSelect)
+     *   - pressing the burger again (bindToggleList)
+     *
+     * The desktop sidebar is always visible (two-column layout)
+     * and has no drawer state to manage.
+     */
     function bindClickOutside(container) {
-        addSafeEventListener(document, 'click', function(e) {
+        addSafeEventListener(document, 'click', function() {
+            // Intentionally a no-op on mobile. See the docstring
+            // above. The function exists so a future desktop-only
+            // outside-click behaviour has a place to live, but the
+            // mobile path is closed.
             if (!isMobile()) { return; }
 
-            var sidebar = getSidebar();
-            if (!sidebar) { return; }
-            if (!sidebar.classList.contains('open')) { return; }
-
-            var toggle = document.getElementById(
-                'toggle-char-list'
-            );
-
-            var clickedOutsideSidebar =
-                !sidebar.contains(e.target);
-            var clickedToggle =
-                toggle && toggle.contains(e.target);
-
-            if (clickedOutsideSidebar && !clickedToggle) {
-                sidebar.classList.remove('open');
-            }
+            // Mobile outside-click close is disabled by design.
+            // Do nothing.
         });
     }
 
@@ -3512,6 +3548,12 @@
             }, 100);
         }
 
+        // On mobile, this is the ONLY path that closes the drawer
+        // when the user selects a character. Tapping outside the
+        // drawer does not close it (see bindClickOutside); the
+        // burger is the toggle. This is intentional: it ensures
+        // the user always has a way back to the list without an
+        // empty form area in between.
         closeSidebar();
     }
 
@@ -3731,7 +3773,14 @@
         handleAddClassById: handleAddClassById,
         handleAddClassByName: handleAddClassByName,
         handleRemoveClass: handleRemoveClass,
-        refreshCharacterReportButton: refreshCharacterReportButton
+        refreshCharacterReportButton: refreshCharacterReportButton,
+
+        // Sidebar drawer controls (see MOBILE DRAWER note in the
+        // file header). index.js calls openSidebar() on mount so
+        // the drawer is visible from the first render.
+        openSidebar: openSidebar,
+        closeSidebar: closeSidebar,
+        toggleSidebar: toggleSidebar
     };
 
 })();
