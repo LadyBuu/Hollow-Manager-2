@@ -64,6 +64,14 @@
  *   that keeping it in the UI layer is simpler than a wrapper
  *   module around a one-line pipeline call.
  *
+ *   importCharactersBatch checks the live store BEFORE the batch
+ *   starts. If window.data is not yet loaded (the user opened the
+ *   CSV modal before DataLoader.whenReady fired), every save
+ *   would fail with a misleading "Dependencies not loaded"
+ *   message per row. The pre-flight guard converts that into a
+ *   single clear message: "Application data is not loaded yet.
+ *   Reload the page and try again."
+ *
  * JSON IMPORT CONFIRM:
  *   The file-content summary shown before a JSON import is
  *   rendered as a native browser dialog (window.confirm). The
@@ -119,7 +127,10 @@
     }
 
     if (missing.length > 0) {
-        console.warn('[ImportExportUI] Missing dependencies (will use fallbacks):', missing.join(', '));
+        console.warn(
+            '[ImportExportUI] Missing dependencies (will use fallbacks):',
+            missing.join(', ')
+        );
     }
 
     // ============================================================
@@ -160,7 +171,8 @@
             return;
         }
         console.error(
-            '[ImportExportUI] ' + label + ' (' + errors.length + '):'
+            '[ImportExportUI] ' + label + ' (' +
+            errors.length + '):'
         );
         for (var i = 0; i < errors.length; i++) {
             console.error('  ' + (i + 1) + '.', errors[i]);
@@ -172,7 +184,8 @@
             return;
         }
         console.warn(
-            '[ImportExportUI] ' + label + ' (' + warnings.length + '):'
+            '[ImportExportUI] ' + label + ' (' +
+            warnings.length + '):'
         );
         for (var i = 0; i < warnings.length; i++) {
             console.warn('  ' + (i + 1) + '.', warnings[i]);
@@ -187,11 +200,14 @@
         var notifier = deps.NotificationSystem;
 
         if (notifier) {
-            if (type === 'error' && typeof notifier.notifyError === 'function') {
+            if (type === 'error' &&
+                typeof notifier.notifyError === 'function') {
                 notifier.notifyError(message);
-            } else if (type === 'warning' && typeof notifier.notifyWarning === 'function') {
+            } else if (type === 'warning' &&
+                typeof notifier.notifyWarning === 'function') {
                 notifier.notifyWarning(message);
-            } else if (type === 'success' && typeof notifier.notifySuccess === 'function') {
+            } else if (type === 'success' &&
+                typeof notifier.notifySuccess === 'function') {
                 notifier.notifySuccess(message);
             } else if (typeof notifier.notify === 'function') {
                 notifier.notify(message, type || 'info');
@@ -223,7 +239,8 @@
 
     function refreshUI() {
         try {
-            if (deps.TabManager && typeof deps.TabManager.refreshCurrent === 'function') {
+            if (deps.TabManager &&
+                typeof deps.TabManager.refreshCurrent === 'function') {
                 deps.TabManager.refreshCurrent();
             } else if (typeof window.renderAll === 'function') {
                 window.renderAll();
@@ -231,7 +248,9 @@
                 window.renderAllFeatures();
             }
         } catch (e) {
-            console.warn('[ImportExportUI] UI refresh failed:', e.message);
+            console.warn(
+                '[ImportExportUI] UI refresh failed:', e.message
+            );
         }
     }
 
@@ -279,8 +298,12 @@
                 try {
                     handler(this.files[0]);
                 } catch (err) {
-                    notifyError('File operation failed: ' + err.message);
-                    console.error('[ImportExportUI] File error:', err);
+                    notifyError(
+                        'File operation failed: ' + err.message
+                    );
+                    console.error(
+                        '[ImportExportUI] File error:', err
+                    );
                 }
                 this.value = '';
             }
@@ -316,14 +339,27 @@
         var result = JSONIO.exportJSON(data, { pretty: true });
 
         if (result.exported) {
-            notifySuccess('JSON backup exported: ' + result.filename);
+            notifySuccess(
+                'JSON backup exported: ' + result.filename
+            );
             try {
-                deps.ActivityLog.record('Exported JSON backup: ' + result.filename, 'export');
+                if (deps.ActivityLog &&
+                    typeof deps.ActivityLog.record ===
+                        'function') {
+                    deps.ActivityLog.record(
+                        'Exported JSON backup: ' +
+                        result.filename,
+                        'export'
+                    );
+                }
             } catch (e) {
                 // Non-fatal
             }
         } else {
-            notifyError('Export failed: ' + (result.error || 'Unknown error'));
+            notifyError(
+                'Export failed: ' +
+                (result.error || 'Unknown error')
+            );
         }
     }
 
@@ -349,7 +385,9 @@
         var shown = 0;
         var shownNames = [];
 
-        for (var i = 0; i < collectionNames.length && shown < 5; i++) {
+        for (var i = 0;
+             i < collectionNames.length && shown < 5;
+             i++) {
             var key = collectionNames[i];
             var val = summary.collections[key];
 
@@ -364,12 +402,17 @@
                 var subKeys = Object.keys(val);
                 for (var j = 0; j < subKeys.length; j++) {
                     var subKey = subKeys[j];
-                    if (typeof val[subKey] === 'number' && val[subKey] > 0) {
-                        subParts.push(subKey + ': ' + val[subKey]);
+                    if (typeof val[subKey] === 'number' &&
+                        val[subKey] > 0) {
+                        subParts.push(
+                            subKey + ': ' + val[subKey]
+                        );
                     }
                 }
                 if (subParts.length > 0) {
-                    shownNames.push(key + ' (' + subParts.join(', ') + ')');
+                    shownNames.push(
+                        key + ' (' + subParts.join(', ') + ')'
+                    );
                     shown++;
                 }
             }
@@ -387,7 +430,10 @@
             }
         }
         if (remaining > shown) {
-            lines.push('  (and ' + (remaining - shown) + ' more sections)');
+            lines.push(
+                '  (and ' + (remaining - shown) +
+                ' more sections)'
+            );
         }
 
         lines.push('');
@@ -402,7 +448,8 @@
         var JSONIO = deps.JSONIO;
         var Pipeline = deps.ImportPipeline;
 
-        if (!JSONIO || typeof JSONIO.importJSONFromFile !== 'function') {
+        if (!JSONIO ||
+            typeof JSONIO.importJSONFromFile !== 'function') {
             notifyError('JSON import not available');
             return;
         }
@@ -423,15 +470,20 @@
             .then(function(result) {
                 if (!result.valid) {
                     console.error(
-                        '[JSON import] parse/validation failed. Full result:',
-                        result
+                        '[JSON import] parse/validation failed. ' +
+                        'Full result:', result
                     );
-                    notifyError('JSON import failed: ' + (result.error || 'Unknown error'));
+                    notifyError(
+                        'JSON import failed: ' +
+                        (result.error || 'Unknown error')
+                    );
                     return;
                 }
 
                 if (!JSONIO.hasData(result.data)) {
-                    notifyWarning('No application data found in JSON file.');
+                    notifyWarning(
+                        'No application data found in JSON file.'
+                    );
                     return;
                 }
 
@@ -445,32 +497,41 @@
                     return;
                 }
 
-                if (result.data.format && result.data.format === 'hollow-blades') {
-                    return Pipeline.importFromEnvelope(result.data, {
-                        sourceName: file.name,
-                        preserveExistingIds: true,
-                        autoFixIds: true,
-                        skipValidation: false
-                    });
+                if (result.data.format &&
+                    result.data.format === 'hollow-blades') {
+                    return Pipeline.importFromEnvelope(
+                        result.data,
+                        {
+                            sourceName: file.name,
+                            preserveExistingIds: true,
+                            autoFixIds: true,
+                            skipValidation: false
+                        }
+                    );
                 }
 
                 // Raw data (no envelope). Route through
                 // importFromJSON, which builds an envelope from the
                 // raw object and delegates to importFromEnvelope.
-                return Pipeline.importFromJSON(JSON.stringify(result.data), {
-                    sourceName: file.name,
-                    preserveExistingIds: true,
-                    autoFixIds: true,
-                    skipValidation: false
-                });
+                return Pipeline.importFromJSON(
+                    JSON.stringify(result.data),
+                    {
+                        sourceName: file.name,
+                        preserveExistingIds: true,
+                        autoFixIds: true,
+                        skipValidation: false
+                    }
+                );
             })
             .then(function(importResult) {
                 if (importResult && importResult.success) {
                     var details = importResult.details || {};
                     var summary = details.summary || {};
-                    var message = 'JSON import completed successfully';
+                    var message =
+                        'JSON import completed successfully';
                     if (summary.totalRecords !== undefined) {
-                        message += ': ' + summary.totalRecords + ' records';
+                        message += ': ' +
+                            summary.totalRecords + ' records';
                     }
                     notifySuccess(message);
                     refreshUI();
@@ -493,11 +554,14 @@
                         'Unknown error';
 
                     if (errors.length > 1) {
-                        errorMsg += ' \u2014 ' + (errors.length - 1) +
+                        errorMsg += ' \u2014 ' +
+                            (errors.length - 1) +
                             ' more error(s), see console';
                     }
 
-                    notifyError('JSON import failed: ' + errorMsg);
+                    notifyError(
+                        'JSON import failed: ' + errorMsg
+                    );
                     return;
                 }
 
@@ -508,7 +572,9 @@
                 console.error('[JSON import] threw:', err);
                 notifyError(
                     'JSON import failed: ' +
-                    (err && err.message ? err.message : String(err))
+                    (err && err.message
+                        ? err.message
+                        : String(err))
                 );
             });
     }
@@ -537,7 +603,8 @@
     function importCharactersBatch(candidates) {
         var CharacterCRUD = window.CharacterCRUD || null;
 
-        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
+        if (!CharacterCRUD ||
+            typeof CharacterCRUD.save !== 'function') {
             return Promise.resolve({
                 success: false,
                 added: 0,
@@ -547,6 +614,25 @@
                     message: 'CharacterCRUD.save is not available.'
                 }],
                 message: 'Character save API is not available.'
+            });
+        }
+
+        // Pre-flight: the store must be loaded. Without it, every
+        // save fails with a misleading "Dependencies not loaded"
+        // message, once per row. Guarding here converts the whole
+        // batch into one clear error.
+        if (!window.data ||
+            !Array.isArray(window.data.characters)) {
+            return Promise.resolve({
+                success: false,
+                added: 0,
+                failed: 0,
+                errors: [{
+                    index: -1,
+                    message: 'Application data is not loaded yet.'
+                }],
+                message: 'Application data is not loaded yet. ' +
+                    'Reload the page and try again.'
             });
         }
 
@@ -578,7 +664,8 @@
                             failed++;
                             errors.push({
                                 index: index,
-                                message: (result && result.message) ||
+                                message:
+                                    (result && result.message) ||
                                     'Save failed.'
                             });
                         }
@@ -618,7 +705,8 @@
         // reaches the store. Refuse rather than mutating the store
         // directly.
         var CharacterCRUD = window.CharacterCRUD || null;
-        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
+        if (!CharacterCRUD ||
+            typeof CharacterCRUD.save !== 'function') {
             notifyError(
                 'Character import is not available. Reload the ' +
                 'page and try again.'
@@ -633,24 +721,31 @@
                     var msg = 'Found ' + summary.errors +
                         ' error(s) in the file.\n\n';
                     var errors = result.getErrors(true);
-                    for (var i = 0; i < Math.min(errors.length, 5); i++) {
+                    for (var i = 0;
+                         i < Math.min(errors.length, 5);
+                         i++) {
                         var err = errors[i];
-                        var rowInfo = err.metadata && err.metadata.row
-                            ? 'Row ' + err.metadata.row + ': '
-                            : '';
+                        var rowInfo =
+                            err.metadata && err.metadata.row
+                                ? 'Row ' + err.metadata.row + ': '
+                                : '';
                         msg += rowInfo + err.message + '\n';
                     }
                     if (errors.length > 5) {
                         msg += '\n... and ' + (errors.length - 5) +
                             ' more errors.';
                     }
-                    if (!confirm(msg + '\n\nContinue with valid rows?')) {
+                    if (!confirm(
+                        msg + '\n\nContinue with valid rows?'
+                    )) {
                         return;
                     }
                 }
 
                 if (!result.hasValid()) {
-                    notifyWarning('No valid characters found to import.');
+                    notifyWarning(
+                        'No valid characters found to import.'
+                    );
                     return;
                 }
 
@@ -691,7 +786,8 @@
                 // a pointer to the console for per-row failures.
                 if (importResult.added > 0) {
                     console.warn(
-                        '[Character import] ' + importResult.failed +
+                        '[Character import] ' +
+                        importResult.failed +
                         ' row(s) failed. Errors:',
                         importResult.errors
                     );
@@ -708,9 +804,10 @@
                 }
 
                 // Total failure.
-                var firstMessage = importResult.errors.length > 0
-                    ? importResult.errors[0].message
-                    : 'Unknown error';
+                var firstMessage =
+                    importResult.errors.length > 0
+                        ? importResult.errors[0].message
+                        : 'Unknown error';
                 console.error(
                     '[Character import] All rows failed. Errors:',
                     importResult.errors
@@ -734,7 +831,8 @@
 
     function handleMissionExport() {
         var MissionCSV = deps.MissionCSV;
-        if (!MissionCSV || typeof MissionCSV.exportFromData !== 'function') {
+        if (!MissionCSV ||
+            typeof MissionCSV.exportFromData !== 'function') {
             notifyError('Mission export not available');
             return;
         }
@@ -747,16 +845,23 @@
                 } else {
                     notifySuccess(result.message);
                     try {
-                        deps.ActivityLog.record(
-                            'Exported ' + result.count +
-                            ' missions to CSV', 'export'
-                        );
+                        if (deps.ActivityLog &&
+                            typeof deps.ActivityLog.record ===
+                                'function') {
+                            deps.ActivityLog.record(
+                                'Exported ' + result.count +
+                                ' missions to CSV',
+                                'export'
+                            );
+                        }
                     } catch (e) {
                         // Non-fatal
                     }
                 }
             } else if (result && result.count !== undefined) {
-                notifySuccess('Exported ' + result.count + ' missions');
+                notifySuccess(
+                    'Exported ' + result.count + ' missions'
+                );
             } else {
                 notifySuccess('Missions exported');
             }
@@ -767,7 +872,8 @@
 
     function handleMissionImport(file) {
         var MissionCSV = deps.MissionCSV;
-        if (!MissionCSV || typeof MissionCSV.importFromFile !== 'function') {
+        if (!MissionCSV ||
+            typeof MissionCSV.importFromFile !== 'function') {
             notifyError('Mission import not available');
             return;
         }
@@ -790,24 +896,31 @@
                     var msg = 'Found ' + summary.errors +
                         ' error(s) in the file.\n\n';
                     var errors = result.getErrors(true);
-                    for (var i = 0; i < Math.min(errors.length, 5); i++) {
+                    for (var i = 0;
+                         i < Math.min(errors.length, 5);
+                         i++) {
                         var err = errors[i];
-                        var rowInfo = err.metadata && err.metadata.row
-                            ? 'Row ' + err.metadata.row + ': '
-                            : '';
+                        var rowInfo =
+                            err.metadata && err.metadata.row
+                                ? 'Row ' + err.metadata.row + ': '
+                                : '';
                         msg += rowInfo + err.message + '\n';
                     }
                     if (errors.length > 5) {
                         msg += '\n... and ' + (errors.length - 5) +
                             ' more errors.';
                     }
-                    if (!confirm(msg + '\n\nContinue with valid rows?')) {
+                    if (!confirm(
+                        msg + '\n\nContinue with valid rows?'
+                    )) {
                         return;
                     }
                 }
 
                 if (!result.hasValid()) {
-                    notifyWarning('No valid missions found to import.');
+                    notifyWarning(
+                        'No valid missions found to import.'
+                    );
                     return;
                 }
 
@@ -830,7 +943,8 @@
                 return MissionCore.importMissions(candidates);
             })
             .then(function(importResult) {
-                if (importResult && importResult.success !== false) {
+                if (importResult &&
+                    importResult.success !== false) {
                     var added = importResult.added ||
                         importResult.count || 0;
                     notifySuccess(
@@ -847,7 +961,8 @@
 
     function handleMissionTemplate() {
         var MissionCSV = deps.MissionCSV;
-        if (!MissionCSV || typeof MissionCSV.exportTemplate !== 'function') {
+        if (!MissionCSV ||
+            typeof MissionCSV.exportTemplate !== 'function') {
             notifyError('Mission template not available');
             return;
         }
@@ -856,13 +971,16 @@
             var result = MissionCSV.exportTemplate();
             if (result && result.exported) {
                 notifySuccess(
-                    'Mission template downloaded: ' + result.filename
+                    'Mission template downloaded: ' +
+                    result.filename
                 );
             } else {
                 notifySuccess('Mission template downloaded');
             }
         } catch (err) {
-            notifyError('Template generation failed: ' + err.message);
+            notifyError(
+                'Template generation failed: ' + err.message
+            );
         }
     }
 
@@ -883,7 +1001,9 @@
         try {
             Picker.openModal();
         } catch (err) {
-            notifyError('Graduates export failed: ' + err.message);
+            notifyError(
+                'Graduates export failed: ' + err.message
+            );
         }
     }
 
@@ -896,7 +1016,9 @@
         try {
             Picker.openModal();
         } catch (err) {
-            notifyError('Graduates export failed: ' + err.message);
+            notifyError(
+                'Graduates export failed: ' + err.message
+            );
         }
     }
 
@@ -957,8 +1079,9 @@
         }
         if (!deps.NotificationSystem) {
             console.warn(
-                '[ImportExportUI] NotificationSystem not available - ' +
-                'notifications will fallback to console'
+                '[ImportExportUI] NotificationSystem not ' +
+                'available - notifications will fallback to ' +
+                'console'
             );
         }
 
@@ -970,7 +1093,10 @@
         bindFileInput('json-file-input', handleJSONImport);
 
         // ---- Graduates Export ----
-        bindButton('export-graduates-json-btn', handleGraduatesJSONExport);
+        bindButton(
+            'export-graduates-json-btn',
+            handleGraduatesJSONExport
+        );
 
         // ---- Character CSV import ----
         //
@@ -980,7 +1106,10 @@
         bindButton('import-characters-csv-btn', function() {
             triggerFileInput('characters-csv-file-input');
         });
-        bindFileInput('characters-csv-file-input', handleCharacterImport);
+        bindFileInput(
+            'characters-csv-file-input',
+            handleCharacterImport
+        );
     }
 
     // ============================================================
