@@ -179,13 +179,18 @@
     // DEBUG FLAG
     // ============================================================
     //
-    // Set to false to silence the [ScheduleExport DEBUG] logs once
-    // the failing argument has been identified. The logs are
-    // intentionally unconditional on call, not gated behind a
-    // console filter, because the failure mode being diagnosed is
-    // a silent no-op and the caller has no other signal.
+    // Shipped state: false. The logs were added to diagnose a
+    // silent-no-op failure in the character-schedule export (the
+    // caller was passing an argument shape the validator rejected,
+    // and the export produced no output and no error). With the
+    // argument shapes confirmed against the caller, the logs are
+    // off. Set to true to re-enable them.
+    //
+    // The debugLog call sites are kept (not removed) because they
+    // document where the failure mode was and provide a
+    // ready-to-hand signal for the next investigation.
 
-    var DEBUG = true;
+    var DEBUG = false;
 
     function debugLog(label, payload) {
         if (!DEBUG) { return; }
