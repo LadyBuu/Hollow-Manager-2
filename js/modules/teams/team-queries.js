@@ -27,6 +27,19 @@
  *   - The periods array itself. TeamCore writes it; this module
  *     reads it. The shape is documented in team-core.js.
  *
+ * TYPE AND STATUS COMPARISONS:
+ *   Every comparison of a team's `type` or `status` field routes
+ *   through TeamConstants.normalizeTeamType / normalizeTeamStatus.
+ *   A legacy 'temporary' or 'internship' record matches
+ *   'professional' the moment it hits any query in this file; a
+ *   stored 'Active' matches 'active'. There is no raw string
+ *   comparison of either field in this module.
+ *
+ *   The one exception is `isOperationalStatus`, which is an
+ *   internal helper that classifies an already-normalised status
+ *   into the {active, inactive} bucket. It normalises internally
+ *   and is called only from getTeams and isTeamOperational.
+ *
  * PERIOD PREDICATE OWNERSHIP:
  *   teamWindowContains(team, period)
  *   intervalContains(interval, period)
@@ -97,8 +110,8 @@
  *   period.end. A 1905 ranking belongs to Rapid II, not Rapid.
  *
  * RANKING INHERITANCE:
- *   The `rankingHistory` array holds EXPLICIT entries only —
- *   the values the user actually wrote:
+ *   The `rankingHistory` array holds EXPLICIT entries only — the
+ *   values the user actually wrote:
  *
  *     { period: '1905', rank: 3 }
  *
@@ -216,6 +229,10 @@
         _missing.push('TeamConstants.normalizeTeamType');
     }
     if (!TeamConstants ||
+        typeof TeamConstants.normalizeTeamStatus !== 'function') {
+        _missing.push('TeamConstants.normalizeTeamStatus');
+    }
+    if (!TeamConstants ||
         typeof TeamConstants.getPeriodRange !== 'function') {
         _missing.push('TeamConstants.getPeriodRange');
     }
@@ -281,8 +298,47 @@
         return n;
     }
 
+    /**
+     * Is this team's status one of {active, inactive}?
+     *
+     * Routes through normalizeTeamStatus, so a stored 'Active'
+     * counts as operational. Called from getTeams' status filter
+     * and isTeamOperational.
+     */
     function isOperationalStatus(status) {
-        return status === 'active' || status === 'inactive';
+        var normalized = TeamConstants.normalizeTeamStatus(status);
+        return normalized === 'active' || normalized === 'inactive';
+    }
+
+    /**
+     * Is this team's status exactly 'active' (normalised)?
+     */
+    function isActiveStatus(status) {
+        return TeamConstants.normalizeTeamStatus(status) === 'active';
+    }
+
+    /**
+     * Is this team's status exactly 'inactive' (normalised)?
+     */
+    function isInactiveStatus(status) {
+        return TeamConstants.normalizeTeamStatus(status) === 'inactive';
+    }
+
+    /**
+     * Is this team's type 'professional' (normalised)?
+     *
+     * The legacy 'temporary' and 'internship' types normalise to
+     * 'professional', so a record imported before v31 matches.
+     */
+    function isProfessionalType(type) {
+        return TeamConstants.normalizeTeamType(type) === 'professional';
+    }
+
+    /**
+     * Is this team's type 'academic' (normalised)?
+     */
+    function isAcademicType(type) {
+        return TeamConstants.normalizeTeamType(type) === 'academic';
     }
 
     function teamWindowContainsNum(team, periodNum) {
@@ -820,8 +876,7 @@
     /**
      * The team's current display name. Reads periods[last].name
      * via getCurrentTeamName; falls back to team.name for a
-     * record that predates the periods model. The fallback path
-     * is a safety net, not a supported shape.
+     * record that predates the periods model.
      */
     function getTeamName(teamId) {
         if (!isNonEmptyString(teamId)) { return 'Unassigned'; }
@@ -841,7 +896,7 @@
 
     function isTeamActive(team) {
         if (!team || typeof team !== 'object') { return false; }
-        return team.status === 'active';
+        return isActiveStatus(team.status);
     }
 
     function isTeamActiveAtPeriod(team, period) {
@@ -892,11 +947,11 @@
 
         if (status === 'active') {
             result = result.filter(function(t) {
-                return t.status === 'active';
+                return isActiveStatus(t.status);
             });
         } else if (status === 'inactive') {
             result = result.filter(function(t) {
-                return t.status === 'inactive';
+                return isInactiveStatus(t.status);
             });
         } else if (status === 'operational') {
             result = result.filter(function(t) {
@@ -908,7 +963,9 @@
 
         if (!includeDeprecated) {
             result = result.filter(function(t) {
-                return t.status !== 'deprecated';
+                var normalized =
+                    TeamConstants.normalizeTeamStatus(t.status);
+                return normalized !== 'deprecated';
             });
         }
 
@@ -944,7 +1001,7 @@
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (team && team.type === 'academic' &&
+            if (team && isAcademicType(team.type) &&
                 String(team.classId) === target) {
                 result.push(team);
             }
@@ -1334,12 +1391,12 @@
         // ---- Precompute each member's interval bounds once. ----
         var memberRanges = [];
         for (var mr = 0; mr < team.members.length; mr++) {
-            var m = team.members[mr];
-            if (!m || !Array.isArray(m.intervals)) { continue; }
+            var m2 = team.members[mr];
+            if (!m2 || !Array.isArray(m2.intervals)) { continue; }
 
             var ranges = [];
-            for (var ri = 0; ri < m.intervals.length; ri++) {
-                var raw = m.intervals[ri];
+            for (var ri = 0; ri < m2.intervals.length; ri++) {
+                var raw = m2.intervals[ri];
                 if (!raw || typeof raw !== 'object') { continue; }
 
                 var joinNum = parsePeriod(raw.joinPeriod);
@@ -1570,7 +1627,12 @@
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team || typeof team !== 'object') { continue; }
-            if (team.type !== 'professional') { continue; }
+            // Route through normalizeTeamType: a legacy 'temporary'
+            // or 'internship' record still counts as a professional
+            // team. Without this, a character with pre-v31 history
+            // looks like they have none, and re-enters the staffing
+            // pool.
+            if (!isProfessionalType(team.type)) { continue; }
             if (!Array.isArray(team.members)) { continue; }
 
             var teamId = String(team.id);
@@ -1992,18 +2054,8 @@
      * The last entry's range extends to Infinity. This is the
      * same half-open rule the periods model uses.
      *
-     * Returns [] when the team has no ranking history. Order is
-     * ascending by year.
-     *
      * @param {object} team
-     * @returns {array} [
-     *   {
-     *     period:       '1905',
-     *     rank:         3,
-     *     governsFrom:  1905,
-     *     governsTo:    1906 | null    (null = unbounded)
-     *   }
-     * ]
+     * @returns {array} [ { period, rank, governsFrom, governsTo } ]
      */
     function getRankingHistoryWithRanges(team) {
         if (!team || !Array.isArray(team.rankingHistory)) {
@@ -2056,11 +2108,6 @@
     /**
      * Get the team's explicit ranking entries, sorted ascending
      * by year. Returns [{ period, rank }, ...].
-     *
-     * This is the raw list. A caller that wants the effective
-     * rank at a year uses getEffectiveRanking; a caller that
-     * wants the governing range of each entry uses
-     * getRankingHistoryWithRanges.
      */
     function getSortedRankings(team) {
         if (!team || !Array.isArray(team.rankingHistory)) {
@@ -2093,12 +2140,6 @@
 
     /**
      * Get the most recent explicit entry, or null.
-     *
-     * "Most recent" means "the entry with the highest year."
-     * This is the entry written at the latest date in the
-     * team's history. It is not the same as the effective rank
-     * at the current application year — that requires knowing
-     * the year and using getEffectiveRanking.
      */
     function getMostRecentRanking(team) {
         var history = getSortedRankings(team);
@@ -2110,10 +2151,6 @@
     /**
      * The most recent explicit rank, as a display string, or ''
      * when the team has no ranking history.
-     *
-     * This is what the team list shows. It is a fact about the
-     * team's most recent entry, not a claim about the current
-     * year.
      */
     function getCurrentRank(team) {
         var most = getMostRecentRanking(team);
@@ -2127,14 +2164,6 @@
 
     /**
      * A summary of the team's ranking state.
-     *
-     *   total      the number of explicit entries
-     *   current    the most recent explicit rank as a string
-     *   mostRecent the most recent entry object, or null
-     *   history    the full sorted list of explicit entries
-     *
-     * Consumers that want the effective rank at a specific year
-     * use getEffectiveRanking instead.
      */
     function getRankingSummary(team) {
         if (!team) {
@@ -2346,17 +2375,12 @@
             }
         }
 
-        // ---- Period predicate smoke test ----
-        //
-        // The table from the file header. Rapid 1900–1905,
-        // Rapid II 1905–''.
         try {
             var RAPID_START = '1900';
             var RAPID_END = '1905';
             var RII_START = '1905';
             var RII_END = '';
 
-            // 1898–present: in both.
             if (!intervalOverlapsPeriod(
                 '1898', '', RAPID_START, RAPID_END
             )) {
@@ -2371,8 +2395,6 @@
                     'predicate: 1898–present should be in Rapid II'
                 );
             }
-
-            // 1900–1904: in Rapid only.
             if (!intervalOverlapsPeriod(
                 '1900', '1904', RAPID_START, RAPID_END
             )) {
@@ -2387,8 +2409,6 @@
                     'predicate: 1900–1904 should NOT be in Rapid II'
                 );
             }
-
-            // 1904–1908: in both.
             if (!intervalOverlapsPeriod(
                 '1904', '1908', RAPID_START, RAPID_END
             )) {
@@ -2403,8 +2423,6 @@
                     'predicate: 1904–1908 should be in Rapid II'
                 );
             }
-
-            // 1905–present: in Rapid II only.
             if (intervalOverlapsPeriod(
                 '1905', '', RAPID_START, RAPID_END
             )) {
@@ -2419,8 +2437,6 @@
                     'predicate: 1905–present should be in Rapid II'
                 );
             }
-
-            // 1906–1910: in Rapid II only.
             if (intervalOverlapsPeriod(
                 '1906', '1910', RAPID_START, RAPID_END
             )) {
@@ -2435,8 +2451,6 @@
                     'predicate: 1906–1910 should be in Rapid II'
                 );
             }
-
-            // 1898–1899: in neither.
             if (intervalOverlapsPeriod(
                 '1898', '1899', RAPID_START, RAPID_END
             )) {
@@ -2445,7 +2459,6 @@
                 );
             }
 
-            // ---- Ranking predicate smoke test ----
             if (rankingInPeriod('1904', RAPID_START, RAPID_END) !== true) {
                 missing.push(
                     'ranking: 1904 should be in Rapid'
@@ -2467,9 +2480,6 @@
                 );
             }
 
-            // ---- Ranking inheritance smoke test ----
-            //
-            // The worked example from the file header.
             var mockTeam = {
                 rankingHistory: [
                     { period: '1904', rank: 3 },
@@ -2477,7 +2487,6 @@
                 ]
             };
 
-            // 1903: no entry at or before 1903 -> null.
             var e1903 = getEffectiveRanking(mockTeam, '1903');
             if (e1903.rank !== null) {
                 missing.push(
@@ -2486,7 +2495,6 @@
                 );
             }
 
-            // 1904: explicit #3.
             var e1904 = getEffectiveRanking(mockTeam, '1904');
             if (e1904.rank !== 3 || e1904.explicit !== true) {
                 missing.push(
@@ -2494,7 +2502,6 @@
                 );
             }
 
-            // 1905: inherited #3.
             var e1905 = getEffectiveRanking(mockTeam, '1905');
             if (e1905.rank !== 3 || e1905.explicit !== false) {
                 missing.push(
@@ -2502,14 +2509,12 @@
                 );
             }
 
-            // 1906: inherited #3.
             if (getEffectiveRanking(mockTeam, '1906').rank !== 3) {
                 missing.push(
                     'inheritance: 1906 should inherit #3'
                 );
             }
 
-            // 1907: explicit #5.
             var e1907 = getEffectiveRanking(mockTeam, '1907');
             if (e1907.rank !== 5 || e1907.explicit !== true) {
                 missing.push(
@@ -2517,15 +2522,12 @@
                 );
             }
 
-            // 1908: inherited #5.
             if (getEffectiveRanking(mockTeam, '1908').rank !== 5) {
                 missing.push(
                     'inheritance: 1908 should inherit #5'
                 );
             }
 
-            // getRankAtPeriod returns the same value as
-            // getEffectiveRanking's rank.
             if (getRankAtPeriod(mockTeam, '1905') !== 3) {
                 missing.push(
                     'getRankAtPeriod(1905) should be 3'
@@ -2537,7 +2539,6 @@
                 );
             }
 
-            // hasExplicitRankingAt distinguishes the two.
             if (hasExplicitRankingAt(mockTeam, '1904') !== true) {
                 missing.push(
                     'hasExplicitRankingAt(1904) should be true'
@@ -2549,8 +2550,6 @@
                 );
             }
 
-            // Ranges: entry at 1904 governs [1904, 1907), entry
-            // at 1907 governs [1907, null).
             var ranges = getRankingHistoryWithRanges(mockTeam);
             if (ranges.length !== 2 ||
                 ranges[0].governsFrom !== 1904 ||
