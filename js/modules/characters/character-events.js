@@ -80,6 +80,24 @@
  *   (delete character, remove stint, delete relationship). These
  *   are intentional deviations from Modal.
  *
+ * WINDOW.SHOWCHARACTERFORM IS NOT DEFINED HERE:
+ *   This file used to define window.showCharacterForm and
+ *   window.hideCharacterForm at the bottom. That made both globals
+ *   load-order dependent: whichever file loaded last won, and a
+ *   caller that reached window.showCharacterForm after this file
+ *   loaded got a variant that rendered the form WITHOUT setting
+ *   the current-edit-id (the next save would then create a new
+ *   character instead of updating).
+ *
+ *   Those definitions have been removed.
+ *
+ *   window.showCharacterForm is owned by characters/index.js,
+ *   which sets the edit id and renders. window.hideCharacterForm
+ *   is owned by character-form.js, which hides the form and clears
+ *   the edit id. Both single owners.
+ *
+ *   Do NOT reintroduce either definition in this file.
+ *
  * DEPENDENCIES (MANDATORY at call time):
  *   - window.CharacterAggregator
  *   - window.CharacterQueries
@@ -3777,10 +3795,16 @@
 
         // Sidebar drawer controls (see MOBILE DRAWER note in the
         // file header). index.js calls openSidebar() on mount so
-        // the drawer is visible from the first render.
+        // the drawer is visible from the first render, and
+        // window.toggleCharacterList delegates to these helpers.
         openSidebar: openSidebar,
         closeSidebar: closeSidebar,
         toggleSidebar: toggleSidebar
+
+        // NOTE: window.showCharacterForm and window.hideCharacterForm
+        // are NOT defined here. See the WINDOW.SHOWCHARACTERFORM
+        // note in the file header. Their single owners are
+        // characters/index.js and character-form.js respectively.
     };
 
 })();
