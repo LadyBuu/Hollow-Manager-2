@@ -35,6 +35,14 @@
  *                     when the whole store is in scope.
  *   Blank template    CharacterCSV.exportTemplate()
  *
+ *   The single-character paths use the per-character exporters
+ *   so the produced filename carries the character's name rather
+ *   than being a bulk file with one entry. The Simplified format
+ *   has no per-character exporter, so a single-character
+ *   Simplified export is a one-row TSV produced by
+ *   exportSelectedText([id]); that is the correct shape for a
+ *   fixed-column roster.
+ *
  *   The picker opens the target module lazily at click time. A
  *   missing module produces a toast, not a boot-time crash.
  *
@@ -53,7 +61,7 @@
  *                                    caller passes the current
  *                                    selection in)
  *
- * DEPENDENCIES (MANDATORY):
+ * DEPENDENCIES (MANDATORY at call time):
  *   - window.DomUtils
  *   - window.Modal
  *   - window.NotificationSystem
@@ -71,38 +79,78 @@
     if (window.__characterExportPickerLoaded) {
         return;
     }
-
-    var DomUtils = window.DomUtils;
-    var Modal = window.Modal;
-    var NotificationSystem = window.NotificationSystem;
-
-    var _missing = [];
-
-    if (!DomUtils ||
-        typeof DomUtils.escapeHtml !== 'function' ||
-        typeof DomUtils.escapeAttribute !== 'function') {
-        _missing.push('DomUtils.escapeHtml/escapeAttribute');
-    }
-    if (!Modal ||
-        typeof Modal.createModal !== 'function' ||
-        typeof Modal.showModal !== 'function' ||
-        typeof Modal.closeModal !== 'function' ||
-        typeof Modal.modalSetup !== 'function') {
-        _missing.push('Modal API');
-    }
-    if (!NotificationSystem ||
-        typeof NotificationSystem.notify !== 'function') {
-        _missing.push('NotificationSystem.notify');
-    }
-
-    if (_missing.length > 0) {
-        throw new Error(
-            '[CharacterExportPicker] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
-    }
-
     window.__characterExportPickerLoaded = true;
+
+    // ============================================================
+    // LAZY DEPENDENCY ACCESSORS
+    // ============================================================
+
+    function getDomUtils() {
+        return window.DomUtils || null;
+    }
+
+    function getModal() {
+        return window.Modal || null;
+    }
+
+    function getNotificationSystem() {
+        return window.NotificationSystem || null;
+    }
+
+    function getCharacterCSV() {
+        return window.CharacterCSV || null;
+    }
+
+    function getCharacterRosterExport() {
+        return window.CharacterRosterExport || null;
+    }
+
+    function getCharacterExport() {
+        return window.CharacterExport || null;
+    }
+
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - at open time
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        var DU = getDomUtils();
+        if (!DU ||
+            typeof DU.escapeHtml !== 'function' ||
+            typeof DU.escapeAttribute !== 'function') {
+            missing.push('DomUtils.escapeHtml/escapeAttribute');
+        }
+
+        var M = getModal();
+        if (!M ||
+            typeof M.createModal !== 'function' ||
+            typeof M.showModal !== 'function' ||
+            typeof M.closeModal !== 'function' ||
+            typeof M.modalSetup !== 'function') {
+            missing.push('Modal API');
+        }
+
+        var NS = getNotificationSystem();
+        if (!NS || typeof NS.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (missing.length > 0) {
+            console.error(
+                '[CharacterExportPicker] Missing mandatory ' +
+                'dependencies: ' + missing.join(', ')
+            );
+            return false;
+        }
+
+        return true;
+    }
 
     // ============================================================
     // MODULE STATE
@@ -126,15 +174,38 @@
     }
 
     function notify(message, type) {
-        NotificationSystem.notify(message, type || 'info');
+        var NS = getNotificationSystem();
+        if (NS && typeof NS.notify === 'function') {
+            NS.notify(message, type || 'info');
+        } else if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[CharacterExportPicker]', message);
+        }
     }
 
     function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeHtml === 'function') {
+            return DU.escapeHtml(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     function escapeAttribute(value) {
-        return DomUtils.escapeAttribute(value);
+        var DU = getDomUtils();
+        if (DU && typeof DU.escapeAttribute === 'function') {
+            return DU.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -153,6 +224,11 @@
      * @returns {object|null} The modal element, or null on failure
      */
     function openModal(options) {
+        if (!checkDependencies()) {
+            notify('Export is not available.', 'error');
+            return null;
+        }
+
         options = options || {};
 
         closeModal();
@@ -183,7 +259,19 @@
             ? options.onClose
             : null;
 
-        var shell = Modal.createModal(
+        // If the preselected format is unavailable, fall through to
+        // the first available format. This prevents opening with a
+        // selected-but-disabled radio.
+        var availability = getFormatAvailability();
+        if (!isFormatAvailable(_selectedFormat, availability)) {
+            var fallback = getFirstAvailableFormat(availability);
+            if (fallback) {
+                _selectedFormat = fallback;
+            }
+        }
+
+        var M = getModal();
+        var shell = M.createModal(
             'character-export-picker-modal'
         );
         if (!shell) {
@@ -207,10 +295,10 @@
 
         renderContent();
 
-        Modal.modalSetup(shell, function() {
+        M.modalSetup(shell, function() {
             closeModal();
         });
-        Modal.showModal(shell);
+        M.showModal(shell);
 
         return shell;
     }
@@ -239,7 +327,10 @@
 
         if (modal) {
             try {
-                Modal.closeModal(modal);
+                var M = getModal();
+                if (M && typeof M.closeModal === 'function') {
+                    M.closeModal(modal);
+                }
             } catch (e) {
                 // Ignore.
             }
@@ -271,13 +362,13 @@
     // ============================================================
 
     function getWholeStoreCount() {
-        if (!window.CharacterQueries ||
-            typeof window.CharacterQueries.getCharacters !==
-                'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ ||
+            typeof CQ.getCharacters !== 'function') {
             return null;
         }
         try {
-            var chars = window.CharacterQueries.getCharacters() || [];
+            var chars = CQ.getCharacters() || [];
             return chars.length;
         } catch (e) {
             return null;
@@ -285,43 +376,59 @@
     }
 
     /**
-     * Returns { scope: 'all' | 'selected', count: number }.
+     * Returns { scope: 'all' | 'selected', count: number,
+     *           totalSelected: number }.
      *
      *   scope 'selected' with a live count means characterIds is
-     *   set; the count reflects how many of those IDs resolve to
-     *   actual characters.
+     *   set and at least one of those IDs resolves to a real
+     *   character. totalSelected is the original characterIds
+     *   length, so the UI can distinguish "nothing selected" from
+     *   "everything selected was deleted".
+     *
+     *   scope 'selected' with count 0 and totalSelected > 0 means
+     *   the selection is empty (all selected characters were
+     *   deleted since the selection was made). The UI recovers
+     *   from this by offering "Use all characters instead".
      *
      *   scope 'all' means the whole store is in scope. count is
      *   the store size (or null when CharacterQueries is absent).
      */
     function getScope() {
         if (_characterIds && _characterIds.length > 0) {
+            var totalSelected = _characterIds.length;
             var live = 0;
-            if (window.CharacterQueries &&
-                typeof window.CharacterQueries.getCharacterById ===
-                    'function') {
+            var CQ = getCharacterQueries();
+            if (CQ &&
+                typeof CQ.getCharacterById === 'function') {
                 for (var i = 0; i < _characterIds.length; i++) {
                     try {
-                        if (window.CharacterQueries
-                                .getCharacterById(
-                                    _characterIds[i]
-                                )) {
+                        if (CQ.getCharacterById(
+                            _characterIds[i]
+                        )) {
                             live++;
                         }
                     } catch (e) { /* ignore */ }
                 }
             } else {
-                live = _characterIds.length;
+                live = totalSelected;
             }
-            return { scope: 'selected', count: live };
+            return {
+                scope: 'selected',
+                count: live,
+                totalSelected: totalSelected
+            };
         }
-        return { scope: 'all', count: getWholeStoreCount() };
+        return {
+            scope: 'all',
+            count: getWholeStoreCount(),
+            totalSelected: 0
+        };
     }
 
     function getFormatAvailability() {
-        var csv = window.CharacterCSV || null;
-        var roster = window.CharacterRosterExport || null;
-        var report = window.CharacterExport || null;
+        var csv = getCharacterCSV();
+        var roster = getCharacterRosterExport();
+        var report = getCharacterExport();
 
         return {
             report: report !== null &&
@@ -336,6 +443,26 @@
             template: csv !== null &&
                 typeof csv.exportTemplate === 'function'
         };
+    }
+
+    function isFormatAvailable(format, availability) {
+        if (format === 'report') { return availability.report; }
+        if (format === 'general') { return availability.general; }
+        if (format === 'simplified') {
+            return availability.simplified;
+        }
+        if (format === 'template') { return availability.template; }
+        return false;
+    }
+
+    function getFirstAvailableFormat(availability) {
+        var order = ['report', 'general', 'simplified', 'template'];
+        for (var i = 0; i < order.length; i++) {
+            if (isFormatAvailable(order[i], availability)) {
+                return order[i];
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -408,24 +535,8 @@
 
         html += '</div>';
 
-        var canExport = isFormatAvailable(
-            _selectedFormat, availability
-        );
-        var hasData = scope.count === null
-            ? true
-            : scope.count > 0;
-        var templateSelected = _selectedFormat === 'template';
-
-        var exportDisabled = templateSelected
-            ? !canExport
-            : (!canExport || !hasData);
-
-        var exportLabel = 'Export';
-        if (!templateSelected && scope.scope === 'selected' &&
-            scope.count !== null && scope.count > 0) {
-            exportLabel = 'Export ' + scope.count +
-                ' character' + (scope.count === 1 ? '' : 's');
-        }
+        var exportDisabled = computeExportDisabled(scope, availability);
+        var exportLabel = computeExportLabel(scope);
 
         html += '<div class="modal-footer character-export-picker-footer">';
 
@@ -448,18 +559,78 @@
         return html;
     }
 
+    function computeExportDisabled(scope, availability) {
+        var canExport = isFormatAvailable(
+            _selectedFormat, availability
+        );
+        if (!canExport) { return true; }
+
+        var templateSelected = _selectedFormat === 'template';
+        if (templateSelected) { return false; }
+
+        if (scope.scope === 'selected' &&
+            scope.totalSelected > 0 &&
+            scope.count === 0) {
+            // Recoverable empty selection. The Export button is
+            // disabled until the user chooses "Use all characters
+            // instead" or closes.
+            return true;
+        }
+
+        if (scope.count === null) {
+            // CharacterQueries unavailable for the whole-store
+            // scope. Export is allowed: the downstream exporter
+            // will surface its own error if it cannot read.
+            return false;
+        }
+
+        return scope.count === 0;
+    }
+
+    function computeExportLabel(scope) {
+        if (_selectedFormat === 'template') {
+            return 'Export';
+        }
+        if (scope.scope === 'selected' &&
+            scope.count !== null && scope.count > 0) {
+            return 'Export ' + scope.count +
+                ' character' + (scope.count === 1 ? '' : 's');
+        }
+        return 'Export';
+    }
+
     function buildScopeSummaryHTML(scope) {
         var html = '';
         html += '<div class="character-export-picker-preview">';
 
         if (scope.scope === 'selected') {
-            html += '<div class="character-export-picker-counts">';
-            html += '<span class="character-export-picker-count">' +
-                        'Exporting <strong>' + scope.count +
-                        '</strong> selected character' +
-                        (scope.count === 1 ? '' : 's') +
-                    '</span>';
-            html += '</div>';
+            if (scope.count > 0) {
+                html += '<div class="character-export-picker-counts">';
+                html += '<span class="character-export-picker-count">' +
+                            'Exporting <strong>' + scope.count +
+                            '</strong> selected character' +
+                            (scope.count === 1 ? '' : 's') +
+                        '</span>';
+                if (scope.count < scope.totalSelected) {
+                    html += '<span class="character-export-picker-count" ' +
+                                'style="color:var(--text-dim);' +
+                                'font-size:0.7rem;' +
+                                'margin-left:6px;">' +
+                                '(' + (scope.totalSelected - scope.count) +
+                                ' no longer exist)' +
+                            '</span>';
+                }
+                html += '</div>';
+            } else if (scope.totalSelected > 0) {
+                html += buildEmptySelectionHTML(scope);
+            } else {
+                // Defensive: shouldn't happen (getScope returns
+                // 'all' when characterIds is empty), but if it
+                // ever does, treat it as nothing selected.
+                html += '<p class="empty-state">' +
+                            'No characters selected.' +
+                        '</p>';
+            }
         } else if (scope.count === null) {
             html += '<p class="empty-state">' +
                         'Character data is not available.' +
@@ -483,12 +654,40 @@
         return html;
     }
 
+    /**
+     * Recovery UI for the "selection is empty" state. The user
+     * landed here with a selection, but every character in it
+     * has been deleted since. Offer a single button that widens
+     * the scope to the whole store.
+     */
+    function buildEmptySelectionHTML(scope) {
+        var html = '';
+        html += '<div class="character-export-picker-empty-selection">';
+        html += '<p class="empty-state">' +
+                    'The ' + scope.totalSelected +
+                    ' selected character' +
+                    (scope.totalSelected === 1 ? '' : 's') +
+                    ' no longer exist' +
+                    (scope.totalSelected === 1 ? 's' : '') +
+                    '.' +
+                '</p>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-picker-action="use-all">' +
+                    'Use all characters instead' +
+                '</button>';
+        html += '</div>';
+        return html;
+    }
+
     function buildFormatRow(format, title, description, available) {
         var checked = _selectedFormat === format ? ' checked' : '';
         var disabled = available ? '' : ' disabled';
 
+        // When the format is unavailable, the row is disabled and
+        // NOT selected — even if _selectedFormat happens to equal
+        // `format`. This prevents a "selected but disabled" radio.
         var rowClass = 'character-export-picker-format';
-        if (checked) { rowClass += ' is-selected'; }
+        if (available && checked) { rowClass += ' is-selected'; }
         if (!available) { rowClass += ' is-disabled'; }
 
         var html = '';
@@ -497,7 +696,8 @@
 
         html += '<input type="radio" name="character-export-format" ' +
                     'value="' + escapeAttribute(format) + '"' +
-                    checked + disabled + '>';
+                    (available ? checked : '') +
+                    disabled + '>';
 
         html += '<span class="character-export-picker-format-body">';
         html += '<span class="character-export-picker-format-title">' +
@@ -518,14 +718,92 @@
         return html;
     }
 
-    function isFormatAvailable(format, availability) {
-        if (format === 'report') { return availability.report; }
-        if (format === 'general') { return availability.general; }
-        if (format === 'simplified') {
-            return availability.simplified;
+    // ============================================================
+    // IN-PLACE UPDATE
+    // ============================================================
+
+    /**
+     * Apply a format selection change to the existing DOM without
+     * re-rendering. Focus, caret position, and the radio group's
+     * arrow-key traversal all survive.
+     *
+     * The rows are located by `data-format` (unique per row), so
+     * the update is order-independent.
+     */
+    function applyFormatSelectionInPlace(format) {
+        if (!_contentEl) { return; }
+
+        var rows = _contentEl.querySelectorAll(
+            '.character-export-picker-format'
+        );
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var rowFormat = row.dataset ? row.dataset.format : null;
+            if (!rowFormat) { continue; }
+
+            var input = row.querySelector(
+                'input[name="character-export-format"]'
+            );
+            var isAvailable = input && !input.disabled;
+            var isNowSelected = isAvailable && rowFormat === format;
+
+            if (isNowSelected) {
+                row.classList.add('is-selected');
+            } else {
+                row.classList.remove('is-selected');
+            }
         }
-        if (format === 'template') { return availability.template; }
-        return false;
+
+        updateExportButtonState();
+    }
+
+    /**
+     * Recompute the export button's label and disabled state
+     * against the current scope and availability. Called after a
+     * selection change and after the "use all" recovery.
+     */
+    function updateExportButtonState() {
+        if (!_contentEl) { return; }
+
+        var btn = _contentEl.querySelector(
+            '[data-picker-action="export"]'
+        );
+        if (!btn) { return; }
+
+        var scope = getScope();
+        var availability = getFormatAvailability();
+        var disabled = computeExportDisabled(scope, availability);
+        var label = computeExportLabel(scope);
+
+        btn.disabled = disabled;
+        btn.textContent = label;
+    }
+
+    /**
+     * Re-render just the scope summary region. Called by the "Use
+     * all characters instead" recovery, which changes the scope
+     * from 'selected' to 'all'.
+     */
+    function updateScopeSummaryInPlace() {
+        if (!_contentEl) { return; }
+
+        var existing = _contentEl.querySelector(
+            '.character-export-picker-preview'
+        );
+        if (!existing) { return; }
+
+        var scope = getScope();
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = buildScopeSummaryHTML(scope);
+        var replacement = wrapper.firstElementChild;
+        if (replacement) {
+            existing.parentNode.replaceChild(
+                replacement, existing
+            );
+        }
+
+        updateExportButtonState();
     }
 
     // ============================================================
@@ -552,6 +830,12 @@
             handleExport();
             return;
         }
+
+        if (action === 'use-all') {
+            e.preventDefault();
+            handleUseAll();
+            return;
+        }
     }
 
     function handleContentChange(e) {
@@ -561,7 +845,19 @@
 
         _selectedFormat = target.value || 'report';
 
-        renderContent();
+        // In-place update. No renderContent() call, so focus on
+        // the newly-checked radio survives.
+        applyFormatSelectionInPlace(_selectedFormat);
+    }
+
+    /**
+     * "Use all characters instead": widen the scope from the
+     * selected-but-empty set to the whole store. Re-renders the
+     * scope summary and refreshes the button.
+     */
+    function handleUseAll() {
+        _characterIds = null;
+        updateScopeSummaryInPlace();
     }
 
     // ============================================================
@@ -627,38 +923,58 @@
         return 'Export';
     }
 
-    function runReportExport() {
-        var report = window.CharacterExport;
-        if (!report) { return null; }
-
-        // Scoped to a selection.
+    /**
+     * Resolve the ids the report formats should operate on.
+     *
+     * Returns either:
+     *   { ids: string[] }    explicit list to pass to the
+     *                        *SelectedText helpers
+     *   { all: true }        whole store; caller routes to the
+     *                        per-store helper
+     *   null                 no ids can be resolved
+     */
+    function resolveExportIds() {
         if (_characterIds && _characterIds.length > 0) {
-            if (typeof report.exportSelectedText !== 'function') {
-                return null;
-            }
-            return report.exportSelectedText(_characterIds);
+            return { ids: _characterIds.slice() };
         }
 
-        // Whole store. There is no single "export all reports"
-        // helper, so build the selection from every character
-        // currently in the store, then defer to the same code path.
-        if (!window.CharacterQueries ||
-            typeof window.CharacterQueries.getCharacters !==
-                'function') {
+        var CQ = getCharacterQueries();
+        if (!CQ || typeof CQ.getCharacters !== 'function') {
             return null;
         }
-        var all = [];
+
+        var all;
         try {
-            all = window.CharacterQueries.getCharacters() || [];
+            all = CQ.getCharacters() || [];
         } catch (e) {
             return null;
         }
+
         var ids = [];
         for (var i = 0; i < all.length; i++) {
             if (all[i] && all[i].id) {
                 ids.push(String(all[i].id));
             }
         }
+        return { ids: ids };
+    }
+
+    function runReportExport() {
+        var report = getCharacterExport();
+        if (!report) { return null; }
+
+        var resolved = resolveExportIds();
+        if (!resolved) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'No characters to export.'
+            };
+        }
+
+        var ids = resolved.ids;
+
         if (ids.length === 0) {
             return {
                 exported: false,
@@ -666,43 +982,48 @@
                 count: 0,
                 error: 'No characters to export.'
             };
+        }
+
+        // Single-character fast path: use the per-character
+        // exporter so the filename carries the character's name.
+        if (ids.length === 1) {
+            if (typeof report.exportCharacterText !== 'function') {
+                return null;
+            }
+            var single = report.exportCharacterText(ids[0]);
+            if (single && single.exported) {
+                return {
+                    exported: true,
+                    filename: single.filename,
+                    count: 1,
+                    error: null
+                };
+            }
+            return single;
+        }
+
+        if (typeof report.exportSelectedText !== 'function') {
+            return null;
         }
         return report.exportSelectedText(ids);
     }
 
     function runGeneralExport() {
-        var report = window.CharacterExport;
+        var report = getCharacterExport();
         if (!report) { return null; }
 
-        // Scoped to a selection.
-        if (_characterIds && _characterIds.length > 0) {
-            if (typeof report.exportGeneralSelectedText !==
-                'function') {
-                return null;
-            }
-            return report.exportGeneralSelectedText(_characterIds);
+        var resolved = resolveExportIds();
+        if (!resolved) {
+            return {
+                exported: false,
+                filename: null,
+                count: 0,
+                error: 'No characters to export.'
+            };
         }
 
-        // Whole store. Same shape as runReportExport: build the
-        // full ID list from the store, then defer to the bulk
-        // helper so the file layout matches the selected path.
-        if (!window.CharacterQueries ||
-            typeof window.CharacterQueries.getCharacters !==
-                'function') {
-            return null;
-        }
-        var all = [];
-        try {
-            all = window.CharacterQueries.getCharacters() || [];
-        } catch (e) {
-            return null;
-        }
-        var ids = [];
-        for (var i = 0; i < all.length; i++) {
-            if (all[i] && all[i].id) {
-                ids.push(String(all[i].id));
-            }
-        }
+        var ids = resolved.ids;
+
         if (ids.length === 0) {
             return {
                 exported: false,
@@ -711,15 +1032,32 @@
                 error: 'No characters to export.'
             };
         }
-        if (typeof report.exportGeneralSelectedText !==
-            'function') {
+
+        // Single-character fast path.
+        if (ids.length === 1) {
+            if (typeof report.exportGeneralText !== 'function') {
+                return null;
+            }
+            var single = report.exportGeneralText(ids[0]);
+            if (single && single.exported) {
+                return {
+                    exported: true,
+                    filename: single.filename,
+                    count: 1,
+                    error: null
+                };
+            }
+            return single;
+        }
+
+        if (typeof report.exportGeneralSelectedText !== 'function') {
             return null;
         }
         return report.exportGeneralSelectedText(ids);
     }
 
     function runSimplifiedExport() {
-        var roster = window.CharacterRosterExport;
+        var roster = getCharacterRosterExport();
         if (!roster) { return null; }
 
         if (_characterIds && _characterIds.length > 0) {
@@ -736,7 +1074,7 @@
     }
 
     function runTemplateExport() {
-        var csv = window.CharacterCSV;
+        var csv = getCharacterCSV();
         if (!csv || typeof csv.exportTemplate !== 'function') {
             return null;
         }
