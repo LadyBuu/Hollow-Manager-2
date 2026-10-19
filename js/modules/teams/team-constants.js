@@ -31,10 +31,39 @@
  *   means "unbounded on this side." isValidPeriod accepts the blank
  *   sentinel as valid; parsePeriod does not.
  *
+ *   isValidBoundPeriod is the same predicate with an EXPLICIT
+ *   allowBlank flag. Use it when the caller needs to be strict
+ *   about blank (e.g. a team's startPeriod, which cannot legally
+ *   be blank):
+ *
+ *     isValidBoundPeriod(startPeriod, type, { allowBlank: false })
+ *
+ *   Use isValidPeriod, or isValidBoundPeriod with allowBlank:true,
+ *   for a field where blank is legal (e.g. a team's endPeriod,
+ *   where '' means "ongoing").
+ *
  * CALENDAR BOUNDS:
  *   CalendarConstants is a LAZY dependency. When absent, any
  *   operation that needs week bounds throws. There is no silent
  *   fallback.
+ *
+ *   hasWeekBounds() is the NON-THROWING probe. A defensive caller
+ *   that wants to check before rendering can do:
+ *
+ *     if (!TeamConstants.hasWeekBounds()) {
+ *       // render an empty-state / warning, don't call
+ *       // getPeriodRange or the MIN_WEEK / MAX_WEEK getters
+ *       return;
+ *     }
+ *
+ *   MIN_WEEK / MAX_WEEK are GETTERS that throw on access. This is
+ *   deliberate: a caller reaching for them is asserting that
+ *   CalendarConstants is loaded. A caller that is not sure uses
+ *   hasWeekBounds first. Enumerating TeamConstants with
+ *   Object.keys + read throws on the getters; that is a known
+ *   limitation of accessor properties and is not fixable without
+ *   freezing the value at load time (which would reintroduce the
+ *   exact bug the getter pattern avoids).
  *
  * TEMPORARY TEAMS ARE RETIRED:
  *   The 'temporary' team type is gone. Temporary teams were a
@@ -46,6 +75,27 @@
  *   normalised to 'professional' on read through LEGACY_TYPE_MAP.
  *   A migrated record never re-emits 'temporary', and no new code
  *   can create one.
+ *
+ * STATUS NORMALISATION:
+ *   normalizeTeamStatus mirrors normalizeTeamType. It lowercases
+ *   and trims, returns the canonical string if it exists in the
+ *   status map, and returns null otherwise. getTeamStatus and
+ *   isValidTeamStatus route through it.
+ *
+ *   normalizeTeamStatus is the precursor for a Phase F sweep that
+ *   replaces `team.status === 'active'` (in team-queries.js and
+ *   elsewhere) with
+ *   `TeamConstants.normalizeTeamStatus(team.status) === 'active'`.
+ *   Currently a stored 'Active' validates here (isValidTeamStatus
+ *   returns true) but fails every raw comparison downstream. The
+ *   sweep closes that.
+ *
+ * LEGACY TYPE MAP PROTOTYPE GUARD:
+ *   LEGACY_TYPE_MAP is a frozen object literal. A naive
+ *   `LEGACY_TYPE_MAP[normalized]` returns Object.prototype members
+ *   for keys like 'constructor', 'toString', '__proto__', which
+ *   would be misread as a mapped type. The lookup is guarded by
+ *   Object.prototype.hasOwnProperty.call.
  *
  * DEPENDENCIES:
  *   - window.CalendarConstants (lazy)
@@ -76,6 +126,8 @@
      *
      * Throws when CalendarConstants is missing or malformed. This is
      * a load-order bug that must surface, not a degraded state.
+     * Callers that want to probe without throwing use
+     * hasWeekBounds().
      *
      * @returns {{ MIN_WEEK: number, MAX_WEEK: number }}
      */
@@ -87,6 +139,8 @@
             typeof CC.MAX_WEEK !== 'number' ||
             !isFinite(CC.MIN_WEEK) ||
             !isFinite(CC.MAX_WEEK) ||
+            !Number.isInteger(CC.MIN_WEEK) ||
+            !Number.isInteger(CC.MAX_WEEK) ||
             CC.MIN_WEEK < 1 ||
             CC.MAX_WEEK < CC.MIN_WEEK) {
             throw new Error(
@@ -99,6 +153,25 @@
             MIN_WEEK: CC.MIN_WEEK,
             MAX_WEEK: CC.MAX_WEEK
         };
+    }
+
+    /**
+     * Non-throwing probe. True iff CalendarConstants is loaded and
+     * its week bounds are valid.
+     *
+     * Use this before calling getPeriodRange or the MIN_WEEK /
+     * MAX_WEEK getters if you are not sure the calendar module is
+     * loaded.
+     *
+     * @returns {boolean}
+     */
+    function hasWeekBounds() {
+        try {
+            getWeekBounds();
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     // ============================================================
@@ -160,7 +233,11 @@
     /**
      * Legacy type mappings, applied before any lookup.
      *
-     * Every public lookup normalises through this map.
+     * Every public lookup normalises through this map. Lookups are
+     * guarded by Object.prototype.hasOwnProperty.call, because this
+     * is a plain frozen object and would otherwise leak
+     * Object.prototype members ('constructor', 'toString', etc.) as
+     * mapped types.
      *
      *   'internship'  a persisted value from early builds.
      *                 Migrates to 'professional'.
@@ -233,8 +310,8 @@
     /**
      * Normalise a type ID to its canonical form.
      *
-     * Accepts canonical IDs, legacy IDs, and any casing or surrounding
-     * whitespace. Returns null for anything else.
+     * Accepts canonical IDs, legacy IDs, and any casing or
+     * surrounding whitespace. Returns null for anything else.
      *
      * This is the single entry point for type resolution. Every
      * public lookup goes through it.
@@ -250,10 +327,41 @@
         if (normalized === '') {
             return null;
         }
-        if (LEGACY_TYPE_MAP[normalized]) {
+        // Guarded lookup: LEGACY_TYPE_MAP is a plain frozen object.
+        if (Object.prototype.hasOwnProperty.call(
+            LEGACY_TYPE_MAP, normalized
+        )) {
             return LEGACY_TYPE_MAP[normalized];
         }
         return _typeMap[normalized] ? normalized : null;
+    }
+
+    // ============================================================
+    // STATUS NORMALISATION
+    // ============================================================
+    //
+    // Mirrors normalizeTeamType. Lowercase + trim, canonical string
+    // if the normalized value exists in the status map, else null.
+    //
+    // Precursor for a Phase F sweep that replaces raw
+    // `team.status === 'active'` comparisons with
+    // `normalizeTeamStatus(team.status) === 'active'`.
+
+    /**
+     * Normalise a status ID to its canonical form.
+     *
+     * @param {string} statusId
+     * @returns {string|null}
+     */
+    function normalizeTeamStatus(statusId) {
+        if (typeof statusId !== 'string') {
+            return null;
+        }
+        var normalized = statusId.toLowerCase().trim();
+        if (normalized === '') {
+            return null;
+        }
+        return _statusMap[normalized] ? normalized : null;
     }
 
     // ============================================================
@@ -305,11 +413,8 @@
     }
 
     function getTeamStatus(statusId) {
-        if (typeof statusId !== 'string') {
-            return null;
-        }
-        var normalized = statusId.toLowerCase().trim();
-        return _statusMap[normalized] || null;
+        var normalized = normalizeTeamStatus(statusId);
+        return normalized === null ? null : (_statusMap[normalized] || null);
     }
 
     function getStatusLabel(statusId) {
@@ -318,10 +423,7 @@
     }
 
     function isValidTeamStatus(statusId) {
-        if (typeof statusId !== 'string') {
-            return false;
-        }
-        return _statusMap[statusId.toLowerCase().trim()] !== undefined;
+        return normalizeTeamStatus(statusId) !== null;
     }
 
     function getValidStatusIds() {
@@ -395,7 +497,8 @@
      * The sentinel is '', null, or undefined. It means "no bound on
      * this side of the range" and is not a period.
      *
-     * Whitespace-only strings are NOT the sentinel. They are malformed.
+     * Whitespace-only strings are NOT the sentinel. They are
+     * malformed.
      *
      * @param {*} value
      * @returns {boolean}
@@ -411,7 +514,10 @@
     /**
      * Get the period range for a team type.
      *
-     * ACADEMIC: bounded weeks from CalendarConstants.
+     * ACADEMIC: bounded weeks from CalendarConstants. Throws when
+     * CalendarConstants is missing. Callers that want to probe
+     * without throwing use hasWeekBounds().
+     *
      * NON-ACADEMIC: unbounded years, { min: 1, max: Infinity }.
      *
      * Returns null for an invalid type. Does not fabricate a default.
@@ -471,8 +577,13 @@
      *   - invalid team type IDs
      *
      * WHY BLANK IS VALID: TeamCore writes '' to endPeriod to mean
-     * "ongoing." Rejecting blank would make validating a freshly
-     * created open-ended team fail.
+     * "ongoing." Rejecting blank here would make validating a
+     * freshly created open-ended team fail.
+     *
+     * CALLERS THAT NEED STRICTER VALIDATION (e.g. startPeriod, which
+     * can never legally be blank) use isValidBoundPeriod with
+     * allowBlank: false. That is the recommended pattern going
+     * forward.
      *
      * @param {*} period
      * @param {string} typeId
@@ -480,6 +591,50 @@
      */
     function isValidPeriod(period, typeId) {
         if (isUnboundedPeriod(period)) {
+            return normalizeTeamType(typeId) !== null;
+        }
+
+        var num = parsePeriod(period);
+        if (num === null) {
+            return false;
+        }
+
+        var range = getPeriodRange(typeId);
+        if (range === null) {
+            return false;
+        }
+
+        return num >= range.min && num <= range.max;
+    }
+
+    /**
+     * Stricter period validation with an explicit allowBlank flag.
+     *
+     * allowBlank: false (default)
+     *   The blank sentinel is rejected. Use this for a team's
+     *   startPeriod, which cannot legally be blank. A blank
+     *   startPeriod in the store is a data bug the validator
+     *   should surface, not accept.
+     *
+     * allowBlank: true
+     *   The blank sentinel is accepted. Identical to isValidPeriod.
+     *   Use this for a team's endPeriod, where '' means
+     *   "ongoing."
+     *
+     * Otherwise the semantics are the same as isValidPeriod.
+     *
+     * @param {*} period
+     * @param {string} typeId
+     * @param {object} [options]
+     * @param {boolean} [options.allowBlank] - default false
+     * @returns {boolean}
+     */
+    function isValidBoundPeriod(period, typeId, options) {
+        options = options || {};
+        var allowBlank = options.allowBlank === true;
+
+        if (isUnboundedPeriod(period)) {
+            if (!allowBlank) { return false; }
             return normalizeTeamType(typeId) !== null;
         }
 
@@ -638,9 +793,10 @@
         DEFAULT_ROLE: DEFAULT_ROLE,
 
         // Bounds — resolved at call time, throws if unavailable,
-        // no caching.
+        // no caching. hasWeekBounds() is the non-throwing probe.
         get MIN_WEEK() { return getWeekBounds().MIN_WEEK; },
         get MAX_WEEK() { return getWeekBounds().MAX_WEEK; },
+        hasWeekBounds: hasWeekBounds,
 
         // Type lookup
         getTeamTypes: getTeamTypes,
@@ -658,6 +814,7 @@
         getTeamStatus: getTeamStatus,
         getStatusLabel: getStatusLabel,
         isValidTeamStatus: isValidTeamStatus,
+        normalizeTeamStatus: normalizeTeamStatus,
         getValidStatusIds: getValidStatusIds,
         getDefaultStatus: getDefaultStatus,
 
@@ -670,6 +827,7 @@
         getPeriodRange: getPeriodRange,
         getPeriodBounds: getPeriodBounds,
         isValidPeriod: isValidPeriod,
+        isValidBoundPeriod: isValidBoundPeriod,
 
         // Diagnostics
         validateConstants: validateConstants
