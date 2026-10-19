@@ -50,6 +50,13 @@
  *   Neither tournament-driven nor standalone. Presence-based, not
  *   year-scoped.
  *
+ *   The presence test is delegated to
+ *   EliminationQueries.hasEliminations. That predicate correctly
+ *   recognises a year-only elimination (a record with a year but
+ *   no week), which the old getEliminationWeek-based test did NOT:
+ *   a year-only elimination had getEliminationWeek === null, so
+ *   the character was mis-classified as a graduate.
+ *
  * WHAT "CHARACTER" MEANS HERE:
  *   Every class member. Includes eliminated and deceased members.
  *   Instructors of the class are excluded by the roster source
@@ -84,15 +91,35 @@
  *   The characters export does not consult EliminationQueries at
  *   all, so it is unaffected by the module's absence.
  *
- * ELIMINATION QUERIES SIGNATURE:
- *   This module calls EliminationQueries.getEliminationWeek(charId)
- *   with a character ID string. character-export.js's
- *   resolveEliminationMarker calls EliminationQueries
- *   .getEliminationYear(char) with a character record. If
- *   EliminationQueries exposes one signature or the other (not
- *   both), one of those two call sites is silently falling
- *   through to its fallback. Verify against elimination-queries.js
- *   before relying on the "elimination year" column.
+ * FORMULA GUARD:
+ *   The CSV output runs user-authored string cells through a local
+ *   guardFormulaForCell wrapper that skips negative numbers and
+ *   numeric strings ("-5", "-5kg"). Everything else routes through
+ *   CSV.guardFormula. This matches character-export.js's scoping,
+ *   so the two exporters produce the same shapes for the same
+ *   values.
+ *
+ *   No importer consumes this CSV today, so the round-trip
+ *   symmetry is not enforced by a caller. If a user opens the
+ *   CSV in a text editor and hand-edits it, the values in the
+ *   cells are unchanged from what was written, so re-parsing
+ *   produces the same values.
+ *
+ * STATS ABSENCE:
+ *   A character with no `stats` block produces a stats entry whose
+ *   values are `null` for every key rather than `0`. formatStats
+ *   skips null keys, so the text output shows only stats that
+ *   exist. A CSV consumer that reads the JSON stats column sees
+ *   {"str":null,...}, which is honest about the absence.
+ *
+ * AGE:
+ *   Age is computed as of the current application year, not at
+ *   graduation. A graduate exported in a year after their class
+ *   year will show their age at the later year, not the age at
+ *   graduation. Changing this would require threading the
+ *   graduating class year into the query; the fix is deferred
+ *   because the current behaviour matches what the Character tab
+ *   shows.
  *
  * VM SHAPE:
  *   Both getGraduates() and getCharacters() return a VM of the
@@ -113,7 +140,7 @@
  *
  * TEXT SHAPE:
  *
- *   Hollow Blades — Graduates of Class of 1926
+ *   Hollow Manager 2 — Graduates of Class of 1926
  *   Exported 2026-09-25
  *   12 graduates
  *
@@ -130,14 +157,14 @@
  *   Weapons  : Longsword (sharp); Dagger (sharp)
  *   ...
  *
- * DEPENDENCIES (MANDATORY):
+ * DEPENDENCIES (MANDATORY at call time):
  *   - window.CharacterQueries
  *   - window.AcademyClasses
  *   - window.AcademyAggregator
  *   - window.CSV
  *   - window.ExportUtils
  *
- * DEPENDENCIES (OPTIONAL):
+ * DEPENDENCIES (OPTIONAL at call time):
  *   - window.EliminationQueries
  *     Missing -> no character can be a graduate. Fail-closed.
  *     The characters export does not use this dependency.
@@ -154,57 +181,28 @@
     window.__classRosterExportLoaded = true;
 
     // ============================================================
-    // MANDATORY DEPENDENCIES
+    // LAZY DEPENDENCY ACCESSORS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyClasses = window.AcademyClasses;
-    var AcademyAggregator = window.AcademyAggregator;
-    var CSV = window.CSV;
-    var ExportUtils = window.ExportUtils;
-
-    var _missing = [];
-
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-        _missing.push('CharacterQueries.getCharacterById');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-        _missing.push('CharacterQueries.getDisplayName');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
-        _missing.push('CharacterQueries.getCharacterAge');
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
     }
 
-    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
-        _missing.push('AcademyClasses.getClass');
-    }
-    if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
-        _missing.push('AcademyClasses.getClasses');
+    function getAcademyClasses() {
+        return window.AcademyClasses || null;
     }
 
-    if (!AcademyAggregator ||
-        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
-        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    function getAcademyAggregator() {
+        return window.AcademyAggregator || null;
     }
 
-    if (!CSV || typeof CSV.arrayToCSV !== 'function') {
-        _missing.push('CSV.arrayToCSV');
+    function getCSV() {
+        return window.CSV || null;
     }
 
-    if (!ExportUtils || typeof ExportUtils.downloadBlob !== 'function') {
-        _missing.push('ExportUtils.downloadBlob');
+    function getExportUtils() {
+        return window.ExportUtils || null;
     }
-
-    if (_missing.length > 0) {
-        throw new Error(
-            '[ClassRosterExport] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
-    }
-
-    // ============================================================
-    // OPTIONAL DEPENDENCY ACCESSORS
-    // ============================================================
 
     function getEliminationQueries() {
         return window.EliminationQueries || null;
@@ -216,6 +214,64 @@
 
     function getMagicConstants() {
         return window.MagicConstants || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - per entry point
+    // ============================================================
+
+    function checkDependencies(calleeName) {
+        var missing = [];
+
+        var CQ = getCharacterQueries();
+        if (!CQ ||
+            typeof CQ.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CQ ||
+            typeof CQ.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CQ ||
+            typeof CQ.getCharacterAge !== 'function') {
+            missing.push('CharacterQueries.getCharacterAge');
+        }
+
+        var AC = getAcademyClasses();
+        if (!AC || typeof AC.getClass !== 'function') {
+            missing.push('AcademyClasses.getClass');
+        }
+        if (!AC || typeof AC.getClasses !== 'function') {
+            missing.push('AcademyClasses.getClasses');
+        }
+
+        var AA = getAcademyAggregator();
+        if (!AA ||
+            typeof AA.getClassStudentsViewModel !== 'function') {
+            missing.push(
+                'AcademyAggregator.getClassStudentsViewModel'
+            );
+        }
+
+        var CSV = getCSV();
+        if (!CSV || typeof CSV.arrayToCSV !== 'function') {
+            missing.push('CSV.arrayToCSV');
+        }
+
+        var EU = getExportUtils();
+        if (!EU || typeof EU.downloadBlob !== 'function') {
+            missing.push('ExportUtils.downloadBlob');
+        }
+
+        if (missing.length > 0) {
+            var msg = '[ClassRosterExport] ' + calleeName +
+                ' missing mandatory dependencies: ' +
+                missing.join(', ');
+            console.error(msg);
+            throw new Error(msg);
+        }
+
+        return true;
     }
 
     // ============================================================
@@ -296,14 +352,18 @@
 
     function jsonOrEmpty(value) {
         try {
-            return JSON.stringify(value === undefined ? null : value);
+            return JSON.stringify(
+                value === undefined ? null : value
+            );
         } catch (e) {
             return 'null';
         }
     }
 
     function sanitiseForFilename(value) {
-        return String(value === undefined || value === null ? '' : value)
+        return String(
+            value === undefined || value === null ? '' : value
+        )
             .replace(/[^A-Za-z0-9_-]+/g, '-')
             .replace(/^-+|-+$/g, '') || 'class';
     }
@@ -343,38 +403,49 @@
     // ============================================================
     //
     // A graduate is a roster member with NO eliminations at all.
-    // Presence, not year. See the file header for the reasoning.
+    // Presence, not year.
+    //
+    // The presence test is delegated to
+    // EliminationQueries.hasEliminations. That predicate handles
+    // the year-only case correctly: a record with a year but no
+    // week still counts as an elimination. The previous
+    // getEliminationWeek-based test did not: it returned null for
+    // a year-only record, so the character was mis-classified as
+    // a graduate.
 
-    var _graduateFilterWarned = false;
+    var _eliminationUnavailableWarned = false;
 
     function isGraduate(charId) {
         var EQ = getEliminationQueries();
 
-        if (!EQ || typeof EQ.getEliminationWeek !== 'function') {
-            if (!_graduateFilterWarned) {
-                _graduateFilterWarned = true;
+        if (!EQ ||
+            typeof EQ.hasEliminations !== 'function') {
+            if (!_eliminationUnavailableWarned) {
+                _eliminationUnavailableWarned = true;
                 console.warn(
-                    '[ClassRosterExport] EliminationQueries.' +
-                    'getEliminationWeek is not available. ' +
-                    'No character can be classified as a graduate.'
+                    '[ClassRosterExport] ' +
+                    'EliminationQueries.hasEliminations is not ' +
+                    'available. No character can be classified as ' +
+                    'a graduate.'
                 );
             }
             return false;
         }
 
-        var earliest;
+        var has = false;
         try {
-            earliest = EQ.getEliminationWeek(charId);
+            has = EQ.hasEliminations(charId) === true;
         } catch (e) {
             console.warn(
-                '[ClassRosterExport] getEliminationWeek threw:',
+                '[ClassRosterExport] hasEliminations threw:',
                 e,
                 { charId: charId }
             );
+            // Fail closed.
             return false;
         }
 
-        return earliest === null || earliest === undefined;
+        return !has;
     }
 
     // ============================================================
@@ -387,14 +458,21 @@
     // filter is applied here.
 
     function resolveRoster(classId) {
+        var AA = getAcademyAggregator();
+        if (!AA ||
+            typeof AA.getClassStudentsViewModel !== 'function') {
+            return [];
+        }
+
         var roster = [];
         try {
-            roster = AcademyAggregator.getClassStudentsViewModel(
+            roster = AA.getClassStudentsViewModel(
                 classId
             ) || [];
         } catch (e) {
             console.warn(
-                '[ClassRosterExport] getClassStudentsViewModel threw:', e
+                '[ClassRosterExport] ' +
+                'getClassStudentsViewModel threw:', e
             );
             return [];
         }
@@ -420,7 +498,9 @@
 
     function getStatKeys() {
         var CC = getCharacterConstants();
-        if (CC && Array.isArray(CC.STAT_KEYS) && CC.STAT_KEYS.length > 0) {
+        if (CC &&
+            Array.isArray(CC.STAT_KEYS) &&
+            CC.STAT_KEYS.length > 0) {
             return CC.STAT_KEYS.slice();
         }
         return DEFAULT_STAT_KEYS.slice();
@@ -441,6 +521,21 @@
         return [];
     }
 
+    /**
+     * Project a character's stats block. Present values are
+     * carried through as numbers; absent values are `null`.
+     *
+     * This differs from the previous implementation, which
+     * defaulted every absent key to 0. A stats block of all zeros
+     * is impossible under the engine's rules (STAT_MIN is above
+     * zero), so a wall of zeros in the text output was visibly
+     * wrong: it looked like a real, filled-in block that had
+     * rolled all-zero.
+     *
+     * formatStats skips null entries. buildCSVRows serialises the
+     * whole stats object, so a CSV consumer sees
+     * {"str":null,...}, which is honest about the absence.
+     */
     function normaliseStats(char) {
         var keys = getStatKeys();
         var source = isObject(char.stats) ? char.stats : {};
@@ -448,7 +543,11 @@
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var v = source[k];
-            result[k] = isFiniteNumber(v) ? v : 0;
+            if (isFiniteNumber(v)) {
+                result[k] = v;
+            } else {
+                result[k] = null;
+            }
         }
         return result;
     }
@@ -473,8 +572,10 @@
             if (!isObject(w)) { continue; }
             result.push({
                 id: isNonEmptyString(w.id) ? String(w.id) : '',
-                name: isNonEmptyString(w.name) ? String(w.name) : '',
-                type: isNonEmptyString(w.type) ? String(w.type) : '',
+                name: isNonEmptyString(w.name)
+                    ? String(w.name) : '',
+                type: isNonEmptyString(w.type)
+                    ? String(w.type) : '',
                 notes: typeof w.notes === 'string' ? w.notes : ''
             });
         }
@@ -482,9 +583,13 @@
     }
 
     function normaliseSpecialMoves(char) {
-        var source = isObject(char.specialMoves) ? char.specialMoves : {};
-        var physRaw = Array.isArray(source.physical) ? source.physical : [];
-        var magRaw = Array.isArray(source.magical) ? source.magical : [];
+        var source = isObject(char.specialMoves)
+            ? char.specialMoves
+            : {};
+        var physRaw = Array.isArray(source.physical)
+            ? source.physical : [];
+        var magRaw = Array.isArray(source.magical)
+            ? source.magical : [];
 
         function mapList(list) {
             var out = [];
@@ -492,8 +597,10 @@
                 var m = list[i];
                 if (!isObject(m)) { continue; }
                 out.push({
-                    id: isNonEmptyString(m.id) ? String(m.id) : '',
-                    name: isNonEmptyString(m.name) ? String(m.name) : '',
+                    id: isNonEmptyString(m.id)
+                        ? String(m.id) : '',
+                    name: isNonEmptyString(m.name)
+                        ? String(m.name) : '',
                     description: typeof m.description === 'string'
                         ? m.description
                         : ''
@@ -522,16 +629,26 @@
     }
 
     function buildRosterRecord(charId) {
-        var char = CharacterQueries.getCharacterById(charId);
+        var CQ = getCharacterQueries();
+        if (!CQ) { return null; }
+
+        var char = null;
+        try {
+            char = CQ.getCharacterById(charId);
+        } catch (e) {
+            char = null;
+        }
         if (!char) { return null; }
 
         var personality = isObject(char.personality)
             ? char.personality
             : {};
 
+        // Age is computed as of the current application year,
+        // not at graduation. See the AGE note in the file header.
         var age = '';
         try {
-            var ageValue = CharacterQueries.getCharacterAge(char);
+            var ageValue = CQ.getCharacterAge(char);
             if (ageValue !== undefined && ageValue !== null) {
                 age = String(ageValue);
             }
@@ -541,7 +658,7 @@
 
         var displayName = '';
         try {
-            displayName = CharacterQueries.getDisplayName(char) || '';
+            displayName = CQ.getDisplayName(char) || '';
         } catch (e) {
             displayName = '';
         }
@@ -607,11 +724,14 @@
      * @returns {object|null}
      */
     function getGraduates(classId) {
+        checkDependencies('getGraduates');
+
         if (!isNonEmptyString(classId)) {
             return null;
         }
 
-        var cls = AcademyClasses.getClass(classId);
+        var AC = getAcademyClasses();
+        var cls = AC.getClass(classId);
         if (!cls) {
             return null;
         }
@@ -659,11 +779,14 @@
      * @returns {object|null}
      */
     function getCharacters(classId) {
+        checkDependencies('getCharacters');
+
         if (!isNonEmptyString(classId)) {
             return null;
         }
 
-        var cls = AcademyClasses.getClass(classId);
+        var AC = getAcademyClasses();
+        var cls = AC.getClass(classId);
         if (!cls) {
             return null;
         }
@@ -692,8 +815,6 @@
         //                 it is kept so that external callers
         //                 written against the shared VM shape
         //                 continue to work.
-        //
-        // The renderer reads `members` and ignores `graduates`.
         return {
             classId: String(cls.id),
             className: isNonEmptyString(cls.name)
@@ -726,22 +847,25 @@
         return padLabel(label) + ': ' + v + '\n';
     }
 
+    /**
+     * Format a stats block. Null entries (absent stats) are
+     * skipped. Zero entries are kept: a 0 is a value, not a
+     * missing value, and the engine does not produce zeros for
+     * stat blocks in practice, so an explicit zero here is a
+     * faithful representation of the record.
+     */
     function formatStats(stats) {
         if (!isObject(stats)) { return ''; }
 
         var keys = Object.keys(stats);
         if (keys.length === 0) { return ''; }
 
-        var any = false;
-        for (var i = 0; i < keys.length; i++) {
-            if (stats[keys[i]] !== 0) { any = true; break; }
-        }
-        if (!any) { return ''; }
-
         var parts = [];
-        for (var j = 0; j < keys.length; j++) {
-            var k = keys[j];
-            parts.push(k.toUpperCase() + ' ' + stats[k]);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            var v = stats[k];
+            if (!isFiniteNumber(v)) { continue; }
+            parts.push(k.toUpperCase() + ' ' + v);
         }
         return parts.join(' \u00b7 ');
     }
@@ -770,7 +894,8 @@
         for (var i = 0; i < weapons.length; i++) {
             var w = weapons[i];
             if (!isObject(w)) { continue; }
-            var name = isNonEmptyString(w.name) ? String(w.name) : '';
+            var name = isNonEmptyString(w.name)
+                ? String(w.name) : '';
             if (name === '') { continue; }
             if (isNonEmptyString(w.type)) {
                 name += ' (' + w.type + ')';
@@ -856,7 +981,9 @@
     function emitIdentityLines(rec) {
         var out = '';
 
-        var fullName = [rec.firstName, rec.middleName, rec.lastName]
+        var fullName = [
+            rec.firstName, rec.middleName, rec.lastName
+        ]
             .filter(isNonEmptyString)
             .join(' ');
         if (fullName && fullName !== rec.displayName) {
@@ -1043,9 +1170,10 @@
         var count = members.length;
         var singular = useLabel.toLowerCase().replace(/s$/, '');
 
-        out += 'Hollow Blades \u2014 ' + useLabel + ' of ' +
+        out += 'Hollow Manager 2 \u2014 ' + useLabel + ' of ' +
             vm.className + '\n';
-        out += 'Exported ' + new Date().toISOString().slice(0, 10) + '\n';
+        out += 'Exported ' +
+            new Date().toISOString().slice(0, 10) + '\n';
         out += count + ' ' + singular +
             (count === 1 ? '' : 's') + '\n\n';
 
@@ -1084,6 +1212,7 @@
      * @returns {{ exported, filename, count, error }}
      */
     function exportGraduatesText(classId, options) {
+        checkDependencies('exportGraduatesText');
         options = options || {};
 
         var vm = getGraduates(classId);
@@ -1118,7 +1247,7 @@
             sanitiseForFilename(vm.className) + '.txt';
 
         try {
-            ExportUtils.downloadBlob(blob, filename);
+            getExportUtils().downloadBlob(blob, filename);
         } catch (e) {
             return {
                 exported: false,
@@ -1143,6 +1272,7 @@
      * @returns {{ exported, filename, count, error }}
      */
     function exportClassCharactersText(classId, options) {
+        checkDependencies('exportClassCharactersText');
         options = options || {};
 
         var vm = getCharacters(classId);
@@ -1179,7 +1309,7 @@
             today + '.txt';
 
         try {
-            ExportUtils.downloadBlob(blob, filename);
+            getExportUtils().downloadBlob(blob, filename);
         } catch (e) {
             return {
                 exported: false,
@@ -1212,30 +1342,33 @@
     // ============================================================
 
     /**
-     * Formula-injection guard for spreadsheet-oriented exports.
+     * Guard a cell value against spreadsheet formula evaluation,
+     * SKIPPING the guard when the value looks like a negative
+     * number with an optional unit or comma-grouped tail.
      *
-     * A cell whose first character is `=`, `+`, `-`, `@`, tab, or
-     * CR is evaluated as a formula by Excel / LibreOffice when the
-     * file is opened. Prefixing a single quote tells those apps to
-     * treat the cell as a literal string. The quote does not
-     * appear in the cell once rendered.
-     *
-     * CSV.isPotentialFormula (in csv-parser.js) owns the prefix
-     * test. When it is unavailable, this function is a passthrough.
+     * Matches character-export.js's guardFormulaForCell. The
+     * scoping keeps "-5", "-5kg", "-5 metres", "-5,000" from
+     * being prefixed with a leading apostrophe, which a
+     * text-editor reader would see and could mistake for data.
      */
-    function guardFormula(value) {
-        if (value === undefined || value === null) { return value; }
-        if (typeof value !== 'string') { return value; }
-        if (value === '') { return value; }
-
-        if (!CSV || typeof CSV.isPotentialFormula !== 'function') {
+    function guardFormulaForCell(value) {
+        var CSV = getCSV();
+        if (!CSV || typeof CSV.guardFormula !== 'function') {
             return value;
         }
 
-        if (CSV.isPotentialFormula(value)) {
-            return "'" + value;
+        if (typeof value !== 'string') {
+            return CSV.guardFormula(value);
         }
-        return value;
+
+        var trimmedValue = value.trim();
+        if (trimmedValue === '') { return value; }
+
+        if (/^-?\d/.test(trimmedValue)) {
+            return value;
+        }
+
+        return CSV.guardFormula(value);
     }
 
     function buildCSVRows(vm) {
@@ -1249,41 +1382,41 @@
         for (var i = 0; i < members.length; i++) {
             var g = members[i];
             rows.push([
-                guardFormula(g.firstName),
-                guardFormula(g.middleName),
-                guardFormula(g.lastName),
-                guardFormula(g.nickname),
-                guardFormula(g.alias),
+                guardFormulaForCell(g.firstName),
+                guardFormulaForCell(g.middleName),
+                guardFormulaForCell(g.lastName),
+                guardFormulaForCell(g.nickname),
+                guardFormulaForCell(g.alias),
                 jsonOrEmpty(g.previousNames),
-                guardFormula(g.age),
-                guardFormula(g.birthYear),
-                guardFormula(g.gender),
-                guardFormula(g.attraction),
-                guardFormula(g.sexuality),
-                guardFormula(g.eyes),
-                guardFormula(g.hair),
-                guardFormula(g.skin),
-                guardFormula(g.height),
-                guardFormula(g.weight),
-                guardFormula(g.build),
-                guardFormula(g.appearanceNotes),
-                guardFormula(g.traits),
-                guardFormula(g.ideals),
-                guardFormula(g.bonds),
-                guardFormula(g.flaws),
-                guardFormula(g.alignment),
-                guardFormula(g.likes),
-                guardFormula(g.dislikes),
-                guardFormula(g.habits),
-                guardFormula(g.fears),
-                guardFormula(g.goals),
+                guardFormulaForCell(g.age),
+                guardFormulaForCell(g.birthYear),
+                guardFormulaForCell(g.gender),
+                guardFormulaForCell(g.attraction),
+                guardFormulaForCell(g.sexuality),
+                guardFormulaForCell(g.eyes),
+                guardFormulaForCell(g.hair),
+                guardFormulaForCell(g.skin),
+                guardFormulaForCell(g.height),
+                guardFormulaForCell(g.weight),
+                guardFormulaForCell(g.build),
+                guardFormulaForCell(g.appearanceNotes),
+                guardFormulaForCell(g.traits),
+                guardFormulaForCell(g.ideals),
+                guardFormulaForCell(g.bonds),
+                guardFormulaForCell(g.flaws),
+                guardFormulaForCell(g.alignment),
+                guardFormulaForCell(g.likes),
+                guardFormulaForCell(g.dislikes),
+                guardFormulaForCell(g.habits),
+                guardFormulaForCell(g.fears),
+                guardFormulaForCell(g.goals),
                 jsonOrEmpty(g.stats),
                 jsonOrEmpty(g.magic),
                 String(g.hp),
                 String(g.mp),
                 jsonOrEmpty(g.weapons),
                 jsonOrEmpty(g.specialMoves),
-                guardFormula(g.combatNotes)
+                guardFormulaForCell(g.combatNotes)
             ]);
         }
 
@@ -1291,13 +1424,18 @@
     }
 
     function getGraduatesCSVContent(classId) {
+        checkDependencies('getGraduatesCSVContent');
+
         var vm = getGraduates(classId);
         if (!vm) { return ''; }
+
+        var CSV = getCSV();
         var rows = buildCSVRows(vm);
         return CSV.arrayToCSV(rows);
     }
 
     function exportGraduatesCSV(classId, options) {
+        checkDependencies('exportGraduatesCSV');
         options = options || {};
 
         var vm = getGraduates(classId);
@@ -1321,6 +1459,7 @@
             };
         }
 
+        var CSV = getCSV();
         var content;
         try {
             content = CSV.arrayToCSV(buildCSVRows(vm));
@@ -1342,7 +1481,7 @@
             sanitiseForFilename(vm.className) + '.csv';
 
         try {
-            ExportUtils.downloadBlob(blob, filename);
+            getExportUtils().downloadBlob(blob, filename);
         } catch (e) {
             return {
                 exported: false,
@@ -1428,8 +1567,8 @@
 
         if (missing.length > 0) {
             console.warn(
-                '[ClassRosterExport] Verification - some exports may ' +
-                'be missing:', missing.join(', ')
+                '[ClassRosterExport] Verification - some exports ' +
+                'may be missing:', missing.join(', ')
             );
         }
     })();
