@@ -55,18 +55,28 @@
  *   CharacterCSV.export prefixes every user-authored string cell
  *   with a guard character when the value would be evaluated as a
  *   spreadsheet formula. CharacterCSV.import strips the guard
- *   symmetrically. Both directions use CSV.isPotentialFormula as
- *   the single predicate, so the round trip is lossless.
+ *   symmetrically.
  *
- *   The guard is applied in toRow, and removed in parseRow. Every
- *   string cell that originates from user data passes through
- *   both. Cells produced by the module itself (the boolean
- *   'true'/'false', the JSON-encoded careerStatus and
- *   eliminatedWeeks) are not guarded, because they cannot begin
- *   with a formula prefix.
+ *   SCOPE OF THE GUARD (this revision):
+ *     The guard is applied through a local wrapper
+ *     (guardFormulaForCell) that SKIPS guarding when the value
+ *     looks like a negative number or a negative number with a
+ *     trailing unit or comma-grouped tail ("-5", "-5kg",
+ *     "-5 metres", "-5,000"). Those values round-trip unchanged;
+ *     they are not silently prefixed, which avoids producing "'-5"
+ *     in the CSV where a text-editor reader would see it.
  *
- *   The guard/un-guard pair lives in CSV (csv-parser.js). This
- *   module calls CSV.guardFormula and CSV.unguardFormula by name.
+ *     Everything else routes through CSV.guardFormula. That still
+ *     covers "=SUM(A1:A10)", "+1234", "@home", a leading tab, and
+ *     a leading CR.
+ *
+ *   The guard/un-guard pair is symmetric on the import side
+ *   (CSV.unguardFormula), so a genuine leading apostrophe in a
+ *   value — "'Tis the season" — is preserved.
+ *
+ *   csv-parser.js is NOT modified. The scoping lives entirely in
+ *   this file because three other exporters depend on
+ *   isPotentialFormula's current behaviour.
  *
  * LAZY DEPENDENCIES:
  *   Every dependency this file uses is resolved at call time, not
@@ -74,14 +84,23 @@
  *   first time an operation that needs it runs, not a load-time
  *   throw that takes the whole module offline.
  *
+ * PREVIOUS-NAME COLUMN:
+ *   The column header is "AssociatedNames". The field on the
+ *   character record is `previousNames`, an array. Export writes
+ *   `previousNames.join(' | ')`. Import splits on '|' and trims
+ *   each entry. Empty cells yield [].
+ *
+ *   A single previous name containing a literal '|' would be
+ *   mis-split. That is a documented trade-off of keeping the
+ *   column flat and human-editable. CharacterCSV's other array
+ *   columns (careerStatus, eliminatedWeeks) remain JSON-encoded.
+ *
  * ELIMINATION QUERIES SIGNATURE:
  *   CharacterRosterExport.resolveEliminationMarker calls
  *   EliminationQueries.getEliminationYear(char) with a character
- *   record. class-roster-export.js calls getEliminationWeek(charId)
- *   with a character ID. If EliminationQueries exposes one
- *   signature or the other (not both), one of those two call sites
- *   is silently falling through to its fallback. Verify against
- *   elimination-queries.js before relying on either.
+ *   record. EliminationQueries accepts both a character record and
+ *   a character-id string, so both shapes work here and in
+ *   class-roster-export.js.
  */
 
 (function() {
@@ -177,6 +196,41 @@
         return safeString(value).trim();
     }
 
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
+    function isObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
+    }
+
+    /**
+     * Coerce a value to a boolean the same way form checkboxes do.
+     * "true"/"false" strings are honoured; anything else follows
+     * JS truthiness.
+     */
+    function coerceBoolean(value) {
+        if (typeof value === 'string') {
+            if (value.toLowerCase() === 'false') { return false; }
+            if (value.toLowerCase() === 'true') { return true; }
+        }
+        return !!value;
+    }
+
+    /**
+     * Pad a numeric value to `width` with leading zeroes.
+     * Manual loop; avoids String.prototype.padStart.
+     */
+    function padZeros(value, width) {
+        var str = String(value);
+        while (str.length < width) {
+            str = '0' + str;
+        }
+        return str;
+    }
+
     /**
      * Guard a value against spreadsheet formula evaluation.
      *
@@ -209,9 +263,6 @@
         if (CSV && typeof CSV.isPotentialFormula === 'function') {
             predicate = CSV.isPotentialFormula;
         } else {
-            // Inline the predicate rather than depend on the parser
-            // for a function this small. The rule is the same one
-            // csv-parser.js documents.
             predicate = function(v) {
                 if (typeof v !== 'string') { return false; }
                 var t = v.trim();
@@ -231,6 +282,43 @@
             return "'" + value;
         }
         return value;
+    }
+
+    /**
+     * Guard a cell value against spreadsheet formula evaluation,
+     * SKIPPING the guard when the value looks like a negative
+     * number with an optional unit or comma-grouped tail.
+     *
+     * Why skip:
+     *   A cell whose trimmed content matches /^-?\d/ is a negative
+     *   number or a negative number followed by a unit or
+     *   comma-grouping ("-5", "-5kg", "-5 metres", "-5,000").
+     *   Those are ordinary data values, not formulas, and prefixing
+     *   them with `'` produces "'-5" in the CSV file, which a
+     *   text-editor reader finds confusing.
+     *
+     *   Round-trip losslessness is preserved without the prefix
+     *   because no unguard is needed on the import side for these
+     *   values (the string in the cell is unchanged on the way out
+     *   and on the way back in).
+     *
+     *   Real formula shapes ("=SUM(A1)", "+1234", "@home",
+     *   leading tab, leading CR) still go through guardFormula.
+     */
+    function guardFormulaForCell(value) {
+        if (typeof value !== 'string') {
+            return guardFormula(value);
+        }
+        var trimmedValue = value.trim();
+        if (trimmedValue === '') {
+            return value;
+        }
+        if (/^-?\d/.test(trimmedValue)) {
+            // Negative number, or any numeric value. Not a
+            // spreadsheet formula. Skip the guard.
+            return value;
+        }
+        return guardFormula(value);
     }
 
     /**
@@ -282,6 +370,79 @@
         return value;
     }
 
+    /**
+     * Parse a strict positive integer (or 0), returning null for
+     * anything malformed. Used by the career-status and
+     * eliminatedWeeks row-level coercion.
+     */
+    function parseStrictInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        if (typeof value === 'number') {
+            if (!Number.isSafeInteger(value)) { return null; }
+            return value;
+        }
+        if (typeof value === 'string') {
+            var str = value.trim();
+            if (str === '' || !/^-?\d+$/.test(str)) { return null; }
+            var n = parseInt(str, 10);
+            if (isNaN(n) || !Number.isSafeInteger(n)) {
+                return null;
+            }
+            return n;
+        }
+        return null;
+    }
+
+    /**
+     * Get the character's class ids for display purposes, preferring
+     * enrolment data over the cached classIds array.
+     *
+     * Enrolment is the source of truth (AcademyEnrolments). The
+     * classIds field is a denormalised cache that can carry stale
+     * references after a rollback or purge; using enrolment first
+     * means a purge is reflected immediately.
+     *
+     * Falls back to classIds when enrolments are absent or empty.
+     * Returns a string-id array.
+     */
+    function getClassIdsForCharacter(char) {
+        if (!char || !char.id) { return []; }
+
+        var Enrol = window.AcademyEnrolments;
+        if (Enrol &&
+            typeof Enrol.getStudentClasses === 'function') {
+            try {
+                var enrolled = Enrol.getStudentClasses(char.id);
+                if (Array.isArray(enrolled) &&
+                    enrolled.length > 0) {
+                    var result = [];
+                    for (var i = 0; i < enrolled.length; i++) {
+                        if (isNonEmptyString(enrolled[i])) {
+                            result.push(String(enrolled[i]));
+                        }
+                    }
+                    if (result.length > 0) { return result; }
+                }
+            } catch (e) {
+                // Fall through to classIds.
+            }
+        }
+
+        if (Array.isArray(char.classIds)) {
+            var fallback = [];
+            for (var j = 0; j < char.classIds.length; j++) {
+                if (isNonEmptyString(char.classIds[j])) {
+                    fallback.push(String(char.classIds[j]));
+                }
+            }
+            return fallback;
+        }
+
+        return [];
+    }
+
     // ============================================================
     // SECTION 2: CharacterCSV
     // ============================================================
@@ -328,7 +489,7 @@
             3: 'lastName',
             4: 'birthYear',
             5: 'gender',
-            6: 'associatedNames',
+            6: 'previousNames',
             7: 'eyes',
             8: 'hair',
             9: 'skin',
@@ -386,8 +547,9 @@
 
         function getColumnIndex(fieldName) {
             for (var key in FIELD_MAP) {
-                if (FIELD_MAP.hasOwnProperty(key) &&
-                    FIELD_MAP[key] === fieldName) {
+                if (Object.prototype.hasOwnProperty.call(
+                    FIELD_MAP, key
+                ) && FIELD_MAP[key] === fieldName) {
                     return parseInt(key, 10);
                 }
             }
@@ -451,6 +613,155 @@
             return true;
         }
 
+        /**
+         * Split the flat-joined previous-names column.
+         * "John | Johnny" -> ["John", "Johnny"]. Empty segments
+         * are dropped. An empty cell yields [].
+         */
+        function splitPreviousNames(raw) {
+            var str = String(raw == null ? '' : raw).trim();
+            if (str === '') { return []; }
+
+            var parts = str.split('|');
+            var result = [];
+            for (var i = 0; i < parts.length; i++) {
+                var entry = parts[i].trim();
+                if (entry !== '') { result.push(entry); }
+            }
+            return result;
+        }
+
+        /**
+         * Coerce a raw careerStatus value (parsed JSON) to a
+         * well-formed array of entries.
+         *
+         *   - Non-array values become [].
+         *   - Non-object entries are dropped.
+         *   - status is lowercased and trimmed.
+         *   - startYear / endYear must be strict integers, or ''
+         *     (a malformed year drops the entry with a warning).
+         *   - title is coerced to a string.
+         *
+         * The function is warn-only: malformed entries do not
+         * abort the row. The alternative is a silent drop; a
+         * warning at the import boundary is more useful.
+         */
+        function coerceCareerStatus(raw, warnFn) {
+            if (!Array.isArray(raw)) {
+                if (raw !== null && raw !== undefined) {
+                    if (typeof warnFn === 'function') {
+                        warnFn(
+                            'CareerStatus is not an array - ' +
+                            'defaulting to [].',
+                            'CareerStatus'
+                        );
+                    }
+                }
+                return [];
+            }
+
+            var result = [];
+            for (var i = 0; i < raw.length; i++) {
+                var entry = raw[i];
+                if (!isObject(entry)) { continue; }
+
+                var status = typeof entry.status === 'string'
+                    ? entry.status.trim().toLowerCase()
+                    : '';
+
+                var startYearNum = parseStrictInteger(
+                    entry.startYear
+                );
+                var endYearNum = parseStrictInteger(
+                    entry.endYear
+                );
+
+                // Only warn when a value was present but unparseable.
+                var startPresent = entry.startYear !== undefined &&
+                    entry.startYear !== null &&
+                    String(entry.startYear).trim() !== '';
+                var endPresent = entry.endYear !== undefined &&
+                    entry.endYear !== null &&
+                    String(entry.endYear).trim() !== '';
+
+                if (startPresent && startYearNum === null) {
+                    if (typeof warnFn === 'function') {
+                        warnFn(
+                            'Career status entry ' + i +
+                            ' has a malformed startYear - ' +
+                            'entry skipped.',
+                            'CareerStatus'
+                        );
+                    }
+                    continue;
+                }
+                if (endPresent && endYearNum === null) {
+                    if (typeof warnFn === 'function') {
+                        warnFn(
+                            'Career status entry ' + i +
+                            ' has a malformed endYear - ' +
+                            'entry skipped.',
+                            'CareerStatus'
+                        );
+                    }
+                    continue;
+                }
+
+                result.push({
+                    status: status,
+                    startYear: startYearNum === null
+                        ? ''
+                        : String(startYearNum),
+                    endYear: endYearNum === null
+                        ? ''
+                        : String(endYearNum),
+                    title: typeof entry.title === 'string'
+                        ? entry.title.trim()
+                        : ''
+                });
+            }
+
+            return result;
+        }
+
+        /**
+         * Coerce a raw eliminatedWeeks value (parsed JSON) to an
+         * array of integers. Malformed entries are dropped with a
+         * warning. A non-array value yields [].
+         */
+        function coerceEliminatedWeeks(raw, warnFn) {
+            if (!Array.isArray(raw)) {
+                if (raw !== null && raw !== undefined) {
+                    if (typeof warnFn === 'function') {
+                        warnFn(
+                            'EliminatedWeeks is not an array - ' +
+                            'defaulting to [].',
+                            'EliminatedWeeks'
+                        );
+                    }
+                }
+                return [];
+            }
+
+            var result = [];
+            for (var i = 0; i < raw.length; i++) {
+                var entry = raw[i];
+                var n = parseStrictInteger(entry);
+                if (n === null) {
+                    if (typeof warnFn === 'function') {
+                        warnFn(
+                            'EliminatedWeeks entry ' + i +
+                            ' is not an integer - dropped.',
+                            'EliminatedWeeks'
+                        );
+                    }
+                    continue;
+                }
+                result.push(n);
+            }
+            return result;
+        }
+
         function parseRow(row, warnFn) {
             var errors = [];
             var warnings = [];
@@ -472,11 +783,19 @@
 
             var id = String(row[0] || '').trim() || null;
             var deceased = parseBooleanField(row[15]);
-            var careerStatus = parseJSONField(
+
+            var rawCareer = parseJSONField(
                 row[20], [], warnFn, 'CareerStatus'
             );
-            var eliminatedWeeks = parseJSONField(
+            var careerStatus = coerceCareerStatus(
+                rawCareer, warnFn
+            );
+
+            var rawWeeks = parseJSONField(
                 row[21], [], warnFn, 'EliminatedWeeks'
+            );
+            var eliminatedWeeks = coerceEliminatedWeeks(
+                rawWeeks, warnFn
             );
 
             // Every string cell that could have been guarded on
@@ -495,8 +814,8 @@
                 gender: unguardFormula(
                     String(row[5] || '').trim()
                 ),
-                associatedNames: unguardFormula(
-                    String(row[6] || '').trim()
+                previousNames: splitPreviousNames(
+                    unguardFormula(String(row[6] || ''))
                 ),
                 eyes: unguardFormula(
                     String(row[7] || '').trim()
@@ -566,8 +885,12 @@
          * Build one CSV row for a character.
          *
          * Every user-authored string cell is guarded against
-         * spreadsheet formula evaluation via guardFormula. The
-         * cells produced by this function itself — the boolean
+         * spreadsheet formula evaluation via
+         * guardFormulaForCell. That wrapper skips the guard for
+         * negative numbers and numeric strings, so "-5" and "-5kg"
+         * round-trip unchanged while "=SUM(A1)" is still guarded.
+         *
+         * The cells produced by this function itself — the boolean
          * 'true'/'false' cell and the JSON-encoded careerStatus
          * and eliminatedWeeks cells — are not guarded, because
          * their shape is fixed and cannot begin with a formula
@@ -580,44 +903,51 @@
 
             var personality = character.personality || {};
 
+            var previousNames = Array.isArray(character.previousNames)
+                ? character.previousNames
+                    .map(function(n) {
+                        return safeString(n).trim();
+                    })
+                    .filter(function(n) { return n !== ''; })
+                : [];
+
             return [
                 character.id != null ? character.id : '',
-                guardFormula(character.firstName != null
+                guardFormulaForCell(character.firstName != null
                     ? character.firstName : ''),
-                guardFormula(character.middleName != null
+                guardFormulaForCell(character.middleName != null
                     ? character.middleName : ''),
-                guardFormula(character.lastName != null
+                guardFormulaForCell(character.lastName != null
                     ? character.lastName : ''),
-                guardFormula(character.birthYear != null
+                guardFormulaForCell(character.birthYear != null
                     ? character.birthYear : ''),
-                guardFormula(character.gender != null
+                guardFormulaForCell(character.gender != null
                     ? character.gender : ''),
-                guardFormula(character.associatedNames != null
-                    ? character.associatedNames : ''),
-                guardFormula(character.eyes != null
+                guardFormulaForCell(previousNames.join(' | ')),
+                guardFormulaForCell(character.eyes != null
                     ? character.eyes : ''),
-                guardFormula(character.hair != null
+                guardFormulaForCell(character.hair != null
                     ? character.hair : ''),
-                guardFormula(character.skin != null
+                guardFormulaForCell(character.skin != null
                     ? character.skin : ''),
-                guardFormula(character.height != null
+                guardFormulaForCell(character.height != null
                     ? character.height : ''),
-                guardFormula(character.weight != null
+                guardFormulaForCell(character.weight != null
                     ? character.weight : ''),
-                guardFormula(character.build != null
+                guardFormulaForCell(character.build != null
                     ? character.build : ''),
-                guardFormula(character.appearanceNotes != null
+                guardFormulaForCell(character.appearanceNotes != null
                     ? character.appearanceNotes : ''),
-                guardFormula(character.notes != null
+                guardFormulaForCell(character.notes != null
                     ? character.notes : ''),
                 character.deceased ? 'true' : 'false',
-                guardFormula(character.deathYear != null
+                guardFormulaForCell(character.deathYear != null
                     ? character.deathYear : ''),
-                guardFormula(character.deathCause != null
+                guardFormulaForCell(character.deathCause != null
                     ? character.deathCause : ''),
-                guardFormula(character.deathAge != null
+                guardFormulaForCell(character.deathAge != null
                     ? character.deathAge : ''),
-                guardFormula(character.specialty != null
+                guardFormulaForCell(character.specialty != null
                     ? character.specialty : ''),
                 JSON.stringify(
                     character.careerStatus != null
@@ -627,13 +957,13 @@
                     character.eliminatedWeeks != null
                         ? character.eliminatedWeeks : []
                 ),
-                guardFormula(personality.authority != null
+                guardFormulaForCell(personality.authority != null
                     ? personality.authority : ''),
-                guardFormula(personality.conflictStyle != null
+                guardFormulaForCell(personality.conflictStyle != null
                     ? personality.conflictStyle : ''),
-                guardFormula(personality.socialStyle != null
+                guardFormulaForCell(personality.socialStyle != null
                     ? personality.socialStyle : ''),
-                guardFormula(personality.quirks != null
+                guardFormulaForCell(personality.quirks != null
                     ? personality.quirks : '')
             ];
         }
@@ -768,7 +1098,6 @@
 
         function importCharacters(csvText, options) {
             options = options || {};
-            var strict = options.strict === true;
             var maxRows = options.maxRows || MAX_ROWS;
 
             var CSV = requireCSV('CharacterCSV.import');
@@ -810,6 +1139,8 @@
                 return result;
             }
 
+            var CharacterQueries = getCharacterQueries();
+
             for (var i = 0; i < characterRows.length; i++) {
                 var row = characterRows[i];
                 var rowNumber = i + 1;
@@ -833,12 +1164,56 @@
 
                 if (parsed.valid) {
                     if (isValidCandidate(parsed.character)) {
+                        // ---- ID resolution ----
+                        //
+                        // The CSV's CharacterId column is a hint,
+                        // not a key. CharacterCRUD.save ignores it
+                        // (it treats the DTO as "create new" and
+                        // assigns a fresh id). We therefore:
+                        //
+                        //   - generate an id when the CSV had none
+                        //   - regenerate when the CSV id collides
+                        //     with a live character, and warn
+                        //
+                        // This makes the collision visible to the
+                        // user rather than silently producing two
+                        // characters with the "same" id in the
+                        // candidate list.
                         if (!parsed.character.id) {
-                            var IdUtils = requireIdUtils(
+                            var IU = requireIdUtils(
                                 'CharacterCSV.import'
                             );
                             parsed.character.id =
-                                IdUtils.generateId(ID_PREFIX);
+                                IU.generateId(ID_PREFIX);
+                        } else if (
+                            CharacterQueries &&
+                            typeof CharacterQueries
+                                .getCharacterById === 'function'
+                        ) {
+                            var existing = null;
+                            try {
+                                existing = CharacterQueries
+                                    .getCharacterById(
+                                        parsed.character.id
+                                    );
+                            } catch (e) {
+                                existing = null;
+                            }
+                            if (existing) {
+                                var IU2 = requireIdUtils(
+                                    'CharacterCSV.import'
+                                );
+                                var oldId =
+                                    parsed.character.id;
+                                parsed.character.id =
+                                    IU2.generateId(ID_PREFIX);
+                                result.addWarning(
+                                    'CharacterId "' + oldId +
+                                    '" already exists; a new id ' +
+                                    'was generated.',
+                                    { row: rowNumber, field: 'CharacterId' }
+                                );
+                            }
                         }
                         result.addValid(parsed.character, {
                             row: rowNumber
@@ -857,9 +1232,6 @@
                     });
                 }
             }
-
-            // Strict-mode policy is enforced by the CONSUMER, not
-            // here. See the file header.
 
             return result;
         }
@@ -907,13 +1279,13 @@
                     firstName: 'John',
                     middleName: '',
                     lastName: 'Doe',
-                    birthYear: '1990',
+                    birthYear: '1900',
                     gender: 'Male',
-                    associatedNames: '',
+                    previousNames: [],
                     eyes: 'Blue',
                     hair: 'Brown',
                     skin: 'Fair',
-                    height: "5'10\"",
+                    height: '178cm',
                     weight: '75kg',
                     build: 'Athletic',
                     appearanceNotes: '',
@@ -942,13 +1314,13 @@
                     firstName: 'Jane',
                     middleName: 'Mary',
                     lastName: 'Smith',
-                    birthYear: '1992',
+                    birthYear: '1902',
                     gender: 'Female',
-                    associatedNames: 'The Shadow',
+                    previousNames: ['The Shadow'],
                     eyes: 'Green',
                     hair: 'Black',
                     skin: 'Olive',
-                    height: "5'7\"",
+                    height: '170cm',
                     weight: '60kg',
                     build: 'Slim',
                     appearanceNotes: 'Scar on cheek',
@@ -1182,10 +1554,10 @@
     // SECTION 3: CharacterRosterExport
     // ============================================================
     //
-    // Unchanged. The tab-separated roster format does not run
-    // through guardFormula: TSV has no spreadsheet-evaluation
-    // convention that the guard would protect against, and the
-    // roster is a display grid, not a spreadsheet import.
+    // The tab-separated roster format does not run through the CSV
+    // formula guard: TSV has no spreadsheet-evaluation convention
+    // that the guard would protect against, and the roster is a
+    // display grid, not a spreadsheet import.
 
     (function() {
 
@@ -1242,12 +1614,12 @@
             return 'Yes';
         }
 
-        // The roster format is TSV, not CSV. TSV has no quoting
-        // convention, so a tab or a newline inside a cell would
-        // split the row. Both are replaced with a single space
-        // before the row is joined. This is lossy by design: the
-        // roster is a display grid, and losing the newline in a
-        // multi-line note is preferable to corrupting the row.
+        // TSV has no quoting convention, so a tab or a newline
+        // inside a cell would split the row. Both are replaced
+        // with a single space before the row is joined. This is
+        // lossy by design: the roster is a display grid, and
+        // losing the newline in a multi-line note is preferable
+        // to corrupting the row.
 
         function stripTabs(value) {
             return String(value).replace(/\t/g, ' ');
@@ -1430,11 +1802,9 @@
             var y = now.getFullYear();
             var m = now.getMonth() + 1;
             var d = now.getDate();
-            function pad(n) {
-                return n < 10 ? '0' + n : String(n);
-            }
             return 'characters-roster-' +
-                y + '-' + pad(m) + '-' + pad(d) + '.txt';
+                y + '-' + padZeros(m, 2) + '-' +
+                padZeros(d, 2) + '.txt';
         }
 
         function exportText() {
@@ -1495,9 +1865,7 @@
             // Only after validity is confirmed does a count of
             // zero mean "nothing to export". Before the validity
             // check, a zero count is the default the error paths
-            // leave behind, and the specific error message
-            // (e.g. "characterIds must be an array") would be
-            // swallowed by the generic one.
+            // leave behind.
             if (built.count === 0) {
                 return {
                     exported: false,
@@ -1546,10 +1914,20 @@
     // SECTION 4: CharacterExport
     // ============================================================
     //
-    // Unchanged. The full and general report builders compose
-    // their cross-domain reads lazily at call time and already
-    // guard against missing modules. They do not need the CSV
-    // formula guard; they emit plain text, not CSV.
+    // The full and general report builders compose their
+    // cross-domain reads lazily at call time and already guard
+    // against missing modules. They do not need the CSV formula
+    // guard; they emit plain text, not CSV.
+    //
+    // PERF (deferred):
+    //   exportSelectedText and exportGeneralSelectedText re-read
+    //   getCharacterById and getDisplayName for every character on
+    //   every iteration. A per-batch Map<id, char> and
+    //   Map<classId, className> would eliminate the repeated
+    //   lookups. The current cost is bounded by the number of
+    //   characters selected; a few hundred is imperceptible. If
+    //   bulk export of a very large selection becomes a reported
+    //   problem, add the two caches here.
 
     (function() {
 
@@ -1563,16 +1941,6 @@
 
         var DEFAULT_STAT_KEYS =
             ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
-        function isFiniteNumber(value) {
-            return typeof value === 'number' && isFinite(value);
-        }
-
-        function isObject(value) {
-            return value !== null &&
-                   typeof value === 'object' &&
-                   !Array.isArray(value);
-        }
 
         function hasText(value) {
             if (value === undefined || value === null) {
@@ -1816,12 +2184,12 @@
                              iv++) {
                             var interval = rec.intervals[iv];
                             if (!interval) { continue; }
-                            var entry = makeTimelineEntry(
+                            var entry2 = makeTimelineEntry(
                                 interval.joinPeriod,
                                 null,
                                 'Joined ' + teamName
                             );
-                            if (entry) { entries.push(entry); }
+                            if (entry2) { entries.push(entry2); }
                         }
                     }
                 }
@@ -1852,12 +2220,12 @@
                         elimReason !== 'Unknown'
                         ? ' \u2014 ' + elimReason
                         : '';
-                    var entry = makeTimelineEntry(
+                    var entry3 = makeTimelineEntry(
                         elimYear,
                         elimWeek,
                         'Eliminated' + reasonText
                     );
-                    if (entry) { entries.push(entry); }
+                    if (entry3) { entries.push(entry3); }
                 }
             }
 
@@ -1868,6 +2236,8 @@
                 try {
                     allClasses = Classes.getClasses() || [];
                 } catch (e) { allClasses = []; }
+
+                var charClassIds = getClassIdsForCharacter(char);
 
                 for (var g = 0;
                      g < allClasses.length;
@@ -1883,26 +2253,24 @@
                     }
 
                     var belongs = false;
-                    if (Array.isArray(char.classIds)) {
-                        for (var cc = 0;
-                             cc < char.classIds.length;
-                             cc++) {
-                            if (String(char.classIds[cc]) ===
-                                String(gClass.id)) {
-                                belongs = true;
-                                break;
-                            }
+                    for (var ci = 0;
+                         ci < charClassIds.length;
+                         ci++) {
+                        if (String(charClassIds[ci]) ===
+                            String(gClass.id)) {
+                            belongs = true;
+                            break;
                         }
                     }
                     if (!belongs) { continue; }
 
-                    var entry = makeTimelineEntry(
+                    var entry4 = makeTimelineEntry(
                         gClass.year,
                         null,
                         'Graduated from ' +
                             (gClass.name || 'Unknown Class')
                     );
-                    if (entry) { entries.push(entry); }
+                    if (entry4) { entries.push(entry4); }
                 }
             }
 
@@ -2364,7 +2732,12 @@
                 return result;
             }
 
-            var classIds = [];
+            var classIds = getClassIdsForCharacter(char);
+
+            // Merge in the class's own list from
+            // getCharacterClasses, when available. This catches the
+            // case where a character has enrolments but not a
+            // classIds entry (pre-migration).
             if (Classes &&
                 typeof Classes.getCharacterClasses ===
                     'function') {
@@ -2374,28 +2747,13 @@
                     for (var i = 0; i < classes.length; i++) {
                         if (classes[i] &&
                             isNonEmptyString(classes[i].id)) {
-                            classIds.push(
-                                String(classes[i].id)
-                            );
+                            var cid = String(classes[i].id);
+                            if (classIds.indexOf(cid) === -1) {
+                                classIds.push(cid);
+                            }
                         }
                     }
-                } catch (e) { classIds = []; }
-            }
-
-            if (Enrol &&
-                typeof Enrol.getStudentClasses === 'function') {
-                try {
-                    var extra =
-                        Enrol.getStudentClasses(charId) || [];
-                    for (var e = 0; e < extra.length; e++) {
-                        if (isNonEmptyString(extra[e]) &&
-                            classIds.indexOf(
-                                String(extra[e])
-                            ) === -1) {
-                            classIds.push(String(extra[e]));
-                        }
-                    }
-                } catch (e2) { /* ignore */ }
+                } catch (e) { /* ignore */ }
             }
 
             for (var ci = 0; ci < classIds.length; ci++) {
@@ -2417,16 +2775,28 @@
                 var instructorDisciplineIds =
                     Object.create(null);
 
+                // Defensive shape handling: an entry may be a
+                // discipline-id string (pre-v31) or an object with
+                // { disciplineId, role }. Both are accepted.
                 for (var ii = 0;
                      ii < intervals.length;
                      ii++) {
                     var iv = intervals[ii];
-                    if (!iv ||
-                        !isNonEmptyString(iv.disciplineId)) {
-                        continue;
+                    var discId = '';
+                    var isInstructor = false;
+
+                    if (typeof iv === 'string') {
+                        discId = iv.trim();
+                    } else if (iv && typeof iv === 'object' &&
+                        isNonEmptyString(iv.disciplineId)) {
+                        discId = String(iv.disciplineId).trim();
+                        isInstructor =
+                            intervalRole(iv) === ROLE_INSTRUCTOR;
                     }
-                    var discId = String(iv.disciplineId);
-                    if (intervalRole(iv) === ROLE_INSTRUCTOR) {
+
+                    if (discId === '') { continue; }
+
+                    if (isInstructor) {
                         instructorDisciplineIds[discId] = true;
                     } else {
                         studentDisciplineIds[discId] = true;
@@ -2706,14 +3076,13 @@
 
                 var timeLabel = '';
                 if (isFiniteNumber(c.startTime)) {
-                    var start = String(c.startTime)
-                        .padStart(2, '0');
+                    var start = padZeros(c.startTime, 2);
                     var duration = isFiniteNumber(c.duration)
                         ? c.duration
                         : 1;
-                    var end = String(
-                        c.startTime + duration
-                    ).padStart(2, '0');
+                    var end = padZeros(
+                        c.startTime + duration, 2
+                    );
                     timeLabel =
                         start + ':00\u2013' + end + ':00';
                 }
@@ -3309,6 +3678,7 @@
                 all = Classes.getClasses() || [];
             } catch (e) { all = []; }
 
+            var charClassIds = getClassIdsForCharacter(char);
             var out = '';
             var any = false;
 
@@ -3318,15 +3688,13 @@
                 if (cls.status !== 'graduated') { continue; }
 
                 var belongs = false;
-                if (Array.isArray(char.classIds)) {
-                    for (var cc = 0;
-                         cc < char.classIds.length;
-                         cc++) {
-                        if (String(char.classIds[cc]) ===
-                            String(cls.id)) {
-                            belongs = true;
-                            break;
-                        }
+                for (var ci = 0;
+                     ci < charClassIds.length;
+                     ci++) {
+                    if (String(charClassIds[ci]) ===
+                        String(cls.id)) {
+                        belongs = true;
+                        break;
                     }
                 }
                 if (!belongs) { continue; }
@@ -3839,18 +4207,6 @@
             return out;
         }
 
-        function buildGeneralPhysicalGroup(char) {
-            return buildIdentityPhysicalGroup(char);
-        }
-
-        function buildGeneralPersonalityGroup(char) {
-            return buildIdentityPersonalityGroup(char);
-        }
-
-        function buildGeneralCombatGroup(char) {
-            return buildIdentityCombatGroup(char);
-        }
-
         function buildGeneralClassesSection(char) {
             var Classes = window.AcademyClasses;
             if (!Classes ||
@@ -3858,9 +4214,7 @@
                 return emptySectionBody();
             }
 
-            var classIds = Array.isArray(char.classIds)
-                ? char.classIds
-                : [];
+            var classIds = getClassIdsForCharacter(char);
 
             if (classIds.length === 0) {
                 return emptySectionBody();
@@ -3870,10 +4224,6 @@
             var names = [];
 
             for (var i = 0; i < classIds.length; i++) {
-                if (classIds[i] === null ||
-                    classIds[i] === undefined) {
-                    continue;
-                }
                 var idStr = String(classIds[i]);
                 if (idStr === '' || seen[idStr]) { continue; }
                 seen[idStr] = true;
@@ -3907,10 +4257,6 @@
                 out += '  ' + names[n] + '\n';
             }
             return out;
-        }
-
-        function buildGeneralTeamsSection(char, charId) {
-            return buildTeamsSection(char, charId);
         }
 
         function buildGeneralCareerSection(char) {
@@ -3971,14 +4317,6 @@
             return out;
         }
 
-        function buildGeneralDepartmentsSection(char, charId) {
-            return buildDepartmentsSection(char, charId);
-        }
-
-        function buildGeneralSocialSection(char, charId) {
-            return buildSocialSection(char, charId);
-        }
-
         function buildGeneralReport(charId) {
             var CharacterQueries = getCharacterQueries();
             if (!CharacterQueries) { return null; }
@@ -4008,21 +4346,21 @@
             out += buildGeneralIdentitySection(char, charId);
             out += '\n';
 
-            var physical = buildGeneralPhysicalGroup(char);
+            var physical = buildIdentityPhysicalGroup(char);
             if (physical) {
                 out += sectionHeader('PHYSICAL');
                 out += physical;
                 out += '\n';
             }
 
-            var personality = buildGeneralPersonalityGroup(char);
+            var personality = buildIdentityPersonalityGroup(char);
             if (personality) {
                 out += sectionHeader('PERSONALITY');
                 out += personality;
                 out += '\n';
             }
 
-            var combat = buildGeneralCombatGroup(char);
+            var combat = buildIdentityCombatGroup(char);
             if (combat) {
                 out += sectionHeader('COMBAT');
                 out += combat;
@@ -4034,7 +4372,7 @@
             out += '\n';
 
             out += sectionHeader('PROFESSIONAL TEAMS');
-            out += buildGeneralTeamsSection(char, charId);
+            out += buildTeamsSection(char, charId);
             out += '\n';
 
             out += sectionHeader('CAREER STATUS');
@@ -4042,11 +4380,11 @@
             out += '\n';
 
             out += sectionHeader('DEPARTMENTS');
-            out += buildGeneralDepartmentsSection(char, charId);
+            out += buildDepartmentsSection(char, charId);
             out += '\n';
 
             out += sectionHeader('SOCIAL');
-            out += buildGeneralSocialSection(char, charId);
+            out += buildSocialSection(char, charId);
             out += '\n';
 
             out += BANNER + '\n';
