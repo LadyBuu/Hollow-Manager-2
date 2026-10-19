@@ -15,6 +15,9 @@
  *   - The character list toggle (mobile drawer).
  *   - The Research button. Opens window.Research.
  *   - The Bulk Add button. Opens window.CharacterBulkCreate.
+ *   - window.showCharacterForm (the single owner).
+ *   - window.toggleCharacterList (delegates to CharacterEvents).
+ *   - window._clearEditState (dispatches characterCleared).
  *
  * LAYOUT:
  *   Desktop (>=769px):
@@ -27,7 +30,12 @@
  *     The form container fills the tab. The sidebar is hidden and
  *     appears as an overlay drawer when the toggle button
  *     (#toggle-char-list) is tapped. Tapping outside the drawer
- *     or selecting a character closes it.
+ *     does NOT close it (see the MOBILE DRAWER note in
+ *     character-events.js); the drawer closes when a character is
+ *     selected, and re-opens when the toggle is tapped again.
+ *
+ *     On mount, the drawer is opened immediately so the user
+ *     never sees an empty tab.
  *
  *   The toggle button is only visible on mobile.
  *
@@ -54,7 +62,7 @@
  *   Positioning and visibility live entirely in
  *   css/characters.css.
  *
- * RELATIONSHIP MODAL SHELL REMOVED (this revision):
+ * RELATIONSHIP MODAL SHELL REMOVED:
  *   The character tab used to carry its own relationship form
  *   modal, #character-relationship-modal, with a
  *   #character-relationship-form-container that CharacterViews
@@ -68,8 +76,35 @@
  *   CharacterEvents.openRelationshipModal → SocialEvents.handleAddRelationship,
  *   which handles the shell install.
  *
- *   Do NOT reintroduce #character-relationship-modal. The shared
- *   modal is the only relationship modal in the app.
+ *   Do NOT reintroduce #character-relationship-modal.
+ *
+ * WINDOW.SHOWCHARACTERFORM IS OWNED HERE:
+ *   Three files used to define window.showCharacterForm:
+ *   character-form.js, character-events.js, and this file. Any
+ *   definition other than this one either forgot to set the
+ *   current-edit-id (character-form.js) or duplicated it
+ *   (character-events.js).
+ *
+ *   This file's definition is the single owner. The other two
+ *   definitions have been removed. A programmatic
+ *   window.showCharacterForm(id) call now reliably sets the edit
+ *   id and renders the form.
+ *
+ * WINDOW.TOGGLECHARACTERLIST DELEGATES:
+ *   toggleCharacterList used to toggle .open on #char-list-panel,
+ *   which is not the mobile drawer. The drawer's state lives on
+ *   .characters-sidebar, managed by CharacterEvents. The public
+ *   function now delegates to CharacterEvents' sidebar helpers
+ *   so a caller reaching for window.toggleCharacterList sees the
+ *   same behaviour the burger does.
+ *
+ * WINDOW._CLEAREDITSTATE DISPATCHES AN EVENT:
+ *   clearEditState clears the current-edit-id and hides the form.
+ *   It now also dispatches a `characterCleared` CustomEvent on
+ *   document, so listeners that cache per-character state (the
+ *   export picker, an unsaved-changes guard, etc.) get notified.
+ *   No existing listener consumes it; the dispatch is additive
+ *   and safe.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Any domain logic. All character reads go through
@@ -249,12 +284,26 @@
             unmountCharacters();
         }
 
-        container.innerHTML = getCharactersHTML();
+        // ---- Shell ----
+        try {
+            container.innerHTML = getCharactersHTML();
+        } catch (e) {
+            console.warn(
+                '[CharactersModule] getCharactersHTML failed:', e
+            );
+            container.innerHTML =
+                '<p class="empty-state">' +
+                    'Failed to render the characters tab. ' +
+                    'Please refresh the page.' +
+                '</p>';
+            return;
+        }
 
         // Restore filter state from storage.
         restoreFilterState();
 
-        // Populate the class filter (emits the __no_class__ sentinel).
+        // Populate the class filter (emits the __no_class__
+        // sentinel).
         if (CharacterClassView &&
             typeof CharacterClassView.populateClassFilter ===
             'function') {
@@ -294,6 +343,29 @@
             }
         }
 
+        // On mobile, open the character list drawer immediately.
+        // The drawer is the ONLY way to see the list on mobile,
+        // and opening it on mount means the user never lands on
+        // an empty form area with no visible way to pick a
+        // character. The drawer closes when a character is
+        // selected and re-opens when the burger is tapped; see
+        // character-events.js's MOBILE DRAWER note for the full
+        // contract.
+        //
+        // On desktop, openSidebar() is a no-op: the sidebar is
+        // always visible in the two-column layout.
+        if (isMobileViewport() &&
+            CharacterEvents &&
+            typeof CharacterEvents.openSidebar === 'function') {
+            try {
+                CharacterEvents.openSidebar();
+            } catch (e) {
+                console.warn(
+                    '[CharactersModule] openSidebar failed:', e
+                );
+            }
+        }
+
         // Research button: opens the research modal.
         bindResearchButton(container);
 
@@ -314,10 +386,6 @@
                 );
             }
         }
-
-        // NOTE: the character list drawer is NOT opened at mount.
-        // It opens when the user taps the toggle button, and
-        // closes when they tap outside it or select a character.
 
         _mounted = true;
         _initialized = true;
@@ -344,59 +412,88 @@
     function bindResearchButton(container) {
         if (!container) { return; }
 
-        var btn = container.querySelector('#research-btn');
+        var btn = null;
+        try {
+            btn = container.querySelector('#research-btn');
+        } catch (e) {
+            console.warn(
+                '[CharactersModule] Research button lookup threw:', e
+            );
+            return;
+        }
         if (!btn) { return; }
 
-        btn.addEventListener('click', function(e) {
-            e.preventDefault();
+        try {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
 
-            var Research = window.Research || null;
-            if (!Research ||
-                typeof Research.open !== 'function') {
-                console.warn(
-                    '[CharactersModule] Research module is not ' +
-                    'loaded.'
-                );
-                return;
-            }
+                var Research = window.Research || null;
+                if (!Research ||
+                    typeof Research.open !== 'function') {
+                    console.warn(
+                        '[CharactersModule] Research module is ' +
+                        'not loaded.'
+                    );
+                    return;
+                }
 
-            try {
-                Research.open();
-            } catch (err) {
-                console.warn(
-                    '[CharactersModule] Research.open threw:', err
-                );
-            }
-        });
+                try {
+                    Research.open();
+                } catch (err) {
+                    console.warn(
+                        '[CharactersModule] Research.open threw:',
+                        err
+                    );
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[CharactersModule] Research button bind threw:', e
+            );
+        }
     }
 
     function bindBulkAddButton(container) {
         if (!container) { return; }
 
-        var btn = container.querySelector('#bulk-add-btn');
+        var btn = null;
+        try {
+            btn = container.querySelector('#bulk-add-btn');
+        } catch (e) {
+            console.warn(
+                '[CharactersModule] Bulk Add button lookup threw:', e
+            );
+            return;
+        }
         if (!btn) { return; }
 
-        btn.addEventListener('click', function(e) {
-            e.preventDefault();
+        try {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
 
-            var Bulk = window.CharacterBulkCreate || null;
-            if (!Bulk || typeof Bulk.open !== 'function') {
-                console.warn(
-                    '[CharactersModule] CharacterBulkCreate module ' +
-                    'is not loaded.'
-                );
-                return;
-            }
+                var Bulk = window.CharacterBulkCreate || null;
+                if (!Bulk || typeof Bulk.open !== 'function') {
+                    console.warn(
+                        '[CharactersModule] CharacterBulkCreate ' +
+                        'module is not loaded.'
+                    );
+                    return;
+                }
 
-            try {
-                Bulk.open();
-            } catch (err) {
-                console.warn(
-                    '[CharactersModule] CharacterBulkCreate.open ' +
-                    'threw:', err
-                );
-            }
-        });
+                try {
+                    Bulk.open();
+                } catch (err) {
+                    console.warn(
+                        '[CharactersModule] CharacterBulkCreate.open ' +
+                        'threw:', err
+                    );
+                }
+            });
+        } catch (e) {
+            console.warn(
+                '[CharactersModule] Bulk Add button bind threw:', e
+            );
+        }
     }
 
     // ============================================================
@@ -447,8 +544,6 @@
     //
     // The shell does NOT contain a relationship modal. That modal
     // is installed into document.body by SocialEvents on first use.
-    // See the RELATIONSHIP MODAL SHELL REMOVED note in the file
-    // header.
 
     function getCharactersHTML() {
         var careerStatusCollapsed = isMobileViewport();
@@ -610,6 +705,9 @@
             _currentEditId = null;
             return;
         }
+        // Coerce to a string. A number (42) becomes '42'; an
+        // object becomes '[object Object]', which is a caller bug
+        // not a defensive case worth handling.
         _currentEditId = String(id);
     }
 
@@ -617,6 +715,14 @@
     // PUBLIC API
     // ============================================================
 
+    /**
+     * Show the character form for a character.
+     *
+     * This is the single owner of window.showCharacterForm.
+     * Sets the current-edit-id first, then renders. A programmatic
+     * call therefore has the same effect a click on a character
+     * row does.
+     */
     function showCharacterForm(id) {
         var normalisedId = (id !== undefined &&
             id !== null &&
@@ -631,22 +737,57 @@
         }
     }
 
+    /**
+     * Toggle the character list drawer.
+     *
+     * Delegates to CharacterEvents' sidebar helpers. The drawer's
+     * open state is a class on .characters-sidebar, managed by
+     * those helpers. This function used to toggle `.open` on
+     * #char-list-panel, which had no effect on mobile.
+     *
+     * forceState: true opens, false closes, undefined toggles.
+     */
     function toggleCharacterList(forceState) {
-        var panel = document.getElementById('char-list-panel');
-        if (!panel) { return; }
+        if (!CharacterEvents) { return; }
 
-        if (forceState !== undefined) {
-            panel.classList.toggle('open', forceState);
-        } else {
-            panel.classList.toggle('open');
+        if (forceState === true &&
+            typeof CharacterEvents.openSidebar === 'function') {
+            try { CharacterEvents.openSidebar(); } catch (e) {}
+            return;
+        }
+        if (forceState === false &&
+            typeof CharacterEvents.closeSidebar === 'function') {
+            try { CharacterEvents.closeSidebar(); } catch (e) {}
+            return;
+        }
+        if (typeof CharacterEvents.toggleSidebar === 'function') {
+            try { CharacterEvents.toggleSidebar(); } catch (e) {}
         }
     }
 
+    /**
+     * Clear the current-edit-id and hide the form.
+     *
+     * Dispatches a `characterCleared` CustomEvent on document so
+     * listeners that cache per-character state get notified. No
+     * existing listener consumes it; the dispatch is additive.
+     */
     function clearEditState() {
         setCurrentEditId(null);
         if (CharacterForm &&
             typeof CharacterForm.hide === 'function') {
             CharacterForm.hide();
+        }
+
+        try {
+            var event = new CustomEvent('characterCleared', {
+                detail: { timestamp: Date.now() },
+                bubbles: true,
+                cancelable: false
+            });
+            document.dispatchEvent(event);
+        } catch (e) {
+            // Ignore event dispatch errors.
         }
     }
 
