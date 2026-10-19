@@ -33,6 +33,15 @@
  *   - The mission cleanup details. MissionCascade.stripTeamRefs
  *     owns the reference model for team → mission.
  *
+ * TYPE COMPARISONS:
+ *   Every comparison of a team's `type` field in this module
+ *   routes through TeamConstants.normalizeTeamType. In particular,
+ *   endStintsForCharacter treats a legacy 'temporary' or
+ *   'internship' team as 'professional', so a character's death
+ *   cascade and career-transition cascade reach such teams. Before
+ *   the normalisation fix, death and retirement skipped them and
+ *   left open stints behind.
+ *
  * ============================================================
  * THE PERIODS MODEL
  * ============================================================
@@ -356,16 +365,23 @@
         return { success: true, data: data };
     }
 
+    /**
+     * Route through TeamConstants.normalizeTeamType, so a legacy
+     * 'temporary' or 'internship' record is classified identically
+     * to a canonical 'professional' one.
+     */
+    function isProfessionalTeam(team) {
+        if (!team || typeof team !== 'object') { return false; }
+        return TeamConstants.normalizeTeamType(team.type) ===
+            'professional';
+    }
+
     // ============================================================
     // DESCRIPTIVE FIELD CANONICALISATION
     // ============================================================
 
     /**
      * Canonicalise a tactical style string.
-     *
-     *   missing / null / undefined  -> { valid: true, value: '' }
-     *   string                      -> { valid: true, value: trimmed }
-     *   anything else               -> { valid: false }
      */
     function canonicaliseTacticalStyle(raw) {
         if (raw === undefined || raw === null) {
@@ -382,17 +398,6 @@
 
     /**
      * Canonicalise a specialisations array.
-     *
-     *   missing / null / undefined  -> { valid: true, value: [] }
-     *   array                       -> { valid: true, value: [...deduped] }
-     *   anything else               -> { valid: false }
-     *
-     * Each entry must be a known mission type id. Duplicates are
-     * dropped, order preserved. Blank entries are dropped without
-     * error.
-     *
-     * When MissionConstants is not loaded, the isValidMissionType
-     * check is skipped and every non-empty id passes.
      */
     function canonicaliseSpecialisations(raw) {
         if (raw === undefined || raw === null) {
@@ -447,15 +452,7 @@
     // ============================================================
     // PERIODS CANONICALISATION
     // ============================================================
-    //
-    // The canonicaliser for the periods array. Also hosts the
-    // legacy migration from nameHistory + scalars.
 
-    /**
-     * Read the tactical style off a raw input, accepting either
-     * the canonical `tacticalStyle` or the legacy `style` alias.
-     * `tacticalStyle` wins when both are present.
-     */
     function readRawTacticalStyle(input) {
         if (!input || typeof input !== 'object') { return undefined; }
         if (input.tacticalStyle !== undefined) {
@@ -464,12 +461,6 @@
         return input.style;
     }
 
-    /**
-     * Canonicalise a single period entry.
-     *
-     * Returns { valid, value?, message? }. The caller aggregates
-     * errors; this function does not append to a shared list.
-     */
     function canonicalisePeriodEntry(raw, index, isLast) {
         if (!isObject(raw)) {
             return {
@@ -571,37 +562,18 @@
         };
     }
 
-    /**
-     * Canonicalise the periods array.
-     *
-     * Accepts:
-     *   - a raw `periods` array
-     *   - a legacy record with `nameHistory` and scalars
-     *   - a record with neither, which produces a single period
-     *     from the current scalars
-     *
-     * The `fallback` argument carries the record's top-level
-     * scalars (name, tacticalStyle, specialisations, startPeriod,
-     * endPeriod) that build the single-entry default when
-     * nameHistory is absent.
-     *
-     * Returns { valid, value?, message? }.
-     */
     function canonicalisePeriods(raw, fallback) {
         fallback = fallback || {};
 
-        // ---- Case 1: raw.periods is already an array. ----
         if (Array.isArray(raw)) {
             return canonicalisePeriodsArray(raw);
         }
 
-        // ---- Case 2: legacy nameHistory. ----
         var history = fallback.nameHistory;
         if (Array.isArray(history) && history.length > 0) {
             return canonicaliseFromNameHistory(history, fallback);
         }
 
-        // ---- Case 3: no periods, no nameHistory. One period. ----
         return canonicaliseSinglePeriod(fallback);
     }
 
@@ -625,18 +597,11 @@
             cleaned.push(check.value);
         }
 
-        // ---- Sort by startPeriod ascending. ----
         cleaned.sort(function(a, b) {
             return parseInt(a.startPeriod, 10) -
                    parseInt(b.startPeriod, 10);
         });
 
-        // ---- Re-check "only last is open-ended" after sorting. ----
-        //
-        // A caller that supplied the entries out of order, with
-        // the open-ended one first, would pass the per-entry check
-        // but produce an array whose first entry is open. Sorting
-        // first, then re-checking, catches that.
         for (var j = 0; j < cleaned.length; j++) {
             var isLastAfterSort = (j === cleaned.length - 1);
             if (cleaned[j].endPeriod === '' && !isLastAfterSort) {
@@ -650,12 +615,6 @@
             }
         }
 
-        // ---- Overlap check. ----
-        //
-        // Uses the half-open rule in periodsOverlap. Two periods
-        // that share only a boundary year do NOT overlap; the
-        // boundary year belongs to the later period. See the
-        // OVERLAP SEMANTICS note in the file header.
         for (var a = 0; a < cleaned.length; a++) {
             for (var b = a + 1; b < cleaned.length; b++) {
                 if (periodsOverlap(cleaned[a], cleaned[b])) {
@@ -682,28 +641,6 @@
      *     s1 < e2   AND   s2 < e1
      *
      *   A blank endPeriod means Infinity (open-ended).
-     *
-     * WHY STRICT ON THE UPPER BOUND:
-     *
-     *   Periods are year-granular. A team can be renamed mid-year,
-     *   and both the pre-rename and post-rename period will name
-     *   that year as one of their own. With only years available,
-     *   the boundary year must belong to BOTH periods or to
-     *   NEITHER; it cannot be assigned unambiguously.
-     *
-     *   The half-open convention makes the boundary year belong to
-     *   the LATER period, exactly as
-     *   TeamQueries.intervalOverlapsPeriod does for stints vs.
-     *   periods, and as TeamQueries.rankingInPeriod does for
-     *   rankings.
-     *
-     *   This is what allows:
-     *
-     *     Aegis     1900–1900
-     *     Aegis II  1900–present
-     *
-     *   Both periods name 1900, and that is the correct semantic
-     *   for "renamed mid-year, only years recorded."
      *
      * WORKED TABLE:
      *
@@ -735,15 +672,6 @@
         return pStart < qEnd && qStart < pEnd;
     }
 
-    /**
-     * Build periods from a legacy nameHistory array.
-     *
-     * Every produced period carries the fallback's tactical style
-     * and specialisations. We have no way to know which historical
-     * period carried which values; the current values are the
-     * safest guess, and the user can edit individual periods after
-     * the migration.
-     */
     function canonicaliseFromNameHistory(history, fallback) {
         var styleCheck = canonicaliseTacticalStyle(
             fallback.tacticalStyle
@@ -800,20 +728,9 @@
             });
         }
 
-        // Reuse the array canonicaliser for the invariants (sort,
-        // open-ended position, overlap).
         return canonicalisePeriodsArray(periods);
     }
 
-    /**
-     * Build a single period from the record's top-level scalars.
-     *
-     * `name` is required. `startPeriod` is required when the
-     * top-level value is set; a blank startPeriod is accepted and
-     * normalised to the current application year, so a fresh
-     * create that omits start still produces a well-formed
-     * period.
-     */
     function canonicaliseSinglePeriod(fallback) {
         if (!isNonEmptyString(fallback.name)) {
             return {
@@ -831,9 +748,6 @@
         }
 
         if (startCanon === '') {
-            // Absent start. Use the current calendar year as a
-            // well-formed default so a create that did not supply
-            // a start still produces a valid period.
             startCanon = String(new Date().getFullYear());
         }
 
@@ -906,8 +820,7 @@
         } catch (err) {
             console.warn(
                 '[TeamCore] TeamNaming.applyTeamName threw for ' +
-                'team ' + teamId + ':',
-                err
+                'team ' + teamId + ':', err
             );
         }
     }
@@ -947,8 +860,7 @@
         } catch (err) {
             console.warn(
                 '[TeamCore] MissionCascade.stripTeamRefs threw ' +
-                'for team ' + teamId + ':',
-                err
+                'for team ' + teamId + ':', err
             );
             return {
                 assignedTeamEntriesRemoved: 0,
@@ -1297,12 +1209,6 @@
 
     /**
      * Validate a fully-built team record.
-     *
-     * Checks structure. The periods array is validated for shape:
-     * non-empty, sorted, at least one entry, only the last
-     * open-ended, no overlaps (half-open). Every per-period check
-     * lives in canonicalisePeriodEntry, and validatePeriods
-     * delegates to it so the invariants are stated once.
      */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
@@ -1386,11 +1292,6 @@
         }
 
         // ---- top-level startPeriod / endPeriod mirror the periods.
-        //
-        // The scalar fields remain on the record because some
-        // readers (the timeline, the export header) still use
-        // them. They must be consistent with periods[0].start and
-        // periods[last].end respectively.
         var expectedStart = team.periods[0].startPeriod;
         var expectedEnd = team.periods[team.periods.length - 1].endPeriod;
 
@@ -1499,10 +1400,6 @@
      *   name        = periods[last].name
      *   startPeriod = periods[0].startPeriod
      *   endPeriod   = periods[last].endPeriod
-     *
-     * The denormalised `name` is the only one of these that
-     * nothing else writes; the two period scalars are legacy
-     * mirrors of the periods array's first and last entries.
      */
     function projectPeriodScalars(candidate) {
         if (!Array.isArray(candidate.periods) ||
@@ -1518,10 +1415,6 @@
     }
 
     function buildNewTeam(teamData) {
-        // The periods array is built from teamData.periods when
-        // supplied, otherwise from the legacy inputs
-        // (nameHistory / style / specialisations) or from the
-        // top-level scalars.
         var periodsInput = teamData.periods;
         var fallback = {
             nameHistory: teamData.nameHistory,
@@ -1535,12 +1428,6 @@
         var periodsCheck = canonicalisePeriods(
             periodsInput, fallback
         );
-        // A caller that reaches this function with invalid
-        // periods has already been rejected by createTeam's
-        // pre-flight. The defensive check here is a belt-and-
-        // braces guarantee; if it fails, an empty periods array
-        // is produced and validateCompleteTeam rejects the
-        // candidate immediately after.
         var periods = periodsCheck.valid
             ? periodsCheck.value
             : [];
@@ -1600,20 +1487,6 @@
             candidate.status = updates.status;
         }
 
-        // ---- periods ----
-        //
-        // Three shapes are accepted:
-        //
-        //   updates.periods       a canonical periods array;
-        //                         replaces the existing one
-        //   updates.nameHistory   a legacy name history plus
-        //                         scalar style / specialisations;
-        //                         rebuilt into periods
-        //   neither               the existing periods are kept
-        //
-        // The legacy path also reads updates.style and
-        // updates.specialisations, if present, so an old caller
-        // that writes those scalars still works.
         if (updates.periods !== undefined) {
             var periodsCheck = canonicalisePeriods(
                 updates.periods, null
@@ -1651,13 +1524,6 @@
             candidate.periods = historyCheck.value;
         }
 
-        // ---- Direct scalar-style updates ----
-        //
-        // A caller that sends only `name` or only `tacticalStyle`
-        // or only `specialisations` is updating the CURRENT (last)
-        // period in place. This is the shape the team form uses
-        // when the user edits the top of the form without
-        // touching the period history below.
         var touchedLastPeriod = false;
         if (updates.name !== undefined) {
             if (!isNonEmptyString(updates.name)) {
@@ -1691,7 +1557,6 @@
             }
         }
 
-        // Legacy alias: updates.style.
         if (updates.style !== undefined &&
             updates.tacticalStyle === undefined) {
             var styleAliasCheck = canonicaliseTacticalStyle(
@@ -1724,16 +1589,6 @@
                 lastForSpec.specialisations = specCheck.value;
                 touchedLastPeriod = true;
             }
-        }
-
-        if (touchedLastPeriod) {
-            // Re-run the periods invariants, because in-place
-            // edits to the last entry can break ordering if the
-            // caller set an unexpected name... but names do not
-            // affect ordering. The checks that matter (open-
-            // ended only on last, no overlaps) are unaffected by
-            // name / style / specialisations edits, so a full
-            // re-canonicalisation is unnecessary. Skip.
         }
 
         if (updates.temporaryMission !== undefined) {
@@ -1805,7 +1660,6 @@
 
         candidate.updatedAt = new Date().toISOString();
 
-        // Project the derived scalars from the periods array.
         projectPeriodScalars(candidate);
 
         return { valid: true, candidate: candidate };
@@ -1872,7 +1726,6 @@
             );
         }
 
-        // Pre-flight the periods array (or its legacy sources).
         var fallback = {
             nameHistory: teamData.nameHistory,
             name: teamData.name,
@@ -2056,16 +1909,10 @@
                     }
                 }
 
-                // The scalar mirrors of the periods array are
-                // written explicitly, because they are not in the
-                // updateable list above (they are derived).
                 target.name = candidate.name;
                 target.startPeriod = candidate.startPeriod;
                 target.endPeriod = candidate.endPeriod;
 
-                // Drop legacy fields that a canonicalised record
-                // no longer carries. This is what makes the
-                // migration persistent on any update.
                 if (target.nameHistory !== undefined) {
                     delete target.nameHistory;
                 }
@@ -3811,7 +3658,12 @@
         for (var t = 0; t < appData.teams.length; t++) {
             var team = appData.teams[t];
             if (!team || typeof team !== 'object') { continue; }
-            if (team.type !== 'professional') { continue; }
+            // Route through normalizeTeamType, so a legacy
+            // 'temporary' or 'internship' team is treated
+            // identically to a canonical 'professional' one. Before
+            // this, death and retirement skipped legacy teams and
+            // left open stints behind.
+            if (!isProfessionalTeam(team)) { continue; }
             if (!Array.isArray(team.members)) { continue; }
 
             var teamIdStr = String(team.id);
