@@ -72,13 +72,40 @@
  *
  *   The add-row handler inherits the previous row's tactical
  *   style and specialisations, per the periods model. The new
- *   row's start year defaults to the current application year;
- *   the previous row's end year is auto-set to (start - 1) unless
- *   the user has already given it an explicit end.
+ *   row's start year defaults to one greater than the previous
+ *   row's start, or the application year if the previous start
+ *   cannot be parsed. This prevents appending a row that starts
+ *   before its predecessor (an ordering error that surfaces only
+ *   on save). The previous row's end year is auto-set to
+ *   (start - 1) unless the user has already given it an explicit
+ *   end.
  *
  *   All four handlers bind on the modal, not through the
  *   container delegation chain. The form is its own modal shell
  *   and is not a descendant of the teams container.
+ *
+ * TOP-OF-FORM NAME (two-owners fix, interim):
+ *   The team form has two inputs that can own the current
+ *   period's name: the top-of-form #team-name field and the
+ *   last period row's .team-period-name input.
+ *
+ *   Before this pass, saveTeam forced periods[last].name =
+ *   currentName unconditionally. That meant:
+ *     - a user retitling the last period in the editor lost the
+ *       change if they didn't also retype the top field
+ *     - saving any unrelated edit rewrote the name from the
+ *       top field, which had been populated on load
+ *
+ *   The fix: the top field wins only if the user typed in it
+ *   this session. That is detected by comparing the field's
+ *   current value against its data-original-value attribute,
+ *   which TeamRender wrote with the name the form opened with.
+ *
+ *   If the top field is untouched, the periods array wins as
+ *   edited. A subsequent ship introduces a `nameIsAuto` flag
+ *   that takes over the "did the user type" decision at the
+ *   model layer; the dirty-check here remains valid as the
+ *   writer side of that flag's semantics.
  *
  * RANKINGS TAB:
  *   The professional tab's fourth view mode. Delegated to
@@ -99,22 +126,22 @@
  *   calls TeamCore.removeRanking; a blank value with no original
  *   is a no-op.
  *
- * EXPORT BUTTONS:
- *   Page header Export button (#team-export-btn)
- *     Bulk. Exports every ticked team into ONE file.
- *
- *   Per-row .export-team button
- *     Single team. Exports that team directly with no picker
- *     when it has one period; opens the picker when it has more
- *     than one, so the user chooses which period to export.
- *
- *   Rankings tab Export year button (#rankings-export-year-btn)
- *     Calls TeamExport.exportTeamsByYear with the current
- *     rankings year. Separate from the page-header Export,
- *     which is selection-driven.
+ *   DOUBLE-COMMIT GUARD:
+ *   Enter and blur can both fire on the same input within one
+ *   tick (Enter → commit → re-render → blur on the detached
+ *   input). A module-level in-flight flag plus a per-input
+ *   `dataset.committed` marker ensure a single commit per
+ *   editor instance.
  *
  * TIMELINE STATE:
  *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
+ *
+ *   The range is clamped to a 200-year span. The timeline is a
+ *   UI affordance over team history, not a general-purpose date
+ *   explorer; 200 years covers any plausible game chronology
+ *   while keeping the row count bounded. A request wider than
+ *   that is clamped to the most recent 200 years and the user is
+ *   notified.
  *
  * MATCHMAKING PLANNER:
  *   The planner is a MATRIX. Teams are columns, candidates are
@@ -129,18 +156,54 @@
  *   full-width band that holds the Join and Leave inputs for the
  *   candidate's currently-checked team. When no radio is checked,
  *   the strip is hidden. When a radio is checked, the strip is
- *   populated with the team name and the two inputs, and unhidden.
- *   Moving the check to a different team in the same row swaps
- *   the strip's contents in place.
+ *   populated with the team name and the two inputs, and
+ *   unhidden. Moving the check to a different team in the same
+ *   row swaps the strip's contents in place.
  *
- *   The strip lives in the DOM as an empty wrapper emitted by
- *   TeamMatchmakingView. TeamEvents fills and unhides it on radio
- *   change, and clears / hides it on radio deselect.
+ *   PENDING LEAVE:
+ *   The strip preserves a typed Leave year per team within one
+ *   candidate's row. Switching team A → B → A carries A's typed
+ *   Leave back to A. The staging lives on the strip's
+ *   data-pending-leave-by-team attribute as a JSON map keyed by
+ *   teamId. Join does not need this staging because the default
+ *   Join is computed from the candidate's availability window
+ *   per team; Leave has no such default.
  *
- *   On commit, TeamEvents reads every checked radio in the
- *   matrix, locates the details strip for that radio's candidate,
- *   reads the two inputs by (teamId, characterId) pair, and
- *   builds one assignment per checked radio.
+ * EXPORT BUTTONS:
+ *   Page header Export button (#team-export-btn)
+ *     Bulk. Exports every ticked team into ONE file.
+ *
+ *   Per-row .export-team button
+ *     Single team. Exports that team directly with no picker
+ *     when it has one period; opens the picker when it has more
+ *     than one, so the user chooses which period to export.
+ *
+ *   Rankings tab Export year button (#rankings-export-year-btn)
+ *     Calls TeamExport.exportTeamsByYear with the current
+ *     rankings year.
+ *
+ * MODAL LIFECYCLE:
+ *   The member manager, matchmaking planner, ranking modal, and
+ *   team form each have a module-level modal variable. Opening
+ *   any of them closes the previous instance first. destroy()
+ *   closes every one. This prevents stacked modals and orphaned
+ *   listeners when the tab is unmounted.
+ *
+ * LOAD ORDER AND DEPENDENCIES (deliberate):
+ *   Every dependency in the DEPENDENCIES block below is
+ *   resolved at module load and required. A missing dependency
+ *   throws here, and the Teams tab does not exist.
+ *
+ *   This is deliberate. A missing core dependency is a
+ *   load-order bug that must surface loudly, not be papered
+ *   over with a silent degradation. A Teams tab that renders
+ *   but has non-functional buttons is harder to diagnose than a
+ *   Teams tab that refuses to exist and says why on the console.
+ *
+ *   If a future dependency can be genuinely optional, add it to
+ *   the LAZY DEPENDENCIES block instead — a lazy dependency
+ *   produces a toast at the point of use, which is the correct
+ *   failure mode for a genuinely optional feature.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -364,11 +427,32 @@
         return null;
     }
 
+    /**
+     * Escape a value for use inside a CSS attribute selector.
+     * Covers the metacharacters the planner's data-attribute
+     * selectors actually encounter: quotes, backslashes, and the
+     * whitespace/control characters that would otherwise break
+     * the attribute value.
+     */
     function cssEscape(value) {
         if (value === undefined || value === null) {
             return '';
         }
-        return String(value).replace(/(["\\])/g, '\\$1');
+        return String(value).replace(
+            /["\\\n\r\t\f\b]/g,
+            function(ch) {
+                switch (ch) {
+                    case '"':  return '\\"';
+                    case '\\': return '\\\\';
+                    case '\n': return '\\n';
+                    case '\r': return '\\r';
+                    case '\t': return '\\t';
+                    case '\f': return '\\f';
+                    case '\b': return '\\b';
+                    default:   return ch;
+                }
+            }
+        );
     }
 
     function objectKeyCount(obj) {
@@ -437,6 +521,7 @@
 
     var _memberManagerModal = null;
     var _matchmakingModal = null;
+    var _rankingModal = null;
 
     var _viewMode = 'teams';
 
@@ -455,6 +540,15 @@
     var _rankingsShowInactive = false;
 
     var _pendingTeamMemberIds = null;
+
+    // In-flight guard for the inline rank editor. Enter + blur can
+    // both fire on the same input within one tick; the guard keeps
+    // a single commit through.
+    var _rankCommitInFlight = false;
+
+    // 200 years: enough to cover any plausible game chronology,
+    // small enough to keep the timeline's row count bounded.
+    var TIMELINE_MAX_SPAN = 200;
 
     // ============================================================
     // LISTENER BOOKKEEPING
@@ -515,8 +609,9 @@
 
         var data = window.data || {};
         if (typeof data.currentYear === 'number' &&
-            isFinite(data.currentYear)) {
-            return data.currentYear;
+            isFinite(data.currentYear) &&
+            data.currentYear > 0) {
+            return Math.floor(data.currentYear);
         }
 
         return null;
@@ -672,6 +767,7 @@
         _rankingsSortDirection = 'asc';
         _rankingsShowInactive = false;
         _pendingTeamMemberIds = null;
+        _rankCommitInFlight = false;
 
         bindTabSwitching();
         bindModeToggle();
@@ -710,6 +806,15 @@
             _matchmakingModal = null;
         }
 
+        if (_rankingModal) {
+            try {
+                Modal.closeModal(_rankingModal);
+            } catch (e) {
+                // Ignore.
+            }
+            _rankingModal = null;
+        }
+
         removeAllEventListeners();
         _initialized = false;
         _container = null;
@@ -725,6 +830,7 @@
         _rankingsSortDirection = 'asc';
         _rankingsShowInactive = false;
         _pendingTeamMemberIds = null;
+        _rankCommitInFlight = false;
     }
 
     // ============================================================
@@ -897,6 +1003,20 @@
 
         var lo = Math.min(startNum, endNum);
         var hi = Math.max(startNum, endNum);
+
+        // Clamp the span to TIMELINE_MAX_SPAN years. A range of
+        // 1..99999 would build tens of thousands of rows and
+        // freeze the tab; clamping keeps the UI responsive and
+        // tells the user why.
+        if (hi - lo + 1 > TIMELINE_MAX_SPAN) {
+            var originalSpan = hi - lo + 1;
+            lo = hi - TIMELINE_MAX_SPAN + 1;
+            notify(
+                'Timeline range clamped to ' + TIMELINE_MAX_SPAN +
+                ' years (requested span: ' + originalSpan + ').',
+                'warning'
+            );
+        }
 
         _timelineYearStart = lo;
         _timelineYearEnd = hi;
@@ -1083,6 +1203,13 @@
     // The rank editor commits on Enter or blur, cancels on Escape.
     // A blank value on commit calls TeamCore.removeRanking when a
     // value existed; a blank with no prior value is a no-op.
+    //
+    // DOUBLE-COMMIT GUARD:
+    //   Enter commits and triggers refreshUI(); blur on the same
+    //   input can arrive in the same tick on the old node before
+    //   the re-render tears it down. A module-level in-flight
+    //   flag plus a per-input dataset.committed marker keep the
+    //   commit to one per editor instance.
 
     function bindRankingsActions() {
         delegate('#rankings-apply-year-btn', 'click', function(e) {
@@ -1256,6 +1383,7 @@
         input.dataset.teamId = teamId;
         input.dataset.year = year;
         input.dataset.originalRank = currentRank;
+        input.dataset.committed = '0';
 
         span.textContent = '';
         span.appendChild(input);
@@ -1272,6 +1400,21 @@
     function commitRankEditor(input) {
         if (!input || !input.parentNode) { return; }
 
+        // Double-commit guard. Enter commits and re-renders; blur
+        // can still arrive on the old node. Both paths route
+        // through here. The dataset marker is per-input, the
+        // module flag is global — the marker prevents the same
+        // input from committing twice, the flag prevents two
+        // different inputs from interleaving their async calls
+        // past each other.
+        if (input.dataset &&
+            input.dataset.committed === '1') {
+            return;
+        }
+        if (_rankCommitInFlight) {
+            return;
+        }
+
         var teamId = input.dataset.teamId;
         var year = parseInt(input.dataset.year, 10);
         var originalRank = input.dataset.originalRank || '';
@@ -1286,6 +1429,7 @@
                 refreshUI();
                 return;
             }
+            input.dataset.committed = '1';
             clearRankAtYearInternal(teamId, year);
             return;
         }
@@ -1305,8 +1449,12 @@
             return;
         }
 
+        input.dataset.committed = '1';
+        _rankCommitInFlight = true;
+
         TeamCore.addRanking(teamId, year, rank)
             .then(function(result) {
+                _rankCommitInFlight = false;
                 if (!result || !result.success) {
                     notify(
                         'Failed to set rank: ' +
@@ -1318,6 +1466,7 @@
                 refreshUI();
             })
             .catch(function(err) {
+                _rankCommitInFlight = false;
                 console.warn(
                     '[TeamEvents] addRanking failed:', err
                 );
@@ -1351,6 +1500,8 @@
         TeamCore.removeRanking(teamId, year)
             .then(function(result) {
                 if (!result || !result.success) {
+                    // Point 2: surface the failure instead of
+                    // returning silently.
                     notify(
                         'Failed to remove rank: ' +
                         ((result && result.message) ||
@@ -1408,6 +1559,9 @@
             );
         }
 
+        // Clearing _pendingTeamMemberIds on close is done
+        // unconditionally inside closeFormModal() so the Cancel
+        // button and Escape/outside-click behave identically.
         Modal.modalSetup(modal, function() {
             _pendingTeamMemberIds = null;
         });
@@ -1478,6 +1632,13 @@
         if (!form) { return; }
 
         function close() {
+            // Cancel button path. Clear pending state so the next
+            // open does not accidentally inject members from an
+            // abandoned session. modalSetup's callback does the
+            // same for Escape / outside-click; putting the clear
+            // in one place (this function and the callback) keeps
+            // every close path identical.
+            _pendingTeamMemberIds = null;
             closeModal(modal);
         }
 
@@ -1512,7 +1673,6 @@
                 return;
             }
 
-            // ---- Remove a period row ----
             var removePeriodBtn = target.closest(
                 '.team-period-remove'
             );
@@ -1522,7 +1682,6 @@
                 return;
             }
 
-            // ---- Add a specialisation chip in this row ----
             var addSpecBtn = target.closest(
                 '.team-period-specialisation-add'
             );
@@ -1532,7 +1691,6 @@
                 return;
             }
 
-            // ---- Remove a specialisation chip ----
             var removeSpecBtn = target.closest(
                 '.team-specialisation-remove'
             );
@@ -1561,9 +1719,14 @@
      *
      * The new row inherits the previous row's tactical style and
      * specialisations (per the periods model). Its start year is
-     * the current application year; the previous row's end year
-     * is auto-set to (start - 1) unless it already has an
-     * explicit end.
+     * one greater than the previous row's start, or the
+     * application year if the previous start cannot be parsed.
+     * This prevents appending a row that starts before its
+     * predecessor, which would surface only on save as an
+     * ordering error.
+     *
+     * The previous row's end year is auto-set to (start - 1)
+     * unless it already has an explicit end.
      *
      * The new row becomes the LAST row, so its end year input is
      * disabled and read-only (the open-ended current period). The
@@ -1607,16 +1770,33 @@
         }
 
         // ---- Determine the new row's start year ----
+        //
+        // Default: application year. If the previous row has a
+        // parseable start, take (prevStart + 1) if it is later
+        // than the application year. The result is never before
+        // the previous row's start.
         var newStart = getApplicationYear();
+
+        if (lastRow) {
+            var prevStartEl = lastRow.querySelector(
+                '.team-period-start'
+            );
+            if (prevStartEl) {
+                var prevStartNum = parsePositiveInteger(
+                    prevStartEl.value
+                );
+                if (prevStartNum !== null &&
+                    newStart <= prevStartNum) {
+                    newStart = prevStartNum + 1;
+                }
+            }
+        }
 
         // ---- Auto-close the previous row at (newStart - 1) ----
         if (lastRow) {
             var prevEndEl = lastRow.querySelector(
                 '.team-period-end'
             );
-            // The previous row was the last, so its end was a
-            // disabled input. Convert it to an editable number
-            // input and set its value.
             if (prevEndEl) {
                 var wasLastDisabled =
                     prevEndEl.hasAttribute('disabled');
@@ -1632,8 +1812,6 @@
                 }
             }
 
-            // Remove the "(open)" hint and its wrapper treatment
-            // on the previous row's end field.
             var hint = lastRow.querySelector(
                 '.team-period-field-hint'
             );
@@ -1641,9 +1819,6 @@
                 hint.parentNode.removeChild(hint);
             }
 
-            // The previous row is no longer the last. Update its
-            // data attribute and clear the readonly / disabled
-            // flags on the end input.
             lastRow.dataset.isLast = 'false';
         }
 
@@ -1662,13 +1837,9 @@
 
         list.appendChild(newRow);
 
-        // ---- Re-index every row ----
         reindexPeriodRows(list);
-
-        // ---- Refresh the remove buttons visibility ----
         updateRemoveButtons(list);
 
-        // ---- Focus the new row's name input ----
         var newNameEl = newRow.querySelector('.team-period-name');
         if (newNameEl && typeof newNameEl.focus === 'function') {
             setTimeout(function() {
@@ -1677,10 +1848,6 @@
         }
     }
 
-    /**
-     * Replace the previous row's disabled end input with an
-     * editable number input carrying the given value.
-     */
     function replaceEndInputWithEditable(oldInput, value) {
         var newInput = document.createElement('input');
         newInput.type = 'number';
@@ -1693,10 +1860,6 @@
         }
     }
 
-    /**
-     * Build the HTML for a single new period row. Mirrors the
-     * renderer's row markup, but with the new row's data.
-     */
     function buildNewPeriodRowHTML(
         startYear, style, specialisations, options
     ) {
@@ -1757,7 +1920,6 @@
                 '</textarea>';
         html += '</div>';
 
-        // ---- Specialisations ----
         html += '<div class="team-period-specialisations-row">';
         html += '<label class="team-period-field-label">' +
                     'Specialisations' +
@@ -1852,12 +2014,6 @@
         return html;
     }
 
-    /**
-     * Read the specialisation options off the form's first row.
-     * The renderer emits them as <option> elements inside the
-     * select; we harvest the id/label pairs from there so the new
-     * row's select shows the same vocabulary.
-     */
     function getSpecialisationOptions(form) {
         var result = [];
         var seen = Object.create(null);
@@ -1880,10 +2036,6 @@
             }
         }
 
-        // Any option already selected in an existing row is
-        // included too — the renderer removes it from the select
-        // when it is a chip, but the vocabulary must still be
-        // complete for other rows.
         var chips = form.querySelectorAll(
             '.team-specialisation-chip'
         );
@@ -1908,14 +2060,6 @@
         return result;
     }
 
-    /**
-     * Remove the period row the button lives inside.
-     *
-     * The last remaining row is never removed: a team must always
-     * have at least one period. The button is not rendered when
-     * there is only one row, but a defensive check here protects
-     * against a stale button.
-     */
     function removePeriodRow(form, button) {
         var list = form.querySelector('#team-periods-list');
         if (!list) { return; }
@@ -1937,8 +2081,6 @@
         var wasLast = row.dataset.isLast === 'true';
         row.parentNode.removeChild(row);
 
-        // ---- If the removed row was the last one, the new last
-        //      row becomes the open-ended current period. ----
         if (wasLast) {
             var remaining = list.querySelectorAll(
                 '.team-period-row'
@@ -1953,17 +2095,11 @@
         updateRemoveButtons(list);
     }
 
-    /**
-     * Turn a row into the open-ended current period: disable and
-     * clear its end input, add the "(open)" hint, set the
-     * data-is-last flag.
-     */
     function promoteToCurrentPeriod(row) {
         row.dataset.isLast = 'true';
 
         var endEl = row.querySelector('.team-period-end');
         if (endEl) {
-            // Replace with a disabled, read-only text input.
             var replacement = document.createElement('input');
             replacement.type = 'text';
             replacement.className = 'team-period-end';
@@ -1977,7 +2113,6 @@
             }
         }
 
-        // Add the "(open)" hint if not present.
         var fieldEnd = row.querySelector(
             '.team-period-field-end'
         );
@@ -1991,10 +2126,6 @@
         }
     }
 
-    /**
-     * Renumber every row's data-period-index and the labels on
-     * their remove buttons.
-     */
     function reindexPeriodRows(list) {
         var rows = list.querySelectorAll('.team-period-row');
         for (var i = 0; i < rows.length; i++) {
@@ -2019,10 +2150,6 @@
         }
     }
 
-    /**
-     * Show or hide the remove button on each row. The remove is
-     * hidden when there is only one row.
-     */
     function updateRemoveButtons(list) {
         var rows = list.querySelectorAll('.team-period-row');
         var showRemove = rows.length > 1;
@@ -2051,10 +2178,6 @@
         }
     }
 
-    /**
-     * Append a specialisation chip to the row the Add button
-     * lives in. Refuses duplicates within the same row.
-     */
     function appendSpecialisationChip(addButton) {
         var row = addButton.closest
             ? addButton.closest('.team-period-row')
@@ -2075,7 +2198,6 @@
             return;
         }
 
-        // Duplicate check within the row.
         var existing = chipsHost.querySelectorAll(
             '.team-specialisation-chip'
         );
@@ -2111,8 +2233,6 @@
             chipsHost.appendChild(chip);
         }
 
-        // Remove the now-used option from the select so it does
-        // not appear twice.
         for (var s = 0; s < select.options.length; s++) {
             if (select.options[s].value === id) {
                 select.removeChild(select.options[s]);
@@ -2121,8 +2241,6 @@
         }
         select.value = '';
 
-        // If the select just became empty, disable it and set a
-        // placeholder.
         if (select.options.length === 0) {
             select.disabled = true;
             var placeholder = document.createElement('option');
@@ -2135,10 +2253,6 @@
         }
     }
 
-    /**
-     * Remove the specialisation chip the button lives inside.
-     * Restores the option to the row's select.
-     */
     function removeSpecialisationChip(button) {
         var chip = button.closest
             ? button.closest('.team-specialisation-chip')
@@ -2167,14 +2281,11 @@
             chipsHost.appendChild(empty);
         }
 
-        // ---- Restore the option to the select ----
         if (row && id) {
             var select = row.querySelector(
                 '.team-period-specialisation-select'
             );
             if (select) {
-                // If the select was disabled with the "all selected"
-                // placeholder, clear it first.
                 if (select.disabled) {
                     select.innerHTML = '';
                     select.disabled = false;
@@ -2184,8 +2295,6 @@
                     select.appendChild(initial);
                 }
 
-                // Insert in alphabetical order among the existing
-                // options, so the list stays sorted.
                 var newOption = document.createElement('option');
                 newOption.value = id;
                 newOption.textContent = label || id;
@@ -2233,6 +2342,22 @@
             return;
         }
 
+        // Point 1 (interim): the top field wins only if the user
+        // typed in it this session. The form's baseline is
+        // captured in the data-original-value attribute that
+        // TeamRender wrote. If the current value equals the
+        // baseline, the field is untouched and the periods array
+        // wins as edited.
+        var topFieldTouched = false;
+        if (nameEl) {
+            var original = nameEl.dataset
+                ? (nameEl.dataset.originalValue || '')
+                : '';
+            if (currentName !== original.trim()) {
+                topFieldTouched = true;
+            }
+        }
+
         var type = typeEl ? typeEl.value : 'professional';
         var status = statusEl ? statusEl.value : 'active';
 
@@ -2243,27 +2368,35 @@
         // ---- Collect periods ----
         var periods = collectPeriodsFromForm(form);
         if (periods === null) {
-            // collectPeriodsFromForm already notified.
             return;
         }
 
-        // ---- The top-level name writes to the last period. ----
+        // ---- Top-level name resolution ----
         //
-        // The user may have edited the current name at the top of
-        // the form without touching the periods editor. That
-        // edit is the authoritative value for the current
-        // period's name.
-        if (periods.length > 0) {
+        // If the top field was touched, it wins and overwrites
+        // the last period's name. If not, the periods array wins
+        // as edited and the top field is ignored.
+        //
+        // The name field and the last period's name input both
+        // exist because the form is convenient with a visible
+        // current name at the top; this rule keeps the two from
+        // fighting over the value.
+        if (periods.length > 0 && topFieldTouched) {
             periods[periods.length - 1].name = currentName;
         }
 
-        // ---- Build the update payload ----
-        //
-        // We pass the periods array directly. TeamCore reads
-        // periods[last].name as the denormalised name, and reads
-        // periods[0].start / periods[last].end as the scalar
-        // start / end mirrors. There is no separate start / end
-        // input at the top of the form anymore.
+        // For the create path, the top-level name is required by
+        // the VM, but periods[last].name is what the model
+        // actually persists. If the user filled in the top
+        // field but not the last row's name, seed the row from
+        // the top field.
+        if (!editId && periods.length > 0) {
+            var lastPeriod = periods[periods.length - 1];
+            if (!lastPeriod.name || lastPeriod.name === '') {
+                lastPeriod.name = currentName;
+            }
+        }
+
         var teamData = {
             name: currentName,
             type: type,
@@ -2286,12 +2419,9 @@
 
         promise.then(function(result) {
             if (!result || !result.success) {
-                // Surface the failure to the user. Previously this
-                // branch returned silently, which made every
-                // validation failure inside TeamCore.updateTeam
-                // invisible: the form stayed open, no toast
-                // appeared, and the console showed nothing. The
-                // message from TeamCore is the actionable detail.
+                // Point 2 family: surface the failure. Before this
+                // pass the create/edit path already did; keep the
+                // pattern consistent across every mutation.
                 notify(
                     'Failed to save team: ' +
                     ((result && result.message) || 'Unknown error'),
@@ -2313,8 +2443,6 @@
                 ? String(result.data.team.id)
                 : null;
 
-            // The team's start period is now periods[0].start;
-            // use it as the join year for the pending members.
             var newTeamStartPeriod = '';
             if (result.data &&
                 result.data.team &&
@@ -2410,19 +2538,6 @@
         });
     }
 
-    /**
-     * Read every period row out of the form.
-     *
-     * Returns an array of { startPeriod, endPeriod, name,
-     * tacticalStyle, specialisations }, or null on a validation
-     * failure (with a notification already shown).
-     *
-     * Validation performed here:
-     *   - name is required on every row
-     *   - start is required and a positive integer
-     *   - end (when present) is a positive integer >= start
-     *   - the last row's end is forced to ''
-     */
     function collectPeriodsFromForm(form) {
         var list = form.querySelector('#team-periods-list');
         if (!list) {
@@ -2474,9 +2589,6 @@
                 return null;
             }
 
-            // The last row is the open-ended current period.
-            // Its end is always '' regardless of what the input
-            // says (the input is disabled).
             var endCanon = '';
             if (!isLast) {
                 var endRaw = endEl
@@ -2567,9 +2679,16 @@
     // On commit, TeamEvents walks every checked radio. For each,
     // it finds the details strip in the radio's row (via
     // data-character-id) and locates the two inputs by
-    // (teamId, characterId) pair. This pairing is what guarantees
-    // the years read for a checked radio belong to that radio's
-    // selected team, not another.
+    // (teamId, characterId) pair.
+    //
+    // PENDING LEAVE:
+    //   The strip preserves a typed Leave year per team within
+    //   one candidate's row. Switching team A → B → A carries A's
+    //   typed Leave back to A. The staging lives on the strip's
+    //   data-pending-leave-by-team attribute as a JSON map keyed
+    //   by teamId. Join does not need this staging because the
+    //   default Join is computed from the candidate's
+    //   availability window per team; Leave has no such default.
 
     function bindMatchmaking() {
         delegate('#team-matchmaking-btn', 'click', function(e) {
@@ -2661,32 +2780,7 @@
             TeamMatchmakingView.renderHTML(vm);
     }
 
-    /**
-     * Bind the planner's events. All bindings attach to the
-     * content element, not the modal shell, so a re-render of the
-     * matrix (which does not happen today, but could) would not
-     * leave orphaned listeners on the shell.
-     *
-     * The change handler is the important one. It fires on radio
-     * changes and manages the details strip:
-     *
-     *   - find the row (the <tr> that owns the radio)
-     *   - find the strip (the <tr class="planner-matrix-details-row">
-     *     that carries the same data-character-id)
-     *   - when a radio is checked:
-     *       - clear and hide every OTHER candidate's strip
-     *       - populate this candidate's strip with the team name
-     *         and the two inputs
-     *       - unhide the strip
-     *   - when a radio is unchecked:
-     *       - clear and hide this candidate's strip
-     *
-     * The strip's Join input pre-fills from the strip's
-     * data-default-join attribute, which TeamMatchmakingView wrote
-     * from the candidate's availability window.
-     */
     function bindPlannerEvents(modal, contentEl) {
-        // ---- Click: close / commit ----
         contentEl.addEventListener('click', function(e) {
             var actionEl = e.target.closest
                 ? e.target.closest('[data-action]')
@@ -2706,7 +2800,23 @@
             }
         });
 
-        // ---- Change: radio selection manages the strip ----
+        // Capture Leave changes so switching team preserves them.
+        // The input event fires on every keystroke; the handler
+        // stages the current value into the strip's
+        // data-pending-leave-by-team map, keyed by the input's
+        // team-id.
+        contentEl.addEventListener('input', function(e) {
+            var target = e.target;
+            if (!target || !target.classList) { return; }
+            if (!target.classList.contains('planner-assoc-leave')) {
+                return;
+            }
+            var teamId = target.dataset.teamId;
+            var candidateId = target.dataset.characterId;
+            if (!teamId || !candidateId) { return; }
+            stageLeave(candidateId, teamId, target.value);
+        });
+
         contentEl.addEventListener('change', function(e) {
             var target = e.target;
             if (!target) { return; }
@@ -2719,22 +2829,47 @@
         });
     }
 
-    /**
-     * Handle a radio change in the planner matrix.
-     *
-     * A radio being CHECKED is the interesting case: it means the
-     * candidate has just picked a team. The strip for that
-     * candidate is populated and unhidden.
-     *
-     * A radio being UNCHECKED happens when the user picks a
-     * different team in the same row (the browser unchecks the
-     * previous radio and checks the new one) — in which case we
-     * do not need to do anything, because the subsequent change
-     * event for the newly-checked radio will handle it. The
-     * unchecked case also fires when the user clears the group by
-     * other means, which we do not support — so we only act on
-     * checked radios.
-     */
+    function stageLeave(candidateId, teamId, value) {
+        if (!_matchmakingModal) { return; }
+        var strip = findStripForCandidate(
+            _matchmakingModal, candidateId
+        );
+        if (!strip) { return; }
+
+        var raw = strip.dataset.pendingLeaveByTeam || '{}';
+        var map;
+        try {
+            map = JSON.parse(raw);
+            if (!map || typeof map !== 'object' ||
+                Array.isArray(map)) {
+                map = {};
+            }
+        } catch (e) {
+            map = {};
+        }
+        map[String(teamId)] = String(value || '');
+        strip.dataset.pendingLeaveByTeam = JSON.stringify(map);
+    }
+
+    function readStagedLeave(candidateId, teamId) {
+        if (!_matchmakingModal) { return ''; }
+        var strip = findStripForCandidate(
+            _matchmakingModal, candidateId
+        );
+        if (!strip) { return ''; }
+        var raw = strip.dataset.pendingLeaveByTeam || '{}';
+        try {
+            var map = JSON.parse(raw);
+            if (map && typeof map === 'object' &&
+                typeof map[String(teamId)] === 'string') {
+                return map[String(teamId)];
+            }
+        } catch (e) {
+            // fall through
+        }
+        return '';
+    }
+
     function handlePlannerRadioChange(contentEl, radio) {
         if (!radio.checked) { return; }
 
@@ -2742,7 +2877,6 @@
         var teamId = radio.dataset.teamId;
         if (!candidateId || !teamId) { return; }
 
-        // Find the candidate's row and the strip below it.
         var row = radio.closest
             ? radio.closest('tr.planner-matrix-row')
             : null;
@@ -2750,11 +2884,10 @@
 
         if (!strip) { return; }
 
-        // Find the team's display name from the column header.
         var teamName = findTeamNameById(contentEl, teamId);
 
-        // Build the strip's inner HTML.
         var defaultJoin = strip.dataset.defaultJoin || '';
+        var stagedLeave = readStagedLeave(candidateId, teamId);
 
         var stripInner = strip.querySelector(
             '.planner-row-details'
@@ -2762,13 +2895,12 @@
         if (!stripInner) { return; }
 
         stripInner.innerHTML = buildStripHTML(
-            candidateId, teamId, teamName, defaultJoin
+            candidateId, teamId, teamName,
+            defaultJoin, stagedLeave
         );
 
-        // Unhide the strip.
         strip.removeAttribute('hidden');
 
-        // Focus the Join input so the user can type immediately.
         var joinInput = stripInner.querySelector(
             '.planner-assoc-join'
         );
@@ -2779,10 +2911,6 @@
         }
     }
 
-    /**
-     * Find the details strip for a candidate. Strips are
-     * top-level rows keyed by data-character-id.
-     */
     function findStripForCandidate(contentEl, candidateId) {
         return contentEl.querySelector(
             'tr.planner-matrix-details-row' +
@@ -2790,11 +2918,6 @@
         );
     }
 
-    /**
-     * Look up the display name for a team in the matrix's column
-     * headers. The name is read from the header cell so the strip
-     * shows the same text the user sees at the top of the column.
-     */
     function findTeamNameById(contentEl, teamId) {
         var header = contentEl.querySelector(
             'th.planner-matrix-team-header' +
@@ -2809,12 +2932,8 @@
         return String(nameEl.textContent || '').trim();
     }
 
-    /**
-     * Build the strip's inner HTML. Two inputs plus a small
-     * label identifying the team.
-     */
     function buildStripHTML(
-        candidateId, teamId, teamName, defaultJoin
+        candidateId, teamId, teamName, defaultJoin, stagedLeave
     ) {
         var html = '';
 
@@ -2843,7 +2962,9 @@
                     'class="planner-assoc-leave" ' +
                     'inputmode="numeric" ' +
                     'placeholder="Leave" ' +
-                    'value="" ' +
+                    'value="' +
+                        escapeAttribute(String(stagedLeave || '')) +
+                    '" ' +
                     'data-team-id="' +
                         escapeAttribute(teamId) + '" ' +
                     'data-character-id="' +
@@ -2861,22 +2982,6 @@
         return html;
     }
 
-    /**
-     * Read every checked radio in the matrix and build one
-     * assignment per checked radio.
-     *
-     * For each checked radio:
-     *   - read the (teamId, characterId) pair from the radio
-     *   - find the candidate's details strip
-     *   - read the two inputs by (teamId, characterId) pair
-     *     inside the strip
-     *
-     * A radio's checked state and the strip it belongs to are
-     * paired by construction: the strip lives in the candidate's
-     * row, and the inputs inside it carry the same teamId and
-     * characterId the radio does. There is no ambiguity about
-     * which years belong to which radio.
-     */
     function handlePlannerCommit(modal, contentEl) {
         var state = modal.__plannerState;
         if (!state) { return; }
@@ -3247,9 +3352,6 @@
             var teamId = target.dataset.id;
             if (!teamId) { return; }
 
-            // The period picker is only shown when the team has
-            // more than one period. A single-period team exports
-            // directly, matching the previous behaviour.
             var team = null;
             try {
                 team = TeamQueries.getTeamById(teamId);
@@ -3333,7 +3435,17 @@
         }
 
         TeamCore.deleteTeam(teamId).then(function(result) {
-            if (!result || !result.success) { return; }
+            if (!result || !result.success) {
+                // Point 2: surface the failure instead of
+                // returning silently.
+                notify(
+                    'Failed to delete team: ' +
+                    ((result && result.message) ||
+                        'Unknown error'),
+                    'error'
+                );
+                return;
+            }
 
             if (TeamUI.getExpandedTeamId() === teamId) {
                 TeamUI.setExpandedTeamId(null);
@@ -3353,9 +3465,46 @@
     // ============================================================
     // MEMBER MANAGER
     // ============================================================
+    //
+    // Point 7: academic teams are refused here. The Teams tab
+    // does not manage academic teams (TeamUI.VALID_TABS is
+    // ['professional', 'civilian']), and the member manager's
+    // period resolution is year-typed. Opening an academic team
+    // at year 1926 as a week would produce an empty member list
+    // silently. Refuse loudly instead, and point the user at the
+    // Academy module.
+    //
+    // If academic teams are ever added to the Teams tab, this
+    // guard is where the year-vs-week resolution has to be
+    // introduced, not a bug fix on top of the current shape.
 
     function openMemberManager(teamId, overridePeriod) {
         if (!isNonEmptyString(teamId)) { return; }
+
+        var team = null;
+        try {
+            team = TeamQueries.getTeamById(teamId);
+        } catch (e) {
+            team = null;
+        }
+
+        if (team) {
+            var TC = window.TeamConstants;
+            var normalized = null;
+            if (TC && typeof TC.normalizeTeamType === 'function') {
+                normalized = TC.normalizeTeamType(team.type);
+            } else {
+                normalized = team.type;
+            }
+            if (normalized === 'academic') {
+                notify(
+                    'The Teams tab does not manage academic teams. ' +
+                    'Use the Academy module instead.',
+                    'error'
+                );
+                return;
+            }
+        }
 
         var period = overridePeriod;
 
@@ -3432,15 +3581,24 @@
     // RANKING MODAL (per-team)
     // ============================================================
     //
-    // The single-team ranking modal. The Rankings tab is the
-    // cross-team view; this modal remains useful for looking at
-    // one team's history with its governing ranges.
+    // Point 3: the ranking modal now uses Modal.modalSetup, so
+    // Escape and outside-click close it and the keydown listener
+    // is torn down. It also records itself in _rankingModal, so
+    // opening it twice closes the first — the previous version
+    // stacked two.
 
     function showRankingModal(teamId) {
         var vm = TeamAggregator.getRankingModalViewModel(teamId);
         if (!vm) {
             notify('Team not found.', 'error');
             return;
+        }
+
+        if (_rankingModal) {
+            try {
+                Modal.closeModal(_rankingModal);
+            } catch (e) { /* ignore */ }
+            _rankingModal = null;
         }
 
         var modal = Modal.createModal('ranking-modal');
@@ -3474,6 +3632,13 @@
         contentEl.innerHTML = html;
         modal.appendChild(contentEl);
 
+        _rankingModal = modal;
+
+        Modal.modalSetup(modal, function() {
+            if (_rankingModal === modal) {
+                _rankingModal = null;
+            }
+        });
         Modal.showModal(modal);
 
         bindRankingModalEvents(modal, contentEl, teamId);
@@ -3481,6 +3646,9 @@
 
     function bindRankingModalEvents(modal, contentEl, teamId) {
         function close() {
+            if (_rankingModal === modal) {
+                _rankingModal = null;
+            }
             closeModal(modal);
         }
 
@@ -3517,6 +3685,14 @@
                             modal, teamId
                         );
                         refreshUI();
+                    } else {
+                        // Point 2: surface the failure.
+                        notify(
+                            'Failed to remove ranking: ' +
+                            ((result && result.message) ||
+                                'Unknown error'),
+                            'error'
+                        );
                     }
                 })
                 .catch(function(err) {
@@ -3537,21 +3713,43 @@
         );
         var rankEl = contentEl.querySelector('#ranking-rank');
 
-        var period = periodEl ? periodEl.value.trim() : '';
-        if (!period) {
-            notify('Please enter a period.', 'error');
+        // Point 4: use parsePositiveInteger for both, so a
+        // non-integer period or a "3abc" rank fails loudly rather
+        // than being silently coerced or rejected by TeamCore.
+        var periodNum = parsePositiveInteger(
+            periodEl ? periodEl.value : ''
+        );
+        if (periodNum === null) {
+            notify(
+                'Period must be a positive integer.',
+                'error'
+            );
             return;
         }
 
-        var rank = rankEl ? parseInt(rankEl.value, 10) : NaN;
-        if (isNaN(rank) || rank < 1) {
-            notify('Please enter a valid rank.', 'error');
+        var rankNum = parsePositiveInteger(
+            rankEl ? rankEl.value : ''
+        );
+        if (rankNum === null) {
+            notify(
+                'Rank must be a positive integer.',
+                'error'
+            );
             return;
         }
 
-        TeamCore.addRanking(teamId, period, rank)
+        TeamCore.addRanking(teamId, periodNum, rankNum)
             .then(function(result) {
-                if (!result || !result.success) { return; }
+                if (!result || !result.success) {
+                    // Point 2: surface the failure.
+                    notify(
+                        'Failed to add ranking: ' +
+                        ((result && result.message) ||
+                            'Unknown error'),
+                        'error'
+                    );
+                    return;
+                }
                 if (periodEl) { periodEl.value = ''; }
                 if (rankEl) { rankEl.value = ''; }
                 refreshRankingListInPlace(modal, teamId);
@@ -3579,6 +3777,13 @@
     // ============================================================
     // FILTERS
     // ============================================================
+    //
+    // The filter listener is scoped to the specific checkboxes
+    // the filter bar owns (the per-tab "Show Inactive" toggles).
+    // Listening to every checkbox in the container was overbroad:
+    // the planner, the pool selection, and the team selection all
+    // live in descendants of the same container and would have
+    // triggered an applyFilters call on every tick.
 
     function bindFilters() {
         delegate('#apply-filter-btn', 'click', function(e) {
@@ -3593,7 +3798,8 @@
             }
         });
 
-        delegate('.filter-container input[type="checkbox"]',
+        delegate(
+            '#professional-show-inactive, #civilian-show-inactive',
             'change',
             function() {
                 applyFilters();
