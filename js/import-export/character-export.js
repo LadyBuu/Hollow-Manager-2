@@ -101,6 +101,19 @@
  *   record. EliminationQueries accepts both a character record and
  *   a character-id string, so both shapes work here and in
  *   class-roster-export.js.
+ *
+ * TEAM TYPE NORMALISATION (Phase F sweep):
+ *   Every comparison of a team's `type` field in this file routes
+ *   through TeamConstants.normalizeTeamType. A legacy 'temporary'
+ *   or 'internship' record matches 'professional' the moment it
+ *   hits the timeline collector or the TEAMS section, matching the
+ *   LEGACY_TYPE_MAP contract in team-constants.js. Before the
+ *   sweep, such a record was silently dropped from both sections
+ *   because neither comparison recognised it as professional.
+ *
+ *   The two classification helpers, isAcademicTeamType() and
+ *   isProfessionalTeamType(), sit together so the vocabulary is in
+ *   one place.
  */
 
 (function() {
@@ -441,6 +454,48 @@
         }
 
         return [];
+    }
+
+    /**
+     * Is this team's type 'academic' (normalised)?
+     *
+     * Routes through TeamConstants.normalizeTeamType. A missing
+     * TeamConstants (should never happen at call time) returns
+     * false, so a legacy record is excluded rather than included
+     * by accident.
+     *
+     * Phase F sibling of isProfessionalTeamType, below. The two
+     * helpers sit together so the type vocabulary is in one place.
+     */
+    function isAcademicTeamType(teamType) {
+        var TC = window.TeamConstants;
+        if (!TC ||
+            typeof TC.normalizeTeamType !== 'function') {
+            return false;
+        }
+        return TC.normalizeTeamType(teamType) === 'academic';
+    }
+
+    /**
+     * Is this team's type 'professional' (normalised)?
+     *
+     * The legacy 'temporary' and 'internship' types normalise to
+     * 'professional' via LEGACY_TYPE_MAP, so a record imported
+     * before the retirement matches. Before the Phase F sweep,
+     * the two raw comparisons in this file dropped such records
+     * from the timeline and the TEAMS section.
+     *
+     * A missing TeamConstants returns false — the same fallback
+     * semantics as isAcademicTeamType. A load-order problem
+     * surfaces as a missing record, not as a false positive.
+     */
+    function isProfessionalTeamType(teamType) {
+        var TC = window.TeamConstants;
+        if (!TC ||
+            typeof TC.normalizeTeamType !== 'function') {
+            return false;
+        }
+        return TC.normalizeTeamType(teamType) === 'professional';
     }
 
     // ============================================================
@@ -2080,14 +2135,9 @@
             return '';
         }
 
-        function isAcademicTeamType(teamType) {
-            var TC = window.TeamConstants;
-            if (!TC ||
-                typeof TC.normalizeTeamType !== 'function') {
-                return false;
-            }
-            return TC.normalizeTeamType(teamType) === 'academic';
-        }
+        // isAcademicTeamType() and isProfessionalTeamType() live
+        // in the shared-helpers scope above. This section uses
+        // them for team-type classification.
 
         function makeTimelineEntry(year, week, display) {
             var yearNum = parseInt(year, 10);
@@ -2155,7 +2205,12 @@
                 for (var t = 0; t < teams.length; t++) {
                     var team = teams[t];
                     if (!team) { continue; }
-                    if (team.type !== 'professional') {
+                    // Phase F sweep: route through
+                    // TeamConstants.normalizeTeamType. A legacy
+                    // 'temporary' or 'internship' team matches
+                    // 'professional' here; before the sweep it
+                    // was silently dropped.
+                    if (!isProfessionalTeamType(team.type)) {
                         continue;
                     }
 
@@ -3352,7 +3407,11 @@
             for (var i = 0; i < teams.length; i++) {
                 var team = teams[i];
                 if (!team) { continue; }
-                if (team.type === 'professional') {
+                // Phase F sweep: route through
+                // TeamConstants.normalizeTeamType. Before the
+                // sweep, a legacy 'temporary' or 'internship'
+                // record was silently dropped here too.
+                if (isProfessionalTeamType(team.type)) {
                     professional.push(team);
                 }
             }
