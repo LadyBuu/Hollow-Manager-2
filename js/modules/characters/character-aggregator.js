@@ -35,10 +35,32 @@
  *   - Filter runs BEFORE the expensive per-character computations
  *     (ages, professional team list). Only survivors pay for those.
  *
- * __no_class__ SEMANTICS:
- *   A character matches __no_class__ when classIds is empty, OR when
- *   every entry in classIds fails to resolve against the live class
- *   set. If AcademyClasses is unavailable, the filter throws.
+ * __no_class__ SEMANTICS (H.1):
+ *   The sentinel is owned by character-class-view.js. That module
+ *   declares the option list, emits the sentinel in the filter
+ *   dropdown, and exports it on window.CharacterClassView
+ *   .NO_CLASS_FILTER. This module is a CONSUMER of that value: it
+ *   must compare against the same string the dropdown emits.
+ *
+ *   Reading the sentinel lazily (getNoClassFilter()) makes the two
+ *   modules agree at runtime rather than at authoring time. If the
+ *   string ever changes, it changes in one place — the owning
+ *   module — and this consumer picks up the new value the next
+ *   time it runs. A second literal here would silently diverge.
+ *
+ *   The local '__no_class__' fallback exists only for load-order
+ *   safety: a caller can invoke getCharacterListViewModel before
+ *   character-class-view.js has loaded (for instance, from an
+ *   early characters/index.js init). The fallback is the same
+ *   literal the owner uses, so even in that window the comparison
+ *   works; the moment the owner loads, the primary path takes
+ *   over.
+ *
+ *   A character matches __no_class__ when classIds is empty, OR
+ *   when every entry in classIds fails to resolve against the live
+ *   class set. If AcademyClasses is unavailable, the filter
+ *   throws — there is no reliable way to check "no real class"
+ *   without the live class map.
  *
  * AGE SEMANTICS:
  *   - getCharacterDetail uses CharacterQueries.getCharacterAge(char),
@@ -62,6 +84,37 @@
  *   where a year is available. ByWeek is used only as a fallback
  *   when no year is provided.
  *
+ *   H.2 — FAIL-CLOSED hideEliminated FILTER:
+ *   When hideEliminated is on, the filter MUST be able to run.
+ *   If EliminationQueries is missing entirely, or if it is present
+ *   but does not export isCharacterEliminatedByYear, the list
+ *   projection THROWS. This is the same policy the __no_class__
+ *   branch already uses for a missing AcademyClasses. The
+ *   alternative — silently returning the unfiltered list — is the
+ *   hidden failure the plan calls out: the user unticks a filter
+ *   and nothing happens, with no signal about why.
+ *
+ *   When hideEliminated is OFF, a missing EliminationQueries
+ *   degrades to `eliminated: false` on every row. That is a
+ *   display limitation, not a correctness failure, and it is
+ *   outside the fail-closed scope: the user did not ask for
+ *   elimination filtering.
+ *
+ * TEAM TYPE NORMALISATION:
+ *   Every comparison of a team's `type` field in this file routes
+ *   through TeamConstants.normalizeTeamType, matching the sweep
+ *   applied to team-queries.js, team-core.js, and
+ *   character-export.js. A legacy 'temporary' or 'internship'
+ *   record matches 'professional' the moment it hits any filter
+ *   here.
+ *
+ *   Because 'temporary' is retired and normalises to
+ *   'professional', the `temporaryTeams` list would always be
+ *   empty after normalisation. This module therefore does not emit
+ *   a `temporaryTeams` key at all. A renderer that reads it gets
+ *   `undefined`, which is honest; a permanently-empty array would
+ *   look like a working filter that found nothing.
+ *
  * TEAM PERIODS:
  *   formatTeams reads member.intervals first (the current shape,
  *   one entry per stint). A member whose intervals array is missing
@@ -84,21 +137,30 @@
  *   scheduleCount = 0 without a warning. The list and detail
  *   projections render correctly with schedule data absent.
  *
+ *   TeamConstants is added by the type-normalisation sweep. It is
+ *   required for the list and detail projections (they filter
+ *   teams by type); a missing module produces a warning, and the
+ *   filter falls back to raw type comparison so the projection
+ *   still renders. This preserves the pre-sweep behaviour for the
+ *   narrow window before team-constants.js loads.
+ *
  * DEPENDENCIES (LAZY):
  *   - window.CharacterQueries
  *   - window.AcademyClasses
  *   - window.AcademyGrades
  *   - window.AcademyDisciplines
  *   - window.TeamQueries
+ *   - window.TeamConstants       (type normalisation)
  *   - window.SocialQueries
  *   - window.MissionQueries
  *   - window.EliminationQueries
  *   - window.TournamentQueries
- *   - window.CalendarQueries       (optional; schedule only)
+ *   - window.CalendarQueries     (optional; schedule only)
  *   - window.CharacterStats
  *   - window.CharacterConstants
  *   - window.CalendarConstants
  *   - window.MagicConstants
+ *   - window.CharacterClassView  (optional; NO_CLASS_FILTER sentinel)
  */
 
 (function() {
@@ -118,6 +180,7 @@
     function getAcademyGrades() { return window.AcademyGrades || null; }
     function getAcademyDisciplines() { return window.AcademyDisciplines || null; }
     function getTeamQueries() { return window.TeamQueries || null; }
+    function getTeamConstants() { return window.TeamConstants || null; }
     function getSocialQueries() { return window.SocialQueries || null; }
     function getMissionQueries() { return window.MissionQueries || null; }
     function getEliminationQueries() { return window.EliminationQueries || null; }
@@ -127,6 +190,66 @@
     function getCharacterConstants() { return window.CharacterConstants || null; }
     function getCalendarConstants() { return window.CalendarConstants || null; }
     function getMagicConstants() { return window.MagicConstants || null; }
+    function getCharacterClassView() { return window.CharacterClassView || null; }
+
+    // ============================================================
+    // SENTINEL: NO_CLASS_FILTER
+    // ============================================================
+    //
+    // The sentinel's owner is character-class-view.js. It declares
+    // the option list, emits the sentinel in the filter dropdown,
+    // and exports the string on window.CharacterClassView
+    // .NO_CLASS_FILTER. This module consumes that value.
+    //
+    // The fallback literal matches the owner's own default. It
+    // exists only to keep the filter working in the narrow window
+    // between this module loading and character-class-view.js
+    // loading. It is not a second source of truth; it is a
+    // last-resort value that agrees with the owner today and will
+    // agree with the owner tomorrow as long as nobody edits only
+    // one of the two. The way to change the sentinel is to change
+    // it in character-class-view.js; this module picks up the new
+    // value on the next call.
+
+    var FALLBACK_NO_CLASS_FILTER = '__no_class__';
+
+    function getNoClassFilter() {
+        var CCV = getCharacterClassView();
+        if (CCV &&
+            typeof CCV.NO_CLASS_FILTER === 'string' &&
+            CCV.NO_CLASS_FILTER !== '') {
+            return CCV.NO_CLASS_FILTER;
+        }
+        return FALLBACK_NO_CLASS_FILTER;
+    }
+
+    // ============================================================
+    // TEAM TYPE NORMALISATION
+    // ============================================================
+    //
+    // Every comparison of a team's `type` in this file routes
+    // through this helper. When TeamConstants is available (the
+    // normal case), the comparison is canonical: a legacy
+    // 'temporary' or 'internship' record matches 'professional'.
+    //
+    // When TeamConstants is missing (a load-order problem that
+    // self-heals once team-constants.js loads), the helper falls
+    // back to the raw type, so a filter still matches a record
+    // whose type already IS the canonical string. The fallback
+    // does not reproduce the legacy-alias mapping — a
+    // pre-retirement 'temporary' record will not match
+    // 'professional' until TeamConstants loads. That is the same
+    // failure mode the reader had before this sweep, so the
+    // fallback is strictly a non-regression.
+
+    function normaliseTeamTypeForFilter(team) {
+        if (!team || typeof team !== 'object') { return ''; }
+        var TC = getTeamConstants();
+        if (!TC || typeof TC.normalizeTeamType !== 'function') {
+            return typeof team.type === 'string' ? team.type : '';
+        }
+        return TC.normalizeTeamType(team.type) || '';
+    }
 
     // ============================================================
     // DEPENDENCY CHECK - per projection
@@ -138,6 +261,12 @@
     // missing dependency. This removes the "Dependencies not yet
     // loaded: CalendarQueries" warning from every character tab
     // mount when the schedule module loads lazily.
+    //
+    // CharacterClassView and TeamConstants are also deliberately
+    // absent from the required list. Both have lazy fallbacks that
+    // preserve behaviour until they load. Requiring them here
+    // would produce a warning on every tab mount in the narrow
+    // window before those modules load, for no behavioural gain.
 
     function checkDependencies(calleeName) {
         var missing = [];
@@ -170,8 +299,6 @@
     // ============================================================
     // CONSTANTS
     // ============================================================
-
-    var NO_CLASS_FILTER = '__no_class__';
 
     var VALID_SORTS = {
         'name-asc': true,
@@ -586,8 +713,7 @@
             : 'Unknown';
 
         var typeLabel = SocialQueries.getRelationshipTypeLabel(
-            rel.typeId
-        );
+            rel.typeId        );
         var typeColor = SocialQueries.getRelationshipTypeColor(
             rel.typeId
         ) || '#7f8c8d';
@@ -727,6 +853,28 @@
     }
 
     // ============================================================
+    // TEAM FILTER HELPERS
+    // ============================================================
+    //
+    // The detail and professional-data projections each split a
+    // character's team list into per-type buckets. Both used raw
+    // `t.type === '...'` comparisons before the Phase F sweep;
+    // both route through normaliseTeamTypeForFilter now.
+    //
+    // The 'temporary' bucket is removed entirely. After
+    // normalisation every 'temporary' record becomes
+    // 'professional', so a temporary list would always be empty.
+    // A renderer reading vm.temporaryTeams gets `undefined`, which
+    // is honest about the retirement; an always-empty array would
+    // look like a working filter that found nothing.
+
+    function filterTeamsByType(teams, normalisedType) {
+        return teams.filter(function(t) {
+            return normaliseTeamTypeForFilter(t) === normalisedType;
+        });
+    }
+
+    // ============================================================
     // CHARACTER DETAIL PROJECTION
     // ============================================================
 
@@ -841,9 +989,13 @@
         var classNames = academyGetCharacterClassNames(char);
 
         // ---- Teams ----
+        //
+        // Type comparisons route through
+        // normaliseTeamTypeForFilter. A legacy 'temporary' record
+        // matches 'professional' here. The 'temporary' bucket is
+        // removed; see filterTeamsByType.
         var academicTeams = [];
         var professionalTeams = [];
-        var temporaryTeams = [];
         var civilianTeams = [];
 
         if (includeTeams && TeamQueries) {
@@ -852,28 +1004,16 @@
             );
             if (allTeams) {
                 academicTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'academic';
-                    }),
+                    filterTeamsByType(allTeams, 'academic'),
                     characterId,
                     'Wk '
                 );
                 professionalTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'professional';
-                    }),
-                    characterId
-                );
-                temporaryTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'temporary';
-                    }),
+                    filterTeamsByType(allTeams, 'professional'),
                     characterId
                 );
                 civilianTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'civilian';
-                    }),
+                    filterTeamsByType(allTeams, 'civilian'),
                     characterId
                 );
             }
@@ -1069,8 +1209,9 @@
 
             academicTeams: academicTeams,
             professionalTeams: professionalTeams,
-            temporaryTeams: temporaryTeams,
             civilianTeams: civilianTeams,
+            // temporaryTeams: retired. 'temporary' normalises to
+            // 'professional' and appears in professionalTeams.
 
             grades: grades,
             missions: missions,
@@ -1137,6 +1278,36 @@
             if (statusFilter.length === 0) { statusFilter = null; }
         }
 
+        // ---- H.2: fail-closed hideEliminated filter ----
+        //
+        // The hideEliminated filter must be able to run when it is
+        // on. If EliminationQueries is missing, or if it is
+        // present but does not export isCharacterEliminatedByYear,
+        // the filter cannot honour the user's request. Throwing
+        // here matches the __no_class__ precedent below: the
+        // user asked for a filter that depends on a module the
+        // app has not loaded, and the correct answer is to surface
+        // the load-order problem, not to silently return the
+        // unfiltered list.
+        if (hideEliminated) {
+            if (!EliminationQueries) {
+                throw new Error(
+                    '[CharacterAggregator] getCharacterListViewModel ' +
+                    'with hideEliminated=true requires ' +
+                    'EliminationQueries. The module is not loaded.'
+                );
+            }
+            if (typeof EliminationQueries
+                .isCharacterEliminatedByYear !== 'function') {
+                throw new Error(
+                    '[CharacterAggregator] getCharacterListViewModel ' +
+                    'with hideEliminated=true requires ' +
+                    'EliminationQueries.isCharacterEliminatedByYear. ' +
+                    'The method is not available.'
+                );
+            }
+        }
+
         var characters = CharacterQueries.getCharacters() || [];
         var filterYear = resolveFilterYear(options);
 
@@ -1158,10 +1329,19 @@
             });
         }
 
-        if (classFilter === NO_CLASS_FILTER && !AcademyClasses) {
+        // ---- H.1: sentinel comparison through its owner ----
+        //
+        // getNoClassFilter() reads the sentinel from
+        // character-class-view.js. The string is the same one the
+        // filter dropdown emits. A literal here would be a second
+        // source of truth.
+        var noClassFilter = getNoClassFilter();
+
+        if (classFilter === noClassFilter && !AcademyClasses) {
             throw new Error(
-                '[CharacterAggregator] __no_class__ filter requires ' +
-                'AcademyClasses to resolve live class IDs.'
+                '[CharacterAggregator] ' + noClassFilter +
+                ' filter requires AcademyClasses to resolve live ' +
+                'class IDs.'
             );
         }
 
@@ -1191,7 +1371,7 @@
             }
 
             // 3. class: array lookup.
-            if (classFilter === NO_CLASS_FILTER) {
+            if (classFilter === noClassFilter) {
                 var charClasses = classMembership[char.id] || [];
                 if (charClasses.length !== 0) {
                     var hasReal = false;
@@ -1246,14 +1426,16 @@
             }
 
             // 6. eliminated: the most expensive filter predicate.
-            if (hideEliminated && EliminationQueries &&
-                typeof EliminationQueries
-                    .isCharacterEliminatedByYear === 'function') {
-                if (EliminationQueries.isCharacterEliminatedByYear(
+            //
+            // H.2 — the pre-check above guarantees that
+            // EliminationQueries.isCharacterEliminatedByYear is
+            // available when hideEliminated is on. There is no
+            // silent fallthrough.
+            if (hideEliminated &&
+                EliminationQueries.isCharacterEliminatedByYear(
                     char.id, filterYear
                 )) {
-                    return false;
-                }
+                return false;
             }
 
             return true;
@@ -1447,9 +1629,7 @@
             );
             if (allTeams) {
                 academicTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'academic';
-                    }),
+                    filterTeamsByType(allTeams, 'academic'),
                     characterId,
                     'Wk '
                 );
@@ -1550,7 +1730,6 @@
         if (!char) { return null; }
 
         var professionalTeams = [];
-        var temporaryTeams = [];
         var civilianTeams = [];
 
         if (TeamQueries) {
@@ -1558,22 +1737,15 @@
                 characterId
             );
             if (allTeams) {
+                // Type comparisons route through
+                // normaliseTeamTypeForFilter. The 'temporary'
+                // bucket is removed; see filterTeamsByType.
                 professionalTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'professional';
-                    }),
-                    characterId
-                );
-                temporaryTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'temporary';
-                    }),
+                    filterTeamsByType(allTeams, 'professional'),
                     characterId
                 );
                 civilianTeams = formatTeams(
-                    allTeams.filter(function(t) {
-                        return t.type === 'civilian';
-                    }),
+                    filterTeamsByType(allTeams, 'civilian'),
                     characterId
                 );
             }
@@ -1604,8 +1776,9 @@
             characterId: characterId,
             name: CharacterQueries.getDisplayName(char),
             professionalTeams: professionalTeams,
-            temporaryTeams: temporaryTeams,
             civilianTeams: civilianTeams,
+            // temporaryTeams: retired. 'temporary' normalises to
+            // 'professional' and appears in professionalTeams.
             missions: missions,
             careerHistory: careerHistory,
             specialty: char.specialty || '',
@@ -1669,6 +1842,12 @@
         getCurrentWeek: getCurrentWeek,
         isDeceased: isDeceased,
 
+        // H.1 — the sentinel this module compares against. Reads
+        // from character-class-view.js. Exposed for tests and for
+        // callers that need to construct a classFilter that
+        // matches the dropdown without redeclaring the literal.
+        getNoClassFilter: getNoClassFilter,
+
         get MIN_WEEK() {
             var CC = getCalendarConstants();
             return CC ? CC.MIN_WEEK || 1 : 1;
@@ -1696,7 +1875,8 @@
                 'getCharacterListViewModel',
                 'getCharacterAcademicData',
                 'getCharacterProfessionalData',
-                'getCharacterSocialData'
+                'getCharacterSocialData',
+                'getNoClassFilter'
             ];
 
             for (var i = 0; i < required.length; i++) {
@@ -1705,11 +1885,32 @@
                 }
             }
 
-            var list = exports.getCharacterListViewModel({});
+            // H.1 — sentinel agreement.
+            //
+            // If character-class-view.js is loaded, its sentinel
+            // must match the one this module compares against.
+            // A mismatch here is the exact bug the H.1 fix closes;
+            // surfacing it in the verification block makes the
+            // divergence visible on the console, not three
+            // interactions later as a filter that matches nothing.
+            var CCV = window.CharacterClassView;
+            if (CCV && typeof CCV.NO_CLASS_FILTER === 'string') {
+                if (exports.getNoClassFilter() !== CCV.NO_CLASS_FILTER) {
+                    failures.push(
+                        'NO_CLASS_FILTER disagreement: ' +
+                        'aggregator=' + exports.getNoClassFilter() +
+                        ', class-view=' + CCV.NO_CLASS_FILTER
+                    );
+                }
+            }
+
+            var list = exports.getCharacterListViewModel({
+                hideEliminated: false
+            });
             if (!Array.isArray(list)) {
                 failures.push(
-                    'getCharacterListViewModel({}) did not ' +
-                    'return an array'
+                    'getCharacterListViewModel({hideEliminated:false}) ' +
+                    'did not return an array'
                 );
             }
         } catch (e) {
