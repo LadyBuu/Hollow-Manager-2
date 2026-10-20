@@ -16,8 +16,9 @@
  *   - Cross-domain cascades:
  *       stripCharacterRefs      (character deletion)
  *       endStintsForCharacter   (character death, career transition)
- *       deleteTeam's mutate     (fires TournamentCore.stripTeamRefs
- *                                and MissionCascade.stripTeamRefs)
+ *       deleteTeam's mutate     (fires TournamentCore.stripTeamRefs,
+ *                                MissionCascade.stripTeamRefs, and
+ *                                AcademyCascade.teamDeleted)
  *
  * WHAT THIS DOES NOT OWN:
  *   - Public read APIs. Team reads go through TeamQueries.
@@ -32,6 +33,8 @@
  *     MissionConstants.isValidMissionType.
  *   - The mission cleanup details. MissionCascade.stripTeamRefs
  *     owns the reference model for team → mission.
+ *   - The weeklyTeams cleanup details. AcademyCascade.teamDeleted
+ *     owns the reference model for team → academy.weeklyTeams.
  *
  * TYPE COMPARISONS:
  *   Every comparison of a team's `type` field in this module
@@ -184,6 +187,16 @@
  *   Granularity: year. deathWeek is not read.
  *   Non-reversible: clearing deathYear does not restore ended stints.
  *
+ *   OPEN STINTS ON A DECEASED CHARACTER ARE CLOSED UNCONDITIONALLY:
+ *   the join-after-death check in addMember and batchAddMembers
+ *   guards the write path, but a legacy record can reach this
+ *   cascade with an open stint whose joinPeriod is strictly after
+ *   the death year. Leaving such a stint open produces a record
+ *   where a dead person is still on a team, which is worse than an
+ *   impossible-range interval. This module closes it at the death
+ *   year and counts it under skippedStartsAfterDeath for the
+ *   diagnostic, but does not skip the close.
+ *
  * ADD-AFTER-DEATH GUARD:
  *   addMember and batchAddMembers reject assignments whose joinPeriod
  *   is strictly after the character's deathYear.
@@ -204,11 +217,28 @@
  *   every cross-domain reference to it inside the same transaction:
  *
  *     TournamentCore.stripTeamRefs     — tournament participants
+ *                                        (MANDATORY: throws if
+ *                                        TournamentCore is missing)
  *     MissionCascade.stripTeamRefs     — mission.assignedTeamIds
  *                                        and participant rows
+ *                                        (defensive: warn-and-skip)
+ *     AcademyCascade.teamDeleted       — academy.weeklyTeams
+ *                                        (defensive: warn-and-skip)
  *
- *   Both cleanups run against the same snapshot that will be
+ *   All three cleanups run against the same snapshot that will be
  *   committed.
+ *
+ *   POLICY:
+ *   TournamentCore is mandatory because a team whose tournament
+ *   references survive deletion leaves a tournament bracket that
+ *   names a team that no longer exists — a structural failure the
+ *   user sees every time they open the bracket. Mission and Academy
+ *   references are milder: a dangling mission.assignedTeamIds entry
+ *   or weeklyTeams record renders as an empty slot, not a broken
+ *   page. Those two cascades therefore warn-and-continue when
+ *   their module is missing, matching fireMissionCascade's
+ *   existing policy in the same function, so a load-order problem
+ *   never rolls back a delete.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -220,6 +250,7 @@
  * DEPENDENCIES (LAZY, at call time):
  *   - window.MissionConstants    (specialisation id validation)
  *   - window.MissionCascade      (deleteTeam mission cleanup)
+ *   - window.AcademyCascade      (deleteTeam weeklyTeams cleanup)
  *   - window.TournamentCore      (deleteTeam cascade; mandatory at
  *                                 that call, throws if unavailable)
  *   - window.TeamNaming          (post-member-add rename; optional)
@@ -252,6 +283,10 @@
 
     function getMissionCascade() {
         return window.MissionCascade || null;
+    }
+
+    function getAcademyCascade() {
+        return window.AcademyCascade || null;
     }
 
     // ============================================================
@@ -380,9 +415,6 @@
     // DESCRIPTIVE FIELD CANONICALISATION
     // ============================================================
 
-    /**
-     * Canonicalise a tactical style string.
-     */
     function canonicaliseTacticalStyle(raw) {
         if (raw === undefined || raw === null) {
             return { valid: true, value: '' };
@@ -396,9 +428,6 @@
         return { valid: true, value: raw.trim() };
     }
 
-    /**
-     * Canonicalise a specialisations array.
-     */
     function canonicaliseSpecialisations(raw) {
         if (raw === undefined || raw === null) {
             return { valid: true, value: [] };
@@ -631,34 +660,6 @@
         return { valid: true, value: cleaned };
     }
 
-    /**
-     * Do two periods overlap?
-     *
-     * SEMANTICS — HALF-OPEN ON THE UPPER BOUND:
-     *
-     *   Two periods [s1, e1] and [s2, e2] overlap iff:
-     *
-     *     s1 < e2   AND   s2 < e1
-     *
-     *   A blank endPeriod means Infinity (open-ended).
-     *
-     * WORKED TABLE:
-     *
-     *   [1900, 1900]   vs [1900, 1900]   → overlap (identical)
-     *   [1900, 1900]   vs [1900, '']     → no overlap (shared boundary)
-     *   [1900, 1904]   vs [1904, '']     → no overlap (shared boundary)
-     *   [1900, 1904]   vs [1905, '']     → no overlap (gap)
-     *   [1900, 1904]   vs [1903, '']     → OVERLAP (1903 is
-     *                                      genuinely inside A)
-     *   [1900, 1904]   vs [1905, 1909]   → no overlap
-     *   [1900, 1904]   vs [1902, 1903]   → OVERLAP (nested)
-     *   [1900, 1904]   vs [1898, 1900]   → no overlap (shared boundary
-     *                                      belongs to A)
-     *
-     * @param {object} p  A period entry.
-     * @param {object} q  A period entry.
-     * @returns {boolean}
-     */
     function periodsOverlap(p, q) {
         var pStart = parseInt(p.startPeriod, 10);
         var pEnd = p.endPeriod === ''
@@ -731,6 +732,17 @@
         return canonicalisePeriodsArray(periods);
     }
 
+    /**
+     * Canonicalise a single period built from a record's top-level
+     * scalars.
+     *
+     * G.1 — startPeriod is REQUIRED on create. A missing
+     * startPeriod is a caller error, not a signal to default to
+     * the current calendar year. The previous default masked
+     * malformed input; a team created through the form without a
+     * start year would silently anchor to today's year, which is
+     * almost never what the user meant.
+     */
     function canonicaliseSinglePeriod(fallback) {
         if (!isNonEmptyString(fallback.name)) {
             return {
@@ -748,7 +760,10 @@
         }
 
         if (startCanon === '') {
-            startCanon = String(new Date().getFullYear());
+            return {
+                valid: false,
+                message: 'Start period is required.'
+            };
         }
 
         var endCanon = canonicalisePeriod(fallback.endPeriod);
@@ -866,6 +881,64 @@
                 assignedTeamEntriesRemoved: 0,
                 participantEntriesRemoved: 0
             };
+        }
+    }
+
+    // ============================================================
+    // ACADEMY CASCADE HOOK
+    // ============================================================
+    //
+    // G.7 — deleteTeam cleans academy.weeklyTeams[classId][teamId].
+    //
+    // POLICY (defensive):
+    //   AcademyCascade's runStripHelper throws when a required
+    //   module is missing, which would roll back the whole delete.
+    //   That is a bigger failure than a dangling weeklyTeams
+    //   record, which renders as an empty slot rather than a
+    //   broken page. So this hook warns-and-continues, matching
+    //   fireMissionCascade's existing policy in the same mutate.
+    //
+    //   If AcademyCascade is present but its teamDeleted call
+    //   throws (for instance, because AcademyWeeklyTeams is not
+    //   loaded), we warn and continue. The delete still commits.
+    //
+    // Tournaments stay strict: TournamentCore.stripTeamRefs is
+    // mandatory at the call site in deleteTeam, and the caller
+    // refuses the delete when it is missing. See deleteTeam's
+    // preflight.
+
+    var _academyCascadeUnavailableWarned = false;
+
+    function fireAcademyCascade(snapshot, teamId) {
+        var Cascade = getAcademyCascade();
+
+        if (!Cascade ||
+            typeof Cascade.teamDeleted !== 'function') {
+            if (!_academyCascadeUnavailableWarned) {
+                _academyCascadeUnavailableWarned = true;
+                console.warn(
+                    '[TeamCore] AcademyCascade module is not ' +
+                    'loaded. Deleting a team will leave dangling ' +
+                    'team references in academy.weeklyTeams for ' +
+                    'every class that had the team. Load ' +
+                    'academy-cascade.js before team-core.js to ' +
+                    'enable the cleanup.'
+                );
+            }
+            return { modules: [], details: {} };
+        }
+
+        try {
+            return Cascade.teamDeleted(snapshot, teamId) || {
+                modules: [],
+                details: {}
+            };
+        } catch (err) {
+            console.warn(
+                '[TeamCore] AcademyCascade.teamDeleted threw for ' +
+                'team ' + teamId + ':', err
+            );
+            return { modules: [], details: {} };
         }
     }
 
@@ -1207,9 +1280,6 @@
         return { valid: true };
     }
 
-    /**
-     * Validate a fully-built team record.
-     */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
             return {
@@ -1252,7 +1322,6 @@
             };
         }
 
-        // ---- periods ----
         if (!Array.isArray(team.periods)) {
             return {
                 valid: false,
@@ -1291,7 +1360,6 @@
             }
         }
 
-        // ---- top-level startPeriod / endPeriod mirror the periods.
         var expectedStart = team.periods[0].startPeriod;
         var expectedEnd = team.periods[team.periods.length - 1].endPeriod;
 
@@ -1328,7 +1396,6 @@
             };
         }
 
-        // ---- members ----
         var seenMemberIds = Object.create(null);
         for (var i = 0; i < team.members.length; i++) {
             var member = team.members[i];
@@ -1393,14 +1460,6 @@
     // CANDIDATE BUILDERS
     // ============================================================
 
-    /**
-     * Project the periods array onto the scalar fields that some
-     * readers still expect:
-     *
-     *   name        = periods[last].name
-     *   startPeriod = periods[0].startPeriod
-     *   endPeriod   = periods[last].endPeriod
-     */
     function projectPeriodScalars(candidate) {
         if (!Array.isArray(candidate.periods) ||
             candidate.periods.length === 0) {
@@ -1462,8 +1521,37 @@
         return candidate;
     }
 
+    /**
+     * Build an updated team candidate from an existing record and
+     * a partial `updates` object.
+     *
+     * G.3 — Reject periods + top-level startPeriod/endPeriod when
+     * both are present. The top-level fields are overwritten by
+     * projectPeriodScalars() at the end of this function, so a
+     * caller who passes both would silently see their
+     * startPeriod/endPeriod discarded. Making that an explicit
+     * rejection surfaces the conflict instead of masking it.
+     *
+     * G.6 — Reject a non-array `updates.periods` with an explicit
+     * message. Previously the fallthrough to canonicalisePeriods
+     * would synthesise a single period from the fallback, which
+     * is not what a caller who passed a string meant.
+     */
     function buildUpdatedTeam(existing, updates) {
         var candidate = deepClone(existing);
+
+        // G.3 — reject periods + startPeriod / endPeriod together.
+        if (updates.periods !== undefined &&
+            (updates.startPeriod !== undefined ||
+             updates.endPeriod !== undefined)) {
+            return {
+                valid: false,
+                message: 'Cannot specify both periods and ' +
+                    'startPeriod/endPeriod. Update the periods ' +
+                    'array; the top-level start and end are ' +
+                    'derived from it.'
+            };
+        }
 
         if (updates.type !== undefined) {
             var normalized =
@@ -1488,6 +1576,13 @@
         }
 
         if (updates.periods !== undefined) {
+            // G.6 — explicit rejection for non-array periods.
+            if (!Array.isArray(updates.periods)) {
+                return {
+                    valid: false,
+                    message: 'periods must be an array.'
+                };
+            }
             var periodsCheck = canonicalisePeriods(
                 updates.periods, null
             );
@@ -1524,7 +1619,6 @@
             candidate.periods = historyCheck.value;
         }
 
-        var touchedLastPeriod = false;
         if (updates.name !== undefined) {
             if (!isNonEmptyString(updates.name)) {
                 return {
@@ -1537,7 +1631,6 @@
                 var lastForName =
                     candidate.periods[candidate.periods.length - 1];
                 lastForName.name = String(updates.name).trim();
-                touchedLastPeriod = true;
             }
         }
 
@@ -1553,7 +1646,6 @@
                 var lastForStyle =
                     candidate.periods[candidate.periods.length - 1];
                 lastForStyle.tacticalStyle = styleCheck.value;
-                touchedLastPeriod = true;
             }
         }
 
@@ -1571,7 +1663,6 @@
                     candidate.periods[candidate.periods.length - 1];
                 lastForStyleAlias.tacticalStyle =
                     styleAliasCheck.value;
-                touchedLastPeriod = true;
             }
         }
 
@@ -1587,7 +1678,6 @@
                 var lastForSpec =
                     candidate.periods[candidate.periods.length - 1];
                 lastForSpec.specialisations = specCheck.value;
-                touchedLastPeriod = true;
             }
         }
 
@@ -1952,6 +2042,10 @@
 
         var teamName = current.name || 'Unknown Team';
 
+        // TournamentCore is MANDATORY at this call. A tournament
+        // that names a deleted team is a structural failure the
+        // user sees on every bracket render, so this refuses to
+        // proceed rather than committing a broken bracket.
         var TournamentCore = window.TournamentCore;
         if (!TournamentCore ||
             typeof TournamentCore.stripTeamRefs !== 'function') {
@@ -1993,8 +2087,17 @@
                     );
                 }
 
+                // Order: tournaments, missions, academy.
+                //   Tournament — mandatory, throws if broken.
+                //   Mission    — warn-and-skip.
+                //   Academy    — warn-and-skip.
+                //
+                // All three run BEFORE the splice, so the
+                // cross-domain references are cleaned up in the
+                // same transaction that removes the team.
                 TournamentCore.stripTeamRefs(snapshot, targetId);
                 fireMissionCascade(snapshot, targetId);
+                fireAcademyCascade(snapshot, targetId);
 
                 snapshot.teams.splice(idx, 1);
                 return { id: targetId };
@@ -2243,6 +2346,14 @@
                                 intervalsCopy[a].leavePeriod
                         });
                     }
+                    // G.4 — role update on the "already exists"
+                    // branch. The caller passed a role
+                    // explicitly; ignoring it was the bug.
+                    if (roleCopy !== undefined &&
+                        roleCopy !== null &&
+                        roleCopy !== '') {
+                        entry.role = roleCopy;
+                    }
                 } else {
                     entry = buildCanonicalMember(
                         targetChar, roleCopy, intervalsCopy
@@ -2300,6 +2411,17 @@
         });
     }
 
+    /**
+     * G.2 — batchAddMembers now performs the same type-bounds
+     * validation that addMember does (via
+     * validateMemberIntervals). Before this, batchAddMembers
+     * validated shape but not bounds, so an academic team's
+     * batch add would accept a week 60 interval that addMember
+     * would have rejected.
+     *
+     * G.4 — role overwrites the existing entry's role on the
+     * "already exists" branch, matching addMember.
+     */
     function batchAddMembers(assignments) {
         if (failIfMissing(
             checkMemberDependencies(), 'batchAddMembers'
@@ -2368,6 +2490,10 @@
                 if (trimmedRole !== '') { role = trimmedRole; }
             }
 
+            // G.2 — bounds check against the team's type. The
+            // team is looked up below to confirm existence; the
+            // bounds check is deferred until we have the team
+            // so we can pass its `type` to isValidPeriod.
             cleanRows.push({
                 index: i,
                 teamId: String(row.teamId).trim(),
@@ -2394,6 +2520,28 @@
                 return Promise.resolve(failure(
                     'Assignment ' + (pr.index + 1) +
                     ': team no longer exists.'
+                ));
+            }
+
+            // G.2 — bounds check.
+            if (pr.joinPeriod !== '' &&
+                !TeamConstants.isValidPeriod(
+                    pr.joinPeriod, preflightTeam.type
+                )) {
+                return Promise.resolve(failure(
+                    'Assignment ' + (pr.index + 1) +
+                    ': join period is out of bounds for team ' +
+                    'type ' + preflightTeam.type + '.'
+                ));
+            }
+            if (pr.leavePeriod !== '' &&
+                !TeamConstants.isValidPeriod(
+                    pr.leavePeriod, preflightTeam.type
+                )) {
+                return Promise.resolve(failure(
+                    'Assignment ' + (pr.index + 1) +
+                    ': leave period is out of bounds for team ' +
+                    'type ' + preflightTeam.type + '.'
                 ));
             }
 
@@ -2443,6 +2591,30 @@
                             valid: false,
                             message: rowLabel +
                                 ': team no longer exists.'
+                        };
+                    }
+
+                    // G.2 — bounds check inside validate.
+                    if (row.joinPeriod !== '' &&
+                        !TeamConstants.isValidPeriod(
+                            row.joinPeriod, team.type
+                        )) {
+                        return {
+                            valid: false,
+                            message: rowLabel +
+                                ': join period is out of bounds ' +
+                                'for team type ' + team.type + '.'
+                        };
+                    }
+                    if (row.leavePeriod !== '' &&
+                        !TeamConstants.isValidPeriod(
+                            row.leavePeriod, team.type
+                        )) {
+                        return {
+                            valid: false,
+                            message: rowLabel +
+                                ': leave period is out of bounds ' +
+                                'for team type ' + team.type + '.'
                         };
                     }
 
@@ -2588,6 +2760,12 @@
                             joinPeriod: row.joinPeriod,
                             leavePeriod: row.leavePeriod
                         });
+                        // G.4 — role overwrite on existing entry.
+                        if (row.role !== undefined &&
+                            row.role !== null &&
+                            row.role !== '') {
+                            entry.role = row.role;
+                        }
                     } else {
                         entry = buildCanonicalMember(
                             row.charId,
@@ -2889,11 +3067,18 @@
         });
     }
 
+    /**
+     * G.6 — renamed the internal `leaveWeek` parameter to
+     * `leavePeriod` so it matches the canonical field name and
+     * the module's own vocabulary. The public API name is
+     * unchanged; every caller already passes a period, not a
+     * week.
+     */
     function endMemberInterval(
         teamId,
         characterId,
         joinPeriod,
-        leaveWeek
+        leavePeriod
     ) {
         if (failIfMissing(
             checkBaseDependencies(), 'endMemberInterval'
@@ -2919,10 +3104,10 @@
             );
         }
 
-        var leaveCanon = canonicalisePeriod(leaveWeek);
+        var leaveCanon = canonicalisePeriod(leavePeriod);
         if (leaveCanon === null || leaveCanon === '') {
             return Promise.resolve(
-                failure('Valid leave week is required.')
+                failure('Valid leave period is required.')
             );
         }
 
@@ -2972,7 +3157,7 @@
             if (currentLeaveNum <= newLeaveNum) {
                 return Promise.resolve(failure(
                     'Interval is already closed at or before ' +
-                    'week ' + leaveCanon + '.'
+                    'period ' + leaveCanon + '.'
                 ));
             }
         }
@@ -2985,8 +3170,8 @@
             var leaveNumCheck = parseInt(leaveCanon, 10);
             if (leaveNumCheck < joinNum) {
                 return Promise.resolve(failure(
-                    'Leave week cannot be before the interval\'s ' +
-                    'join week.'
+                    'Leave period cannot be before the interval\'s ' +
+                    'join period.'
                 ));
             }
         }
@@ -3632,6 +3817,25 @@
     // CROSS-DOMAIN CASCADES
     // ============================================================
 
+    /**
+     * G.5 — close every open stint on a professional-team
+     * character at the death year, regardless of whether the
+     * stint's join year is before, equal to, or after the death
+     * year.
+     *
+     * The join-after-death guard on the write path (addMember,
+     * batchAddMembers) prevents new stints from starting after
+     * death. A legacy record can still reach this cascade with
+     * such a stint, because the guard did not exist when the
+     * record was written. Leaving it open produces a record
+     * where a dead person is on a team, which is worse than an
+     * impossible-range interval.
+     *
+     * The `skippedStartsAfterDeath` counter is retained as a
+     * diagnostic: it counts stints whose join > deathYear. Those
+     * stints are still closed; the counter tells a caller how
+     * many impossible records were repaired.
+     */
     function endStintsForCharacter(appData, charId, deathYear) {
         var result = {
             stintsEnded: 0,
@@ -3658,11 +3862,6 @@
         for (var t = 0; t < appData.teams.length; t++) {
             var team = appData.teams[t];
             if (!team || typeof team !== 'object') { continue; }
-            // Route through normalizeTeamType, so a legacy
-            // 'temporary' or 'internship' team is treated
-            // identically to a canonical 'professional' one. Before
-            // this, death and retirement skipped legacy teams and
-            // left open stints behind.
             if (!isProfessionalTeam(team)) { continue; }
             if (!Array.isArray(team.members)) { continue; }
 
@@ -3691,6 +3890,8 @@
                         : String(iv.leavePeriod);
                     var leaveNum = parsePeriod(leaveRaw);
 
+                    // Already closed at or before death — no
+                    // change.
                     if (leaveNum !== null &&
                         leaveNum <= deathNum) {
                         result.skippedAlreadyEnded++;
@@ -3703,9 +3904,20 @@
                         : String(iv.joinPeriod);
                     var joinNum = parsePeriod(joinRaw);
 
+                    // G.5 — count, but do not skip. An open
+                    // stint with join > deathYear is repaired
+                    // by closing it at the death year. A closed
+                    // stint with join > deathYear is already
+                    // closed past the death year; leave it
+                    // alone (a future audit may flag it, but
+                    // this cascade's job is to end OPEN stints).
                     if (joinNum !== null && joinNum > deathNum) {
                         result.skippedStartsAfterDeath++;
-                        continue;
+                        if (leaveNum !== null) {
+                            // Closed already; nothing to do.
+                            continue;
+                        }
+                        // Open: fall through and close it.
                     }
 
                     iv.leavePeriod = deathStr;
