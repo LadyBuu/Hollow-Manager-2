@@ -72,6 +72,18 @@
  *   with the current calendar year. The user sees one editable
  *   row and no history. On edit, every stored period renders.
  *
+ * TOP-OF-FORM NAME (dirty-track baseline):
+ *   The form's #team-name input carries a data-original-value
+ *   attribute holding the name the form was opened with. TeamEvents
+ *   reads it on submit to decide whether the user actually typed in
+ *   the field this session. That decision, combined with the
+ *   team's nameIsAuto flag, resolves the two-owners-of-name
+ *   problem: the top field wins only when the user touched it.
+ *
+ *   If the field is untouched, the periods array — as edited —
+ *   wins, so retitling the last period in the editor is not
+ *   silently overwritten by an untouched top field.
+ *
  * LEGACY SHAPE:
  *   The read-only descriptive block reads `team.tacticalStyle` and
  *   `team.specialisations` off the detail / list VM. Those are
@@ -1375,20 +1387,21 @@
     // start, end, class, team number, status, associated mission)
     // and the periods editor.
     //
-    // The top-level name is the CURRENT period's name. It is
-    // rendered as an editable field for convenience — a user who
-    // only wants to rename the current period does not have to
-    // scroll to the editor. The team name input writes through to
-    // the last period on submit. See team-events.js for the read.
+    // The top-of-form name input:
+    //   It is a VIEW of periods[last].name, with a submit-time
+    //   rule: the field wins only if the user typed in it this
+    //   session. TeamEvents reads data-original-value to detect
+    //   that. If the field is untouched, the periods array — as
+    //   edited — wins. This resolves the two-owners-of-name
+    //   problem without an extra flag, and it is forward-
+    //   compatible with a future nameIsAuto flag that would
+    //   simply take over the "did the user type" decision.
     //
     // The top-level start / end inputs are NOT rendered: the
     // team's start and end are derived from periods[0].start and
     // periods[last].end. The periods editor owns them. Two
     // separate places to edit the same value would be a bug
     // factory.
-    //
-    // The periods editor is the sole owner of start and end for
-    // any period.
 
     function renderTeamForm(formVM) {
         if (!formVM) {
@@ -1419,13 +1432,20 @@
 
         html += '<div class="form-grid">';
 
+        // ---- Top-of-form name (dirty-track baseline) ----
         html += '<div class="form-group full-width">';
         html += '<label for="team-name">Current Name *</label>';
-        html += '<input type="text" id="team-name" value="' +
-                    escapeAttribute(formVM.name) + '" required>';
+        html += '<input type="text" id="team-name" ' +
+                    'value="' +
+                        escapeAttribute(formVM.name) + '" ' +
+                    'data-original-value="' +
+                        escapeAttribute(formVM.name) + '" ' +
+                    'required>';
         html += '<span class="field-hint">' +
                     'The current period\u2019s name. Editing here ' +
-                    'renames the current period.' +
+                    'renames the current period. If you rename ' +
+                    'the last period in the editor below and ' +
+                    'leave this field untouched, the editor wins.' +
                 '</span>';
         html += '</div>';
 
