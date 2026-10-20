@@ -2,7 +2,7 @@
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
  *
- * DATA_VERSION: 33
+ * DATA_VERSION: 34
  *
  * Migrations run in sequence from the stored `_dataVersion` up to
  * DATA_VERSION. Each migration function documents its own purpose,
@@ -37,10 +37,10 @@
  *
  * MIGRATION DEPENDENCIES:
  *   v17 (TournamentSchema), v18 (IdUtils), v23 (TournamentSchema +
- *   IdUtils + TeamConstants), v26 (CalendarValidation) require
- *   their module to be present. If missing, the migration throws
- *   and _dataVersion does not advance, so the migration runs on a
- *   later load once the module is available.
+ *   IdUtils + TeamConstants), v26 (CalendarValidation), v34
+ *   (TeamConstants) require their module to be present. If missing,
+ *   the migration throws and _dataVersion does not advance, so the
+ *   migration runs on a later load once the module is available.
  *
  * CLONE DEPENDENCIES:
  *   deepClone delegates to ObjectUtils.deepClone. If ObjectUtils is
@@ -59,7 +59,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 33;
+    var DATA_VERSION = 34;
     var STORE_NAME = 'appData';
     var BACKUP_KEY_PREFIX = 'mainData_backup_pre_v';
 
@@ -307,14 +307,6 @@
     // IDEMPOTENT MIGRATION-INTERNAL HELPERS
     // ============================================================
 
-    /**
-     * Parse a positive integer used by migrations.
-     *
-     * Delegates to ValidationUtils.parseStrictPositiveInteger when
-     * available. Falls back to a local implementation with the same
-     * semantics: only numbers that are safe integers >= 1, or
-     * strings matching /^\d+$/ that parse to safe integers >= 1.
-     */
     function parseStrictPositiveInteger(value) {
         var VU = window.ValidationUtils;
         if (VU && typeof VU.parseStrictPositiveInteger === 'function') {
@@ -382,10 +374,6 @@
         });
     }
 
-    /**
-     * Explicit opt-in reset. Deletes the database and re-opens it.
-     * Exposed as window.db.forceReset() for manual recovery.
-     */
     function forceReset() {
         console.warn(
             '[Database] forceReset() called. This deletes HollowBladesDB ' +
@@ -674,6 +662,7 @@
                 case 30: migrateToVersion31(data); break;
                 case 31: migrateToVersion32(data); break;
                 case 32: migrateToVersion33(data); break;
+                case 33: migrateToVersion34(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -2510,11 +2499,6 @@
             return out;
         }
 
-        /**
-         * Normalise a period value for storage.
-         * Delegates to ValidationUtils.parseStrictPositiveInteger
-         * via parseStrictPositiveInteger() above.
-         */
         function normalisePeriodForStorage(value) {
             var parsed = parseStrictPositiveInteger(value);
             if (parsed === null) return '';
@@ -2636,6 +2620,97 @@
         }
 
         data._dataVersion = 33;
+    }
+
+    /**
+     * v34 — Team type normalisation.
+     *
+     * Routes every team's `type` field through
+     * TeamConstants.normalizeTeamType. The legacy 'temporary' and
+     * 'internship' aliases become 'professional'; any casing or
+     * surrounding whitespace on a canonical id is stripped.
+     *
+     * SCOPE (deliberately type-only):
+     *   `team.status` is NOT touched here. The Phase F sweep
+     *   normalises status on every read path via
+     *   TeamConstants.normalizeTeamStatus, and the writer
+     *   (TeamCore.updateTeam) already canonicalises. A status
+     *   migration would be a second, later migration once the
+     *   read-side sweep is fully landed; doing it now would
+     *   half-migrate a field whose writers still allow legacy
+     *   values through in edge cases.
+     *
+     * UNPARSEABLE TYPES:
+     *   A non-string `type`, or a string that normalizeTeamType
+     *   returns null for, is left UNTOUCHED and counted. Coercing
+     *   such a value to 'professional' would silently rewrite a
+     *   record the migration cannot understand. Untouched means
+     *   the read path's null-fallback still applies, so the team
+     *   shows up as "Unknown Type" for a human to inspect rather
+     *   than mislabelled.
+     *
+     * Idempotent: a team whose type already equals its canonical
+     * form is not rewritten.
+     */
+    function migrateToVersion34(data) {
+        if (!Array.isArray(data.teams)) {
+            data._dataVersion = 34;
+            return;
+        }
+
+        var TeamConstants = requireModule('TeamConstants', [
+            'normalizeTeamType'
+        ]);
+
+        var teamsSeen = 0;
+        var normalised = 0;
+        var alreadyCanonical = 0;
+        var unparseable = 0;
+
+        for (var i = 0; i < data.teams.length; i++) {
+            var team = data.teams[i];
+            if (!team || typeof team !== 'object' || Array.isArray(team)) {
+                continue;
+            }
+            teamsSeen++;
+
+            if (typeof team.type !== 'string') {
+                unparseable++;
+                continue;
+            }
+
+            var canonical = TeamConstants.normalizeTeamType(team.type);
+            if (canonical === null) {
+                unparseable++;
+                continue;
+            }
+            if (canonical === team.type) {
+                alreadyCanonical++;
+                continue;
+            }
+
+            team.type = canonical;
+            normalised++;
+        }
+
+        console.log(
+            '[Database] v34: team type normalisation. ' +
+            'Teams: ' + teamsSeen + '. ' +
+            'Normalised: ' + normalised + '. ' +
+            'Already canonical: ' + alreadyCanonical + '. ' +
+            'Unparseable (left untouched): ' + unparseable + '.'
+        );
+
+        if (unparseable > 0) {
+            console.warn(
+                '[Database] v34: ' + unparseable + ' team(s) have a ' +
+                'type that TeamConstants.normalizeTeamType could not ' +
+                'resolve. Records preserved. Open each team to set a ' +
+                'valid type, or delete it.'
+            );
+        }
+
+        data._dataVersion = 34;
     }
 
     // ============================================================
@@ -3325,10 +3400,6 @@
     // ============================================================
     // CREATE SAFE COPY
     // ============================================================
-    //
-    // Delegates to ObjectUtils.deepClone when available. The
-    // save-path copy MUST be structuredClone-clean; a JSON fallback
-    // would silently corrupt persisted data.
 
     function createSafeCopy(data) {
         if (data === null || typeof data !== 'object') {
