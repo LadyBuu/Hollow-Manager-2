@@ -79,6 +79,10 @@
  *     - vaporwave  (violet night, neon accents)
  *     - pastel     (pastel 80s magical girl)
  *     - carnival   (demented gothic carnival)
+ *     - maximal    (tacky shocking light)
+ *     - gits       (cyberpunk abyss)
+ *     - stained-glass (luminous fractured light)
+ *     - art-deco   (1920s metallic luxury)
  */
 
 /* ============================================================
@@ -129,9 +133,9 @@
    DARK-MODE GRID SURFACE
    ============================================================
    Declared on `html:not([data-theme])` so it applies ONLY in
-   dark mode. Light, vaporwave, pastel, and carnival all set
-   data-theme on <html>, so this selector does not match for
-   them, and they fall through to --border-soft / --panel.
+   dark mode. Light, vaporwave, pastel, carnival, and all other
+   themes set data-theme on <html>, so this selector does not
+   match for them, and they fall through to --border-soft / --panel.
  */
 
 html:not([data-theme]) {
@@ -2135,4 +2139,172 @@ button[disabled] {
 [data-theme="carnival"] .legend-color.schedule-highlight-instructor-free {
     background: rgba(170, 163, 160, 0.18);
     border-color: rgba(170, 163, 160, 0.45);
+}
+
+/* ============================================================
+   MAXIMAL OVERRIDES
+   ============================================================ */
+
+[data-theme="maximal"] .acad-group-color-0 { background: rgba(255, 46, 166, 0.18); border-left-color: #ff2ea6; }
+[data-theme="maximal"] .acad-group-color-1 { background: rgba(0, 229, 255, 0.18); border-left-color: #00e5ff; }
+[data-theme="maximal"] .acad-group-color-2 { background: rgba(255, 234, 0, 0.22); border-left-color: #ffea00; }
+[data-theme="maximal"] .acad-group-color-3 { background: rgba(122, 63, 168, 0.18); border-left-color: #7a3fa8; }
+[data-theme="maximal"] .acad-group-color-4 { background: rgba(0, 168, 154, 0.18); border-left-color: #00a89a; }
+[data-theme="maximal"] .acad-group-color-5 { background: rgba(255, 0, 102, 0.18); border-left-color: #ff0066; }
+[data-theme="maximal"] .acad-group-color-6 { background: rgba(26, 0, 51, 0.12); border-left-color: #1a0033; }
+[data-theme="maximal"] .acad-group-color-7 { background: rgba(255, 153, 0, 0.18); border-left-color: #ff9900; }
+
+[data-theme="maximal"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(0, 229, 255, 0.25);
+    box-shadow: inset 0 0 0 2px #00e5ff;
+}
+[data-theme="maximal"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(255, 234, 0, 0.30);
+    box-shadow: inset 0 0 0 2px #ffea00;
+}
+[data-theme="maximal"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="maximal"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="maximal"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="maximal"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(0, 229, 255, 0.25);
+}
+[data-theme="maximal"] .schedule-highlight-badge {
+    background: #00e5ff;
+    color: #1a0033;
+    border: 1px solid #1a0033;
+}
+
+[data-theme="maximal"] .legend-color.schedule-highlight-all-free {
+    background: rgba(0, 229, 255, 0.25);
+    border-color: #00e5ff;
+}
+[data-theme="maximal"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(255, 234, 0, 0.30);
+    border-color: #ffea00;
+}
+
+
+/* ============================================================
+   GITS OVERRIDES
+   ============================================================ */
+
+[data-theme="gits"] .acad-group-color-0 { background: rgba(0, 240, 255, 0.15); border-left-color: #00f0ff; }
+[data-theme="gits"] .acad-group-color-1 { background: rgba(50, 200, 162, 0.15); border-left-color: #32c8a2; }
+[data-theme="gits"] .acad-group-color-2 { background: rgba(242, 183, 56, 0.15); border-left-color: #f2b738; }
+[data-theme="gits"] .acad-group-color-3 { background: rgba(199, 125, 255, 0.15); border-left-color: #c77dff; }
+[data-theme="gits"] .acad-group-color-4 { background: rgba(255, 32, 56, 0.15); border-left-color: #ff2038; }
+[data-theme="gits"] .acad-group-color-5 { background: rgba(130, 160, 192, 0.15); border-left-color: #82a0c0; }
+[data-theme="gits"] .acad-group-color-6 { background: rgba(59, 78, 100, 0.25); border-left-color: #3b4e64; }
+[data-theme="gits"] .acad-group-color-7 { background: rgba(255, 119, 85, 0.15); border-left-color: #ff7755; }
+
+[data-theme="gits"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(50, 200, 162, 0.20);
+    box-shadow: inset 0 0 0 1px #32c8a2;
+}
+[data-theme="gits"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(242, 183, 56, 0.20);
+    box-shadow: inset 0 0 0 1px #f2b738;
+}
+[data-theme="gits"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="gits"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="gits"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="gits"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(50, 200, 162, 0.20);
+}
+[data-theme="gits"] .schedule-highlight-badge {
+    background: #32c8a2;
+    color: #060c14;
+    box-shadow: 0 0 5px #32c8a2;
+}
+
+[data-theme="gits"] .legend-color.schedule-highlight-all-free {
+    background: rgba(50, 200, 162, 0.20);
+    border-color: #32c8a2;
+}
+[data-theme="gits"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(242, 183, 56, 0.20);
+    border-color: #f2b738;
+}
+
+
+/* ============================================================
+   STAINED GLASS OVERRIDES
+   ============================================================ */
+
+[data-theme="stained-glass"] .acad-group-color-0 { background: rgba(255, 42, 109, 0.18); border-left-color: #ff2a6d; }
+[data-theme="stained-glass"] .acad-group-color-1 { background: rgba(0, 210, 255, 0.18); border-left-color: #00d2ff; }
+[data-theme="stained-glass"] .acad-group-color-2 { background: rgba(0, 229, 160, 0.18); border-left-color: #00e5a0; }
+[data-theme="stained-glass"] .acad-group-color-3 { background: rgba(181, 123, 255, 0.18); border-left-color: #b57bff; }
+[data-theme="stained-glass"] .acad-group-color-4 { background: rgba(255, 183, 3, 0.18); border-left-color: #ffb703; }
+[data-theme="stained-glass"] .acad-group-color-5 { background: rgba(255, 123, 0, 0.18); border-left-color: #ff7b00; }
+[data-theme="stained-glass"] .acad-group-color-6 { background: rgba(232, 244, 255, 0.12); border-left-color: #e8f4ff; }
+[data-theme="stained-glass"] .acad-group-color-7 { background: rgba(71, 51, 110, 0.28); border-left-color: #47336e; }
+
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(0, 229, 160, 0.22);
+    box-shadow: inset 0 0 0 1px #00e5a0;
+}
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(255, 183, 3, 0.22);
+    box-shadow: inset 0 0 0 1px #ffb703;
+}
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(0, 229, 160, 0.22);
+}
+[data-theme="stained-glass"] .schedule-highlight-badge {
+    background: #00e5a0;
+    color: #08060f;
+}
+
+[data-theme="stained-glass"] .legend-color.schedule-highlight-all-free {
+    background: rgba(0, 229, 160, 0.22);
+    border-color: #00e5a0;
+}
+[data-theme="stained-glass"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(255, 183, 3, 0.22);
+    border-color: #ffb703;
+}
+
+/* ============================================================
+   ART DECO OVERRIDES
+   ============================================================ */
+
+[data-theme="art-deco"] .acad-group-color-0 { background: rgba(10, 191, 126, 0.15); border-left-color: #0abf7e; }
+[data-theme="art-deco"] .acad-group-color-1 { background: rgba(212, 175, 55, 0.15); border-left-color: #d4af37; }
+[data-theme="art-deco"] .acad-group-color-2 { background: rgba(217, 37, 37, 0.15); border-left-color: #d92525; }
+[data-theme="art-deco"] .acad-group-color-3 { background: rgba(242, 235, 225, 0.12); border-left-color: #f2ebe1; }
+[data-theme="art-deco"] .acad-group-color-4 { background: rgba(74, 143, 158, 0.15); border-left-color: #4a8f9e; }
+[data-theme="art-deco"] .acad-group-color-5 { background: rgba(138, 107, 158, 0.15); border-left-color: #8a6b9e; }
+[data-theme="art-deco"] .acad-group-color-6 { background: rgba(181, 141, 92, 0.15); border-left-color: #b58d5c; }
+[data-theme="art-deco"] .acad-group-color-7 { background: rgba(158, 147, 132, 0.15); border-left-color: #9e9384; }
+
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-all-free {
+    background: rgba(10, 191, 126, 0.20);
+    box-shadow: inset 0 0 0 1px #0abf7e;
+}
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-instructor-free {
+    background: rgba(212, 175, 55, 0.20);
+    box-shadow: inset 0 0 0 1px #d4af37;
+}
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-1,
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-2,
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-3,
+[data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-4 {
+    background: rgba(10, 191, 126, 0.20);
+}
+[data-theme="art-deco"] .schedule-highlight-badge {
+    background: #0abf7e;
+    color: #0a0a0c;
+}
+
+[data-theme="art-deco"] .legend-color.schedule-highlight-all-free {
+    background: rgba(10, 191, 126, 0.20);
+    border-color: #0abf7e;
+}
+[data-theme="art-deco"] .legend-color.schedule-highlight-instructor-free {
+    background: rgba(212, 175, 55, 0.20);
+    border-color: #d4af37;
 }
