@@ -909,67 +909,66 @@
 }
 
 /* ============================================================
-   TOKENS — GITS (GHOST IN THE SHELL)
+   TOKENS — GITS (GHOST IN THE SHELL 1995)
    ============================================================
    Activated by data-theme="gits" on <html>.
 
-   Inspired by the 1995 cyberpunk classic. Deep navy, abyssal 
-   teal, and radioactive cyan. Hot crimson red is used as a 
-   warning/alert color, cutting through the cool tones like a 
-   laser. Hard edges, monospace-esque structural lines.
+   Inspired heavily by the 1995 anime poster: deep abyssal teal
+   backgrounds, heavy black structural frames, radioactive cyan,
+   and hot cyberpunk magenta. High contrast, clinical, and harsh.
    ============================================================ */
 
 [data-theme="gits"] {
     /* BASE PALETTE */
-    --bg: #060c14;              /* Deep abyss */
-    --panel: #0a1220;           /* Dark Navy */
-    --panel-alt: #111a2c;
+    --bg: #04101a;              /* Deep underwater abyss */
+    --panel: #091a2a;           /* Dark structural steel */
+    --panel-alt: #0e243b;
     
-    --border: #1d3a5e;          /* Steel blue */
-    --border-soft: #12253d;
+    --border: #00f0ff;          /* Cyan framing */
+    --border-soft: #1d3a5e;
     
-    --text: #e0f0ff;            /* Ice blue */
-    --text-dim: #82a0c0;
+    --text: #ffffff;            /* Pure clinical white */
+    --text-dim: #7da5c4;        /* Muted tech blue */
 
     /* RADIOACTIVE CYAN */
     --accent: #00f0ff;
     --accent-soft: rgba(0, 240, 255, 0.12);
     --accent-hover: rgba(0, 240, 255, 0.25);
 
-    /* SEA GREEN */
-    --info: #32c8a2;
-    --info-soft: rgba(50, 200, 162, 0.12);
-    --info-hover: rgba(50, 200, 162, 0.25);
+    /* NEON MAGENTA (From the poster's glowing lines) */
+    --info: #ff00a8;
+    --info-soft: rgba(255, 0, 168, 0.14);
+    --info-hover: rgba(255, 0, 168, 0.28);
 
     /* LASER CRIMSON */
     --danger: #ff2038;
-    --danger-soft: rgba(255, 32, 56, 0.14);
-    --danger-hover: rgba(255, 32, 56, 0.28);
+    --danger-soft: rgba(255, 32, 56, 0.15);
+    --danger-hover: rgba(255, 32, 56, 0.30);
 
     /* WARNING GOLD */
     --warning: #f2b738;
-    --warning-soft: rgba(242, 183, 56, 0.14);
-    --warning-hover: rgba(242, 183, 56, 0.28);
+    --warning-soft: rgba(242, 183, 56, 0.15);
+    --warning-hover: rgba(242, 183, 56, 0.30);
 
     /* OVERLAY & SHADOWS */
     --overlay: rgba(0, 0, 0, 0.85);
-    --overlay-light: rgba(0, 0, 0, 0.7);
+    --overlay-light: rgba(0, 0, 0, 0.70);
     
-    --radius: 2px;              /* Sharp, angular edges */
-    --shadow: 0 0 15px rgba(0, 240, 255, 0.15), inset 0 0 0 1px rgba(0, 240, 255, 0.1);
+    --radius: 0px;              /* Stark, angular geometry */
+    --shadow: 0 4px 20px rgba(0, 240, 255, 0.15), 0 0 0 1px var(--border-soft);
 
     /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #00f0ff;
-    --graph-node-accent-stroke: #060c14;
-    --graph-node-info-fill: #32c8a2;
-    --graph-node-info-stroke: #060c14;
+    --graph-node-accent-stroke: #04101a;
+    --graph-node-info-fill: #ff00a8;
+    --graph-node-info-stroke: #04101a;
 
     --graph-node-status-deceased:   #3b4e64;
-    --graph-node-status-instructor: #c77dff;
+    --graph-node-status-instructor: #ff00a8;
     --graph-node-status-senior:     #f2b738;
     --graph-node-status-junior:     #00f0ff;
     --graph-node-status-rookie:     #32c8a2;
-    --graph-node-status-student:    #82a0c0;
+    --graph-node-status-student:    #7da5c4;
     --graph-node-status-support:    #ff2038;
     --graph-node-status-civilian:   #5a7a9e;
     --graph-node-status-other:      #5a7a9e;
@@ -977,20 +976,20 @@
     --magic-earth: #6b4e3d;
     --magic-water: #00f0ff;
     --magic-fire:  #ff2038;
-    --magic-air:   #e0f0ff;
+    --magic-air:   #ffffff;
     --magic-metal: #a0b8d0;
     --magic-wood:  #32c8a2;
     
     --magic-blood:   #ff2038;
-    --magic-bone:    #e0f0ff;
-    --magic-mind:    #c77dff;
+    --magic-bone:    #ffffff;
+    --magic-mind:    #ff00a8;
     --magic-morphic: #32c8a2;
-    --magic-life:    #32c8a2;
+    --magic-life:    #00f0ff;
     --magic-death:   #3b4e64;
     
     --magic-space:        #00f0ff;
     --magic-time:         #f2b738;
-    --magic-dimension:    #c77dff;
+    --magic-dimension:    #ff00a8;
     --magic-void:         #000000;
     --magic-reality:      #ff2038;
     --magic-transference: #ff7755;
@@ -999,210 +998,209 @@
     --relationship-professional: #f2b738;
     --relationship-romantic:     #ff2038;
     --relationship-friendship:   #00f0ff;
-    --relationship-mentor:       #c77dff;
+    --relationship-mentor:       #ff00a8;
     --relationship-rivalry:      #ff7755;
-    --relationship-alliance:     #82a0c0;
+    --relationship-alliance:     #7da5c4;
     --relationship-other:        #5a7a9e;
 
     --chip-bg-subtle: rgba(0, 240, 255, 0.08);
 }
 
 /* ============================================================
-   TOKENS — STAINED GLASS
+   TOKENS — STAINED GLASS (LUMINOUS CATHEDRAL)
    ============================================================
    Activated by data-theme="stained-glass" on <html>.
 
-   Inspired by luminous cathedral windows and the shimmering, 
-   fractured light of the 1995 GITS poster. The UI is treated 
-   as dark lead framing holding vivid, glowing glass panels. 
-   Text is treated like backlit glass.
+   A light theme inspired by looking up at a sunlit cathedral 
+   window. The background is a bright, radiant white-blue. 
+   Panels are framed in thick "lead" (dark charcoal). Accents 
+   are vivid jewel tones (ruby red, lapis blue, emerald green).
    ============================================================ */
 
 [data-theme="stained-glass"] {
     /* BASE PALETTE */
-    --bg: #08060f;              /* Dark lead / obsidian */
-    --panel: #110d1f;           /* Deep violet glass */
-    --panel-alt: #19132c;
+    --bg: #f2f7fd;              /* Radiant backlit white-blue */
+    --panel: #ffffff;           /* Pure glass */
+    --panel-alt: #e6eef8;
     
-    --border: #47336e;          /* Soft lead outlines */
-    --border-soft: #2e214a;
+    --border: #2c2c2c;          /* Thick lead framing */
+    --border-soft: #c5d4e3;
     
-    --text: #e8f4ff;            /* Pure, backlit white-blue */
-    --text-dim: #88a8cc;
+    --text: #1a1e24;            /* Very dark lead ink */
+    --text-dim: #5d6e80;
 
     /* VIVID RUBY GLASS */
-    --accent: #ff2a6d;
-    --accent-soft: rgba(255, 42, 109, 0.15);
-    --accent-hover: rgba(255, 42, 109, 0.28);
+    --accent: #e31837;
+    --accent-soft: rgba(227, 24, 55, 0.10);
+    --accent-hover: rgba(227, 24, 55, 0.20);
 
     /* LAPIS LAZULI & CYAN */
-    --info: #00d2ff;
-    --info-soft: rgba(0, 210, 255, 0.14);
-    --info-hover: rgba(0, 210, 255, 0.26);
+    --info: #0066cc;
+    --info-soft: rgba(0, 102, 204, 0.10);
+    --info-hover: rgba(0, 102, 204, 0.20);
 
     /* DEEP RED WARNING */
-    --danger: #ff4d4d;
-    --danger-soft: rgba(255, 77, 77, 0.15);
-    --danger-hover: rgba(255, 77, 77, 0.28);
+    --danger: #990000;
+    --danger-soft: rgba(153, 0, 0, 0.10);
+    --danger-hover: rgba(153, 0, 0, 0.20);
 
     /* AMBER YELLOW */
-    --warning: #ffb703;
-    --warning-soft: rgba(255, 183, 3, 0.15);
-    --warning-hover: rgba(255, 183, 3, 0.28);
+    --warning: #d48806;
+    --warning-soft: rgba(212, 136, 6, 0.12);
+    --warning-hover: rgba(212, 136, 6, 0.24);
 
     /* OVERLAY & SHADOWS */
-    --overlay: rgba(8, 6, 15, 0.85);
-    --overlay-light: rgba(8, 6, 15, 0.65);
+    --overlay: rgba(44, 44, 44, 0.5);
+    --overlay-light: rgba(44, 44, 44, 0.3);
     
-    --radius: 6px;
-    --shadow: inset 0 0 10px rgba(255, 255, 255, 0.05), 0 4px 20px rgba(0, 0, 0, 0.6);
+    --radius: 4px;              /* Rounded lead framing */
+    --shadow: 0 4px 15px rgba(44, 44, 44, 0.08), inset 0 0 10px rgba(255, 255, 255, 0.5);
 
     /* GRAPH & DOMAIN COLORS */
-    --graph-node-accent-fill: #ff2a6d;
-    --graph-node-accent-stroke: #00d2ff;
-    --graph-node-info-fill: #00d2ff;
-    --graph-node-info-stroke: #ff2a6d;
+    --graph-node-accent-fill: #e31837;
+    --graph-node-accent-stroke: #2c2c2c;
+    --graph-node-info-fill: #0066cc;
+    --graph-node-info-stroke: #2c2c2c;
 
-    --graph-node-status-deceased:   #4a4a4a;
-    --graph-node-status-instructor: #b57bff;
-    --graph-node-status-senior:     #ffb703;
-    --graph-node-status-junior:     #00d2ff;
-    --graph-node-status-rookie:     #00e5a0;
-    --graph-node-status-student:    #ff2a6d;
-    --graph-node-status-support:    #ff7b00;
-    --graph-node-status-civilian:   #88a8cc;
-    --graph-node-status-other:      #47336e;
+    --graph-node-status-deceased:   #a0a0a0;
+    --graph-node-status-instructor: #6a1b9a;
+    --graph-node-status-senior:     #d48806;
+    --graph-node-status-junior:     #0066cc;
+    --graph-node-status-rookie:     #2e7d32;
+    --graph-node-status-student:    #e31837;
+    --graph-node-status-support:    #d84315;
+    --graph-node-status-civilian:   #5d6e80;
+    --graph-node-status-other:      #a0a0a0;
 
-    --magic-earth: #8f5e3f;
-    --magic-water: #00d2ff;
-    --magic-fire:  #ff2a6d;
-    --magic-air:   #e8f4ff;
-    --magic-metal: #c0d0e0;
-    --magic-wood:  #00e5a0;
+    --magic-earth: #6b4e3d;
+    --magic-water: #0066cc;
+    --magic-fire:  #e31837;
+    --magic-air:   #87ceeb;
+    --magic-metal: #9e9e9e;
+    --magic-wood:  #2e7d32;
     
-    --magic-blood:   #ff4d4d;
-    --magic-bone:    #f0e6d2;
-    --magic-mind:    #b57bff;
-    --magic-morphic: #00d2ff;
-    --magic-life:    #00e5a0;
-    --magic-death:   #2e214a;
+    --magic-blood:   #990000;
+    --magic-bone:    #e0dac5;
+    --magic-mind:    #6a1b9a;
+    --magic-morphic: #00897b;
+    --magic-life:    #2e7d32;
+    --magic-death:   #2c2c2c;
     
-    --magic-space:        #00d2ff;
-    --magic-time:         #ffb703;
-    --magic-dimension:    #b57bff;
-    --magic-void:         #08060f;
-    --magic-reality:      #ff2a6d;
-    --magic-transference: #ff7b00;
+    --magic-space:        #0066cc;
+    --magic-time:         #d48806;
+    --magic-dimension:    #6a1b9a;
+    --magic-void:         #000000;
+    --magic-reality:      #e31837;
+    --magic-transference: #d84315;
 
-    --relationship-familial:     #00e5a0;
-    --relationship-professional: #ffb703;
-    --relationship-romantic:     #ff2a6d;
-    --relationship-friendship:   #00d2ff;
-    --relationship-mentor:       #b57bff;
-    --relationship-rivalry:      #ff7b00;
-    --relationship-alliance:     #00a8cc;
-    --relationship-other:        #88a8cc;
+    --relationship-familial:     #2e7d32;
+    --relationship-professional: #d48806;
+    --relationship-romantic:     #e31837;
+    --relationship-friendship:   #0066cc;
+    --relationship-mentor:       #6a1b9a;
+    --relationship-rivalry:      #d84315;
+    --relationship-alliance:     #00897b;
+    --relationship-other:        #5d6e80;
 
-    --chip-bg-subtle: rgba(255, 255, 255, 0.05);
+    --chip-bg-subtle: rgba(44, 44, 44, 0.05);
 }
 
 /* ============================================================
-   TOKENS — ART DECO
+   TOKENS — ART DECO (THE GREAT GATSBY)
    ============================================================
    Activated by data-theme="art-deco" on <html>.
 
-   Inspired by 1920s Gatsby-era luxury and the structural,
-   metallic architecture of Fritz Lang's Metropolis. Charcoal 
-   backgrounds, brushed brass framing, and emerald green 
-   accents. The geometry is sharp (radius 0), and the borders 
-   act as metallic trim.
+   A light theme inspired by 1920s luxury. Warm champagne 
+   backgrounds, polished brass borders, and emerald/onyx 
+   geometric accents. Strict, sharp corners (radius 0).
    ============================================================ */
 
 [data-theme="art-deco"] {
     /* BASE PALETTE */
-    --bg: #0a0a0c;              /* Dark charcoal / onyx */
-    --panel: #131418;           /* Smoked glass */
-    --panel-alt: #1c1d24;
+    --bg: #f4f0e6;              /* Champagne / warm parchment */
+    --panel: #ffffff;           /* Crisp linen */
+    --panel-alt: #f0ebd8;
     
-    --border: #c5a059;          /* Polished brass */
-    --border-soft: #4a3f2a;
+    --border: #b8975a;          /* Polished brass */
+    --border-soft: #d1c2a5;
     
-    --text: #f2ebe1;            /* Ivory paper */
-    --text-dim: #9e9384;
+    --text: #1c1e21;            /* Onyx / deep ink */
+    --text-dim: #7d7768;
 
-    /* EMERALD GREEN & BRASS */
-    --accent: #0abf7e;
-    --accent-soft: rgba(10, 191, 126, 0.12);
-    --accent-hover: rgba(10, 191, 126, 0.24);
+    /* EMERALD GREEN */
+    --accent: #0b6c46;
+    --accent-soft: rgba(11, 108, 70, 0.10);
+    --accent-hover: rgba(11, 108, 70, 0.20);
 
-    --info: #d4af37;            /* Gold */
-    --info-soft: rgba(212, 175, 55, 0.12);
-    --info-hover: rgba(212, 175, 55, 0.24);
+    /* GOLD / BRASS */
+    --info: #b8975a;
+    --info-soft: rgba(184, 151, 90, 0.15);
+    --info-hover: rgba(184, 151, 90, 0.25);
 
     /* RUBY RED */
-    --danger: #d92525;
-    --danger-soft: rgba(217, 37, 37, 0.12);
-    --danger-hover: rgba(217, 37, 37, 0.24);
+    --danger: #8c1c1c;
+    --danger-soft: rgba(140, 28, 28, 0.10);
+    --danger-hover: rgba(140, 28, 28, 0.20);
 
     /* CHAMPAGNE */
-    --warning: #e8c888;
-    --warning-soft: rgba(232, 200, 136, 0.15);
-    --warning-hover: rgba(232, 200, 136, 0.28);
+    --warning: #a67c00;
+    --warning-soft: rgba(166, 124, 0, 0.12);
+    --warning-hover: rgba(166, 124, 0, 0.24);
 
     /* OVERLAY & SHADOWS */
-    --overlay: rgba(5, 5, 7, 0.9);
-    --overlay-light: rgba(5, 5, 7, 0.75);
+    --overlay: rgba(28, 30, 33, 0.6);
+    --overlay-light: rgba(28, 30, 33, 0.4);
     
     --radius: 0px;              /* Strict, architectural geometry */
-    --shadow: 0 4px 12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(197, 160, 89, 0.15);
+    --shadow: 0 10px 25px rgba(28, 30, 33, 0.08), 0 0 0 1px var(--border);
 
     /* GRAPH & DOMAIN COLORS */
-    --graph-node-accent-fill: #0abf7e;
-    --graph-node-accent-stroke: #d4af37;
-    --graph-node-info-fill: #d4af37;
-    --graph-node-info-stroke: #0abf7e;
+    --graph-node-accent-fill: #0b6c46;
+    --graph-node-accent-stroke: #b8975a;
+    --graph-node-info-fill: #b8975a;
+    --graph-node-info-stroke: #0b6c46;
 
-    --graph-node-status-deceased:   #5c5850;
-    --graph-node-status-instructor: #b58d5c;
-    --graph-node-status-senior:     #d4af37;
-    --graph-node-status-junior:     #0abf7e;
-    --graph-node-status-rookie:     #58bfa0;
-    --graph-node-status-student:    #f2ebe1;
-    --graph-node-status-support:    #d92525;
-    --graph-node-status-civilian:   #9e9384;
-    --graph-node-status-other:      #4a3f2a;
+    --graph-node-status-deceased:   #a0a0a0;
+    --graph-node-status-instructor: #6a1b9a;
+    --graph-node-status-senior:     #b8975a;
+    --graph-node-status-junior:     #0b6c46;
+    --graph-node-status-rookie:     #4a9e7b;
+    --graph-node-status-student:    #1c1e21;
+    --graph-node-status-support:    #8c1c1c;
+    --graph-node-status-civilian:   #7d7768;
+    --graph-node-status-other:      #7d7768;
 
-    --magic-earth: #8f5e3f;
+    --magic-earth: #6b4e3d;
     --magic-water: #4a8f9e;
-    --magic-fire:  #d92525;
-    --magic-air:   #f2ebe1;
-    --magic-metal: #d4af37;
-    --magic-wood:  #0abf7e;
+    --magic-fire:  #8c1c1c;
+    --magic-air:   #e8e0d5;
+    --magic-metal: #b8975a;
+    --magic-wood:  #0b6c46;
     
-    --magic-blood:   #9c1a1a;
-    --magic-bone:    #e8dac1;
-    --magic-mind:    #8a6b9e;
-    --magic-morphic: #58bfa0;
-    --magic-life:    #0abf7e;
-    --magic-death:   #5c5850;
+    --magic-blood:   #6b1414;
+    --magic-bone:    #f4f0e6;
+    --magic-mind:    #6a1b9a;
+    --magic-morphic: #4a9e7b;
+    --magic-life:    #0b6c46;
+    --magic-death:   #1c1e21;
     
     --magic-space:        #4a8f9e;
-    --magic-time:         #d4af37;
-    --magic-dimension:    #8a6b9e;
-    --magic-void:         #0a0a0c;
-    --magic-reality:      #d92525;
-    --magic-transference: #b58d5c;
+    --magic-time:         #b8975a;
+    --magic-dimension:    #6a1b9a;
+    --magic-void:         #000000;
+    --magic-reality:      #8c1c1c;
+    --magic-transference: #a67c00;
 
-    --relationship-familial:     #0abf7e;
-    --relationship-professional: #d4af37;
-    --relationship-romantic:     #d92525;
+    --relationship-familial:     #0b6c46;
+    --relationship-professional: #b8975a;
+    --relationship-romantic:     #8c1c1c;
     --relationship-friendship:   #4a8f9e;
-    --relationship-mentor:       #8a6b9e;
-    --relationship-rivalry:      #b58d5c;
-    --relationship-alliance:     #58bfa0;
-    --relationship-other:        #9e9384;
+    --relationship-mentor:       #6a1b9a;
+    --relationship-rivalry:      #a67c00;
+    --relationship-alliance:     #4a9e7b;
+    --relationship-other:        #7d7768;
 
-    --chip-bg-subtle: rgba(197, 160, 89, 0.08);
+    --chip-bg-subtle: rgba(28, 30, 33, 0.05);
 }
 
 /* ============================================================
@@ -1607,28 +1605,17 @@ a,
     box-shadow: 2px 2px 0 var(--text);
 }
 
-
 /* ============================================================
-   GITS BACKDROP
-   ============================================================
-   Vertical scanlines and deep radial glow.
-   Inert in every other theme.
- */
+   GITS BACKDROP & HEADINGS
+   ============================================================ */
 
 [data-theme="gits"] body {
     background:
-        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-        radial-gradient(circle at 50% 0%, #112a4a 0%, transparent 60%),
-        var(--bg);
-    background-size: 100% 4px, 100% 100%, 100% 100%;
+        linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px),
+        radial-gradient(circle at 50% 0%, #0a2540 0%, var(--bg) 100%);
+    background-size: 100% 4px, 100% 100%;
     background-attachment: fixed;
 }
-
-/* ============================================================
-   GITS HEADINGS
-   ============================================================
-   Clinical, glowing data.
- */
 
 [data-theme="gits"] h1,
 [data-theme="gits"] h2,
@@ -1641,97 +1628,79 @@ a,
     text-transform: uppercase;
 }
 
+[data-theme="gits"] header {
+    background: #000;
+    border-bottom: 2px solid var(--info); /* Magenta divider */
+}
+[data-theme="gits"] header nav a.active {
+    color: #000;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+}
 [data-theme="gits"] #theme-toggle-btn {
-    color: var(--accent);
-    border-color: var(--accent);
+    color: var(--info);
+    border-color: var(--info);
     background: transparent;
-    box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+    box-shadow: 0 0 10px rgba(255, 0, 168, 0.2);
 }
 
-[data-theme="gits"] ::selection { background: var(--danger); color: #fff; }
-[data-theme="gits"] :focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
-
-
 /* ============================================================
-   STAINED GLASS BACKDROP
-   ============================================================
-   Fractured light beams and deep radial glow.
-   Inert in every other theme.
- */
+   STAINED GLASS BACKDROP & HEADINGS
+   ============================================================ */
 
 [data-theme="stained-glass"] body {
     background:
-        linear-gradient(135deg, rgba(255, 42, 109, 0.05) 0%, transparent 40%),
-        linear-gradient(225deg, rgba(0, 210, 255, 0.05) 0%, transparent 40%),
-        radial-gradient(circle at 50% 50%, #1a1233 0%, var(--bg) 100%);
+        linear-gradient(135deg, rgba(227, 24, 55, 0.04) 0%, transparent 40%),
+        linear-gradient(225deg, rgba(0, 102, 204, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 50% 50%, #ffffff 0%, var(--bg) 100%);
     background-attachment: fixed;
 }
-
-/* ============================================================
-   STAINED GLASS HEADINGS
-   ============================================================
-   Backlit serif.
- */
 
 [data-theme="stained-glass"] h1,
 [data-theme="stained-glass"] h2,
 [data-theme="stained-glass"] h3,
 [data-theme="stained-glass"] h4 {
-    color: #fff;
-    text-shadow: 
-        0 0 10px rgba(0, 210, 255, 0.6),
-        0 0 20px rgba(255, 42, 109, 0.4);
+    color: #1a1e24;
+    text-shadow: 0 0 15px rgba(255, 255, 255, 1);
     font-family: 'Fraunces', serif;
     font-weight: 700;
+    letter-spacing: 0.02em;
 }
 
+[data-theme="stained-glass"] header {
+    background: #ffffff;
+    border-bottom: 3px solid var(--border); /* Thick lead */
+}
+[data-theme="stained-glass"] .modal-content {
+    border: 3px solid var(--border);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05);
+}
 [data-theme="stained-glass"] #theme-toggle-btn {
-    color: var(--warning);
-    border-color: var(--warning);
+    color: var(--accent);
+    border-color: var(--accent);
     background: transparent;
-    box-shadow: inset 0 0 10px rgba(255, 183, 3, 0.2);
 }
-
-[data-theme="stained-glass"] ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, var(--accent), var(--info));
-    border: 1px solid var(--border);
-}
-[data-theme="stained-glass"] :focus-visible {
-    outline: 2px solid var(--info);
-    outline-offset: 2px;
-    box-shadow: 0 0 15px rgba(0, 210, 255, 0.4);
-}
-
 
 /* ============================================================
-   ART DECO BACKDROP
-   ============================================================
-   Subtle structural grid.
-   Inert in every other theme.
- */
+   ART DECO BACKDROP & HEADINGS
+   ============================================================ */
 
 [data-theme="art-deco"] body {
     background:
-        linear-gradient(to right, rgba(197, 160, 89, 0.03) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(197, 160, 89, 0.03) 1px, transparent 1px),
+        linear-gradient(to right, rgba(184, 151, 90, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(184, 151, 90, 0.04) 1px, transparent 1px),
         var(--bg);
     background-size: 40px 40px, 40px 40px, 100% 100%;
     background-attachment: fixed;
 }
 
-/* ============================================================
-   ART DECO HEADINGS & HEADER
-   ============================================================
-   Geometric, uppercase brass trim.
- */
-
 [data-theme="art-deco"] h1,
 [data-theme="art-deco"] h2,
 [data-theme="art-deco"] h3,
 [data-theme="art-deco"] h4 {
-    color: var(--info);
+    color: #1c1e21;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.15em;
     font-family: 'Fraunces', serif;
     font-weight: 900;
 }
@@ -1743,18 +1712,16 @@ a,
 [data-theme="art-deco"] header h1 span {
     color: var(--info);
 }
-
+[data-theme="art-deco"] .modal-content {
+    border: 2px solid var(--border);
+    box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15);
+}
 [data-theme="art-deco"] #theme-toggle-btn {
     color: var(--info);
     border-color: var(--info);
     background: transparent;
     border-radius: 0;
 }
-[data-theme="art-deco"] :focus-visible {
-    outline: 1px solid var(--info);
-    outline-offset: 0;
-}
-
 
 /* ============================================================
    RESET + GLOBAL
@@ -2385,13 +2352,13 @@ main {
 }
 
 [data-theme="stained-glass"] .modal-content {
-    box-shadow: 0 0 50px rgba(0, 210, 255, 0.15), inset 0 0 20px rgba(255, 42, 109, 0.1);
-    border: 1px solid #47336e;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05);
+    border: 3px solid #2c2c2c;
 }
 
 [data-theme="art-deco"] .modal-content {
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 0 1px #c5a059;
-    border: 2px solid #c5a059;
+    box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15);
+    border: 2px solid #b8975a;
     border-radius: 0;
 }
 
