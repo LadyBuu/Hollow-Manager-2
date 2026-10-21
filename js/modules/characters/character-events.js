@@ -98,6 +98,26 @@
  *
  *   Do NOT reintroduce either definition in this file.
  *
+ * ADD-BY-NAME IS CURRENTLY UNBOUND:
+ *   handleAddClassByName is exported on window.CharacterEvents
+ *   and is correct, but no DOM element in this file is wired to
+ *   it. The academic tab's Add-to-Class section uses a <select>
+ *   (handleAddClassById), not a freeform text input, so the
+ *   by-name path has no trigger.
+ *
+ *   It was bound when the tab had a freeform class-name input
+ *   that has since been replaced by the class dropdown. The
+ *   function is retained because:
+ *     (a) it is exported, so an out-of-tree caller could invoke
+ *         it directly via window.CharacterEvents.handleAddClassByName
+ *     (b) a future freeform input would need exactly this handler,
+ *         and the implementation is already correct
+ *         (AcademyClasses.addClassByName owns the create-or-attach
+ *         semantics).
+ *
+ *   If a review turns it up as dead code, verify that no external
+ *   caller depends on the export before removing it.
+ *
  * DEPENDENCIES (MANDATORY at call time):
  *   - window.CharacterAggregator
  *   - window.CharacterQueries
@@ -273,16 +293,6 @@
     // ============================================================
     // SIDEBAR DRAWER HELPERS
     // ============================================================
-    //
-    // The sidebar drawer is a mobile-only overlay. On desktop the
-    // sidebar is always visible (two-column layout) and the
-    // burger is hidden by CSS. On mobile, the burger
-    // (#toggle-char-list) is the only way to open or close the
-    // drawer.
-    //
-    // openSidebar / closeSidebar / toggleSidebar are exported on
-    // window.CharacterEvents so index.js can drive the initial
-    // open on mount without duplicating the .open class name.
 
     function getSidebar() {
         var container = document.getElementById('tab-characters');
@@ -1659,14 +1669,8 @@
      */
     function bindClickOutside(container) {
         addSafeEventListener(document, 'click', function() {
-            // Intentionally a no-op on mobile. See the docstring
-            // above. The function exists so a future desktop-only
-            // outside-click behaviour has a place to live, but the
-            // mobile path is closed.
             if (!isMobile()) { return; }
-
             // Mobile outside-click close is disabled by design.
-            // Do nothing.
         });
     }
 
@@ -3566,12 +3570,6 @@
             }, 100);
         }
 
-        // On mobile, this is the ONLY path that closes the drawer
-        // when the user selects a character. Tapping outside the
-        // drawer does not close it (see bindClickOutside); the
-        // burger is the toggle. This is intentional: it ensures
-        // the user always has a way back to the list without an
-        // empty form area in between.
         closeSidebar();
     }
 
@@ -3617,6 +3615,10 @@
             });
     }
 
+    /**
+     * Currently unbound. See the ADD-BY-NAME IS CURRENTLY
+     * UNBOUND note in the file header.
+     */
     function handleAddClassByName(name) {
         var charId = typeof window.getCurrentEditId === 'function'
             ? window.getCurrentEditId() : null;
@@ -3793,18 +3795,9 @@
         handleRemoveClass: handleRemoveClass,
         refreshCharacterReportButton: refreshCharacterReportButton,
 
-        // Sidebar drawer controls (see MOBILE DRAWER note in the
-        // file header). index.js calls openSidebar() on mount so
-        // the drawer is visible from the first render, and
-        // window.toggleCharacterList delegates to these helpers.
         openSidebar: openSidebar,
         closeSidebar: closeSidebar,
         toggleSidebar: toggleSidebar
-
-        // NOTE: window.showCharacterForm and window.hideCharacterForm
-        // are NOT defined here. See the WINDOW.SHOWCHARACTERFORM
-        // note in the file header. Their single owners are
-        // characters/index.js and character-form.js respectively.
     };
 
 })();
