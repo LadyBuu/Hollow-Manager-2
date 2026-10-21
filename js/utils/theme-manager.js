@@ -5,15 +5,18 @@
  * Manages theme switching with persistence.
  *
  * THEMES:
- *   - dark       (default; deep green)
- *   - light      (soft cream)
- *   - vaporwave  (neon pink + cyan on violet night)
- *   - pastel     (soft pastel 80s)
- *   - carnival   (gothic carnival; "The Ringmaster")
+ *   - dark          (default; deep green)
+ *   - light         (soft cream)
+ *   - vaporwave     (neon pink + cyan on violet night)
+ *   - pastel        (soft pastel 80s)
+ *   - carnival      (gothic carnival; "The Ringmaster")
+ *   - maximal       (tacky 90s sticker UI; shocking light)
+ *   - gits          (cyberpunk abyss; Ghost in the Shell)
+ *   - stained-glass (luminous fractured light)
+ *   - art-deco      (1920s metallic luxury)
  *
- * The toggle button cycles dark -> light -> vaporwave -> pastel
- * -> carnival -> dark. setTheme() accepts any of the five
- * explicitly.
+ * The toggle button cycles through the themes in the order
+ * above. setTheme() accepts any of the nine explicitly.
  *
  * PERSISTENCE:
  *   The preference is stored in localStorage under
@@ -38,8 +41,10 @@
  *       (function() {
  *         try {
  *           var t = localStorage.getItem('hollow-manager-theme');
- *           if (t === 'light' || t === 'vaporwave' ||
- *               t === 'pastel' || t === 'carnival') {
+ *           if (t === 'light' || t === 'vaporwave' || 
+ *               t === 'pastel' || t === 'carnival' || 
+ *               t === 'maximal' || t === 'gits' || 
+ *               t === 'stained-glass' || t === 'art-deco') {
  *             document.documentElement.setAttribute('data-theme', t);
  *           }
  *         } catch (e) {}
@@ -145,6 +150,38 @@
             title: 'Switch to carnival mode',
             ariaLabel: 'Switch to carnival mode',
             themeColor: '#1a0a0a'
+        },
+        {
+            value: 'maximal',
+            isAttribute: true,
+            icon: '\u2726\uFE0E',           // ✦ text presentation (four-pointed star)
+            title: 'Switch to maximal mode',
+            ariaLabel: 'Switch to maximal mode',
+            themeColor: '#fff0fb'
+        },
+        {
+            value: 'gits',
+            isAttribute: true,
+            icon: '\u25C9\uFE0E',           // ◉ text presentation (fisheye / cyber eye)
+            title: 'Switch to GITS mode',
+            ariaLabel: 'Switch to GITS mode',
+            themeColor: '#060c14'
+        },
+        {
+            value: 'stained-glass',
+            isAttribute: true,
+            icon: '\u26EA\uFE0E',           // ⛪ text presentation (Church / Cathedral)
+            title: 'Switch to Stained Glass mode',
+            ariaLabel: 'Switch to Stained Glass mode',
+            themeColor: '#08060f'
+        },
+        {
+            value: 'art-deco',
+            isAttribute: true,
+            icon: '\u25C6\uFE0E',           // ◆ text presentation (Diamond / Gem)
+            title: 'Switch to Art Deco mode',
+            ariaLabel: 'Switch to Art Deco mode',
+            themeColor: '#0a0a0c'
         }
     ];
 
@@ -158,7 +195,11 @@
         LIGHT: 'light',
         VAPORWAVE: 'vaporwave',
         PASTEL: 'pastel',
-        CARNIVAL: 'carnival'
+        CARNIVAL: 'carnival',
+        MAXIMAL: 'maximal',
+        GITS: 'gits',
+        STAINED_GLASS: 'stained-glass',
+        ART_DECO: 'art-deco'
     });
 
     var CYCLE = THEME_TABLE.map(function(e) { return e.value; });
