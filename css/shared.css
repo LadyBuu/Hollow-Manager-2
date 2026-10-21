@@ -7,6 +7,10 @@
  *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
  *   - Custom properties ([data-theme="pastel"]) — pastel 80s magical-girl
  *   - Custom properties ([data-theme="carnival"]) — demented gothic carnival
+ *   - Custom properties ([data-theme="maximal"]) — tacky shocking light
+ *   - Custom properties ([data-theme="gits"]) — cyberpunk abyss
+ *   - Custom properties ([data-theme="stained-glass"]) — luminous fractured light
+ *   - Custom properties ([data-theme="art-deco"]) — 1920s metallic luxury
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -29,9 +33,10 @@
  * Load order: shared.css MUST load first.
  *
  * THEME SYSTEM:
- *   Dark mode is the default. The other four themes are
+ *   Dark mode is the default. The other eight themes are
  *   activated by setting data-theme="light" / "vaporwave" /
- *   "pastel" / "carnival" on <html>. All colors are driven by
+ *   "pastel" / "carnival" / "maximal" / "gits" / "stained-glass" / 
+ *   "art-deco" on <html>. All colors are driven by
  *   the tokens below, so a single attribute swap re-themes the
  *   app. See js/utils/theme-manager.js for the toggle logic.
  *
@@ -807,6 +812,400 @@
 }
 
 /* ============================================================
+   TOKENS — MAXIMAL (TACKY SHOCKING LIGHT)
+   ============================================================
+   Activated by data-theme="maximal" on <html>.
+
+   Inspired by tacky 90s vaporwave and sticker-heavy UI. 
+   Hot pink and electric cyan fight for dominance on a cream 
+   and mint background. Borders are thick, shadows are hard 
+   offsets, and text is heavily weighted.
+   ============================================================ */
+
+[data-theme="maximal"] {
+    /* BASE PALETTE */
+    --bg: #fff0fb;
+    --panel: #ffffff;
+    --panel-alt: #e6fffb;
+    
+    --border: #ff2ea6;
+    --border-soft: #ffb8e3;
+    
+    --text: #1a0033;
+    --text-dim: #7a3fa8;
+
+    /* HOT PINK & CYAN */
+    --accent: #ff2ea6;
+    --accent-soft: rgba(255, 46, 166, 0.15);
+    --accent-hover: rgba(255, 46, 166, 0.25);
+
+    --info: #00e5ff;
+    --info-soft: rgba(0, 229, 255, 0.18);
+    --info-hover: rgba(0, 229, 255, 0.30);
+
+    /* ACID YELLOW & DEEP RED */
+    --danger: #ff0066;
+    --danger-soft: rgba(255, 0, 102, 0.15);
+    --danger-hover: rgba(255, 0, 102, 0.25);
+
+    --warning: #ffea00;
+    --warning-soft: rgba(255, 234, 0, 0.25);
+    --warning-hover: rgba(255, 234, 0, 0.35);
+
+    /* OVERLAY & SHADOWS */
+    --overlay: rgba(26, 0, 51, 0.6);
+    --overlay-light: rgba(26, 0, 51, 0.4);
+    
+    --radius: 8px;
+    --shadow: 4px 4px 0 #00e5ff, 0 0 20px rgba(255, 46, 166, 0.4);
+
+    /* GRAPH & DOMAIN COLORS */
+    --graph-node-accent-fill: #ff2ea6;
+    --graph-node-accent-stroke: #1a0033;
+    --graph-node-info-fill: #00e5ff;
+    --graph-node-info-stroke: #1a0033;
+
+    --graph-node-status-deceased:   #b8a0c8;
+    --graph-node-status-instructor: #7a3fa8;
+    --graph-node-status-senior:     #ffea00;
+    --graph-node-status-junior:     #00e5ff;
+    --graph-node-status-rookie:     #ff0066;
+    --graph-node-status-student:    #ff2ea6;
+    --graph-node-status-support:    #ff9900;
+    --graph-node-status-civilian:   #1a0033;
+    --graph-node-status-other:      #7a3fa8;
+
+    --magic-earth: #b8a0c8;
+    --magic-water: #00e5ff;
+    --magic-fire:  #ff0066;
+    --magic-air:   #e6fffb;
+    --magic-metal: #7a3fa8;
+    --magic-wood:  #00a89a;
+    
+    --magic-blood:   #ff2ea6;
+    --magic-bone:    #fff0fb;
+    --magic-mind:    #1a0033;
+    --magic-morphic: #00e5ff;
+    --magic-life:    #ffea00;
+    --magic-death:   #7a3fa8;
+    
+    --magic-space:        #00e5ff;
+    --magic-time:         #ffea00;
+    --magic-dimension:    #ff2ea6;
+    --magic-void:         #1a0033;
+    --magic-reality:      #ff0066;
+    --magic-transference: #7a3fa8;
+
+    --relationship-familial:     #ffea00;
+    --relationship-professional: #7a3fa8;
+    --relationship-romantic:     #ff0066;
+    --relationship-friendship:   #00e5ff;
+    --relationship-mentor:       #ff2ea6;
+    --relationship-rivalry:      #1a0033;
+    --relationship-alliance:     #00a89a;
+    --relationship-other:        #b8a0c8;
+
+    --chip-bg-subtle: rgba(255, 46, 166, 0.08);
+}
+
+/* ============================================================
+   TOKENS — GITS (GHOST IN THE SHELL)
+   ============================================================
+   Activated by data-theme="gits" on <html>.
+
+   Inspired by the 1995 cyberpunk classic. Deep navy, abyssal 
+   teal, and radioactive cyan. Hot crimson red is used as a 
+   warning/alert color, cutting through the cool tones like a 
+   laser. Hard edges, monospace-esque structural lines.
+   ============================================================ */
+
+[data-theme="gits"] {
+    /* BASE PALETTE */
+    --bg: #060c14;              /* Deep abyss */
+    --panel: #0a1220;           /* Dark Navy */
+    --panel-alt: #111a2c;
+    
+    --border: #1d3a5e;          /* Steel blue */
+    --border-soft: #12253d;
+    
+    --text: #e0f0ff;            /* Ice blue */
+    --text-dim: #82a0c0;
+
+    /* RADIOACTIVE CYAN */
+    --accent: #00f0ff;
+    --accent-soft: rgba(0, 240, 255, 0.12);
+    --accent-hover: rgba(0, 240, 255, 0.25);
+
+    /* SEA GREEN */
+    --info: #32c8a2;
+    --info-soft: rgba(50, 200, 162, 0.12);
+    --info-hover: rgba(50, 200, 162, 0.25);
+
+    /* LASER CRIMSON */
+    --danger: #ff2038;
+    --danger-soft: rgba(255, 32, 56, 0.14);
+    --danger-hover: rgba(255, 32, 56, 0.28);
+
+    /* WARNING GOLD */
+    --warning: #f2b738;
+    --warning-soft: rgba(242, 183, 56, 0.14);
+    --warning-hover: rgba(242, 183, 56, 0.28);
+
+    /* OVERLAY & SHADOWS */
+    --overlay: rgba(0, 0, 0, 0.85);
+    --overlay-light: rgba(0, 0, 0, 0.7);
+    
+    --radius: 2px;              /* Sharp, angular edges */
+    --shadow: 0 0 15px rgba(0, 240, 255, 0.15), inset 0 0 0 1px rgba(0, 240, 255, 0.1);
+
+    /* GRAPH & DOMAIN COLORS */
+    --graph-node-accent-fill: #00f0ff;
+    --graph-node-accent-stroke: #060c14;
+    --graph-node-info-fill: #32c8a2;
+    --graph-node-info-stroke: #060c14;
+
+    --graph-node-status-deceased:   #3b4e64;
+    --graph-node-status-instructor: #c77dff;
+    --graph-node-status-senior:     #f2b738;
+    --graph-node-status-junior:     #00f0ff;
+    --graph-node-status-rookie:     #32c8a2;
+    --graph-node-status-student:    #82a0c0;
+    --graph-node-status-support:    #ff2038;
+    --graph-node-status-civilian:   #5a7a9e;
+    --graph-node-status-other:      #5a7a9e;
+
+    --magic-earth: #6b4e3d;
+    --magic-water: #00f0ff;
+    --magic-fire:  #ff2038;
+    --magic-air:   #e0f0ff;
+    --magic-metal: #a0b8d0;
+    --magic-wood:  #32c8a2;
+    
+    --magic-blood:   #ff2038;
+    --magic-bone:    #e0f0ff;
+    --magic-mind:    #c77dff;
+    --magic-morphic: #32c8a2;
+    --magic-life:    #32c8a2;
+    --magic-death:   #3b4e64;
+    
+    --magic-space:        #00f0ff;
+    --magic-time:         #f2b738;
+    --magic-dimension:    #c77dff;
+    --magic-void:         #000000;
+    --magic-reality:      #ff2038;
+    --magic-transference: #ff7755;
+
+    --relationship-familial:     #32c8a2;
+    --relationship-professional: #f2b738;
+    --relationship-romantic:     #ff2038;
+    --relationship-friendship:   #00f0ff;
+    --relationship-mentor:       #c77dff;
+    --relationship-rivalry:      #ff7755;
+    --relationship-alliance:     #82a0c0;
+    --relationship-other:        #5a7a9e;
+
+    --chip-bg-subtle: rgba(0, 240, 255, 0.08);
+}
+
+/* ============================================================
+   TOKENS — STAINED GLASS
+   ============================================================
+   Activated by data-theme="stained-glass" on <html>.
+
+   Inspired by luminous cathedral windows and the shimmering, 
+   fractured light of the 1995 GITS poster. The UI is treated 
+   as dark lead framing holding vivid, glowing glass panels. 
+   Text is treated like backlit glass.
+   ============================================================ */
+
+[data-theme="stained-glass"] {
+    /* BASE PALETTE */
+    --bg: #08060f;              /* Dark lead / obsidian */
+    --panel: #110d1f;           /* Deep violet glass */
+    --panel-alt: #19132c;
+    
+    --border: #47336e;          /* Soft lead outlines */
+    --border-soft: #2e214a;
+    
+    --text: #e8f4ff;            /* Pure, backlit white-blue */
+    --text-dim: #88a8cc;
+
+    /* VIVID RUBY GLASS */
+    --accent: #ff2a6d;
+    --accent-soft: rgba(255, 42, 109, 0.15);
+    --accent-hover: rgba(255, 42, 109, 0.28);
+
+    /* LAPIS LAZULI & CYAN */
+    --info: #00d2ff;
+    --info-soft: rgba(0, 210, 255, 0.14);
+    --info-hover: rgba(0, 210, 255, 0.26);
+
+    /* DEEP RED WARNING */
+    --danger: #ff4d4d;
+    --danger-soft: rgba(255, 77, 77, 0.15);
+    --danger-hover: rgba(255, 77, 77, 0.28);
+
+    /* AMBER YELLOW */
+    --warning: #ffb703;
+    --warning-soft: rgba(255, 183, 3, 0.15);
+    --warning-hover: rgba(255, 183, 3, 0.28);
+
+    /* OVERLAY & SHADOWS */
+    --overlay: rgba(8, 6, 15, 0.85);
+    --overlay-light: rgba(8, 6, 15, 0.65);
+    
+    --radius: 6px;
+    --shadow: inset 0 0 10px rgba(255, 255, 255, 0.05), 0 4px 20px rgba(0, 0, 0, 0.6);
+
+    /* GRAPH & DOMAIN COLORS */
+    --graph-node-accent-fill: #ff2a6d;
+    --graph-node-accent-stroke: #00d2ff;
+    --graph-node-info-fill: #00d2ff;
+    --graph-node-info-stroke: #ff2a6d;
+
+    --graph-node-status-deceased:   #4a4a4a;
+    --graph-node-status-instructor: #b57bff;
+    --graph-node-status-senior:     #ffb703;
+    --graph-node-status-junior:     #00d2ff;
+    --graph-node-status-rookie:     #00e5a0;
+    --graph-node-status-student:    #ff2a6d;
+    --graph-node-status-support:    #ff7b00;
+    --graph-node-status-civilian:   #88a8cc;
+    --graph-node-status-other:      #47336e;
+
+    --magic-earth: #8f5e3f;
+    --magic-water: #00d2ff;
+    --magic-fire:  #ff2a6d;
+    --magic-air:   #e8f4ff;
+    --magic-metal: #c0d0e0;
+    --magic-wood:  #00e5a0;
+    
+    --magic-blood:   #ff4d4d;
+    --magic-bone:    #f0e6d2;
+    --magic-mind:    #b57bff;
+    --magic-morphic: #00d2ff;
+    --magic-life:    #00e5a0;
+    --magic-death:   #2e214a;
+    
+    --magic-space:        #00d2ff;
+    --magic-time:         #ffb703;
+    --magic-dimension:    #b57bff;
+    --magic-void:         #08060f;
+    --magic-reality:      #ff2a6d;
+    --magic-transference: #ff7b00;
+
+    --relationship-familial:     #00e5a0;
+    --relationship-professional: #ffb703;
+    --relationship-romantic:     #ff2a6d;
+    --relationship-friendship:   #00d2ff;
+    --relationship-mentor:       #b57bff;
+    --relationship-rivalry:      #ff7b00;
+    --relationship-alliance:     #00a8cc;
+    --relationship-other:        #88a8cc;
+
+    --chip-bg-subtle: rgba(255, 255, 255, 0.05);
+}
+
+/* ============================================================
+   TOKENS — ART DECO
+   ============================================================
+   Activated by data-theme="art-deco" on <html>.
+
+   Inspired by 1920s Gatsby-era luxury and the structural,
+   metallic architecture of Fritz Lang's Metropolis. Charcoal 
+   backgrounds, brushed brass framing, and emerald green 
+   accents. The geometry is sharp (radius 0), and the borders 
+   act as metallic trim.
+   ============================================================ */
+
+[data-theme="art-deco"] {
+    /* BASE PALETTE */
+    --bg: #0a0a0c;              /* Dark charcoal / onyx */
+    --panel: #131418;           /* Smoked glass */
+    --panel-alt: #1c1d24;
+    
+    --border: #c5a059;          /* Polished brass */
+    --border-soft: #4a3f2a;
+    
+    --text: #f2ebe1;            /* Ivory paper */
+    --text-dim: #9e9384;
+
+    /* EMERALD GREEN & BRASS */
+    --accent: #0abf7e;
+    --accent-soft: rgba(10, 191, 126, 0.12);
+    --accent-hover: rgba(10, 191, 126, 0.24);
+
+    --info: #d4af37;            /* Gold */
+    --info-soft: rgba(212, 175, 55, 0.12);
+    --info-hover: rgba(212, 175, 55, 0.24);
+
+    /* RUBY RED */
+    --danger: #d92525;
+    --danger-soft: rgba(217, 37, 37, 0.12);
+    --danger-hover: rgba(217, 37, 37, 0.24);
+
+    /* CHAMPAGNE */
+    --warning: #e8c888;
+    --warning-soft: rgba(232, 200, 136, 0.15);
+    --warning-hover: rgba(232, 200, 136, 0.28);
+
+    /* OVERLAY & SHADOWS */
+    --overlay: rgba(5, 5, 7, 0.9);
+    --overlay-light: rgba(5, 5, 7, 0.75);
+    
+    --radius: 0px;              /* Strict, architectural geometry */
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(197, 160, 89, 0.15);
+
+    /* GRAPH & DOMAIN COLORS */
+    --graph-node-accent-fill: #0abf7e;
+    --graph-node-accent-stroke: #d4af37;
+    --graph-node-info-fill: #d4af37;
+    --graph-node-info-stroke: #0abf7e;
+
+    --graph-node-status-deceased:   #5c5850;
+    --graph-node-status-instructor: #b58d5c;
+    --graph-node-status-senior:     #d4af37;
+    --graph-node-status-junior:     #0abf7e;
+    --graph-node-status-rookie:     #58bfa0;
+    --graph-node-status-student:    #f2ebe1;
+    --graph-node-status-support:    #d92525;
+    --graph-node-status-civilian:   #9e9384;
+    --graph-node-status-other:      #4a3f2a;
+
+    --magic-earth: #8f5e3f;
+    --magic-water: #4a8f9e;
+    --magic-fire:  #d92525;
+    --magic-air:   #f2ebe1;
+    --magic-metal: #d4af37;
+    --magic-wood:  #0abf7e;
+    
+    --magic-blood:   #9c1a1a;
+    --magic-bone:    #e8dac1;
+    --magic-mind:    #8a6b9e;
+    --magic-morphic: #58bfa0;
+    --magic-life:    #0abf7e;
+    --magic-death:   #5c5850;
+    
+    --magic-space:        #4a8f9e;
+    --magic-time:         #d4af37;
+    --magic-dimension:    #8a6b9e;
+    --magic-void:         #0a0a0c;
+    --magic-reality:      #d92525;
+    --magic-transference: #b58d5c;
+
+    --relationship-familial:     #0abf7e;
+    --relationship-professional: #d4af37;
+    --relationship-romantic:     #d92525;
+    --relationship-friendship:   #4a8f9e;
+    --relationship-mentor:       #8a6b9e;
+    --relationship-rivalry:      #b58d5c;
+    --relationship-alliance:     #58bfa0;
+    --relationship-other:        #9e9384;
+
+    --chip-bg-subtle: rgba(197, 160, 89, 0.08);
+}
+
+/* ============================================================
    THEME TRANSITION
    ============================================================
    Smooth color transitions when the theme attribute flips.
@@ -1132,6 +1531,230 @@ a,
         var(--panel);
     background-size: 8px 100%;
 }
+
+/* ============================================================
+   MAXIMAL BACKDROP
+   ============================================================
+   Aggressive multi-radial gradient, bubblegum cream base.
+   Inert in every other theme.
+ */
+
+[data-theme="maximal"] body {
+    background:
+        radial-gradient(600px 400px at 0% 0%, #ffd6f5 0%, transparent 60%),
+        radial-gradient(700px 500px at 100% 10%, #d6fff7 0%, transparent 55%),
+        radial-gradient(600px 400px at 50% 100%, #fff6a8 0%, transparent 55%),
+        repeating-linear-gradient(45deg, #fff0fb 0 20px, #ffe0f5 20px 40px);
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   MAXIMAL HEADER & HEADINGS
+   ============================================================
+   Inverted gradient header with chunky sticker shadows.
+ */
+
+[data-theme="maximal"] header {
+    background: linear-gradient(90deg, #ff2ea6 0%, #00e5ff 100%);
+    border-bottom: 3px solid var(--text);
+    box-shadow: 0 4px 0 var(--text), 0 8px 24px rgba(255, 46, 166, 0.4);
+}
+[data-theme="maximal"] header h1,
+[data-theme="maximal"] header nav a,
+[data-theme="maximal"] .header-actions button {
+    color: #fff;
+    text-shadow: 1px 1px 0 var(--text);
+}
+[data-theme="maximal"] header nav a.active {
+    background: var(--text);
+    color: var(--warning);
+    box-shadow: 2px 2px 0 var(--accent);
+}
+
+[data-theme="maximal"] h1,
+[data-theme="maximal"] h2,
+[data-theme="maximal"] h3,
+[data-theme="maximal"] h4 {
+    color: var(--text);
+    text-shadow: 2px 2px 0 #fff, 3px 3px 0 var(--accent);
+    font-weight: 900;
+}
+
+[data-theme="maximal"] .page-header h2,
+[data-theme="maximal"] .dashboard-title {
+    text-shadow:
+        2px 2px 0 var(--info),
+        4px 4px 0 var(--warning),
+        6px 6px 0 var(--text);
+}
+
+[data-theme="maximal"] ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--accent), var(--info));
+    border: 2px solid var(--text);
+}
+[data-theme="maximal"] ::-webkit-scrollbar-track { background: var(--bg); }
+
+[data-theme="maximal"] :focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 6px var(--info);
+}
+
+[data-theme="maximal"] #theme-toggle-btn {
+    color: #fff;
+    border-color: var(--text);
+    background: var(--accent);
+    box-shadow: 2px 2px 0 var(--text);
+}
+
+
+/* ============================================================
+   GITS BACKDROP
+   ============================================================
+   Vertical scanlines and deep radial glow.
+   Inert in every other theme.
+ */
+
+[data-theme="gits"] body {
+    background:
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        radial-gradient(circle at 50% 0%, #112a4a 0%, transparent 60%),
+        var(--bg);
+    background-size: 100% 4px, 100% 100%, 100% 100%;
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   GITS HEADINGS
+   ============================================================
+   Clinical, glowing data.
+ */
+
+[data-theme="gits"] h1,
+[data-theme="gits"] h2,
+[data-theme="gits"] h3,
+[data-theme="gits"] h4 {
+    color: var(--accent);
+    text-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+    font-family: monospace;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+[data-theme="gits"] #theme-toggle-btn {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: transparent;
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+}
+
+[data-theme="gits"] ::selection { background: var(--danger); color: #fff; }
+[data-theme="gits"] :focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+
+
+/* ============================================================
+   STAINED GLASS BACKDROP
+   ============================================================
+   Fractured light beams and deep radial glow.
+   Inert in every other theme.
+ */
+
+[data-theme="stained-glass"] body {
+    background:
+        linear-gradient(135deg, rgba(255, 42, 109, 0.05) 0%, transparent 40%),
+        linear-gradient(225deg, rgba(0, 210, 255, 0.05) 0%, transparent 40%),
+        radial-gradient(circle at 50% 50%, #1a1233 0%, var(--bg) 100%);
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   STAINED GLASS HEADINGS
+   ============================================================
+   Backlit serif.
+ */
+
+[data-theme="stained-glass"] h1,
+[data-theme="stained-glass"] h2,
+[data-theme="stained-glass"] h3,
+[data-theme="stained-glass"] h4 {
+    color: #fff;
+    text-shadow: 
+        0 0 10px rgba(0, 210, 255, 0.6),
+        0 0 20px rgba(255, 42, 109, 0.4);
+    font-family: 'Fraunces', serif;
+    font-weight: 700;
+}
+
+[data-theme="stained-glass"] #theme-toggle-btn {
+    color: var(--warning);
+    border-color: var(--warning);
+    background: transparent;
+    box-shadow: inset 0 0 10px rgba(255, 183, 3, 0.2);
+}
+
+[data-theme="stained-glass"] ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--accent), var(--info));
+    border: 1px solid var(--border);
+}
+[data-theme="stained-glass"] :focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+    box-shadow: 0 0 15px rgba(0, 210, 255, 0.4);
+}
+
+
+/* ============================================================
+   ART DECO BACKDROP
+   ============================================================
+   Subtle structural grid.
+   Inert in every other theme.
+ */
+
+[data-theme="art-deco"] body {
+    background:
+        linear-gradient(to right, rgba(197, 160, 89, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(197, 160, 89, 0.03) 1px, transparent 1px),
+        var(--bg);
+    background-size: 40px 40px, 40px 40px, 100% 100%;
+    background-attachment: fixed;
+}
+
+/* ============================================================
+   ART DECO HEADINGS & HEADER
+   ============================================================
+   Geometric, uppercase brass trim.
+ */
+
+[data-theme="art-deco"] h1,
+[data-theme="art-deco"] h2,
+[data-theme="art-deco"] h3,
+[data-theme="art-deco"] h4 {
+    color: var(--info);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: 'Fraunces', serif;
+    font-weight: 900;
+}
+
+[data-theme="art-deco"] header {
+    background: var(--panel);
+    border-bottom: 2px solid var(--border);
+}
+[data-theme="art-deco"] header h1 span {
+    color: var(--info);
+}
+
+[data-theme="art-deco"] #theme-toggle-btn {
+    color: var(--info);
+    border-color: var(--info);
+    background: transparent;
+    border-radius: 0;
+}
+[data-theme="art-deco"] :focus-visible {
+    outline: 1px solid var(--info);
+    outline-offset: 0;
+}
+
 
 /* ============================================================
    RESET + GLOBAL
@@ -1747,6 +2370,29 @@ main {
     box-shadow:
         0 0 40px rgba(0, 0, 0, 0.65),
         0 0 30px rgba(181, 31, 45, 0.14);
+}
+
+[data-theme="maximal"] .modal-content {
+    box-shadow: 
+        6px 6px 0 #ff2ea6, 
+        10px 10px 0 #00e5ff;
+    border: 3px solid #1a0033;
+}
+
+[data-theme="gits"] .modal-content {
+    box-shadow: 0 0 30px rgba(0, 240, 255, 0.15), inset 0 0 0 1px #00f0ff;
+    border: 1px solid #00f0ff;
+}
+
+[data-theme="stained-glass"] .modal-content {
+    box-shadow: 0 0 50px rgba(0, 210, 255, 0.15), inset 0 0 20px rgba(255, 42, 109, 0.1);
+    border: 1px solid #47336e;
+}
+
+[data-theme="art-deco"] .modal-content {
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 0 1px #c5a059;
+    border: 2px solid #c5a059;
+    border-radius: 0;
 }
 
 @media (min-width: 768px) {
