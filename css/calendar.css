@@ -2183,18 +2183,17 @@ button[disabled] {
     border-color: #ffea00;
 }
 
-
 /* ============================================================
    GITS OVERRIDES
    ============================================================ */
 
 [data-theme="gits"] .acad-group-color-0 { background: rgba(0, 240, 255, 0.15); border-left-color: #00f0ff; }
-[data-theme="gits"] .acad-group-color-1 { background: rgba(50, 200, 162, 0.15); border-left-color: #32c8a2; }
+[data-theme="gits"] .acad-group-color-1 { background: rgba(255, 0, 168, 0.15); border-left-color: #ff00a8; }
 [data-theme="gits"] .acad-group-color-2 { background: rgba(242, 183, 56, 0.15); border-left-color: #f2b738; }
-[data-theme="gits"] .acad-group-color-3 { background: rgba(199, 125, 255, 0.15); border-left-color: #c77dff; }
+[data-theme="gits"] .acad-group-color-3 { background: rgba(130, 160, 192, 0.15); border-left-color: #82a0c0; }
 [data-theme="gits"] .acad-group-color-4 { background: rgba(255, 32, 56, 0.15); border-left-color: #ff2038; }
-[data-theme="gits"] .acad-group-color-5 { background: rgba(130, 160, 192, 0.15); border-left-color: #82a0c0; }
-[data-theme="gits"] .acad-group-color-6 { background: rgba(59, 78, 100, 0.25); border-left-color: #3b4e64; }
+[data-theme="gits"] .acad-group-color-5 { background: rgba(59, 78, 100, 0.25); border-left-color: #3b4e64; }
+[data-theme="gits"] .acad-group-color-6 { background: rgba(50, 200, 162, 0.15); border-left-color: #32c8a2; }
 [data-theme="gits"] .acad-group-color-7 { background: rgba(255, 119, 85, 0.15); border-left-color: #ff7755; }
 
 [data-theme="gits"] .schedule-cell.schedule-highlight-all-free {
@@ -2213,7 +2212,7 @@ button[disabled] {
 }
 [data-theme="gits"] .schedule-highlight-badge {
     background: #32c8a2;
-    color: #060c14;
+    color: #04101a;
     box-shadow: 0 0 5px #32c8a2;
 }
 
@@ -2226,85 +2225,84 @@ button[disabled] {
     border-color: #f2b738;
 }
 
-
 /* ============================================================
-   STAINED GLASS OVERRIDES
+   STAINED GLASS OVERRIDES (LIGHT THEME)
    ============================================================ */
 
-[data-theme="stained-glass"] .acad-group-color-0 { background: rgba(255, 42, 109, 0.18); border-left-color: #ff2a6d; }
-[data-theme="stained-glass"] .acad-group-color-1 { background: rgba(0, 210, 255, 0.18); border-left-color: #00d2ff; }
-[data-theme="stained-glass"] .acad-group-color-2 { background: rgba(0, 229, 160, 0.18); border-left-color: #00e5a0; }
-[data-theme="stained-glass"] .acad-group-color-3 { background: rgba(181, 123, 255, 0.18); border-left-color: #b57bff; }
-[data-theme="stained-glass"] .acad-group-color-4 { background: rgba(255, 183, 3, 0.18); border-left-color: #ffb703; }
-[data-theme="stained-glass"] .acad-group-color-5 { background: rgba(255, 123, 0, 0.18); border-left-color: #ff7b00; }
-[data-theme="stained-glass"] .acad-group-color-6 { background: rgba(232, 244, 255, 0.12); border-left-color: #e8f4ff; }
-[data-theme="stained-glass"] .acad-group-color-7 { background: rgba(71, 51, 110, 0.28); border-left-color: #47336e; }
+[data-theme="stained-glass"] .acad-group-color-0 { background: rgba(227, 24, 55, 0.12); border-left-color: #e31837; }
+[data-theme="stained-glass"] .acad-group-color-1 { background: rgba(0, 102, 204, 0.12); border-left-color: #0066cc; }
+[data-theme="stained-glass"] .acad-group-color-2 { background: rgba(46, 125, 50, 0.12); border-left-color: #2e7d32; }
+[data-theme="stained-glass"] .acad-group-color-3 { background: rgba(106, 27, 154, 0.12); border-left-color: #6a1b9a; }
+[data-theme="stained-glass"] .acad-group-color-4 { background: rgba(212, 136, 6, 0.12); border-left-color: #d48806; }
+[data-theme="stained-glass"] .acad-group-color-5 { background: rgba(216, 67, 21, 0.12); border-left-color: #d84315; }
+[data-theme="stained-glass"] .acad-group-color-6 { background: rgba(44, 44, 44, 0.10); border-left-color: #2c2c2c; }
+[data-theme="stained-glass"] .acad-group-color-7 { background: rgba(0, 137, 123, 0.12); border-left-color: #00897b; }
 
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-all-free {
-    background: rgba(0, 229, 160, 0.22);
-    box-shadow: inset 0 0 0 1px #00e5a0;
+    background: rgba(46, 125, 50, 0.15);
+    box-shadow: inset 0 0 0 1px #2e7d32;
 }
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-instructor-free {
-    background: rgba(255, 183, 3, 0.22);
-    box-shadow: inset 0 0 0 1px #ffb703;
+    background: rgba(212, 136, 6, 0.15);
+    box-shadow: inset 0 0 0 1px #d48806;
 }
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-3,
 [data-theme="stained-glass"] .schedule-cell.schedule-highlight-weeks-4 {
-    background: rgba(0, 229, 160, 0.22);
+    background: rgba(46, 125, 50, 0.15);
 }
 [data-theme="stained-glass"] .schedule-highlight-badge {
-    background: #00e5a0;
-    color: #08060f;
+    background: #2e7d32;
+    color: #ffffff;
 }
 
 [data-theme="stained-glass"] .legend-color.schedule-highlight-all-free {
-    background: rgba(0, 229, 160, 0.22);
-    border-color: #00e5a0;
+    background: rgba(46, 125, 50, 0.15);
+    border-color: #2e7d32;
 }
 [data-theme="stained-glass"] .legend-color.schedule-highlight-instructor-free {
-    background: rgba(255, 183, 3, 0.22);
-    border-color: #ffb703;
+    background: rgba(212, 136, 6, 0.15);
+    border-color: #d48806;
 }
 
 /* ============================================================
-   ART DECO OVERRIDES
+   ART DECO OVERRIDES (LIGHT THEME)
    ============================================================ */
 
-[data-theme="art-deco"] .acad-group-color-0 { background: rgba(10, 191, 126, 0.15); border-left-color: #0abf7e; }
-[data-theme="art-deco"] .acad-group-color-1 { background: rgba(212, 175, 55, 0.15); border-left-color: #d4af37; }
-[data-theme="art-deco"] .acad-group-color-2 { background: rgba(217, 37, 37, 0.15); border-left-color: #d92525; }
-[data-theme="art-deco"] .acad-group-color-3 { background: rgba(242, 235, 225, 0.12); border-left-color: #f2ebe1; }
-[data-theme="art-deco"] .acad-group-color-4 { background: rgba(74, 143, 158, 0.15); border-left-color: #4a8f9e; }
-[data-theme="art-deco"] .acad-group-color-5 { background: rgba(138, 107, 158, 0.15); border-left-color: #8a6b9e; }
-[data-theme="art-deco"] .acad-group-color-6 { background: rgba(181, 141, 92, 0.15); border-left-color: #b58d5c; }
-[data-theme="art-deco"] .acad-group-color-7 { background: rgba(158, 147, 132, 0.15); border-left-color: #9e9384; }
+[data-theme="art-deco"] .acad-group-color-0 { background: rgba(11, 108, 70, 0.10); border-left-color: #0b6c46; }
+[data-theme="art-deco"] .acad-group-color-1 { background: rgba(184, 151, 90, 0.15); border-left-color: #b8975a; }
+[data-theme="art-deco"] .acad-group-color-2 { background: rgba(140, 28, 28, 0.10); border-left-color: #8c1c1c; }
+[data-theme="art-deco"] .acad-group-color-3 { background: rgba(28, 30, 33, 0.10); border-left-color: #1c1e21; }
+[data-theme="art-deco"] .acad-group-color-4 { background: rgba(74, 143, 158, 0.12); border-left-color: #4a8f9e; }
+[data-theme="art-deco"] .acad-group-color-5 { background: rgba(106, 27, 154, 0.10); border-left-color: #6a1b9a; }
+[data-theme="art-deco"] .acad-group-color-6 { background: rgba(166, 124, 0, 0.12); border-left-color: #a67c00; }
+[data-theme="art-deco"] .acad-group-color-7 { background: rgba(125, 119, 104, 0.12); border-left-color: #7d7768; }
 
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-all-free {
-    background: rgba(10, 191, 126, 0.20);
-    box-shadow: inset 0 0 0 1px #0abf7e;
+    background: rgba(11, 108, 70, 0.15);
+    box-shadow: inset 0 0 0 1px #0b6c46;
 }
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-instructor-free {
-    background: rgba(212, 175, 55, 0.20);
-    box-shadow: inset 0 0 0 1px #d4af37;
+    background: rgba(184, 151, 90, 0.20);
+    box-shadow: inset 0 0 0 1px #b8975a;
 }
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-3,
 [data-theme="art-deco"] .schedule-cell.schedule-highlight-weeks-4 {
-    background: rgba(10, 191, 126, 0.20);
+    background: rgba(11, 108, 70, 0.15);
 }
 [data-theme="art-deco"] .schedule-highlight-badge {
-    background: #0abf7e;
-    color: #0a0a0c;
+    background: #0b6c46;
+    color: #ffffff;
 }
 
 [data-theme="art-deco"] .legend-color.schedule-highlight-all-free {
-    background: rgba(10, 191, 126, 0.20);
-    border-color: #0abf7e;
+    background: rgba(11, 108, 70, 0.15);
+    border-color: #0b6c46;
 }
 [data-theme="art-deco"] .legend-color.schedule-highlight-instructor-free {
-    background: rgba(212, 175, 55, 0.20);
-    border-color: #d4af37;
+    background: rgba(184, 151, 90, 0.20);
+    border-color: #b8975a;
 }
