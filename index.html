@@ -30,9 +30,12 @@
     <script>
         (function() {
             try {
-                var stored = localStorage.getItem('hollow-manager-theme');
-                if (stored && stored !== 'dark') {
-                    document.documentElement.setAttribute('data-theme', stored);
+                var t = localStorage.getItem('hollow-manager-theme');
+                if (t === 'light' || t === 'vaporwave' || 
+                    t === 'pastel' || t === 'carnival' || 
+                    t === 'maximal' || t === 'gits' ||
+                    t === 'stained-glass' || t === 'art-deco') {
+                    document.documentElement.setAttribute('data-theme', t);
                 }
             } catch (e) {}
         })();
