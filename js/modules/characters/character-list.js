@@ -23,10 +23,44 @@
  *   - Hide eliminated
  *   - Hide filler (sessionStorage-persisted)
  *
- * SORT:
- *   - name-asc (default), name-desc, age-asc, age-desc
- *   - sessionStorage-persisted under characters_sort_v1
- *   - Sort is NOT reset by the Clear filter button
+ * __no_class__ SENTINEL (H.1):
+ *   The sentinel is owned by character-class-view.js, which
+ *   declares the option list, emits the sentinel in the filter
+ *   dropdown, and exports the string on window.CharacterClassView
+ *   .NO_CLASS_FILTER. This module is a CONSUMER of that value.
+ *
+ *   The local populateClassFilter() delegates to
+ *   CharacterClassView.populateClassFilter() when that module is
+ *   available (the normal case), so the sentinel that reaches the
+ *   DOM comes from its owner. Only the fallback path — used when
+ *   CharacterClassView hasn't loaded yet — builds the option list
+ *   here, and it reads the sentinel via getNoClassFilter() rather
+ *   than a local literal.
+ *
+ *   getNoClassFilter() returns the owner's value when available
+ *   and a fallback literal otherwise. The fallback matches the
+ *   owner's own default and exists only for the narrow load-order
+ *   window before character-class-view.js loads. The way to
+ *   change the sentinel is to change it in character-class-view.js;
+ *   this module picks up the new value on the next call.
+ *
+ *   Compare with character-aggregator.js's getNoClassFilter(),
+ *   which uses the identical lazy-read + fallback pattern.
+ *
+ * HIDE-ELIMINATED FAIL-CLOSED (H.2):
+ *   When hideEliminated is on, the aggregator throws if
+ *   EliminationQueries is missing or incapable. render() wraps
+ *   the aggregator call in a try/catch, so the throw becomes the
+ *   "Error loading character list" paragraph instead of a
+ *   silently unfiltered list. This is the correct handling: the
+ *   user asked for a filter, and the failure to honour it is
+ *   surfaced rather than hidden.
+ *
+ *   The error paragraph's copy is generic. Naming the missing
+ *   module in the UI would require the aggregator to throw a
+ *   discriminated error, which is a larger change. The console
+ *   carries the diagnostic; the UI carries the fact that
+ *   something is wrong.
  *
  * CLEAR FILTER BUTTON:
  *   The Clear filter button (in the sidebar) resets all filters AND
@@ -57,6 +91,11 @@
  *   selection bar entirely, leaving the user unable to see or
  *   clear a selection that was still live.
  *
+ *   The selection bar's Clear button carries
+ *   data-action="char-clear-selection". The click handler for that
+ *   action lives in character-events.js; this module emits the
+ *   button, that module binds it.
+ *
  *   The selection is NOT persisted. It is pruned on every render:
  *   any ID whose character no longer exists is dropped. Filtered-
  *   out IDs are kept — the user ticked them on purpose, and
@@ -80,6 +119,14 @@
  *   after ticking. Addressing this would require per-row DOM
  *   updates or focus restoration by id; left as a known trade-off.
  *
+ * DECEASED-ROW STYLING:
+ *   Deceased rows render at 40% opacity, but deceased rows are
+ *   filtered out by default (hideDeceased is true on mount). The
+ *   styling only appears when the user unticks "Hide deceased".
+ *   That is intentional: the row's dimmed appearance is a signal
+ *   about why the row is normally hidden, not a persistent state
+ *   the user sees in the default view.
+ *
  * CSS ASSUMPTIONS:
  *   The rows use the classes char-list-checkbox-cell and
  *   char-list-content for layout. They must be styled in
@@ -96,7 +143,7 @@
  *   - window.AcademyClasses
  *   - window.CalendarConstants
  *   - window.CharacterClassView (optional; local fallback for
- *     populateClassFilter if absent)
+ *     populateClassFilter and NO_CLASS_FILTER if absent)
  *   - window.getCurrentEditId (from index.js)
  */
 
@@ -115,7 +162,11 @@
     var HIDE_FILLER_STORAGE_KEY = 'characters_hide_filler_v1';
     var SORT_STORAGE_KEY = 'characters_sort_v1';
 
-    var NO_CLASS_FILTER = '__no_class__';
+    // The fallback for the NO_CLASS_FILTER sentinel. See the
+    // file header: the sentinel is owned by character-class-view.js
+    // and read via getNoClassFilter(). This literal exists only
+    // for the load-order window before that module is available.
+    var FALLBACK_NO_CLASS_FILTER = '__no_class__';
 
     var DEFAULT_SORT = 'name-asc';
 
@@ -155,6 +206,24 @@
             return window._currentEditId;
         }
         return null;
+    }
+
+    // ============================================================
+    // SENTINEL: NO_CLASS_FILTER
+    // ============================================================
+    //
+    // Read the sentinel from its owner (character-class-view.js)
+    // when available. The fallback literal matches the owner's
+    // own default and exists only for load-order safety.
+
+    function getNoClassFilter() {
+        var CCV = getCharacterClassView();
+        if (CCV &&
+            typeof CCV.NO_CLASS_FILTER === 'string' &&
+            CCV.NO_CLASS_FILTER !== '') {
+            return CCV.NO_CLASS_FILTER;
+        }
+        return FALLBACK_NO_CLASS_FILTER;
     }
 
     // ============================================================
@@ -457,6 +526,14 @@
         };
     }
 
+    /**
+     * Current application week. Mirrors CharacterAggregator
+     * .getCurrentWeek()'s contract, but lives here because this
+     * module can render before the aggregator has loaded its own
+     * dependencies. The duplication is deliberate: the cost of a
+     * load-order break would be a character tab that cannot
+     * render until the aggregator's lazy dependencies resolve.
+     */
     function getCurrentWeek() {
         var CC = getCalendarConstants();
         var data = window.data || {};
@@ -484,12 +561,17 @@
             return;
         }
 
+        // Fallback path: build the option list here. The sentinel
+        // value comes from getNoClassFilter() rather than a local
+        // literal, so this path agrees with the primary path even
+        // if the sentinel is ever changed in its owner.
         var select = document.getElementById(
             'char-class-filter'
         );
         if (!select) { return; }
 
         var previousValue = select.value || 'all';
+        var noClassFilter = getNoClassFilter();
 
         var AcademyClasses = getAcademyClasses();
         var classes = [];
@@ -504,7 +586,7 @@
 
         var html = '';
         html += '<option value="all">All Classes</option>';
-        html += '<option value="' + NO_CLASS_FILTER +
+        html += '<option value="' + escapeAttribute(noClassFilter) +
             '">No Class</option>';
 
         for (var i = 0; i < sorted.length; i++) {
@@ -555,6 +637,11 @@
         var filters = getFilterValues();
         var currentWeek = getCurrentWeek();
 
+        // H.2: when hideEliminated is on and EliminationQueries is
+        // missing or incapable, the aggregator throws. Catch that
+        // here so the tab shows a diagnostic error instead of
+        // crashing, and instead of silently returning the
+        // unfiltered list.
         var items;
         try {
             items = CharacterAggregator.getCharacterListViewModel({
@@ -618,6 +705,10 @@
      * can report how many selected characters are hidden by the
      * current filter. Renders whenever at least one character is
      * selected, even if zero are currently visible.
+     *
+     * The Clear button carries data-action="char-clear-selection".
+     * That action's handler lives in character-events.js; this
+     * module emits the button, that module binds it.
      */
     function renderSelectionBar(visibleItems) {
         var count = getSelectionCount();
@@ -708,6 +799,10 @@
             rowStyle += 'background:var(--accent-soft);' +
                 'border-left:3px solid var(--accent);';
         }
+        // Deceased rows dim when hideDeceased is off. When
+        // hideDeceased is on (the default), deceased rows are
+        // filtered out before render, so this branch does not
+        // fire.
         if (item.deceased) {
             rowStyle += 'opacity:0.4;';
         }
@@ -881,6 +976,12 @@
 
         getCurrentEditId: getCurrentEditId,
 
+        // H.1 — the sentinel this module compares against. Reads
+        // from character-class-view.js. Exposed for tests and for
+        // callers that need to construct a classFilter that
+        // matches the dropdown without redeclaring the literal.
+        getNoClassFilter: getNoClassFilter,
+
         // Selection API
         getSelectedIds: getSelectedIds,
         setSelectedIds: setSelectedIds,
@@ -914,7 +1015,8 @@
                 'setSelectedIds',
                 'clearSelection',
                 'hasSelection',
-                'getSelectionCount'
+                'getSelectionCount',
+                'getNoClassFilter'
             ];
 
             for (var i = 0; i < required.length; i++) {
@@ -937,6 +1039,26 @@
                 failures.push(
                     'getSelectedIds() should be empty initially'
                 );
+            }
+
+            // H.1 — sentinel agreement.
+            //
+            // If character-class-view.js is loaded, its sentinel
+            // must match the one this module emits in its fallback
+            // option list. A mismatch here is the exact bug H.1
+            // closes; surfacing it in verification makes the
+            // divergence visible on the console, not three
+            // interactions later as a filter that matches nothing.
+            var CCV = window.CharacterClassView;
+            if (CCV && typeof CCV.NO_CLASS_FILTER === 'string') {
+                if (exports.getNoClassFilter() !==
+                    CCV.NO_CLASS_FILTER) {
+                    failures.push(
+                        'NO_CLASS_FILTER disagreement: ' +
+                        'character-list=' + exports.getNoClassFilter() +
+                        ', class-view=' + CCV.NO_CLASS_FILTER
+                    );
+                }
             }
         } catch (e) {
             failures.push('smoke test threw: ' + e.message);
