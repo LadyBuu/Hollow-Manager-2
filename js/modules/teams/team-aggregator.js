@@ -28,6 +28,36 @@
  *
  *   The 'temporary' tab was retired.
  *
+ * STATUS AND TYPE NORMALISATION:
+ *   Every team-status comparison in this file routes through
+ *   TeamConstants.normalizeTeamStatus. A stored 'Active' counts
+ *   as active; a stored 'Deprecated' counts as deprecated. This
+ *   matches the sweep already applied to team-queries.js,
+ *   team-core.js, character-export.js, and the character
+ *   aggregator.
+ *
+ *   Every team-type comparison routes through
+ *   TeamConstants.normalizeTeamType. The team form VM emits the
+ *   NORMALISED type, not the raw stored value, so the renderer's
+ *   "is this type in the offered list" comparison is meaningful
+ *   against a canonical value. A legacy 'temporary' or
+ *   'internship' record emits 'professional'.
+ *
+ * STATUS DESCRIPTORS:
+ *   The team list VM, team detail VM, and rankings row VM each
+ *   carry:
+ *
+ *     isActive:      normalizeTeamStatus(status) === 'active'
+ *     isDeprecated:  normalizeTeamStatus(status) === 'deprecated'
+ *
+ *   'inactive' is not a distinct flag; it is the case where
+ *   neither of the above is true. Renderers that need to label
+ *   inactive teams check `!isActive && !isDeprecated`.
+ *
+ *   The list VM's 'status' sort orders by active → inactive →
+ *   deprecated, so a deprecated team always sorts below an
+ *   inactive one when the sort is ascending on status.
+ *
  * MEMBER ORDERING:
  *   getTeamMembersViewModel sorts members within their
  *   active/former partition by:
@@ -255,6 +285,14 @@
         typeof TeamConstants.normalizeTeamType !== 'function') {
         _missing.push('TeamConstants.normalizeTeamType');
     }
+    if (!TeamConstants ||
+        typeof TeamConstants.normalizeTeamStatus !== 'function') {
+        _missing.push('TeamConstants.normalizeTeamStatus');
+    }
+    if (!TeamConstants ||
+        typeof TeamConstants.DEFAULT_TEAM_TYPE !== 'string') {
+        _missing.push('TeamConstants.DEFAULT_TEAM_TYPE');
+    }
 
     if (!CharacterQueries ||
         typeof CharacterQueries.getCharacterById !== 'function') {
@@ -381,6 +419,31 @@
             return n;
         }
         return null;
+    }
+
+    /**
+     * Normalise a team's status for the boolean flags this module
+     * emits. Returns the canonical status string ('active',
+     * 'inactive', 'deprecated') or '' for an unparseable value.
+     */
+    function normalizedStatus(team) {
+        if (!team || typeof team !== 'object') { return ''; }
+        return TeamConstants.normalizeTeamStatus(team.status) || '';
+    }
+
+    /**
+     * Normalise a team's type. Returns the canonical string
+     * ('academic', 'professional', 'civilian') or '' for an
+     * unparseable value.
+     *
+     * The form VM emits this normalised value, so the renderer's
+     * "is this type in the offered list" comparison is
+     * authoritative against a canonical string rather than
+     * defensively re-normalising a raw value.
+     */
+    function normalizedType(team) {
+        if (!team || typeof team !== 'object') { return ''; }
+        return TeamConstants.normalizeTeamType(team.type) || '';
     }
 
     function getClassDisplayName(classId) {
@@ -891,6 +954,8 @@
             ? periods[periods.length - 1]
             : null;
 
+        var status = normalizedStatus(team);
+
         var viewModel = {
             id: team.id,
             name: currentDescriptives.name,
@@ -907,7 +972,8 @@
             temporaryMission: temporaryMissionId,
             temporaryMissionName: temporaryMissionName,
             memberCount: team.members ? team.members.length : 0,
-            isActive: team.status === 'active',
+            isActive: status === 'active',
+            isDeprecated: status === 'deprecated',
             isOperational: TeamQueries.isTeamOperational(team),
             createdAt: team.createdAt || '',
 
@@ -1008,6 +1074,8 @@
 
             var descriptives = readCurrentDescriptives(team);
 
+            var status = normalizedStatus(team);
+
             return {
                 id: team.id,
                 name: descriptives.name,
@@ -1019,7 +1087,8 @@
                 totalMemberCount: team.members
                     ? team.members.length : 0,
                 periodDisplay: getTeamPeriodDisplay(team),
-                isActive: team.status === 'active',
+                isActive: status === 'active',
+                isDeprecated: status === 'deprecated',
                 isOperational: TeamQueries.isTeamOperational(team),
                 classDisplay: classDisplay,
                 teamNumber: team.teamNumber || '',
@@ -1056,8 +1125,15 @@
                     bVal = b.activeMemberCount;
                     break;
                 case 'status':
-                    aVal = a.isActive ? 0 : 1;
-                    bVal = b.isActive ? 0 : 1;
+                    // Three-way ordering: active (0) sorts first,
+                    // inactive (1) next, deprecated (2) last.
+                    // The sortDirection inversion below reverses
+                    // this order for descending sorts, so
+                    // deprecated teams appear first on a
+                    // descending-by-status sort — which is the
+                    // intent of "desc".
+                    aVal = a.isDeprecated ? 2 : (a.isActive ? 0 : 1);
+                    bVal = b.isDeprecated ? 2 : (b.isActive ? 0 : 1);
                     break;
                 default:
                     aVal = a.name || '';
@@ -1267,11 +1343,21 @@
                 specialisations: []
             };
 
+        // The form emits the NORMALISED type so the renderer's
+        // "is this type in the offered list" comparison is
+        // authoritative. A legacy 'temporary' record emits
+        // 'professional'. A create form with no team falls back
+        // to the default type.
+        var formType = team
+            ? (TeamConstants.normalizeTeamType(team.type) ||
+                TeamConstants.DEFAULT_TEAM_TYPE)
+            : TeamConstants.DEFAULT_TEAM_TYPE;
+
         return {
             isEdit: isEdit,
             teamId: t.id || null,
             name: currentDescriptives.name,
-            type: t.type || 'professional',
+            type: formType,
             startPeriod: t.startPeriod || '',
             endPeriod: t.endPeriod || '',
             status: t.status || 'active',
@@ -1364,11 +1450,11 @@
 
         var onAnotherTeamSet = Object.create(null);
         if (periodNum !== null && isNonEmptyString(team.type)) {
-            var normalizedType =
+            var teamNormalizedType =
                 TeamConstants.normalizeTeamType(team.type);
-            if (normalizedType !== null) {
+            if (teamNormalizedType !== null) {
                 var allTeams = TeamQueries.getTeams(
-                    normalizedType,
+                    teamNormalizedType,
                     null,
                     true
                 );
@@ -1615,6 +1701,8 @@
                 provenanceLabel = '';
             }
 
+            var rowStatus = normalizedStatus(team);
+
             rows.push({
                 teamId: String(team.id),
                 name: TeamQueries.getCurrentTeamName(team),
@@ -1626,7 +1714,9 @@
                 periodDisplay: getTeamPeriodDisplay(team),
                 memberCount: members.length,
                 status: team.status || 'active',
-                activeAtYear: isActive
+                activeAtYear: isActive,
+                isActive: rowStatus === 'active',
+                isDeprecated: rowStatus === 'deprecated'
             });
         }
 
