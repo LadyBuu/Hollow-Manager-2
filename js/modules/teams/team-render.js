@@ -15,6 +15,10 @@
  *   - Modals: team form, ranking form/list.
  *   - The PERIODS editor: one row per period, each carrying its
  *     own name, start / end, tactical style, and specialisations.
+ *   - renderPeriodRow(), the single canonical renderer for a
+ *     period row. TeamEvents delegates to this function when it
+ *     appends a new row, so the append-path markup cannot drift
+ *     from the initial-render markup.
  *   - The read-only descriptive block on the expanded row and the
  *     team card: current period's tactical style and
  *     specialisations, plus a period history list when there is
@@ -29,7 +33,11 @@
  *   The renderer trusts the VM shape. It does not default missing
  *   fields to fabricated values and does not skip malformed rows.
  *   A broken VM produces a visible failure, not a plausible empty
- *   list.
+ *   list. renderCount() throws deliberately; a malformed count
+ *   blanks the tab, and the console names the malformed field.
+ *   Per-row containment is a design change (adds an error-row
+ *   state, hides the failure inside the list) and is not applied
+ *   here.
  *
  * PERIODS MODEL:
  *   The team form VM carries `periods`, an array of display-shaped
@@ -41,8 +49,9 @@
  *       specialisations:   [ { id, label } ]
  *     }
  *
- *   Each entry renders as one row in the periods editor. The
- *   renderer emits:
+ *   Each entry renders as one row in the periods editor via
+ *   renderPeriodRow(period, index, isLast, options, canRemove).
+ *   The row emits:
  *
  *     .team-period-row[data-period-index="N"]
  *       .team-period-row-header       (label + remove button)
@@ -58,9 +67,11 @@
  *                                     (select + Add button for
  *                                      the current row)
  *
- *   The remove button carries data-period-index. The remove
- *   button is omitted on the first row when there is only one
- *   period; a team must always have at least one.
+ *   `canRemove` controls whether the remove button is emitted.
+ *   The initial render passes `periods.length > 1`; TeamEvents
+ *   passes `false` when appending and then calls its own
+ *   updateRemoveButtons() to reveal the button on every row once
+ *   there is more than one.
  *
  *   The end year input on the last row is disabled AND read-only:
  *   the open-ended sentinel is a fact about the model, not a
@@ -72,17 +83,25 @@
  *   with the current calendar year. The user sees one editable
  *   row and no history. On edit, every stored period renders.
  *
- * TOP-OF-FORM NAME (dirty-track baseline):
- *   The form's #team-name input carries a data-original-value
- *   attribute holding the name the form was opened with. TeamEvents
- *   reads it on submit to decide whether the user actually typed in
- *   the field this session. That decision, combined with the
- *   team's nameIsAuto flag, resolves the two-owners-of-name
- *   problem: the top field wins only when the user touched it.
+ * TEAM TYPE IN THE FORM SELECT:
+ *   The form's #team-type select offers every non-academic type
+ *   (academic teams are managed by the Academy module). If the
+ *   current team's type is not in that list — because it is
+ *   academic, or because it is an unnormalised legacy alias —
+ *   the type is appended as a DISABLED option marked
+ *   "(current; not editable here)". The select shows the truth,
+ *   and the hint explains why changing it would reclassify the
+ *   team. This prevents the silent-default bug where editing a
+ *   team whose type had no matching option rewrote the type to
+ *   the first option on save.
  *
- *   If the field is untouched, the periods array — as edited —
- *   wins, so retitling the last period in the editor is not
- *   silently overwritten by an untouched top field.
+ *   The current type is normalised via TeamConstants
+ *   .normalizeTeamType before the comparison, so a stored
+ *   'temporary' or 'internship' record displays correctly (the
+ *   select shows 'professional' because that is what it
+ *   normalises to, and the user sees the canonical id). A future
+ *   change to the aggregator (Pass 2) will hand this function a
+ *   normalised type, which is a no-op for the logic below.
  *
  * LEGACY SHAPE:
  *   The read-only descriptive block reads `team.tacticalStyle` and
@@ -123,6 +142,14 @@
  *
  *   The mode toggle is rendered by renderFilterBar. The body is
  *   chosen by renderContainer.
+ *
+ * DEPRECATED STATUS:
+ *   A team whose status is 'deprecated' is styled and labelled
+ *   distinctly in the list and card. The signal is
+ *   `team.isDeprecated`, which the aggregator sets from
+ *   normalizeTeamStatus. Until the aggregator supplies it, the
+ *   checks are no-ops and the existing 'inactive' treatment
+ *   remains the only status signal.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -198,6 +225,20 @@
         return typeof value === 'number' && isFinite(value);
     }
 
+    /**
+     * Emit a count as a string.
+     *
+     * THROWS on anything that is not a finite number. This is
+     * deliberate: a malformed count is a data-layer bug, and
+     * surfacing it as a render failure means the tab visibly
+     * refuses to display rather than silently rendering "NaN" or
+     * "0". The cost is that one bad team blanks the tab; the
+     * benefit is that the failure is loud and points at the
+     * malformed field. Per-row containment (an error row per
+     * broken team) is a design change: it preserves the tab at
+     * the cost of hiding the failure inside the list, which is
+     * the failure mode this contract exists to avoid.
+     */
     function renderCount(value) {
         if (!isCount(value)) {
             throw new Error(
@@ -229,6 +270,24 @@
 
     function getFormTeamStatuses() {
         return TeamConstants.getTeamStatuses();
+    }
+
+    /**
+     * Normalise a stored type for form display. Routes through
+     * TeamConstants.normalizeTeamType so a legacy 'temporary' or
+     * 'internship' record displays as 'professional', which is
+     * what the reader compares against.
+     *
+     * Falls back to the raw value when the helper is missing
+     * (never at runtime in practice — TeamConstants is a
+     * module-load dependency above — but the guard costs
+     * nothing and makes the function safe in isolation).
+     */
+    function normaliseTeamTypeForDisplay(rawType) {
+        if (typeof TeamConstants.normalizeTeamType !== 'function') {
+            return typeof rawType === 'string' ? rawType : '';
+        }
+        return TeamConstants.normalizeTeamType(rawType) || '';
     }
 
     // ============================================================
@@ -285,6 +344,34 @@
         return '<span class="unassigned-age">(' +
                     escapeHtml(ageDisplay) +
                 ')</span>';
+    }
+
+    // ============================================================
+    // STATUS LABELS
+    // ============================================================
+    //
+    // Both statuses are additive: a team can be inactive OR
+    // deprecated; the current data model treats them as mutually
+    // exclusive in practice, but the renderer does not assume it.
+    // The labels render independently so a future status change
+    // does not silently lose one of them.
+
+    function renderStatusLabels(team) {
+        var html = '';
+
+        if (team.isActive === false) {
+            html += ' <span class="team-status-inactive">' +
+                        '(Inactive)' +
+                    '</span>';
+        }
+
+        if (team.isDeprecated === true) {
+            html += ' <span class="team-status-deprecated">' +
+                        '(Deprecated)' +
+                    '</span>';
+        }
+
+        return html;
     }
 
     // ============================================================
@@ -454,6 +541,9 @@
             if (team.isActive === false) {
                 rowClass += ' inactive';
             }
+            if (team.isDeprecated === true) {
+                rowClass += ' deprecated';
+            }
             if (isSelected) {
                 rowClass += ' team-item-selected';
             }
@@ -486,11 +576,7 @@
             html += ' <span class="team-type-label">' +
                         escapeHtml(team.typeLabel || team.type || '') +
                     '</span>';
-            if (team.isActive === false) {
-                html += ' <span class="team-status-inactive">' +
-                            '(Inactive)' +
-                        '</span>';
-            }
+            html += renderStatusLabels(team);
             if (isNonEmptyString(team.temporaryMissionName)) {
                 html += ' <span class="team-mission-label" ' +
                             'title="Associated mission">' +
@@ -649,9 +735,46 @@
         return html;
     }
 
+    /**
+     * Render one pool row.
+     *
+     * The row depends on three sub-objects of the pool VM:
+     * availability, assignment, and history. If any is missing,
+     * this function throws with a message naming the missing
+     * field. The alternative — reading row.availability.display
+     * unguarded — produces a TypeError from inside the render
+     * with no context about which field is missing and which row.
+     *
+     * This is consistent with the renderer's "fail loudly"
+     * contract; see the file header for the rationale.
+     */
     function renderPoolRow(
         row, variantClass, expandedIds, selectedIds
     ) {
+        if (!row || typeof row !== 'object') {
+            throw new Error(
+                '[TeamRender] Pool row is not an object.'
+            );
+        }
+        if (!row.availability || typeof row.availability !== 'object') {
+            throw new Error(
+                '[TeamRender] Pool row missing `availability` ' +
+                '(characterId=' + safeString(row.characterId) + ').'
+            );
+        }
+        if (!row.assignment || typeof row.assignment !== 'object') {
+            throw new Error(
+                '[TeamRender] Pool row missing `assignment` ' +
+                '(characterId=' + safeString(row.characterId) + ').'
+            );
+        }
+        if (!row.history || typeof row.history !== 'object') {
+            throw new Error(
+                '[TeamRender] Pool row missing `history` ' +
+                '(characterId=' + safeString(row.characterId) + ').'
+            );
+        }
+
         var charId = row.characterId;
         var idAttr = escapeAttribute(charId);
 
@@ -690,11 +813,11 @@
                 '</span>';
 
         html += '<span class="pool-availability">' +
-                    escapeHtml(row.availability.display) +
+                    escapeHtml(row.availability.display || '') +
                 '</span>';
 
         html += '<span class="pool-assignment">' +
-                    escapeHtml(row.assignment.display) +
+                    escapeHtml(row.assignment.display || '') +
                 '</span>';
 
         html += '<span class="pool-history">';
@@ -1090,6 +1213,9 @@
         if (team.isActive === false) {
             cardClass += ' inactive';
         }
+        if (team.isDeprecated === true) {
+            cardClass += ' deprecated';
+        }
 
         var html = '';
         html += '<div class="' + cardClass + '" ' +
@@ -1107,11 +1233,7 @@
         html += ' <span class="team-type-label">' +
                     escapeHtml(team.typeLabel || team.type || '') +
                 '</span>';
-        if (team.isActive === false) {
-            html += ' <span class="team-status-inactive">' +
-                        '(Inactive)' +
-                    '</span>';
-        }
+        html += renderStatusLabels(team);
         html += '</div>';
 
         html += '<div class="team-card-details">';
@@ -1178,6 +1300,16 @@
     // in Teams mode. The other modes have their own controls on
     // their own body. Rankings mode owns its year picker; the
     // filter bar just carries the mode buttons in that mode.
+    //
+    // ARIA:
+    //   The mode toggle buttons carry role="tab" and
+    //   aria-selected. They also carry aria-controls pointing at
+    //   #team-list-container, which is the role="tabpanel"
+    //   element rendered by renderContainer. Arrow-key navigation
+    //   between the tabs is a larger a11y addition and is not
+    //   implemented here; the buttons remain individually
+    //   focusable and click-activatable, which is what makes the
+    //   current shape usable with a keyboard.
 
     function renderFilterBar(filterVM) {
         if (!filterVM || !filterVM.tab) { return ''; }
@@ -1207,6 +1339,7 @@
                         '" ' +
                         'data-mode="teams" ' +
                         'role="tab" ' +
+                        'aria-controls="team-list-container" ' +
                         'aria-selected="' +
                             (viewMode === 'teams' ? 'true' : 'false') +
                         '">Teams</button>';
@@ -1216,6 +1349,7 @@
                         '" ' +
                         'data-mode="pool" ' +
                         'role="tab" ' +
+                        'aria-controls="team-list-container" ' +
                         'aria-selected="' +
                             (isPool ? 'true' : 'false') +
                         '">Professional Pool</button>';
@@ -1225,6 +1359,7 @@
                         '" ' +
                         'data-mode="timeline" ' +
                         'role="tab" ' +
+                        'aria-controls="team-list-container" ' +
                         'aria-selected="' +
                             (isTimeline ? 'true' : 'false') +
                         '">Timeline</button>';
@@ -1234,14 +1369,12 @@
                         '" ' +
                         'data-mode="rankings" ' +
                         'role="tab" ' +
+                        'aria-controls="team-list-container" ' +
                         'aria-selected="' +
                             (isRankings ? 'true' : 'false') +
                         '">Rankings</button>';
             html += '</div>';
 
-            // The year + inactive controls belong to Teams mode
-            // only. Pool, Timeline, and Rankings each own their
-            // own controls on their own body.
             if (viewMode === 'teams') {
                 html += '<div class="filter-group">';
                 html += '<label for="team-filter-year">' +
@@ -1341,9 +1474,12 @@
                         '\u2013present';
                 } else if (to === from + 1) {
                     governsText = 'governs ' + from + ' only';
-                } else if (to === from) {
-                    governsText = 'governs ' + from + ' only';
                 } else {
+                    // Valid data: to > from + 1. The
+                    // 'to === from' case cannot occur — an
+                    // entry's governing range starts at its own
+                    // year and ends at the next entry's year,
+                    // which is strictly greater.
                     governsText = 'governs ' + from +
                         '\u2013' + (to - 1);
                 }
@@ -1449,11 +1585,13 @@
                 '</span>';
         html += '</div>';
 
+        // ---- Team type (with current-type-in-list fix) ----
         html += '<div class="form-group">';
         html += '<label for="team-type">Team Type *</label>';
         html += '<select id="team-type" required>' +
                     typeOptions +
                 '</select>';
+        html += renderTypeHint(formVM.type);
         html += '</div>';
 
         html += '<div class="form-group">';
@@ -1517,6 +1655,46 @@
         return html;
     }
 
+    /**
+     * Emit the type hint. When the current type normalises to
+     * something not in the offered list (academic, or an
+     * unrecognised legacy alias), explain why the select shows a
+     * disabled current-type option instead of a normal choice.
+     */
+    function renderTypeHint(rawCurrentType) {
+        var normalised = normaliseTeamTypeForDisplay(rawCurrentType);
+        if (normalised === '') { return ''; }
+
+        var offered = getFormTeamTypes();
+        var inList = false;
+        for (var i = 0; i < offered.length; i++) {
+            if (offered[i].id === normalised) {
+                inList = true;
+                break;
+            }
+        }
+        if (inList) { return ''; }
+
+        var hintText;
+        if (normalised === 'academic') {
+            hintText =
+                'This team\u2019s type is academic; changing it ' +
+                'here would move it to the Teams module\u2019s ' +
+                'scope. Edit academic teams through the Academy ' +
+                'module.';
+        } else {
+            hintText =
+                'This team\u2019s stored type (\u201c' +
+                escapeHtml(normalised) +
+                '\u201d) is not one of the types offered here. ' +
+                'Pick a type to replace it, or leave it as-is.';
+        }
+
+        return '<span class="field-hint">' +
+                    hintText +
+                '</span>';
+    }
+
     // ============================================================
     // PERIODS EDITOR
     // ============================================================
@@ -1533,6 +1711,10 @@
     // every row's fields on submit. Chip add / remove are
     // DOM-only edits within the row; nothing hits the store until
     // submit.
+    //
+    // renderPeriodRow is public. TeamEvents delegates to it when
+    // appending a new row, so the append path cannot drift from
+    // the initial render.
 
     function renderPeriodsEditor(formVM) {
         var periods = isArray(formVM.periods)
@@ -1574,7 +1756,38 @@
         return html;
     }
 
-    function renderPeriodRow(period, index, isLast, options, canRemove) {
+    /**
+     * Render one period row.
+     *
+     * This is the SINGLE canonical renderer for a period row.
+     * TeamEvents calls it both during initial render (via
+     * renderPeriodsEditor) and during the append path (via
+     * buildNewPeriodRowHTML). Any change to the row's markup
+     * belongs here, not in the append helper.
+     *
+     * @param {object} period  A display-shaped period entry:
+     *   { startPeriod, endPeriod, name, tacticalStyle,
+     *     specialisations: [{ id, label }] }
+     * @param {number} index   0-based position in the list.
+     * @param {boolean} isLast True for the open-ended current
+     *   period (the last row).
+     * @param {array} options  The full specialisation vocabulary.
+     *   Entries already chipped in this row are filtered out of
+     *   the select.
+     * @param {boolean} canRemove True when the row should carry a
+     *   remove button. The initial render passes
+     *   `periods.length > 1`; TeamEvents passes `false` when
+     *   appending and reveals the button via
+     *   updateRemoveButtons() once there is more than one.
+     * @returns {string} HTML for one `.team-period-row`.
+     */
+    function renderPeriodRow(
+        period, index, isLast, options, canRemove
+    ) {
+        period = period || {};
+        options = isArray(options) ? options : [];
+        canRemove = canRemove === true;
+
         var start = isNonEmptyString(period.startPeriod)
             ? String(period.startPeriod)
             : '';
@@ -1808,20 +2021,55 @@
         return html;
     }
 
+    /**
+     * Render the <option> list for the team type select.
+     *
+     * Every non-academic type is offered. If the current type
+     * normalises to something not in that list (academic, or an
+     * unrecognised legacy alias), it is emitted as a DISABLED
+     * option at the end, marked "(current; not editable here)".
+     *
+     * The disabled option keeps the select showing the truth
+     * instead of silently falling back to the first offered type
+     * on save. renderTypeHint() explains why.
+     */
     function renderTypeOptions(currentType) {
+        var normalised = normaliseTeamTypeForDisplay(currentType);
         var types = getFormTeamTypes();
         var html = '';
+
+        var inList = false;
         for (var i = 0; i < types.length; i++) {
             var type = types[i];
-            var selected = currentType === type.id
+            var selected = normalised === type.id
                 ? ' selected'
                 : '';
+            if (normalised === type.id) { inList = true; }
             html += '<option value="' +
                         escapeAttribute(type.id) + '"' +
                         selected + '>' +
                         escapeHtml(type.label) +
                     '</option>';
         }
+
+        if (!inList && normalised !== '') {
+            // The stored type is not in the offered list. Emit a
+            // disabled option so the select shows it, with a
+            // clear label. Selecting it does nothing (it is
+            // disabled); picking a different type replaces it.
+            var displayLabel = normalised;
+            var typeRecord = TeamConstants.getTeamType(normalised);
+            if (typeRecord && isNonEmptyString(typeRecord.label)) {
+                displayLabel = typeRecord.label;
+            }
+            html += '<option value="' +
+                        escapeAttribute(normalised) + '" ' +
+                        'selected disabled>' +
+                        escapeHtml(displayLabel) +
+                        ' (current; not editable here)' +
+                    '</option>';
+        }
+
         return html;
     }
 
@@ -1892,6 +2140,12 @@
     // ============================================================
     // RANKING FORM
     // ============================================================
+    //
+    // The ranking-period and ranking-rank inputs hint their
+    // constraints. Both must be positive integers; the backend
+    // (TeamCore.addRanking) also rejects non-integer values, so
+    // these hints are a convenience for the user, not a guard
+    // against a bypass.
 
     function renderRankingForm() {
         var html = '';
@@ -1899,6 +2153,9 @@
         html += '<div class="ranking-form">';
         html += '<input type="text" id="ranking-period" ' +
                     'class="ranking-period-input" ' +
+                    'inputmode="numeric" ' +
+                    'pattern="[0-9]+" ' +
+                    'title="Period must be a positive integer." ' +
                     'placeholder="Period">';
         html += '<input type="number" id="ranking-rank" ' +
                     'class="ranking-rank-input" ' +
@@ -1924,6 +2181,12 @@
     //
     // Every mode shares the page header, the stats row, the tab
     // nav, and the filter bar. Only the body differs.
+    //
+    // The body container (#team-list-container) carries
+    // role="tabpanel" so the mode buttons' role="tab" +
+    // aria-controls point at a real target. Arrow-key navigation
+    // between the tabs is not implemented; the buttons remain
+    // individually focusable.
 
     function renderContainer(pageVM) {
         if (!pageVM) {
@@ -2016,7 +2279,8 @@
         if (isRankings) { bodyClass += ' rankings-container'; }
 
         html += '<div id="team-list-container" ' +
-                    'class="' + bodyClass + '">';
+                    'class="' + bodyClass + '" ' +
+                    'role="tabpanel">';
 
         if (isRankings) {
             html += renderRankingsContent(pageVM);
@@ -2109,7 +2373,11 @@
 
         renderRankingList: renderRankingList,
         renderTeamForm: renderTeamForm,
-        renderRankingForm: renderRankingForm
+        renderRankingForm: renderRankingForm,
+
+        // Public API: single canonical renderer for a period row.
+        // TeamEvents delegates to this when appending a new row.
+        renderPeriodRow: renderPeriodRow
     });
 
 })();
