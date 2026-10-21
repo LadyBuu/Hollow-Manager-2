@@ -41,6 +41,31 @@
  *   2. Join replacements (purge + add).
  *   3. Leave-only edits.
  *
+ * TWO-TRANSACTION LIMITATION:
+ *   This adapter composes multiple TeamCore mutation calls per
+ *   user action. Each TeamCore call is its own MutationPipeline
+ *   transaction; the adapter cannot make them atomic.
+ *
+ *   Two paths are affected:
+ *
+ *     addMember          addMemberInterval then updateMember
+ *     updateMembers      purgeMemberInterval then addMemberInterval
+ *                        (for join replacement)
+ *
+ *   If the SECOND call fails after the first succeeds, the first
+ *   call's mutation is committed. The adapter reports this
+ *   honestly: the response is { success: false } with a message
+ *   that names both halves ("Member was added, but the requested
+ *   role could not be assigned."). The caller's UI (the manager)
+ *   surfaces the message and re-renders, so the user sees the
+ *   actual state.
+ *
+ *   A truly atomic version of either path would need a combined
+ *   TeamCore mutation (addMemberWithRole, replaceMemberInterval)
+ *   that runs inside one transaction. That is not this adapter's
+ *   job to invent; the current behaviour is documented and the
+ *   failure mode is honest.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamAggregator
  *   - window.TeamCore
