@@ -7,15 +7,16 @@
  * This module is the SINGLE SOURCE OF TRUTH for Team UI state:
  *   - Which tab is selected (professional | civilian)
  *   - Which team is expanded in the list
- *   - Per-tab filter values (year, status)
+ *   - Per-tab filter values (year, showInactive)
  *
  * IMPORTANT:
  *   - UI state only. No domain data. No mutations. No domain reads.
  *   - Persistence is sessionStorage only. UI state is deliberately
  *     ephemeral; anything that must survive a page reload belongs
  *     in window.data, not here.
- *   - Every setter is typed and validates its input. There are no
- *     generic escape hatches for setting arbitrary keys.
+ *   - Every setter is typed and validates BOTH its key AND its
+ *     value. There are no generic escape hatches for setting
+ *     arbitrary keys.
  *   - Returned state is a structural clone. A caller cannot mutate
  *     live state by holding the reference.
  *   - Modal context is NOT tracked here. The team or member a modal
@@ -23,7 +24,7 @@
  *     form arguments). There is no cross-render modal state.
  *
  * STORAGE VERSION:
- *   The key is versioned ('team_ui_state_v2'). A version bump
+ *   The key is versioned ('team_ui_state_v3'). A version bump
  *   abandons the previous state entirely; there is no migration
  *   between versions. This is deliberate — UI state is a cache,
  *   and caching stale shape across a code change produces bugs
@@ -31,8 +32,17 @@
  *
  *   v1 -> v2: the 'temporary' tab was retired. A persisted
  *   v1 state could carry currentTab: 'temporary' or a filters
- *   entry for it. Rather than migrate, v2 starts clean. The
- *   previous key is not read.
+ *   entry for it. Rather than migrate, v2 started clean. The
+ *   previous key was not read.
+ *
+ *   v2 -> v3: the Show Inactive filter changed shape. The v2
+ *   filterStatus string ('active' | 'inactive') is replaced by
+ *   a showInactive boolean. The v2 semantics were inverted
+ *   relative to the checkbox: 'inactive' meant "only inactive"
+ *   rather than "also include inactive". Migrating the value
+ *   would require interpreting the old polarity, which was the
+ *   bug. v3 starts clean; the old keys (v1 and v2) are removed
+ *   on load.
  *
  * TAB VOCABULARY:
  *   The valid tabs are:
@@ -50,6 +60,14 @@
  *   a filter on one tab does not affect another. The filter object
  *   for a tab is created on first access from the canonical defaults.
  *
+ *   'filterYear':     '' (no year filter) or a positive integer.
+ *   'showInactive':   false (only active) or true (active + inactive).
+ *                     Maps to the query status 'active' or
+ *                     'operational' respectively. Never 'inactive':
+ *                     "show inactive" means "also include", not
+ *                     "only show". The aggregator handles the
+ *                     mapping.
+ *
  * DEPENDENCIES:
  *   None.
  *
@@ -59,6 +77,7 @@
  *   UI.setCurrentTab('professional');
  *   UI.getFilter('professional');
  *   UI.setFilter('professional', 'filterYear', 2025);
+ *   UI.setFilter('professional', 'showInactive', true);
  */
 
 (function() {
@@ -73,7 +92,15 @@
     // CONSTANTS
     // ============================================================
 
-    var STORAGE_KEY = 'team_ui_state_v2';
+    var STORAGE_KEY = 'team_ui_state_v3';
+
+    // Old storage keys removed on load. v1 carried a 'temporary'
+    // tab entry; v2 carried the inverted filterStatus shape. Both
+    // are abandoned without migration.
+    var OLD_STORAGE_KEYS = [
+        'team_ui_state_v1',
+        'team_ui_state_v2'
+    ];
 
     var VALID_TABS = ['professional', 'civilian'];
     var DEFAULT_TAB = 'professional';
@@ -92,23 +119,21 @@
         filters: Object.freeze({
             professional: Object.freeze({
                 filterYear: '',
-                filterStatus: 'active'
+                showInactive: false
             }),
             civilian: Object.freeze({
-                filterStatus: 'active'
+                showInactive: false
             })
         })
     });
 
-    // Frozen. Same rationale as DEFAULT_STATE.
+    // DEFAULT_FILTERS is derived from DEFAULT_STATE so the two
+    // cannot drift. Same shape, separate frozen reference for
+    // callers who want a per-tab default without holding the
+    // whole state template.
     var DEFAULT_FILTERS = Object.freeze({
-        professional: Object.freeze({
-            filterYear: '',
-            filterStatus: 'active'
-        }),
-        civilian: Object.freeze({
-            filterStatus: 'active'
-        })
+        professional: DEFAULT_STATE.filters.professional,
+        civilian: DEFAULT_STATE.filters.civilian
     });
 
     // ============================================================
@@ -134,13 +159,65 @@
     }
 
     function getFilterDefaults(tab) {
-        var defaults = DEFAULT_FILTERS[tab] || DEFAULT_FILTERS[DEFAULT_TAB];
+        var defaults = DEFAULT_FILTERS[tab];
+        if (!defaults) {
+            return {};
+        }
         return clone(defaults);
+    }
+
+    /**
+     * Is this a valid value for the named filter key on the tab?
+     *
+     * Every filter key has a type contract:
+     *   filterYear:    '' or a positive integer
+     *   showInactive:  boolean
+     *
+     * Returns true when the value satisfies the key's contract.
+     * Unknown keys are not validated here; the caller checks the
+     * key exists against the tab's defaults first.
+     */
+    function isValidFilterValue(tab, key, value) {
+        if (key === 'filterYear') {
+            if (value === '') { return true; }
+            if (typeof value === 'number' &&
+                Number.isInteger(value) &&
+                value >= 1) {
+                return true;
+            }
+            if (typeof value === 'string' &&
+                /^\d+$/.test(value.trim())) {
+                var n = Number(value);
+                return Number.isInteger(n) && n >= 1;
+            }
+            return false;
+        }
+
+        if (key === 'showInactive') {
+            return typeof value === 'boolean';
+        }
+
+        // Unknown key: caller already rejected it.
+        return false;
     }
 
     // ============================================================
     // STORAGE
     // ============================================================
+
+    /**
+     * Remove old storage keys from prior versions of this module.
+     * Idempotent; safe to call on every load.
+     */
+    function removeOldStorageKeys() {
+        try {
+            for (var i = 0; i < OLD_STORAGE_KEYS.length; i++) {
+                sessionStorage.removeItem(OLD_STORAGE_KEYS[i]);
+            }
+        } catch (e) {
+            // sessionStorage unavailable; nothing to clean.
+        }
+    }
 
     function loadState() {
         try {
@@ -161,13 +238,10 @@
     /**
      * Merge persisted state with defaults.
      *
-     * Unknown fields are dropped. Invalid values fall back to the
-     * default. This is what makes a future schema change safe: a
-     * stale value is rejected instead of being carried forward.
-     *
-     * In particular, a persisted currentTab of 'temporary' (from a
-     * v1 key that somehow reached this version) is rejected because
-     * VALID_TABS no longer contains it. The default tab wins.
+     * Unknown fields are dropped. Invalid KEYS are ignored.
+     * Invalid VALUES are rejected and replaced by the default.
+     * This is what makes a future schema change safe: a stale or
+     * tampered value cannot leak into live state.
      */
     function mergeWithDefaults(parsed) {
         var merged = getDefaultState();
@@ -189,13 +263,25 @@
                 if (!saved || typeof saved !== 'object') {
                     continue;
                 }
-                var defaults = DEFAULT_FILTERS[tab] || {};
+                var defaults = DEFAULT_FILTERS[tab];
+                if (!defaults) { continue; }
                 var keys = Object.keys(defaults);
                 for (var i = 0; i < keys.length; i++) {
                     var key = keys[i];
-                    if (Object.prototype.hasOwnProperty.call(saved, key)) {
-                        merged.filters[tab][key] = saved[key];
+                    if (!Object.prototype.hasOwnProperty.call(saved, key)) {
+                        continue;
                     }
+                    var savedValue = saved[key];
+                    if (isValidFilterValue(tab, key, savedValue)) {
+                        merged.filters[tab][key] =
+                            key === 'filterYear' && typeof savedValue === 'string'
+                                ? String(savedValue)
+                                : savedValue;
+                    }
+                    // Invalid values are silently dropped, replaced
+                    // by the default that mergeWithDefaults began
+                    // with. The sessionStorage cache is treated as
+                    // untrusted input.
                 }
             }
         }
@@ -219,7 +305,11 @@
     // the state is ready the moment this module loads.
     //
     // init() remains exported for callers that expect a lifecycle
-    // hook. It reloads from storage.
+    // hook. It reloads from storage when the stored state differs
+    // from in-memory state, so a pending in-memory change that
+    // failed to persist is preserved.
+
+    removeOldStorageKeys();
 
     var _state = loadState();
 
@@ -228,9 +318,42 @@
     // ============================================================
 
     /**
-     * Reload state from storage. Idempotent.
+     * Reload state from storage.
+     *
+     * If the in-memory state has pending changes that were not
+     * written to storage (a saveData failure, or a sessionStorage
+     * quota error), init() would silently discard them by reloading
+     * the older persisted state. To preserve in-memory work, init()
+     * compares the serialized live state against the serialized
+     * stored state and only reloads when they agree. A live state
+     * that differs from storage is kept, and the stored state is
+     * brought up to date via saveState().
      */
     function init() {
+        var liveSerialized;
+        try {
+            liveSerialized = JSON.stringify(_state);
+        } catch (e) {
+            liveSerialized = null;
+        }
+
+        var storedSerialized;
+        try {
+            storedSerialized =
+                sessionStorage.getItem(STORAGE_KEY);
+        } catch (e) {
+            storedSerialized = null;
+        }
+
+        if (liveSerialized !== null &&
+            storedSerialized !== null &&
+            liveSerialized !== storedSerialized) {
+            // In-memory changes have not persisted. Keep them and
+            // rewrite storage.
+            saveState();
+            return;
+        }
+
         _state = loadState();
     }
 
@@ -307,32 +430,65 @@
         return _state.expandedTeamId;
     }
 
+    /**
+     * Set the currently expanded team.
+     *
+     * Accepts string ids, null, and ''. A numeric id is coerced to
+     * its string form with a warning: team ids are strings today,
+     * and silently dropping a number would make the setter look
+     * successful when it was not. Any other type is rejected.
+     *
+     * @param {string|null|number} teamId
+     * @returns {boolean} true when the value was accepted
+     */
     function setExpandedTeamId(teamId) {
-        var next = (typeof teamId === 'string' && teamId !== '')
-            ? teamId
-            : null;
+        var next;
+
+        if (teamId === null || teamId === undefined || teamId === '') {
+            next = null;
+        } else if (typeof teamId === 'string') {
+            next = teamId;
+        } else if (typeof teamId === 'number' &&
+                   Number.isInteger(teamId) &&
+                   teamId >= 1) {
+            console.warn(
+                '[TeamUI] setExpandedTeamId received a numeric id (' +
+                teamId + '). Team ids are strings; coercing. ' +
+                'Fix the caller.'
+            );
+            next = String(teamId);
+        } else {
+            console.warn(
+                '[TeamUI] setExpandedTeamId received an invalid ' +
+                'value of type ' + typeof teamId + '. Ignored.'
+            );
+            return false;
+        }
+
         if (next === _state.expandedTeamId) {
-            return;
+            return true;
         }
         _state.expandedTeamId = next;
         saveState();
+        return true;
     }
 
     /**
      * Toggle the expanded state of a team.
      * Returns the state AFTER the toggle.
+     *
+     * Delegates to setExpandedTeamId so the coercion and
+     * validation rules are single-sourced.
      */
     function toggleExpandedTeam(teamId) {
         if (typeof teamId !== 'string' || teamId === '') {
             return false;
         }
         if (_state.expandedTeamId === teamId) {
-            _state.expandedTeamId = null;
-            saveState();
+            setExpandedTeamId(null);
             return false;
         }
-        _state.expandedTeamId = teamId;
-        saveState();
+        setExpandedTeamId(teamId);
         return true;
     }
 
@@ -351,8 +507,16 @@
      * Get the default filter object for a tab.
      * Returns a fresh copy. Mutating the return value does not
      * affect the template.
+     *
+     * An invalid tab returns {} rather than falling back to the
+     * default tab's filter. A caller with a typo should receive
+     * nothing; silently returning another tab's defaults would
+     * hide the bug.
      */
     function getDefaultFilter(tab) {
+        if (!isValidTab(tab)) {
+            return {};
+        }
         return getFilterDefaults(tab);
     }
 
@@ -361,8 +525,13 @@
      *
      * Filter values are primitives (number, string, boolean), so a
      * shallow copy is a full isolation guarantee.
+     *
+     * An invalid tab returns {} (see getDefaultFilter).
      */
     function getFilter(tab) {
+        if (!isValidTab(tab)) {
+            return {};
+        }
         var filters = _state.filters[tab];
         if (!filters) {
             return getFilterDefaults(tab);
@@ -374,8 +543,9 @@
      * Set one filter key on a tab.
      *
      * The tab must be valid; the key must already exist on the
-     * tab's default filter. Setting an unknown key is rejected.
-     * This is what keeps the filter shape canonical.
+     * tab's default filter; the value must satisfy the key's type
+     * contract. A failed check rejects the whole call — nothing
+     * is written.
      */
     function setFilter(tab, key, value) {
         if (!isValidTab(tab)) {
@@ -384,6 +554,9 @@
         var defaults = DEFAULT_FILTERS[tab];
         if (!defaults ||
             !Object.prototype.hasOwnProperty.call(defaults, key)) {
+            return false;
+        }
+        if (!isValidFilterValue(tab, key, value)) {
             return false;
         }
         if (!_state.filters[tab]) {
@@ -400,8 +573,9 @@
     /**
      * Update multiple filter keys on a tab atomically.
      *
-     * Any invalid key rejects the entire call; no key is updated.
-     * This mirrors AcademyUI.setPeopleFilter's contract.
+     * Any invalid key OR invalid value rejects the entire call;
+     * no key is updated. This mirrors AcademyUI.setPeopleFilter's
+     * contract.
      */
     function updateFilter(tab, updates) {
         if (!isValidTab(tab)) {
@@ -419,6 +593,9 @@
         var keys = Object.keys(updates);
         for (var i = 0; i < keys.length; i++) {
             if (!Object.prototype.hasOwnProperty.call(defaults, keys[i])) {
+                return false;
+            }
+            if (!isValidFilterValue(tab, keys[i], updates[keys[i]])) {
                 return false;
             }
         }
