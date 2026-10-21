@@ -43,7 +43,7 @@
  *           var t = localStorage.getItem('hollow-manager-theme');
  *           if (t === 'light' || t === 'vaporwave' || 
  *               t === 'pastel' || t === 'carnival' || 
- *               t === 'maximal' || t === 'gits' || 
+ *               t === 'maximal' || t === 'gits' ||
  *               t === 'stained-glass' || t === 'art-deco') {
  *             document.documentElement.setAttribute('data-theme', t);
  *           }
@@ -165,7 +165,7 @@
             icon: '\u25C9\uFE0E',           // ◉ text presentation (fisheye / cyber eye)
             title: 'Switch to GITS mode',
             ariaLabel: 'Switch to GITS mode',
-            themeColor: '#060c14'
+            themeColor: '#04101a'
         },
         {
             value: 'stained-glass',
@@ -173,7 +173,7 @@
             icon: '\u26EA\uFE0E',           // ⛪ text presentation (Church / Cathedral)
             title: 'Switch to Stained Glass mode',
             ariaLabel: 'Switch to Stained Glass mode',
-            themeColor: '#08060f'
+            themeColor: '#f2f7fd'
         },
         {
             value: 'art-deco',
@@ -181,7 +181,7 @@
             icon: '\u25C6\uFE0E',           // ◆ text presentation (Diamond / Gem)
             title: 'Switch to Art Deco mode',
             ariaLabel: 'Switch to Art Deco mode',
-            themeColor: '#0a0a0c'
+            themeColor: '#f4f0e6'
         }
     ];
 
