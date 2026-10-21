@@ -102,6 +102,18 @@
  *   intermediate periods, because inventing history is not a
  *   naming decision.
  *
+ * NAME PROVENANCE (nameIsAuto):
+ *   applyTeamName generates a new display name. That name is by
+ *   definition auto-generated, so the update it sends to
+ *   TeamCore.updateTeam carries nameIsAuto: true. The flag tells
+ *   team-events.js's saveTeam that the current name is not
+ *   user-typed, so the periods array wins on the next save
+ *   unless the user retypes the top-of-form field.
+ *
+ *   A user who edits the top field flips the flag to false
+ *   (handled by team-events.js). This module never sets it to
+ *   false.
+ *
  * WHAT THIS DOES NOT OWN:
  *   - Team reads. TeamQueries owns them.
  *   - Team writes. TeamCore owns them.
@@ -378,7 +390,6 @@
             }
         }
 
-        // Fallback: the denormalised top-level name.
         var currentSplit = splitTeamName(team.name || '');
         return currentSplit.base || String(team.name || 'Unnamed Team');
     }
@@ -585,30 +596,15 @@
         }
 
         if (lastStartNum === triggerYear) {
-            // Same-year rollover. Close AT the trigger year; the
-            // boundary year belongs to the new period under the
-            // half-open rule.
             last.endPeriod = triggerStr;
         } else {
-            // Normal rollover. The current period closes at the
-            // year before the new period opens.
             if (triggerYear <= 1) {
-                // Degenerate case: trigger year is 1 and current
-                // period starts before 1, which cannot happen.
-                // Drop the current period entirely; the new one
-                // takes its place.
                 periods.pop();
             } else {
                 last.endPeriod = String(triggerYear - 1);
             }
         }
 
-        // ---- Open the new period. ----
-        //
-        // The inherited tacticalStyle and specialisations come
-        // from the (possibly-closed) last period, not from a
-        // mutated copy. If last was popped in the degenerate
-        // branch above, we have no source; use empty defaults.
         var inheritFrom = periods.length > 0
             ? periods[periods.length - 1]
             : null;
@@ -727,14 +723,17 @@
         }
 
         // ---- Build the update ----
-        var update = {};
+        //
+        // Every successful applyTeamName writes an auto-
+        // generated name. Set nameIsAuto: true so the next
+        // save's top-field dirty-check knows the period name is
+        // authoritative.
+        var update = {
+            nameIsAuto: true
+        };
         if (newPeriods !== null) {
             update.periods = newPeriods;
         } else {
-            // No rollover; the current period's name is rewritten
-            // in place. This is what happens on the FIRST suffix
-            // change if the current period already starts at the
-            // trigger year, and on any simple rename.
             update.name = computed.displayName;
         }
 
