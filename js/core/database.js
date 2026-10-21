@@ -2,7 +2,7 @@
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
  *
- * DATA_VERSION: 34
+ * DATA_VERSION: 35
  *
  * Migrations run in sequence from the stored `_dataVersion` up to
  * DATA_VERSION. Each migration function documents its own purpose,
@@ -59,7 +59,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;
-    var DATA_VERSION = 34;
+    var DATA_VERSION = 35;
     var STORE_NAME = 'appData';
     var BACKUP_KEY_PREFIX = 'mainData_backup_pre_v';
 
@@ -268,11 +268,6 @@
     // ============================================================
     // DEEP CLONE
     // ============================================================
-    //
-    // Delegates to ObjectUtils.deepClone when available. Falls back
-    // to a local structuredClone wrapper with identical semantics.
-    // There is NO JSON fallback: the save path must not silently
-    // accept a lossy copy.
 
     function deepClone(value) {
         if (value === null || typeof value !== 'object') {
@@ -663,6 +658,7 @@
                 case 31: migrateToVersion32(data); break;
                 case 32: migrateToVersion33(data); break;
                 case 33: migrateToVersion34(data); break;
+                case 34: migrateToVersion35(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -2442,21 +2438,6 @@
         data._dataVersion = 32;
     }
 
-    /**
-     * v33 — Team periods model.
-     *
-     * Replaces team.nameHistory + team.style + team.specialisations
-     * with a single team.periods array of self-contained entries.
-     *
-     * If nameHistory is non-empty: one period per history entry, each
-     * inheriting the team's current style and specialisations. If
-     * empty: one period built from the top-level scalars. A missing
-     * start period is normalised to the current year.
-     *
-     * After migration, `name` / `startPeriod` / `endPeriod` are
-     * denormalised mirrors of the periods array. Idempotent: a record
-     * that already has `periods` is left alone.
-     */
     function migrateToVersion33(data) {
         if (!Array.isArray(data.teams)) {
             data._dataVersion = 33;
@@ -2622,36 +2603,6 @@
         data._dataVersion = 33;
     }
 
-    /**
-     * v34 — Team type normalisation.
-     *
-     * Routes every team's `type` field through
-     * TeamConstants.normalizeTeamType. The legacy 'temporary' and
-     * 'internship' aliases become 'professional'; any casing or
-     * surrounding whitespace on a canonical id is stripped.
-     *
-     * SCOPE (deliberately type-only):
-     *   `team.status` is NOT touched here. The Phase F sweep
-     *   normalises status on every read path via
-     *   TeamConstants.normalizeTeamStatus, and the writer
-     *   (TeamCore.updateTeam) already canonicalises. A status
-     *   migration would be a second, later migration once the
-     *   read-side sweep is fully landed; doing it now would
-     *   half-migrate a field whose writers still allow legacy
-     *   values through in edge cases.
-     *
-     * UNPARSEABLE TYPES:
-     *   A non-string `type`, or a string that normalizeTeamType
-     *   returns null for, is left UNTOUCHED and counted. Coercing
-     *   such a value to 'professional' would silently rewrite a
-     *   record the migration cannot understand. Untouched means
-     *   the read path's null-fallback still applies, so the team
-     *   shows up as "Unknown Type" for a human to inspect rather
-     *   than mislabelled.
-     *
-     * Idempotent: a team whose type already equals its canonical
-     * form is not rewritten.
-     */
     function migrateToVersion34(data) {
         if (!Array.isArray(data.teams)) {
             data._dataVersion = 34;
@@ -2713,20 +2664,75 @@
         data._dataVersion = 34;
     }
 
+    /**
+     * v35 — Team `nameIsAuto` flag.
+     *
+     * Records whether a team's current display name was generated
+     * by TeamNaming (auto) or typed by a user (manual). The flag
+     * resolves the two-owners-of-name problem between the form's
+     * top-of-form field and the periods editor.
+     *
+     * DEFAULT FOR EXISTING RECORDS: true.
+     *
+     *   Pre-v35 teams have no record of user-vs-generated
+     *   provenance, so the migration cannot recover the true
+     *   value. `true` means "treat the current name as generated":
+     *   a subsequent editor rename wins over the top field. This
+     *   is the safer default, because it lets a user retitle the
+     *   last period in the editor and see the change preserved on
+     *   save. A user who typed the name in the top field retypes
+     *   it on the next save, which flips the flag to false via
+     *   the writer in team-events.js. The alternative default
+     *   (false) would re-open the corruption the flag exists to
+     *   fix.
+     *
+     * CREATE-TIME DEFAULT: true (see TeamCore.createTeam). A newly
+     * created team with no name input has an empty generated name
+     * until the user types one.
+     *
+     * IDEMPOTENT: teams that already carry a boolean nameIsAuto
+     * are not rewritten.
+     */
+    function migrateToVersion35(data) {
+        if (!Array.isArray(data.teams)) {
+            data._dataVersion = 35;
+            return;
+        }
+
+        var teamsSeen = 0;
+        var flagAdded = 0;
+        var flagPreserved = 0;
+
+        for (var i = 0; i < data.teams.length; i++) {
+            var team = data.teams[i];
+            if (!team || typeof team !== 'object' || Array.isArray(team)) {
+                continue;
+            }
+            teamsSeen++;
+
+            if (typeof team.nameIsAuto === 'boolean') {
+                flagPreserved++;
+                continue;
+            }
+
+            team.nameIsAuto = true;
+            flagAdded++;
+        }
+
+        console.log(
+            '[Database] v35: team nameIsAuto flag. ' +
+            'Teams: ' + teamsSeen + '. ' +
+            'Added (defaulted true): ' + flagAdded + '. ' +
+            'Preserved (already boolean): ' + flagPreserved + '.'
+        );
+
+        data._dataVersion = 35;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE
     // ============================================================
 
-    /**
-     * Shape guards applied after migrations and on every save.
-     *
-     * Class-reference pruning (grades, enrolments, weeklyTeams,
-     * classDisciplines, socialScores, character.classIds) is SKIPPED
-     * when the class map looks untrustworthy: either
-     * academy.graduatingClasses is empty, or data._skipClassPrune is
-     * truthy. This prevents an empty or half-loaded class map from
-     * cascading away the stores that reference it.
-     */
     function normaliseDataStructure(data) {
         var repaired = false;
 
@@ -2814,6 +2820,14 @@
             }
             if (team.teamNumber === undefined) {
                 team.teamNumber = ''; repaired = true;
+            }
+            // v35 shape guard: every team must carry a boolean
+            // nameIsAuto. The migration sets it; this catches a
+            // record written by an older client between migration
+            // and the first save.
+            if (typeof team.nameIsAuto !== 'boolean') {
+                team.nameIsAuto = true;
+                repaired = true;
             }
         });
 
