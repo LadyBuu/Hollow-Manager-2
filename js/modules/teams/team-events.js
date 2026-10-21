@@ -93,28 +93,32 @@
  *   container delegation chain. The form is its own modal shell
  *   and is not a descendant of the teams container.
  *
- * TOP-OF-FORM NAME (two-owners fix, interim):
+ * TOP-OF-FORM NAME AND nameIsAuto:
  *   The team form has two inputs that can own the current
  *   period's name: the top-of-form #team-name field and the
  *   last period row's .team-period-name input.
  *
- *   Before this pass, saveTeam forced periods[last].name =
- *   currentName unconditionally. That meant:
- *     - a user retitling the last period in the editor lost the
- *       change if they didn't also retype the top field
- *     - saving any unrelated edit rewrote the name from the
- *       top field, which had been populated on load
+ *   The resolution rule uses the team's nameIsAuto flag plus a
+ *   session-local dirty-check:
  *
- *   The fix: the top field wins only if the user typed in it
- *   this session. That is detected by comparing the field's
- *   current value against its data-original-value attribute,
- *   which TeamRender wrote with the name the form opened with.
+ *     topFieldTouched = currentValue !== data-original-value
  *
- *   If the top field is untouched, the periods array wins as
- *   edited. A subsequent ship introduces a `nameIsAuto` flag
- *   that takes over the "did the user type" decision at the
- *   model layer; the dirty-check here remains valid as the
- *   writer side of that flag's semantics.
+ *   nameIsAuto is a model-level boolean (see team-core.js):
+ *     true   the current name was generated (by TeamNaming or
+ *            by default on create)
+ *     false  a user has typed the current name
+ *
+ *   On save:
+ *     - If topFieldTouched, the top field wins (and we pass
+ *       nameIsAuto: false to TeamCore so the flag reflects that
+ *       the user is now the owner of the name).
+ *     - If not touched, the periods array wins as-edited, and
+ *       nameIsAuto is left unchanged (TeamCore preserves the
+ *       existing value when the update omits it).
+ *
+ *   This means a user who retitles the last period in the
+ *   editor and leaves the top field alone has their edit
+ *   preserved, and the flag stays accurate.
  *
  * SPECIALISATION VOCABULARY:
  *   When showTeamForm creates the modal, it stashes the form
@@ -1514,10 +1518,6 @@
         }
         modal.id = 'team-form-modal';
 
-        // Stash the full specialisation vocabulary on the modal.
-        // appendPeriodRow reads it via getSpecialisationOptions so
-        // a new row's select is never limited to "what is left
-        // after every existing row has been chipped".
         modal.__specialisationOptions = Array.isArray(
             formVM.specialisationOptions
         )
@@ -1866,7 +1866,6 @@
             }
         }
 
-        // Scrape, merging anything the stash did not have.
         var selects = form.querySelectorAll(
             '.team-period-specialisation-select'
         );
@@ -2245,6 +2244,10 @@
             temporaryMission: temporaryMission,
             periods: periods
         };
+
+        if (editId && topFieldTouched) {
+            teamData.nameIsAuto = false;
+        }
 
         var pendingMembers = editId
             ? null
