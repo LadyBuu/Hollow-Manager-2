@@ -43,6 +43,27 @@
  *   against a canonical value. A legacy 'temporary' or
  *   'internship' record emits 'professional'.
  *
+ * SHOW INACTIVE FILTER:
+ *   getTeamListViewModel accepts `showInactive: boolean` in its
+ *   options. The boolean is translated into a TeamQueries status:
+ *
+ *     showInactive === false  → status 'active'
+ *                                 (only active teams)
+ *     showInactive === true   → status 'operational'
+ *                                 (active + inactive, not deprecated)
+ *
+ *   'operational' is the correct status for "show inactive"
+ *   because it means "everything except deprecated" — the user
+ *   who ticks "Show Inactive" expects to see inactive teams
+ *   alongside active ones, not to filter out the active ones.
+ *
+ *   Before this wiring, the UI carried a `filterStatus` string
+ *   ('active' | 'inactive') that was never passed through to the
+ *   aggregator, so the checkbox had no effect. When it was passed
+ *   through (in the reverse direction it was stored), the value
+ *   'inactive' meant "only inactive", the opposite of the
+ *   checkbox's intent. The boolean shape resolves both.
+ *
  * STATUS DESCRIPTORS:
  *   The team list VM, team detail VM, and rankings row VM each
  *   carry:
@@ -461,6 +482,21 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
+    /**
+     * Translate the UI's showInactive boolean into the TeamQueries
+     * status string.
+     *
+     *   false → 'active'       (only active)
+     *   true  → 'operational'  (active + inactive, not deprecated)
+     *
+     * The aggregator never passes 'inactive' from the Show
+     * Inactive checkbox. 'inactive' means "only inactive", which
+     * is not what the checkbox means.
+     */
+    function statusForShowInactive(showInactive) {
+        return showInactive === true ? 'operational' : 'active';
+    }
+
     function buildCharacterSummary(charId) {
         if (!isNonEmptyString(charId)) {
             return {
@@ -519,22 +555,6 @@
     // ============================================================
     // SPECIALISATIONS
     // ============================================================
-    //
-    // A team's specialisations are an array of mission-type ids.
-    // The vocabulary comes from MissionConstants.MISSION_TYPES.
-    //
-    // normaliseSpecialisations:
-    //   Read-time defence. Walks the stored array, drops anything
-    //   that is not a string, drops blanks, drops duplicates,
-    //   and (when MissionConstants is available) drops ids that
-    //   are not known mission types. Returns a fresh array of
-    //   trimmed strings. Order preserved.
-    //
-    // resolveSpecialisations:
-    //   Turns a normalised id array into [{ id, label }] refs.
-    //
-    // getSpecialisationOptions:
-    //   The full pickable list for the team form.
 
     function normaliseSpecialisations(raw) {
         if (!Array.isArray(raw)) { return []; }
@@ -622,10 +642,6 @@
     // ============================================================
     // PERIOD RESOLUTION
     // ============================================================
-    //
-    // Team detail and form VMs carry the full periods array,
-    // resolved for display. The helper below turns a stored period
-    // into a display-shaped VM.
 
     function buildPeriodVM(period) {
         if (!period || typeof period !== 'object') {
@@ -668,20 +684,6 @@
         return result;
     }
 
-    /**
-     * Read the current period's display name, tactical style, and
-     * specialisations off a team. Prefers the periods array; falls
-     * back to the legacy scalars for a team that has not been
-     * re-saved since the migration.
-     *
-     * Returns:
-     *   {
-     *     name:              string,
-     *     tacticalStyle:     string,
-     *     specialisationIds: array,
-     *     specialisations:   array
-     *   }
-     */
     function readCurrentDescriptives(team) {
         if (!team || typeof team !== 'object') {
             return {
@@ -694,8 +696,6 @@
 
         var name = TeamQueries.getCurrentTeamName(team);
 
-        // Tactical style: prefer the last period. Fall back to the
-        // legacy scalar.
         var style = '';
         var current = TeamQueries.getCurrentPeriod(team);
         if (current && isNonEmptyString(current.tacticalStyle)) {
@@ -706,8 +706,6 @@
             style = String(team.style);
         }
 
-        // Specialisations: prefer the last period. Fall back to
-        // the legacy scalar.
         var rawSpecs = [];
         if (current && Array.isArray(current.specialisations)) {
             rawSpecs = current.specialisations;
@@ -947,7 +945,6 @@
             ? resolveMissionName(temporaryMissionId)
             : null;
 
-        // ---- Periods and current descriptives ----
         var periods = buildPeriodsVM(team);
         var currentDescriptives = readCurrentDescriptives(team);
         var currentPeriodVM = periods.length > 0
@@ -977,12 +974,9 @@
             isOperational: TeamQueries.isTeamOperational(team),
             createdAt: team.createdAt || '',
 
-            // Periods model.
             periods: periods,
             currentPeriod: currentPeriodVM,
 
-            // Current period's values promoted to top level, so
-            // list-style readers do not have to walk the array.
             tacticalStyle: currentDescriptives.tacticalStyle,
             specialisationIds: currentDescriptives.specialisationIds,
             specialisations: currentDescriptives.specialisations
@@ -1030,7 +1024,26 @@
     function getTeamListViewModel(options) {
         options = options || {};
         var type = options.type || null;
-        var status = options.status || null;
+
+        // ---- Show Inactive wiring ----
+        //
+        // The UI stores a `showInactive` boolean. Translate it to
+        // the TeamQueries status the reader expects:
+        //
+        //   showInactive === false → 'active'       (only active)
+        //   showInactive === true  → 'operational'  (active + inactive)
+        //
+        // A caller that passes an explicit `status` string (older
+        // code path) still works, but the two options are
+        // mutually exclusive: `showInactive` wins when both are
+        // present, because it is the modern contract.
+        var status;
+        if (typeof options.showInactive === 'boolean') {
+            status = statusForShowInactive(options.showInactive);
+        } else {
+            status = options.status || null;
+        }
+
         var periodNum = TeamConstants.parsePeriod(options.period);
         var includeInactive = options.includeInactive || false;
         var search = options.search || '';
@@ -1125,13 +1138,6 @@
                     bVal = b.activeMemberCount;
                     break;
                 case 'status':
-                    // Three-way ordering: active (0) sorts first,
-                    // inactive (1) next, deprecated (2) last.
-                    // The sortDirection inversion below reverses
-                    // this order for descending sorts, so
-                    // deprecated teams appear first on a
-                    // descending-by-status sort — which is the
-                    // intent of "desc".
                     aVal = a.isDeprecated ? 2 : (a.isActive ? 0 : 1);
                     bVal = b.isDeprecated ? 2 : (b.isActive ? 0 : 1);
                     break;
@@ -1222,6 +1228,7 @@
         options = options || {};
         var type = options.type || 'professional';
         var status = options.status || null;
+        var showInactive = options.showInactive;
         var periodNum = TeamConstants.parsePeriod(options.period);
         var expandedTeamId = options.expandedTeamId || null;
         var search = options.search || '';
@@ -1229,6 +1236,7 @@
         var listVM = getTeamListViewModel({
             type: type,
             status: status,
+            showInactive: showInactive,
             period: periodNum !== null ? periodNum : undefined,
             search: search
         });
@@ -1320,9 +1328,6 @@
 
         var periodsVM = buildPeriodsVM(team);
 
-        // On a create form, no periods exist yet. Synthesise a
-        // single empty period so the editor has something to
-        // render, seeded with the current calendar year.
         if (periodsVM.length === 0) {
             periodsVM.push({
                 startPeriod: String(new Date().getFullYear()),
@@ -1343,11 +1348,6 @@
                 specialisations: []
             };
 
-        // The form emits the NORMALISED type so the renderer's
-        // "is this type in the offered list" comparison is
-        // authoritative. A legacy 'temporary' record emits
-        // 'professional'. A create form with no team falls back
-        // to the default type.
         var formType = team
             ? (TeamConstants.normalizeTeamType(team.type) ||
                 TeamConstants.DEFAULT_TEAM_TYPE)
@@ -1366,7 +1366,6 @@
             temporaryMission: t.temporaryMission || '',
             currentRank: TeamQueries.getCurrentRank(team),
 
-            // Periods model.
             periods: periodsVM,
             specialisationOptions: getSpecialisationOptions(),
 
@@ -1588,10 +1587,6 @@
         if (!team) { return null; }
 
         var summary = TeamQueries.getRankingSummary(team);
-
-        // The explicit entries with the range of years each one
-        // governs. Used by the modal to show the inheritance
-        // story: "entry at 1904 governs 1904–1906".
         var historyWithRanges =
             TeamQueries.getRankingHistoryWithRanges(team);
 
@@ -1615,30 +1610,23 @@
             ? UI.getFilter(normalized)
             : {};
 
+        var showInactive =
+            typeof filter.showInactive === 'boolean'
+                ? filter.showInactive
+                : false;
+
         return {
             tab: normalized,
             typeLabel: getTypeLabel(normalized),
             periodLabel: getPeriodLabel(normalized),
             filterYear: filter.filterYear || '',
-            filterStatus: filter.filterStatus || 'active'
+            showInactive: showInactive
         };
     }
 
     // ============================================================
     // TEAM RANKINGS VM
     // ============================================================
-    //
-    // One row per team visible at a given year. Ranks are the
-    // EFFECTIVE value (read-time inheritance). Each row carries
-    // whether the value is explicit at this year and where it
-    // came from.
-    //
-    // Visibility:
-    //   A team is included when TeamQueries.isTeamActiveAtPeriod
-    //   returns true at `year`, OR when showInactive is set. When
-    //   showInactive is set, teams not active at the year are
-    //   included with activeAtYear: false, so the renderer can
-    //   dim them.
 
     function getTeamRankingsViewModel(options) {
         options = options || {};
@@ -1720,20 +1708,6 @@
             });
         }
 
-        // ---- Sort ----
-        //
-        // Rank sort: numeric ascending by default. Teams with no
-        // effective rank sort last (treated as Infinity). Ties
-        // broken by name ascending.
-        //
-        // Name sort: alphabetical.
-        //
-        // Members sort: numeric ascending by member count. Ties
-        // broken by name ascending.
-        //
-        // Descending inverts the primary key but keeps the name
-        // tiebreak ascending, so the secondary ordering is stable
-        // and predictable.
         rows.sort(function(a, b) {
             var cmp;
 
