@@ -1,47 +1,14 @@
 /**
  * css/shared.css - Hollow Blades Manager Shared Styles
- *
- * Tokens, reset, and cross-module primitives:
- *   - Custom properties (:root) — dark mode
- *   - Custom properties ([data-theme="light"]) — soft cream light mode
- *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
- *   - Custom properties ([data-theme="pastel"]) — pastel 80s magical-girl
- *   - Custom properties ([data-theme="carnival"]) — demented gothic carnival
- *   - Custom properties ([data-theme="maximal"]) — tacky shocking light
- *   - Custom properties ([data-theme="gits"]) — cyberpunk abyss
- *   - Custom properties ([data-theme="stained-glass"]) — luminous fractured light
- *   - Custom properties ([data-theme="stained-glass-dark"]) — dark leaded glass
- *   - Custom properties ([data-theme="art-deco"]) — 1920s metallic luxury
- *   - Custom properties ([data-theme="nouveau"]) — organic art nouveau
- *   - Custom properties ([data-theme="ukiyo-e"]) — traditional woodblock print
- *   - Custom properties ([data-theme="nature"]) — monet's water lilies
- *   - Custom properties ([data-theme="kmt"]) — brutalist monochrome
- *   - Custom properties ([data-theme="gaslight"]) — victorian gaslit streets
- *   - Custom properties ([data-theme="grotesque"]) — dark expressionist
- *   - Custom properties ([data-theme="illuminated"]) — medieval scripture
- *   - Custom properties ([data-theme="discowing"]) — 80s comic book
- *   - Custom properties ([data-theme="choc-cake"]) — 16-bit pixel art
- *   - Custom properties ([data-theme="dada"]) — cut-and-paste collage
- *   - Global reset, scrollbar, focus-visible, reduced motion
- *   - Theme transition
- *   - Theme toggle button
- *   - Buttons (all variants)
- *   - Header + burger navigation
- *   - Main layout container
- *   - Tabs
- *   - Page header
- *   - Empty state
- *   - Form primitives (form-group, form-grid, form-actions)
- *   - Section helpers (section-divider, section-label)
- *   - Modal shell
- *   - Research modal (search + results)
- *   - Notification system
- *   - Generic badges + legacy badge aliases
- *
- * Every other CSS file (dashboard.css, characters.css, etc.)
- * depends on this one but not on each other.
- *
- * Load order: shared.css MUST load first.
+ * ...
+ * THEME CYCLE (Alternating Dark/Light):
+ *   dark (D), light (L), vaporwave (D), pastel (L), 
+ *   carnival (D), maximal (L), gits (D), stained-glass (L), 
+ *   art-deco (L), stained-glass-dark (D), nature (L), 
+ *   kmt (D), gaslight (D), grotesque (D), illuminated (L), 
+ *   discowing (L), choc-cake (D), dada (L), ukiyo-e (L),
+ *   nouveau (L)
+ * ...
  */
 
 /* ============================================================
@@ -71,12 +38,10 @@
 
     --overlay: rgba(0, 0, 0, 0.85);
     --overlay-light: rgba(0, 0, 0, 0.6);
-
     --radius: 10px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     --header-height-mobile: 36px;
     --header-height-desktop: 48px;
-
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
 
@@ -101,14 +66,12 @@
     --magic-air:   #A8D5E2;
     --magic-metal: #95A5A6;
     --magic-wood:  #27AE60;
-
     --magic-blood:   #C0392B;
     --magic-bone:    #F5F5DC;
     --magic-mind:    #8E44AD;
     --magic-morphic: #1ABC9C;
     --magic-life:    #2ECC71;
     --magic-death:   #2C3E50;
-
     --magic-space:        #3498DB;
     --magic-time:         #F39C12;
     --magic-dimension:    #9B59B6;
@@ -156,6 +119,7 @@
     --overlay: rgba(30, 45, 20, 0.55);
     --overlay-light: rgba(30, 45, 20, 0.4);
     --shadow: 0 4px 20px rgba(30, 45, 20, 0.10);
+    --radius: 10px;
 
     --graph-node-accent-fill: #6f9b28;
     --graph-node-accent-stroke: #4d7218;
@@ -178,14 +142,12 @@
     --magic-air:   #5B8AA0;
     --magic-metal: #6A7A7B;
     --magic-wood:  #1F8B4A;
-
     --magic-blood:   #9C2A1E;
     --magic-bone:    #9A9170;
     --magic-mind:    #6E2F8A;
     --magic-morphic: #128C72;
     --magic-life:    #1E9E4F;
     --magic-death:   #3A5068;
-
     --magic-space:        #2172A8;
     --magic-time:         #C47810;
     --magic-dimension:    #7A4090;
@@ -232,7 +194,6 @@
 
     --overlay: rgba(7, 4, 18, 0.88);
     --overlay-light: rgba(7, 4, 18, 0.68);
-
     --radius: 10px;
     --shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 0 45px rgba(255, 79, 216, 0.06);
 
@@ -260,14 +221,12 @@
     --magic-air:   #a9ecff;
     --magic-metal: #b7c8d6;
     --magic-wood:  #61ffb0;
-
     --magic-blood:   #ff557f;
     --magic-bone:    #eee6d8;
     --magic-mind:    #c77dff;
     --magic-morphic: #54f5d0;
     --magic-life:    #61ffb0;
     --magic-death:   #625b78;
-
     --magic-space:        #35e7ff;
     --magic-time:         #ffd166;
     --magic-dimension:    #c77dff;
@@ -341,14 +300,12 @@
     --magic-air:   #b9dfe8;
     --magic-metal: #9eabbc;
     --magic-wood:  #86b99a;
-
     --magic-blood:   #d86f83;
     --magic-bone:    #e6d7c3;
     --magic-mind:    #ad8bd0;
     --magic-morphic: #82bda9;
     --magic-life:    #82bd88;
     --magic-death:   #83728f;
-
     --magic-space:        #73c8df;
     --magic-time:         #d6b45c;
     --magic-dimension:    #a889cf;
@@ -422,14 +379,12 @@
     --magic-air:   #c9c5c0;
     --magic-metal: #a5a4a2;
     --magic-wood:  #6f7c68;
-
     --magic-blood:   #b51f2d;
     --magic-bone:    #ddd5ca;
     --magic-mind:    #81757d;
     --magic-morphic: #777e76;
     --magic-life:    #788c73;
     --magic-death:   #595359;
-
     --magic-space:        #747b82;
     --magic-time:         #b89a61;
     --magic-dimension:    #83787f;
@@ -500,14 +455,12 @@
     --magic-air:   #e6fffb;
     --magic-metal: #7a3fa8;
     --magic-wood:  #00a89a;
-    
     --magic-blood:   #ff2ea6;
     --magic-bone:    #fff0fb;
     --magic-mind:    #1a0033;
     --magic-morphic: #00e5ff;
     --magic-life:    #ffea00;
     --magic-death:   #7a3fa8;
-    
     --magic-space:        #00e5ff;
     --magic-time:         #ffea00;
     --magic-dimension:    #ff2ea6;
@@ -578,14 +531,12 @@
     --magic-air:   #ffffff;
     --magic-metal: #a0b8d0;
     --magic-wood:  #32c8a2;
-    
     --magic-blood:   #ff2038;
     --magic-bone:    #ffffff;
     --magic-mind:    #ff00a8;
     --magic-morphic: #32c8a2;
     --magic-life:    #00f0ff;
     --magic-death:   #3b4e64;
-    
     --magic-space:        #00f0ff;
     --magic-time:         #f2b738;
     --magic-dimension:    #ff00a8;
@@ -606,7 +557,7 @@
 }
 
 /* ============================================================
-   TOKENS — STAINED GLASS (LUMINOUS CATHEDRAL)
+   TOKENS — STAINED GLASS (LIGHT)
    ============================================================ */
 
 [data-theme="stained-glass"] {
@@ -656,14 +607,12 @@
     --magic-air:   #87ceeb;
     --magic-metal: #9e9e9e;
     --magic-wood:  #2e7d32;
-    
     --magic-blood:   #990000;
     --magic-bone:    #e0dac5;
     --magic-mind:    #6a1b9a;
     --magic-morphic: #00897b;
     --magic-life:    #2e7d32;
     --magic-death:   #2c2c2c;
-    
     --magic-space:        #0066cc;
     --magic-time:         #d48806;
     --magic-dimension:    #6a1b9a;
@@ -737,14 +686,12 @@
     --magic-air:   #eaf6ff;
     --magic-metal: #c0d0e0;
     --magic-wood:  #3dffc0;
-    
     --magic-blood:   #ff3d6e;
     --magic-bone:    #f0e6d2;
     --magic-mind:    #c77dff;
     --magic-morphic: #5ee8ff;
     --magic-life:    #3dffc0;
     --magic-death:   #1d4a6e;
-    
     --magic-space:        #5ee8ff;
     --magic-time:         #ffd166;
     --magic-dimension:    #c77dff;
@@ -765,35 +712,52 @@
 }
 
 /* ============================================================
-   TOKENS — ART DECO
+   TOKENS — DECO NOUVEAU
+   ============================================================
+   Merged theme: The strict metallic geometry of Art Deco meets
+   the organic, flowing curves of Art Nouveau.
    ============================================================ */
 
-[data-theme="art-deco"] {
-    --bg: #f4f0e6;
-    --panel: #ffffff;
+[data-theme="deco-nouveau"] {
+    /* BASE PALETTE */
+    --bg: #f4f0e6;              /* Champagne / warm parchment */
+    --panel: #fcfaf5;           /* Crisp linen */
     --panel-alt: #f0ebd8;
-    --border: #b8975a;
+    
+    --border: #b8975a;          /* Polished brass */
     --border-soft: #d1c2a5;
-    --text: #1c1e21;
+    
+    --text: #1c1e21;            /* Onyx / deep ink */
     --text-dim: #7d7768;
+
+    /* EMERALD GREEN */
     --accent: #0b6c46;
     --accent-soft: rgba(11, 108, 70, 0.10);
     --accent-hover: rgba(11, 108, 70, 0.20);
+
+    /* GOLD / BRASS */
     --info: #b8975a;
     --info-soft: rgba(184, 151, 90, 0.15);
     --info-hover: rgba(184, 151, 90, 0.25);
+
+    /* RUBY RED */
     --danger: #8c1c1c;
     --danger-soft: rgba(140, 28, 28, 0.10);
     --danger-hover: rgba(140, 28, 28, 0.20);
+
+    /* CHAMPAGNE */
     --warning: #a67c00;
     --warning-soft: rgba(166, 124, 0, 0.12);
     --warning-hover: rgba(166, 124, 0, 0.24);
 
+    /* OVERLAY & SHADOWS */
     --overlay: rgba(28, 30, 33, 0.6);
     --overlay-light: rgba(28, 30, 33, 0.4);
-    --radius: 0px;
-    --shadow: 0 10px 25px rgba(28, 30, 33, 0.08), 0 0 0 1px var(--border);
+    
+    --radius: 12px;             /* Organic curves */
+    --shadow: 0 10px 25px rgba(28, 30, 33, 0.08), 0 0 0 2px var(--border);
 
+    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #0b6c46;
     --graph-node-accent-stroke: #b8975a;
     --graph-node-info-fill: #b8975a;
@@ -815,14 +779,12 @@
     --magic-air:   #e8e0d5;
     --magic-metal: #b8975a;
     --magic-wood:  #0b6c46;
-    
     --magic-blood:   #6b1414;
     --magic-bone:    #f4f0e6;
     --magic-mind:    #6a1b9a;
     --magic-morphic: #4a9e7b;
     --magic-life:    #0b6c46;
     --magic-death:   #1c1e21;
-    
     --magic-space:        #4a8f9e;
     --magic-time:         #b8975a;
     --magic-dimension:    #6a1b9a;
@@ -843,412 +805,7 @@
 }
 
 /* ============================================================
-   TOKENS — NOUVEAU
-   ============================================================ */
-
-[data-theme="nouveau"] {
-    --bg: #f4ebd8;
-    --panel: #fbf6eb;
-    --panel-alt: #ebdcc6;
-    --border: #9a6a4d;
-    --border-soft: #c6a88e;
-    --text: #3b2b24;
-    --text-dim: #6b5244;
-    --accent: #c45c34;
-    --accent-soft: rgba(196, 92, 52, 0.12);
-    --accent-hover: rgba(196, 92, 52, 0.24);
-    --info: #6b8c7b;
-    --info-soft: rgba(107, 140, 123, 0.14);
-    --info-hover: rgba(107, 140, 123, 0.24);
-    --danger: #9b3e31;
-    --danger-soft: rgba(155, 62, 49, 0.12);
-    --danger-hover: rgba(155, 62, 49, 0.22);
-    --warning: #b08c42;
-    --warning-soft: rgba(176, 140, 66, 0.14);
-    --warning-hover: rgba(176, 140, 66, 0.26);
-
-    --overlay: rgba(59, 43, 36, 0.6);
-    --overlay-light: rgba(59, 43, 36, 0.4);
-    --radius: 12px;
-    --shadow: 0 10px 30px rgba(59, 43, 36, 0.08), 0 0 0 1px var(--border);
-
-    --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
-
-    --graph-node-accent-fill: #c45c34;
-    --graph-node-accent-stroke: #3b2b24;
-    --graph-node-info-fill: #6b8c7b;
-    --graph-node-info-stroke: #3b2b24;
-
-    --graph-node-status-deceased:   #947a6b;
-    --graph-node-status-instructor: #8a5c6b;
-    --graph-node-status-senior:     #b08c42;
-    --graph-node-status-junior:     #6b8c7b;
-    --graph-node-status-rookie:     #7a9b6e;
-    --graph-node-status-student:    #c45c34;
-    --graph-node-status-support:    #d98c6b;
-    --graph-node-status-civilian:   #6b5244;
-    --graph-node-status-other:      #947a6b;
-
-    --magic-earth: #9a6a4d;
-    --magic-water: #6b8c7b;
-    --magic-fire:  #c45c34;
-    --magic-air:   #f4ebd8;
-    --magic-metal: #9b3e31;
-    --magic-wood:  #7a9b6e;
-    
-    --magic-blood:   #9b3e31;
-    --magic-bone:    #fbf6eb;
-    --magic-mind:    #8a5c6b;
-    --magic-morphic: #6b8c7b;
-    --magic-life:    #7a9b6e;
-    --magic-death:   #3b2b24;
-    
-    --magic-space:        #6b8c7b;
-    --magic-time:         #b08c42;
-    --magic-dimension:    #8a5c6b;
-    --magic-void:         #000000;
-    --magic-reality:      #c45c34;
-    --magic-transference: #d98c6b;
-
-    --relationship-familial:     #7a9b6e;
-    --relationship-professional: #b08c42;
-    --relationship-romantic:     #9b3e31;
-    --relationship-friendship:   #6b8c7b;
-    --relationship-mentor:       #8a5c6b;
-    --relationship-rivalry:      #d98c6b;
-    --relationship-alliance:     #9a6a4d;
-    --relationship-other:        #6b5244;
-
-    --chip-bg-subtle: rgba(59, 43, 36, 0.06);
-}
-
-/* ============================================================
-   TOKENS — UKIYO-E
-   ============================================================ */
-
-[data-theme="ukiyo-e"] {
-    --bg: #F4EAD5;
-    --panel: #F9F6EE;
-    --panel-alt: #E8E0D0;
-    --border: #292D30;
-    --border-soft: #8E9295;
-    --text: #292D30;
-    --text-dim: #5A5D60;
-    --accent: #234F70;
-    --accent-soft: rgba(35, 79, 112, 0.12);
-    --accent-hover: rgba(35, 79, 112, 0.22);
-    --info: #78917B;
-    --info-soft: rgba(120, 145, 123, 0.14);
-    --info-hover: rgba(120, 145, 123, 0.24);
-    --danger: #B83A32;
-    --danger-soft: rgba(184, 58, 50, 0.12);
-    --danger-hover: rgba(184, 58, 50, 0.22);
-    --warning: #D1A35F;
-    --warning-soft: rgba(209, 163, 95, 0.14);
-    --warning-hover: rgba(209, 163, 95, 0.26);
-
-    --overlay: rgba(41, 45, 48, 0.6);
-    --overlay-light: rgba(41, 45, 48, 0.4);
-    --radius: 0px;
-    --shadow: 2px 2px 0 var(--border);
-
-    --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
-
-    --graph-node-accent-fill: #234F70;
-    --graph-node-accent-stroke: #292D30;
-    --graph-node-info-fill: #78917B;
-    --graph-node-info-stroke: #292D30;
-
-    --graph-node-status-deceased:   #8E9295;
-    --graph-node-status-instructor: #234F70;
-    --graph-node-status-senior:     #D1A35F;
-    --graph-node-status-junior:     #78917B;
-    --graph-node-status-rookie:     #B83A32;
-    --graph-node-status-student:    #234F70;
-    --graph-node-status-support:    #5A5D60;
-    --graph-node-status-civilian:   #8E9295;
-    --graph-node-status-other:      #8E9295;
-
-    --magic-earth: #D1A35F;
-    --magic-water: #234F70;
-    --magic-fire:  #B83A32;
-    --magic-air:   #F4EAD5;
-    --magic-metal: #292D30;
-    --magic-wood:  #78917B;
-    
-    --magic-blood:   #B83A32;
-    --magic-bone:    #F9F6EE;
-    --magic-mind:    #5A5D60;
-    --magic-morphic: #78917B;
-    --magic-life:    #78917B;
-    --magic-death:   #292D30;
-    
-    --magic-space:        #234F70;
-    --magic-time:         #D1A35F;
-    --magic-dimension:    #5A5D60;
-    --magic-void:         #000000;
-    --magic-reality:      #B83A32;
-    --magic-transference: #D1A35F;
-
-    --relationship-familial:     #78917B;
-    --relationship-professional: #D1A35F;
-    --relationship-romantic:     #B83A32;
-    --relationship-friendship:   #234F70;
-    --relationship-mentor:       #5A5D60;
-    --relationship-rivalry:      #B83A32;
-    --relationship-alliance:     #78917B;
-    --relationship-other:        #8E9295;
-
-    --chip-bg-subtle: rgba(41, 45, 48, 0.06);
-}
-
-/* ============================================================
-   TOKENS — NATURE (MONET'S WATER LILIES)
-   ============================================================ */
-
-[data-theme="nature"] {
-    --bg: #DDE8D8;
-    --panel: #EBF2E9;
-    --panel-alt: #D3E0D6;
-    --border: #6F8C81;
-    --border-soft: #9FB3A8;
-    --text: #2C3D37;
-    --text-dim: #4B615A;
-    --accent: #C982A0;
-    --accent-soft: rgba(201, 130, 160, 0.15);
-    --accent-hover: rgba(201, 130, 160, 0.28);
-    --info: #B5AED0;
-    --info-soft: rgba(181, 174, 208, 0.20);
-    --info-hover: rgba(181, 174, 208, 0.30);
-    --danger: #B34442;
-    --danger-soft: rgba(179, 68, 66, 0.12);
-    --danger-hover: rgba(179, 68, 66, 0.22);
-    --warning: #C49A45;
-    --warning-soft: rgba(196, 154, 69, 0.14);
-    --warning-hover: rgba(196, 154, 69, 0.26);
-
-    --overlay: rgba(44, 61, 55, 0.6);
-    --overlay-light: rgba(44, 61, 55, 0.4);
-    --radius: 16px;
-    --shadow: 0 8px 28px rgba(49, 79, 76, 0.08);
-
-    --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
-
-    --graph-node-accent-fill: #C982A0;
-    --graph-node-accent-stroke: #2C3D37;
-    --graph-node-info-fill: #B5AED0;
-    --graph-node-info-stroke: #2C3D37;
-
-    --graph-node-status-deceased:   #6F867D;
-    --graph-node-status-instructor: #B5AED0;
-    --graph-node-status-senior:     #C49A45;
-    --graph-node-status-junior:     #5B8C74;
-    --graph-node-status-rookie:     #7A9B6E;
-    --graph-node-status-student:    #C982A0;
-    --graph-node-status-support:    #B34442;
-    --graph-node-status-civilian:   #4B615A;
-    --graph-node-status-other:      #6F867D;
-
-    --magic-earth: #C49A45;
-    --magic-water: #5B8C74;
-    --magic-fire:  #B34442;
-    --magic-air:   #DDE8D8;
-    --magic-metal: #6F867D;
-    --magic-wood:  #5B8C74;
-    
-    --magic-blood:   #B34442;
-    --magic-bone:    #EBF2E9;
-    --magic-mind:    #B5AED0;
-    --magic-morphic: #5B8C74;
-    --magic-life:    #5B8C74;
-    --magic-death:   #2C3D37;
-    
-    --magic-space:        #B5AED0;
-    --magic-time:         #C49A45;
-    --magic-dimension:    #C982A0;
-    --magic-void:         #000000;
-    --magic-reality:      #B34442;
-    --magic-transference: #C982A0;
-
-    --relationship-familial:     #5B8C74;
-    --relationship-professional: #C49A45;
-    --relationship-romantic:     #B34442;
-    --relationship-friendship:   #B5AED0;
-    --relationship-mentor:       #C982A0;
-    --relationship-rivalry:      #B34442;
-    --relationship-alliance:     #5B8C74;
-    --relationship-other:        #6F867D;
-
-    --chip-bg-subtle: rgba(44, 61, 55, 0.06);
-}
-
-/* ============================================================
-   TOKENS — KMT
-   ============================================================ */
-
-[data-theme="kmt"] {
-    --bg: #000000;
-    --panel: #0a0a0a;
-    --panel-alt: #141414;
-    --border: #888888;
-    --border-soft: #4a4a4a;
-    --text: #ffffff;
-    --text-dim: #cccccc;
-    --accent: #A30000;
-    --accent-soft: rgba(163, 0, 0, 0.20);
-    --accent-hover: rgba(163, 0, 0, 0.40);
-    --info: #aaaaaa;
-    --info-soft: rgba(170, 170, 170, 0.15);
-    --info-hover: rgba(170, 170, 170, 0.25);
-    --danger: #FF0000;
-    --danger-soft: rgba(255, 0, 0, 0.15);
-    --danger-hover: rgba(255, 0, 0, 0.25);
-    --warning: #B89900;
-    --warning-soft: rgba(184, 153, 0, 0.15);
-    --warning-hover: rgba(184, 153, 0, 0.25);
-
-    --overlay: rgba(0, 0, 0, 0.90);
-    --overlay-light: rgba(0, 0, 0, 0.70);
-    --radius: 0px;
-    --shadow: 0 0 0 1px var(--border-soft), 0 4px 0 rgba(0, 0, 0, 1);
-
-    --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
-
-    --graph-node-accent-fill: #A30000;
-    --graph-node-accent-stroke: #ffffff;
-    --graph-node-info-fill: #aaaaaa;
-    --graph-node-info-stroke: #ffffff;
-
-    --graph-node-status-deceased:   #888888;
-    --graph-node-status-instructor: #cccccc;
-    --graph-node-status-senior:     #B89900;
-    --graph-node-status-junior:     #aaaaaa;
-    --graph-node-status-rookie:     #006600;
-    --graph-node-status-student:    #A30000;
-    --graph-node-status-support:    #FF0000;
-    --graph-node-status-civilian:   #888888;
-    --graph-node-status-other:      #888888;
-
-    --magic-earth: #B89900;
-    --magic-water: #aaaaaa;
-    --magic-fire:  #FF0000;
-    --magic-air:   #ffffff;
-    --magic-metal: #cccccc;
-    --magic-wood:  #006600;
-    
-    --magic-blood:   #FF0000;
-    --magic-bone:    #ffffff;
-    --magic-mind:    #cccccc;
-    --magic-morphic: #006600;
-    --magic-life:    #006600;
-    --magic-death:   #000000;
-    
-    --magic-space:        #aaaaaa;
-    --magic-time:         #B89900;
-    --magic-dimension:    #cccccc;
-    --magic-void:         #000000;
-    --magic-reality:      #FF0000;
-    --magic-transference: #A30000;
-
-    --relationship-familial:     #006600;
-    --relationship-professional: #B89900;
-    --relationship-romantic:     #FF0000;
-    --relationship-friendship:   #aaaaaa;
-    --relationship-mentor:       #cccccc;
-    --relationship-rivalry:      #FF0000;
-    --relationship-alliance:     #006600;
-    --relationship-other:        #888888;
-
-    --chip-bg-subtle: rgba(255, 255, 255, 0.10);
-}
-
-/* ============================================================
-   TOKENS — GASLIGHT
-   ============================================================ */
-
-[data-theme="gaslight"] {
-    --bg: #1A1A22;
-    --panel: #25242B;
-    --panel-alt: #32313A;
-    --border: #6B6878;
-    --border-soft: #4A4855;
-    --text: #E8E2D4;
-    --text-dim: #ABA294;
-    --accent: #D4B56C;
-    --accent-soft: rgba(212, 181, 108, 0.15);
-    --accent-hover: rgba(212, 181, 108, 0.30);
-    --info: #5A7B8C;
-    --info-soft: rgba(90, 123, 140, 0.14);
-    --info-hover: rgba(90, 123, 140, 0.24);
-    --danger: #A63C30;
-    --danger-soft: rgba(166, 60, 48, 0.15);
-    --danger-hover: rgba(166, 60, 48, 0.25);
-    --warning: #C49A45;
-    --warning-soft: rgba(196, 154, 69, 0.15);
-    --warning-hover: rgba(196, 154, 69, 0.25);
-
-    --overlay: rgba(26, 26, 34, 0.85);
-    --overlay-light: rgba(26, 26, 34, 0.65);
-    --radius: 4px;
-    --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-
-    --scrollbar-track: var(--bg);
-    --scrollbar-thumb: var(--border);
-
-    --graph-node-accent-fill: #D4B56C;
-    --graph-node-accent-stroke: #1A1A22;
-    --graph-node-info-fill: #5A7B8C;
-    --graph-node-info-stroke: #1A1A22;
-
-    --graph-node-status-deceased:   #7B7469;
-    --graph-node-status-instructor: #5A7B8C;
-    --graph-node-status-senior:     #C49A45;
-    --graph-node-status-junior:     #D4B56C;
-    --graph-node-status-rookie:     #5B8C6A;
-    --graph-node-status-student:    #D4B56C;
-    --graph-node-status-support:    #A63C30;
-    --graph-node-status-civilian:   #ABA294;
-    --graph-node-status-other:      #7B7469;
-
-    --magic-earth: #C49A45;
-    --magic-water: #5A7B8C;
-    --magic-fire:  #A63C30;
-    --magic-air:   #E8E2D4;
-    --magic-metal: #6B6878;
-    --magic-wood:  #5B8C6A;
-    
-    --magic-blood:   #A63C30;
-    --magic-bone:    #E8E2D4;
-    --magic-mind:    #5A7B8C;
-    --magic-morphic: #5B8C6A;
-    --magic-life:    #5B8C6A;
-    --magic-death:   #1A1A22;
-    
-    --magic-space:        #5A7B8C;
-    --magic-time:         #C49A45;
-    --magic-dimension:    #D4B56C;
-    --magic-void:         #000000;
-    --magic-reality:      #A63C30;
-    --magic-transference: #6B6878;
-
-    --relationship-familial:     #5B8C6A;
-    --relationship-professional: #C49A45;
-    --relationship-romantic:     #A63C30;
-    --relationship-friendship:   #5A7B8C;
-    --relationship-mentor:       #D4B56C;
-    --relationship-rivalry:      #A63C30;
-    --relationship-alliance:     #5B8C6A;
-    --relationship-other:        #7B7469;
-
-    --chip-bg-subtle: rgba(232, 226, 212, 0.05);
-}
-
-/* ============================================================
-   TOKENS — GROTESQUE
+   TOKENS — GROTESQUE (ORGANIC DISTORTION)
    ============================================================ */
 
 [data-theme="grotesque"] {
@@ -1274,8 +831,8 @@
 
     --overlay: rgba(13, 10, 10, 0.90);
     --overlay-light: rgba(13, 10, 10, 0.70);
-    --radius: 6px;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.8), inset 0 0 0 1px #050303;
+    --radius: 40px 10px 40px 10px; /* Organic, distorted shape */
+    --shadow: 10px 15px 30px rgba(0, 0, 0, 0.8), inset 0 0 0 1px #050303;
 
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
@@ -1301,14 +858,12 @@
     --magic-air:   #e8dfd3;
     --magic-metal: #8a7a6e;
     --magic-wood:  #4a6b55;
-    
     --magic-blood:   #D93025;
     --magic-bone:    #e8dfd3;
     --magic-mind:    #5A4B6B;
     --magic-morphic: #4a6b55;
     --magic-life:    #4a6b55;
     --magic-death:   #0d0a0a;
-    
     --magic-space:        #4a6b55;
     --magic-time:         #b88d5a;
     --magic-dimension:    #5A4B6B;
@@ -1382,14 +937,12 @@
     --magic-air:   #F4EBD5;
     --magic-metal: #2B2118;
     --magic-wood:  #4B6B50;
-    
     --magic-blood:   #A63C30;
     --magic-bone:    #FBF7EA;
     --magic-mind:    #5A4B3C;
     --magic-morphic: #7A9B6E;
     --magic-life:    #4B6B50;
     --magic-death:   #1A130D;
-    
     --magic-space:        #2E4D7B;
     --magic-time:         #C49A45;
     --magic-dimension:    #5A4B3C;
@@ -1463,14 +1016,12 @@
     --magic-air:   #FFFFFF;
     --magic-metal: #000000;
     --magic-wood:  #00A86B;
-    
     --magic-blood:   #FF0000;
     --magic-bone:    #FFFFFF;
     --magic-mind:    #1A2A40;
     --magic-morphic: #00A86B;
     --magic-life:    #00A86B;
     --magic-death:   #050505;
-    
     --magic-space:        #0080FF;
     --magic-time:         #FFD700;
     --magic-dimension:    #4A5A70;
@@ -1544,14 +1095,12 @@
     --magic-air:   #F2B35A;
     --magic-metal: #1A0000;
     --magic-wood:  #6B8E23;
-    
     --magic-blood:   #B30000;
     --magic-bone:    #F2B35A;
     --magic-mind:    #D9821A;
     --magic-morphic: #6B8E23;
     --magic-life:    #6B8E23;
     --magic-death:   #1A0000;
-    
     --magic-space:        #D9821A;
     --magic-time:         #FFD700;
     --magic-dimension:    #B36010;
@@ -1625,14 +1174,12 @@
     --magic-air:   #E8E5DF;
     --magic-metal: #111111;
     --magic-wood:  #5A8C5A;
-    
     --magic-blood:   #C93A3A;
     --magic-bone:    #F4F2EC;
     --magic-mind:    #4A4A4A;
     --magic-morphic: #5A8C5A;
     --magic-life:    #5A8C5A;
     --magic-death:   #111111;
-    
     --magic-space:        #D9A5A5;
     --magic-time:         #D4A32A;
     --magic-dimension:    #4A4A4A;
@@ -1653,143 +1200,114 @@
 }
 
 /* ============================================================
+   TOKENS — UKIYO-E
+   ============================================================ */
+
+[data-theme="ukiyo-e"] {
+    --bg: #F4EAD5;
+    --panel: #F9F6EE;
+    --panel-alt: #E8E0D0;
+    --border: #292D30;
+    --border-soft: #8E9295;
+    --text: #292D30;
+    --text-dim: #5A5D60;
+    --accent: #234F70;
+    --accent-soft: rgba(35, 79, 112, 0.12);
+    --accent-hover: rgba(35, 79, 112, 0.22);
+    --info: #78917B;
+    --info-soft: rgba(120, 145, 123, 0.14);
+    --info-hover: rgba(120, 145, 123, 0.24);
+    --danger: #B83A32;
+    --danger-soft: rgba(184, 58, 50, 0.12);
+    --danger-hover: rgba(184, 58, 50, 0.22);
+    --warning: #D1A35F;
+    --warning-soft: rgba(209, 163, 95, 0.14);
+    --warning-hover: rgba(209, 163, 95, 0.26);
+
+    --overlay: rgba(41, 45, 48, 0.6);
+    --overlay-light: rgba(41, 45, 48, 0.4);
+    --radius: 0px;
+    --shadow: 2px 2px 0 var(--border);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #234F70;
+    --graph-node-accent-stroke: #292D30;
+    --graph-node-info-fill: #78917B;
+    --graph-node-info-stroke: #292D30;
+
+    --graph-node-status-deceased:   #8E9295;
+    --graph-node-status-instructor: #234F70;
+    --graph-node-status-senior:     #D1A35F;
+    --graph-node-status-junior:     #78917B;
+    --graph-node-status-rookie:     #B83A32;
+    --graph-node-status-student:    #234F70;
+    --graph-node-status-support:    #5A5D60;
+    --graph-node-status-civilian:   #8E9295;
+    --graph-node-status-other:      #8E9295;
+
+    --magic-earth: #D1A35F;
+    --magic-water: #234F70;
+    --magic-fire:  #B83A32;
+    --magic-air:   #F4EAD5;
+    --magic-metal: #292D30;
+    --magic-wood:  #78917B;
+    --magic-blood:   #B83A32;
+    --magic-bone:    #F9F6EE;
+    --magic-mind:    #5A5D60;
+    --magic-morphic: #78917B;
+    --magic-life:    #78917B;
+    --magic-death:   #292D30;
+    --magic-space:        #234F70;
+    --magic-time:         #D1A35F;
+    --magic-dimension:    #5A5D60;
+    --magic-void:         #000000;
+    --magic-reality:      #B83A32;
+    --magic-transference: #D1A35F;
+
+    --relationship-familial:     #78917B;
+    --relationship-professional: #D1A35F;
+    --relationship-romantic:     #B83A32;
+    --relationship-friendship:   #234F70;
+    --relationship-mentor:       #5A5D60;
+    --relationship-rivalry:      #B83A32;
+    --relationship-alliance:     #78917B;
+    --relationship-other:        #8E9295;
+
+    --chip-bg-subtle: rgba(41, 45, 48, 0.06);
+}
+
+/* ============================================================
    THEME TRANSITION
    ============================================================ */
 
-html {
-    transition: background-color 0.25s ease, color 0.25s ease;
-}
-
-body {
-    transition: background-color 0.25s ease, color 0.25s ease;
-}
-
-button,
-input,
-select,
-textarea,
-a,
-.panel,
-.modal,
-.modal-content,
-.notification,
-.activity-item,
-.stat-card,
-.quick-link,
-.empty-state,
-.loading-state {
-    transition:
-        background-color 0.2s ease,
-        border-color 0.2s ease,
-        color 0.2s ease,
-        box-shadow 0.2s ease;
-}
+html { transition: background-color 0.25s ease, color 0.25s ease; }
+body { transition: background-color 0.25s ease, color 0.25s ease; }
+button, input, select, textarea, a, .panel, .modal, .modal-content, .notification, .activity-item, .stat-card, .quick-link, .empty-state, .loading-state { transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease; }
 
 @media (prefers-reduced-motion: reduce) {
-    html,
-    body,
-    button,
-    input,
-    select,
-    textarea,
-    a,
-    .panel,
-    .modal,
-    .modal-content,
-    .notification,
-    .activity-item,
-    .stat-card,
-    .quick-link,
-    .empty-state,
-    .loading-state {
-        transition: none !important;
-    }
+    html, body, button, input, select, textarea, a, .panel, .modal, .modal-content, .notification, .activity-item, .stat-card, .quick-link, .empty-state, .loading-state { transition: none !important; }
 }
 
 /* ============================================================
    BACKDROPS
    ============================================================ */
 
-[data-theme="vaporwave"] body {
-    background: radial-gradient(circle at 8% 5%, rgba(255, 79, 216, 0.22) 0%, transparent 32%), radial-gradient(circle at 92% 18%, rgba(53, 231, 255, 0.18) 0%, transparent 34%), radial-gradient(circle at 50% 110%, rgba(120, 72, 220, 0.18) 0%, transparent 42%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="pastel"] body {
-    background: radial-gradient(circle at 15% 10%, rgba(255, 182, 213, 0.55) 0%, transparent 34%), radial-gradient(circle at 85% 15%, rgba(177, 225, 239, 0.45) 0%, transparent 32%), radial-gradient(circle at 50% 100%, rgba(211, 181, 235, 0.35) 0%, transparent 38%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="carnival"] body {
-    background: repeating-linear-gradient(105deg, rgba(245, 241, 235, 0.055) 0, rgba(245, 241, 235, 0.055) 22px, rgba(181, 31, 45, 0.055) 22px, rgba(181, 31, 45, 0.055) 44px), radial-gradient(circle at 50% 0%, rgba(181, 31, 45, 0.12), transparent 42%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="maximal"] body {
-    background: radial-gradient(600px 400px at 0% 0%, #ffd6f5 0%, transparent 60%), radial-gradient(700px 500px at 100% 10%, #d6fff7 0%, transparent 55%), radial-gradient(600px 400px at 50% 100%, #fff6a8 0%, transparent 55%), repeating-linear-gradient(45deg, #fff0fb 0 20px, #ffe0f5 20px 40px);
-    background-attachment: fixed;
-}
-[data-theme="gits"] body {
-    background: linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px), radial-gradient(circle at 50% 0%, #0a2540 0%, var(--bg) 100%);
-    background-size: 100% 4px, 100% 100%;
-    background-attachment: fixed;
-}
-[data-theme="stained-glass"] body {
-    background: linear-gradient(135deg, rgba(227, 24, 55, 0.04) 0%, transparent 40%), linear-gradient(225deg, rgba(0, 102, 204, 0.04) 0%, transparent 40%), radial-gradient(circle at 50% 50%, #ffffff 0%, var(--bg) 100%);
-    background-attachment: fixed;
-}
-[data-theme="stained-glass-dark"] body {
-    background: repeating-linear-gradient(90deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(0deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), radial-gradient(ellipse at 50% 30%, rgba(255,79,168,0.10) 0%, transparent 45%), radial-gradient(ellipse at 50% 0%, rgba(94,232,255,0.08) 0%, transparent 50%), linear-gradient(to bottom, transparent 60%, rgba(4,10,18,0.9) 100%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="art-deco"] body {
-    background: linear-gradient(to right, rgba(184, 151, 90, 0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(184, 151, 90, 0.04) 1px, transparent 1px), var(--bg);
-    background-size: 40px 40px, 40px 40px, 100% 100%;
-    background-attachment: fixed;
-}
-[data-theme="nouveau"] body {
-    background: radial-gradient(circle at 50% 30%, rgba(196,92,52,0.05) 0%, transparent 50%), radial-gradient(circle at 0% 100%, rgba(107,140,123,0.08) 0%, transparent 40%), radial-gradient(circle at 100% 0%, rgba(107,140,123,0.08) 0%, transparent 40%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="ukiyo-e"] body {
-    background: linear-gradient(to bottom, rgba(217,108,92,0.15) 0%, transparent 40%), linear-gradient(to bottom, transparent 70%, rgba(35,79,112,0.1) 100%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="nature"] body {
-    background: radial-gradient(ellipse at 15% 15%, rgba(201, 130, 160, 0.16), transparent 38%), radial-gradient(ellipse at 82% 24%, rgba(181, 174, 208, 0.20), transparent 42%), radial-gradient(ellipse at 60% 85%, rgba(120, 155, 145, 0.20), transparent 48%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="kmt"] body {
-    background: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(to top, #3a0000 0%, #000000 40%), var(--bg);
-    background-size: 40px 40px, 40px 40px, 100% 100%, 100% 100%;
-    background-position: center top;
-    background-attachment: fixed;
-}
-[data-theme="gaslight"] body {
-    background: radial-gradient(circle at 20% 10%, rgba(232,226,212,0.08) 0%, transparent 40%), radial-gradient(circle at 80% 90%, var(--accent-soft) 0%, transparent 50%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="grotesque"] body {
-    background: radial-gradient(circle at 50% 10%, rgba(232,223,211,0.05) 0%, transparent 40%), radial-gradient(circle at 20% 40%, rgba(90,75,107,0.06) 0%, transparent 50%), radial-gradient(ellipse at 70% 60%, rgba(122,36,36,0.08) 0%, transparent 50%), radial-gradient(circle at 10% 80%, rgba(74,107,85,0.06) 0%, transparent 40%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="illuminated"] body {
-    background: radial-gradient(circle at 10% 5%, rgba(122,155,110,0.15) 0%, transparent 20%), radial-gradient(circle at 50% 2%, var(--accent-soft) 0%, transparent 25%), radial-gradient(circle at 90% 5%, var(--danger-soft) 0%, transparent 20%), var(--bg);
-    background-attachment: fixed;
-}
-[data-theme="discowing"] body {
-    background: radial-gradient(circle, rgba(0,0,0,0.15) 1px, transparent 1px), var(--bg);
-    background-size: 6px 6px; 
-    background-attachment: fixed;
-}
-[data-theme="choc-cake"] body {
-    background: linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), var(--bg);
-    background-size: 32px 32px;
-    background-position: 0 0, 16px 16px;
-    background-attachment: fixed;
-}
-[data-theme="dada"] body {
-    background: linear-gradient(to right, var(--info-soft) 0%, var(--info-soft) 20%, transparent 20%), linear-gradient(to left, var(--accent-soft) 0%, var(--accent-soft) 15%, transparent 15%), radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1.5px), var(--bg);
-    background-size: 100% 100%, 100% 100%, 5px 5px, 100% 100%;
-    background-attachment: fixed;
-}
+[data-theme="vaporwave"] body { background: radial-gradient(circle at 8% 5%, rgba(255, 79, 216, 0.22) 0%, transparent 32%), radial-gradient(circle at 92% 18%, rgba(53, 231, 255, 0.18) 0%, transparent 34%), radial-gradient(circle at 50% 110%, rgba(120, 72, 220, 0.18) 0%, transparent 42%), var(--bg); background-attachment: fixed; }
+[data-theme="pastel"] body { background: radial-gradient(circle at 15% 10%, rgba(255, 182, 213, 0.55) 0%, transparent 34%), radial-gradient(circle at 85% 15%, rgba(177, 225, 239, 0.45) 0%, transparent 32%), radial-gradient(circle at 50% 100%, rgba(211, 181, 235, 0.35) 0%, transparent 38%), var(--bg); background-attachment: fixed; }
+[data-theme="carnival"] body { background: repeating-linear-gradient(105deg, rgba(245, 241, 235, 0.055) 0, rgba(245, 241, 235, 0.055) 22px, rgba(181, 31, 45, 0.055) 22px, rgba(181, 31, 45, 0.055) 44px), radial-gradient(circle at 50% 0%, rgba(181, 31, 45, 0.12), transparent 42%), var(--bg); background-attachment: fixed; }
+[data-theme="maximal"] body { background: radial-gradient(600px 400px at 0% 0%, #ffd6f5 0%, transparent 60%), radial-gradient(700px 500px at 100% 10%, #d6fff7 0%, transparent 55%), radial-gradient(600px 400px at 50% 100%, #fff6a8 0%, transparent 55%), repeating-linear-gradient(45deg, #fff0fb 0 20px, #ffe0f5 20px 40px); background-attachment: fixed; }
+[data-theme="gits"] body { background: linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px), radial-gradient(circle at 50% 0%, #0a2540 0%, var(--bg) 100%); background-size: 100% 4px, 100% 100%; background-attachment: fixed; }
+[data-theme="stained-glass"] body { background: linear-gradient(135deg, rgba(227, 24, 55, 0.04) 0%, transparent 40%), linear-gradient(225deg, rgba(0, 102, 204, 0.04) 0%, transparent 40%), radial-gradient(circle at 50% 50%, #ffffff 0%, var(--bg) 100%); background-attachment: fixed; }
+[data-theme="stained-glass-dark"] body { background: repeating-linear-gradient(90deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(0deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), radial-gradient(ellipse at 50% 30%, rgba(255,79,168,0.10) 0%, transparent 45%), radial-gradient(ellipse at 50% 0%, rgba(94,232,255,0.08) 0%, transparent 50%), linear-gradient(to bottom, transparent 60%, rgba(4,10,18,0.9) 100%), var(--bg); background-attachment: fixed; }
+[data-theme="deco-nouveau"] body { background: linear-gradient(to right, rgba(184, 151, 90, 0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(184, 151, 90, 0.04) 1px, transparent 1px), radial-gradient(circle at 50% 30%, rgba(11,108,70,0.05) 0%, transparent 50%), radial-gradient(circle at 0% 100%, rgba(11,108,70,0.08) 0%, transparent 40%), radial-gradient(circle at 100% 0%, rgba(11,108,70,0.08) 0%, transparent 40%), var(--bg); background-size: 40px 40px, 40px 40px, 100% 100%, 100% 100%, 100% 100%, 100% 100%; background-attachment: fixed; }
+[data-theme="grotesque"] body { background: radial-gradient(circle at 50% 10%, rgba(232,223,211,0.05) 0%, transparent 40%), radial-gradient(circle at 20% 40%, rgba(90,75,107,0.06) 0%, transparent 50%), radial-gradient(ellipse at 70% 60%, rgba(122,36,36,0.08) 0%, transparent 50%), radial-gradient(circle at 10% 80%, rgba(74,107,85,0.06) 0%, transparent 40%), var(--bg); background-attachment: fixed; }
+[data-theme="illuminated"] body { background: radial-gradient(circle at 10% 5%, rgba(122,155,110,0.15) 0%, transparent 20%), radial-gradient(circle at 50% 2%, var(--accent-soft) 0%, transparent 25%), radial-gradient(circle at 90% 5%, var(--danger-soft) 0%, transparent 20%), var(--bg); background-attachment: fixed; }
+[data-theme="discowing"] body { background: radial-gradient(circle, rgba(0,0,0,0.15) 1px, transparent 1px), var(--bg); background-size: 6px 6px; background-attachment: fixed; }
+[data-theme="choc-cake"] body { background: linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), var(--bg); background-size: 32px 32px; background-position: 0 0, 16px 16px; background-attachment: fixed; }
+[data-theme="dada"] body { background: linear-gradient(to right, var(--info-soft) 0%, var(--info-soft) 20%, transparent 20%), linear-gradient(to left, var(--accent-soft) 0%, var(--accent-soft) 15%, transparent 15%), radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1.5px), var(--bg); background-size: 100% 100%, 100% 100%, 5px 5px, 100% 100%; background-attachment: fixed; }
+[data-theme="ukiyo-e"] body { background: linear-gradient(to bottom, rgba(217,108,92,0.15) 0%, transparent 40%), linear-gradient(to bottom, transparent 70%, rgba(35,79,112,0.1) 100%), var(--bg); background-attachment: fixed; }
 
 /* ============================================================
    HEADINGS & TYPOGRAPHY
@@ -1803,18 +1321,14 @@ a,
 [data-theme="gits"] h1, [data-theme="gits"] h2, [data-theme="gits"] h3, [data-theme="gits"] h4 { color: var(--accent); text-shadow: 0 0 8px rgba(0, 240, 255, 0.4); font-family: monospace; letter-spacing: 0.05em; text-transform: uppercase; }
 [data-theme="stained-glass"] h1, [data-theme="stained-glass"] h2, [data-theme="stained-glass"] h3, [data-theme="stained-glass"] h4 { color: #1a1e24; text-shadow: 0 0 15px rgba(255, 255, 255, 1); font-family: 'Fraunces', serif; font-weight: 700; letter-spacing: 0.02em; }
 [data-theme="stained-glass-dark"] h1, [data-theme="stained-glass-dark"] h2, [data-theme="stained-glass-dark"] h3, [data-theme="stained-glass-dark"] h4 { text-shadow: 0 0 8px rgba(94,232,255,0.5), 0 0 24px rgba(255,79,168,0.15); }
-[data-theme="art-deco"] h1, [data-theme="art-deco"] h2, [data-theme="art-deco"] h3, [data-theme="art-deco"] h4 { color: #1c1e21; text-transform: uppercase; letter-spacing: 0.15em; font-family: 'Fraunces', serif; font-weight: 900; }
-[data-theme="nouveau"] h1, [data-theme="nouveau"] h2, [data-theme="nouveau"] h3, [data-theme="nouveau"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 500; letter-spacing: 0.02em; }
-[data-theme="ukiyo-e"] h1, [data-theme="ukiyo-e"] h2, [data-theme="ukiyo-e"] h3, [data-theme="ukiyo-e"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.03em; }
-[data-theme="nature"] h1, [data-theme="nature"] h2, [data-theme="nature"] h3, [data-theme="nature"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 500; letter-spacing: 0.01em; color: var(--text); }
-[data-theme="kmt"] h1, [data-theme="kmt"] h2, [data-theme="kmt"] h3, [data-theme="kmt"] h4 { font-family: monospace; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text); text-shadow: 2px 2px 0px #000000; }
-[data-theme="gaslight"] h1, [data-theme="gaslight"] h2, [data-theme="gaslight"] h3, [data-theme="gaslight"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.02em; color: var(--accent); text-shadow: 0 0 12px var(--accent-soft); }
+[data-theme="deco-nouveau"] h1, [data-theme="deco-nouveau"] h2, [data-theme="deco-nouveau"] h3, [data-theme="deco-nouveau"] h4 { color: #1c1e21; text-transform: uppercase; letter-spacing: 0.15em; font-family: 'Fraunces', serif; font-weight: 900; text-shadow: 0 2px 0 rgba(184, 151, 90, 0.4); }
 [data-theme="grotesque"] h1, [data-theme="grotesque"] h2, [data-theme="grotesque"] h3, [data-theme="grotesque"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 600; letter-spacing: 0.02em; color: var(--text); text-shadow: 0 0 10px rgba(122,36,36,0.3); }
 [data-theme="illuminated"] h1, [data-theme="illuminated"] h2 { font-family: 'UnifrakturMaguntia', 'Old English Text MT', 'Newsreader', Georgia, serif; color: var(--text); }
 [data-theme="illuminated"] h3, [data-theme="illuminated"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
 [data-theme="discowing"] h1, [data-theme="discowing"] h2, [data-theme="discowing"] h3, [data-theme="discowing"] h4 { font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase; color: var(--accent); -webkit-text-stroke: 2px #000000; text-shadow: 3px 3px 0px #000000; }
 [data-theme="choc-cake"] h1, [data-theme="choc-cake"] h2, [data-theme="choc-cake"] h3, [data-theme="choc-cake"] h4 { font-family: 'VT323', 'Courier New', monospace; color: var(--text); text-transform: uppercase; letter-spacing: 0.1em; text-shadow: 2px 2px 0px var(--border-soft); }
 [data-theme="dada"] h1, [data-theme="dada"] h2, [data-theme="dada"] h3, [data-theme="dada"] h4 { font-family: 'Oswald', 'Impact', 'Arial Black', sans-serif; font-weight: 900; text-transform: uppercase; letter-spacing: -0.02em; text-shadow: 2px 2px 0 var(--accent), -1px -1px 0 var(--info); transform: rotate(-1.5deg) translateX(-4px); display: inline-block; }
+[data-theme="ukiyo-e"] h1, [data-theme="ukiyo-e"] h2, [data-theme="ukiyo-e"] h3, [data-theme="ukiyo-e"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.03em; }
 
 /* ============================================================
    RESET + GLOBAL
@@ -1848,18 +1362,7 @@ a:hover { text-decoration: underline; }
    BUTTONS
    ============================================================ */
 
-button {
-    font-family: 'Inter', sans-serif;
-    font-size: 0.82rem;
-    font-weight: 500;
-    background: var(--panel-alt);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 8px 16px;
-    cursor: pointer;
-    transition: 0.2s;
-}
+button { font-family: 'Inter', sans-serif; font-size: 0.82rem; font-weight: 500; background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px 16px; cursor: pointer; transition: 0.2s; }
 button:hover { border-color: var(--accent); }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -1875,9 +1378,8 @@ button.info { color: var(--info); border-color: var(--info); }
 button.info:hover { background: var(--info-soft); }
 button.small { padding: 4px 10px; font-size: 0.72rem; }
 
-/* Overrides for specific themes on buttons */
 [data-theme="gits"] button { border-radius: 0; text-transform: uppercase; font-family: monospace; }
-[data-theme="art-deco"] button { border-radius: 0; text-transform: uppercase; letter-spacing: 0.05em; }
+[data-theme="deco-nouveau"] button { border-radius: 12px 2px 12px 2px; text-transform: uppercase; letter-spacing: 0.05em; }
 [data-theme="discowing"] button { border-radius: 0; border: 2px solid #000; box-shadow: 2px 2px 0px #000; text-transform: uppercase; font-family: 'Impact', 'Arial Black', sans-serif; }
 [data-theme="discowing"] button:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0px #000; }
 [data-theme="choc-cake"] button { border-radius: 0; border: 2px solid var(--border-soft); box-shadow: 3px 3px 0px var(--border-soft); font-family: 'VT323', monospace; font-size: 1.1rem; text-transform: uppercase; }
@@ -1888,16 +1390,38 @@ button.small { padding: 4px 10px; font-size: 0.72rem; }
 [data-theme="dada"] button:hover { transform: translate(-1px, -1px) rotate(-1deg); box-shadow: 3px 3px 0 var(--border); }
 
 /* ============================================================
-   THEME TOGGLE BUTTON
+   THEME TOGGLE & INDICATOR
    ============================================================ */
 
-#theme-toggle-btn { font-size: 0.7rem; padding: 3px 8px; min-width: 28px; text-align: center; line-height: 1; font-family: 'Inter', sans-serif; }
+.theme-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#theme-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+#theme-toggle-btn { 
+    font-size: 0.7rem; 
+    padding: 3px 8px; 
+    min-width: 28px; 
+    text-align: center; 
+    line-height: 1; 
+    font-family: 'Inter', sans-serif; 
+}
 
 [data-theme="maximal"] #theme-toggle-btn { color: #fff; border-color: var(--text); background: var(--accent); box-shadow: 2px 2px 0 var(--text); }
 [data-theme="gits"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; box-shadow: 0 0 10px rgba(255, 0, 168, 0.2); border-radius: 0; }
 [data-theme="stained-glass"] #theme-toggle-btn { color: var(--accent); border-color: var(--accent); background: transparent; }
 [data-theme="stained-glass-dark"] #theme-toggle-btn { color: var(--accent); border-color: var(--accent); background: transparent; }
-[data-theme="art-deco"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; border-radius: 0; }
+[data-theme="deco-nouveau"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; border-radius: 12px 2px 12px 2px; }
 
 /* ============================================================
    HEADER + NAVIGATION
@@ -1927,7 +1451,7 @@ header nav a.active { color: var(--accent); background: var(--accent-soft); }
 
 [data-theme="stained-glass"] header { background: #ffffff; border-bottom: 3px solid var(--border); }
 [data-theme="stained-glass-dark"] header { background: var(--panel); border-bottom: 1px solid var(--border); }
-[data-theme="art-deco"] header { background: var(--panel); border-bottom: 2px solid var(--border); }
+[data-theme="deco-nouveau"] header { background: var(--panel); border-bottom: 2px solid var(--border); }
 [data-theme="carnival"] header nav { background: repeating-linear-gradient(90deg, rgba(238, 233, 229, 0.10) 0, rgba(238, 233, 229, 0.10) 14px, rgba(181, 31, 45, 0.14) 14px, rgba(181, 31, 45, 0.14) 28px), #1c1a1d; border-top: 1px solid #413d40; border-bottom: 1px solid #413d40; padding: 4px 6px; }
 [data-theme="carnival"] header nav a { color: #d8d2cc; background: rgba(24, 23, 25, 0.72); border: 1px solid #413d40; border-radius: 3px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; font-size: 0.68rem; }
 [data-theme="carnival"] header nav a:hover { color: #eee9e5; background: rgba(48, 45, 48, 0.9); border-color: #625c60; }
@@ -2031,7 +1555,8 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 [data-theme="gits"] .modal-content { box-shadow: 0 0 30px rgba(0, 240, 255, 0.15), inset 0 0 0 1px #00f0ff; border: 1px solid #00f0ff; border-radius: 0; }
 [data-theme="stained-glass"] .modal-content { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05); border: 3px solid #2c2c2c; }
 [data-theme="stained-glass-dark"] .modal-content { box-shadow: 0 0 40px rgba(94, 232, 255, 0.1), inset 0 0 0 1px #5ee8ff; border: 1px solid #5ee8ff; }
-[data-theme="art-deco"] .modal-content { box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15); border: 2px solid #b8975a; border-radius: 0; }
+[data-theme="deco-nouveau"] .modal-content { box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15); border: 2px solid #b8975a; border-radius: 12px 2px 12px 2px; }
+[data-theme="grotesque"] .modal-content { border-radius: 20px 40px 20px 40px; border: 2px solid var(--border); }
 [data-theme="discowing"] .modal-content { border-radius: 0; border: 3px solid #000; box-shadow: 6px 6px 0px #000; }
 [data-theme="choc-cake"] .modal-content { border-radius: 0; border: 3px solid var(--border-soft); box-shadow: 4px 4px 0px var(--border-soft); }
 [data-theme="dada"] .modal-content { border-radius: 1px; border: 2px solid var(--border); border-right-width: 4px; border-bottom-width: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,0.15); transform: rotate(-0.5deg); }
