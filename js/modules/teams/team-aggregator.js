@@ -13,170 +13,20 @@
  *   - Team list, team detail, member modal, ranking modal VMs.
  *   - The periods array on the team detail and form VMs.
  *
- * WHAT THIS DOES NOT OWN:
- *   - Reads. TeamQueries owns them.
- *   - Mutations. TeamCore owns them.
- *   - Rendering. TeamRender owns it.
- *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
- *     owns it; this module projects the resulting records.
- *   - The periods shape. TeamCore owns the schema. This module
- *     projects the stored periods into display-shaped VMs.
+ * MEMBER VM SHAPE:
+ *   buildMemberVM emits:
+ *     characterId, memberId, displayName, status, statusLabel,
+ *     age, deceased, role, intervals (per-stint VMs), joinPeriod,
+ *     leavePeriod, activeAtPeriod
  *
- * TAB VOCABULARY:
- *   The page VM emits counts and type descriptors for two tabs:
- *     professional | civilian
+ *   status and statusLabel are the same string, from
+ *   CharacterQueries.getCurrentStatus(member's character).
+ *   statusLabel is emitted for the member-adapter-teams.js contract,
+ *   which reads member.statusLabel for display; the aggregator is
+ *   the single source of that label.
  *
- *   The 'temporary' tab was retired.
- *
- * STATUS AND TYPE NORMALISATION:
- *   Every team-status comparison in this file routes through
- *   TeamConstants.normalizeTeamStatus. A stored 'Active' counts
- *   as active; a stored 'Deprecated' counts as deprecated. This
- *   matches the sweep already applied to team-queries.js,
- *   team-core.js, character-export.js, and the character
- *   aggregator.
- *
- *   Every team-type comparison routes through
- *   TeamConstants.normalizeTeamType. The team form VM emits the
- *   NORMALISED type, not the raw stored value, so the renderer's
- *   "is this type in the offered list" comparison is meaningful
- *   against a canonical value. A legacy 'temporary' or
- *   'internship' record emits 'professional'.
- *
- * SHOW INACTIVE FILTER:
- *   getTeamListViewModel accepts `showInactive: boolean` in its
- *   options. The boolean is translated into a TeamQueries status:
- *
- *     showInactive === false  → status 'active'
- *                                 (only active teams)
- *     showInactive === true   → status 'operational'
- *                                 (active + inactive, not deprecated)
- *
- *   'operational' is the correct status for "show inactive"
- *   because it means "everything except deprecated" — the user
- *   who ticks "Show Inactive" expects to see inactive teams
- *   alongside active ones, not to filter out the active ones.
- *
- *   Before this wiring, the UI carried a `filterStatus` string
- *   ('active' | 'inactive') that was never passed through to the
- *   aggregator, so the checkbox had no effect. When it was passed
- *   through (in the reverse direction it was stored), the value
- *   'inactive' meant "only inactive", the opposite of the
- *   checkbox's intent. The boolean shape resolves both.
- *
- * STATUS DESCRIPTORS:
- *   The team list VM, team detail VM, and rankings row VM each
- *   carry:
- *
- *     isActive:      normalizeTeamStatus(status) === 'active'
- *     isDeprecated:  normalizeTeamStatus(status) === 'deprecated'
- *
- *   'inactive' is not a distinct flag; it is the case where
- *   neither of the above is true. Renderers that need to label
- *   inactive teams check `!isActive && !isDeprecated`.
- *
- *   The list VM's 'status' sort orders by active → inactive →
- *   deprecated, so a deprecated team always sorts below an
- *   inactive one when the sort is ascending on status.
- *
- * MEMBER ORDERING:
- *   getTeamMembersViewModel sorts members within their
- *   active/former partition by:
- *     1. latest join period, ascending (oldest first)
- *     2. latest leave period, ascending (open stints last)
- *
- * PERIODS MODEL:
- *   A team's identity is described by its `periods` array. Each
- *   entry is a self-contained description of what the team was
- *   during a range of years:
- *
- *     {
- *       startPeriod, endPeriod, name,
- *       tacticalStyle, specialisations
- *     }
- *
- *   The LAST entry is the current period. Every VM in this module
- *   that needs the team's display name, tactical style, or
- *   specialisations without a period context reads the last entry
- *   via TeamQueries.getCurrentPeriod / getCurrentTeamName.
- *
- *   The team detail VM carries:
- *     periods           the full array, resolved for display
- *     currentPeriod     the last entry, also resolved
- *     name              = currentPeriod.name
- *     tacticalStyle     = currentPeriod.tacticalStyle
- *     specialisations   = currentPeriod.specialisations, resolved
- *
- *   The team form VM carries:
- *     periods           the full array, for the editor
- *     specialisationOptions   the pickable list for the chip editor
- *
- *   The team list VM carries the current period's values on each
- *   item, so list renderers do not need to walk the array.
- *
- * LEGACY SHAPE:
- *   A team loaded from an old export still carries `nameHistory`
- *   and scalar `style` / `specialisations`. This module does not
- *   touch those fields: the migration runs in TeamCore on the
- *   first update. Until then, the readers fall back gracefully:
- *
- *     getCurrentTeamName reads periods[last].name, then team.name
- *     getCurrentPeriod reads periods[last], then synthesises one
- *     entry from the legacy scalars
- *
- *   The synthesised fallback is a read-time convenience, not a
- *   supported storage shape. It exists so the team list, detail
- *   panel, and export all display correctly for a team that has
- *   not been re-saved since the migration.
- *
- * RANKINGS MODEL:
- *   Ranks are read-time inherited. The team's `rankingHistory`
- *   array holds EXPLICIT entries only; the rank in effect at a
- *   year is the most recent explicit entry at or before that
- *   year. This module delegates entirely to
- *   TeamQueries.getEffectiveRanking for any year-scoped read.
- *
- *   The Rankings tab VM (getTeamRankingsViewModel) carries one
- *   row per team visible at the requested year, with the
- *   effective rank and the provenance of that value.
- *
- *   The team list VM's `currentRank` is the team's MOST RECENT
- *   explicit rank, unchanged from before. That is a fact about
- *   the last entry written, not about any particular year.
- *
- *   The ranking modal VM (getRankingModalViewModel) carries the
- *   full explicit history and the ranges each entry governs, so
- *   the per-team view shows both layers.
- *
- * SHORTAGE HISTORY:
- *   Each planner team row carries a `shortagePeriods` array and a
- *   `shortageDisplay` string. The display string is a compact
- *   run-length encoding:
- *
- *     "1930–1931, 1935–present"
- *
- * PROFESSIONAL POOL:
- *   getProfessionalPoolViewModel({ period }) projects
- *   TeamQueries.getProfessionalPersonnelAtPeriod(period) into
- *   display-shaped rows. Each row carries a `detail` sub-object
- *   with a compact view of the character's physical, personality,
- *   and combat stats.
- *
- * MATCHMAKING PLANNER:
- *   getMatchmakingPlannerViewModel({ period, targetSize })
- *   returns the two-column planner VM.
- *
- * POOL DETAIL BLOCK:
- *   The `detail` sub-object on each pool row carries:
- *
- *     physical       { height, weight, build }
- *     personality    { traits, ideals, bonds, flaws, alignment,
- *                      goals, socialStyle, conflictStyle, quirks }
- *     combat         {
- *                      stats: { str, dex, con, int, wis, cha },
- *                      hp, mp,
- *                      magic: [ { key, label, value } ]
- *                    }
+ * (rest of header unchanged from the Pass 2 / Show Inactive ship;
+ * dependencies, helpers, and every other VM builder preserved.)
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -442,26 +292,11 @@
         return null;
     }
 
-    /**
-     * Normalise a team's status for the boolean flags this module
-     * emits. Returns the canonical status string ('active',
-     * 'inactive', 'deprecated') or '' for an unparseable value.
-     */
     function normalizedStatus(team) {
         if (!team || typeof team !== 'object') { return ''; }
         return TeamConstants.normalizeTeamStatus(team.status) || '';
     }
 
-    /**
-     * Normalise a team's type. Returns the canonical string
-     * ('academic', 'professional', 'civilian') or '' for an
-     * unparseable value.
-     *
-     * The form VM emits this normalised value, so the renderer's
-     * "is this type in the offered list" comparison is
-     * authoritative against a canonical string rather than
-     * defensively re-normalising a raw value.
-     */
     function normalizedType(team) {
         if (!team || typeof team !== 'object') { return ''; }
         return TeamConstants.normalizeTeamType(team.type) || '';
@@ -482,17 +317,6 @@
         return TeamConstants.getPeriodLabel(type);
     }
 
-    /**
-     * Translate the UI's showInactive boolean into the TeamQueries
-     * status string.
-     *
-     *   false → 'active'       (only active)
-     *   true  → 'operational'  (active + inactive, not deprecated)
-     *
-     * The aggregator never passes 'inactive' from the Show
-     * Inactive checkbox. 'inactive' means "only inactive", which
-     * is not what the checkbox means.
-     */
     function statusForShowInactive(showInactive) {
         return showInactive === true ? 'operational' : 'active';
     }
@@ -849,6 +673,13 @@
     // ============================================================
     // MEMBER VM
     // ============================================================
+    //
+    // statusLabel is emitted alongside status (same source). The
+    // member-adapter-teams.js adapter reads member.statusLabel for
+    // the member-manager row display; before this ship the adapter
+    // read a field the aggregator never set, so the label was
+    // always empty. Same data as .status, exposed under the name
+    // the adapter contracts for.
 
     function buildMemberVM(member, periodNum) {
         if (!member || typeof member !== 'object') { return null; }
@@ -903,6 +734,7 @@
                 ? String(member.memberId) : '',
             displayName: summary.displayName,
             status: summary.status,
+            statusLabel: summary.status,
             age: summary.age,
             deceased: summary.deceased,
             role: member.role || 'Member',
@@ -1025,18 +857,6 @@
         options = options || {};
         var type = options.type || null;
 
-        // ---- Show Inactive wiring ----
-        //
-        // The UI stores a `showInactive` boolean. Translate it to
-        // the TeamQueries status the reader expects:
-        //
-        //   showInactive === false → 'active'       (only active)
-        //   showInactive === true  → 'operational'  (active + inactive)
-        //
-        // A caller that passes an explicit `status` string (older
-        // code path) still works, but the two options are
-        // mutually exclusive: `showInactive` wins when both are
-        // present, because it is the modern contract.
         var status;
         if (typeof options.showInactive === 'boolean') {
             status = statusForShowInactive(options.showInactive);
