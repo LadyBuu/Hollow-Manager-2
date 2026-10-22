@@ -44,6 +44,19 @@
  *   Forced to 'teams' on non-professional tabs. Reset on init and
  *   destroy.
  *
+ * SHOW INACTIVE FILTER:
+ *   The filter bar's Show Inactive checkbox is stored on TeamUI
+ *   as a `showInactive` boolean. refreshUI reads it via
+ *   TeamUI.getFilter and passes it into
+ *   TeamAggregator.getTeamPageViewModel as `showInactive`.
+ *   The aggregator translates it to the correct TeamQueries
+ *   status ('active' or 'operational').
+ *
+ *   applyFilters writes the checkbox's checked state into
+ *   TeamUI as a boolean. It does not write a status string.
+ *   The old `filterStatus: 'inactive'` shape was inverted —
+ *   it filtered to ONLY inactive teams, hiding the active ones.
+ *
  * POOL STATE:
  *   _poolExpandedIds  { [characterId]: true }
  *   _poolSelectedIds  { [characterId]: true }
@@ -56,6 +69,8 @@
  *   _rankingsSortMode        'rank' | 'name' | 'members'
  *   _rankingsSortDirection   'asc' | 'desc'
  *   _rankingsShowInactive    whether inactive teams are visible
+ *                            (Rankings-specific; not the same as
+ *                            the Teams tab's Show Inactive)
  *
  * PERIODS EDITOR:
  *   The team form's periods editor is a DOM-only staging area.
@@ -636,6 +651,17 @@
         return null;
     }
 
+    /**
+     * Read the Show Inactive state for a tab from TeamUI.
+     *
+     * The stored value is a boolean. An absent filter (invalid
+     * tab, cleared state) defaults to false — hide inactive.
+     */
+    function getShowInactive(tab) {
+        var filter = TeamUI.getFilter(tab);
+        return filter && filter.showInactive === true;
+    }
+
     // ============================================================
     // RENDER
     // ============================================================
@@ -645,6 +671,7 @@
 
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
+        var showInactive = getShowInactive(currentTab);
         var expandedTeamId = TeamUI.getExpandedTeamId();
 
         if (currentTab !== 'professional') {
@@ -660,6 +687,7 @@
         var pageVM = TeamAggregator.getTeamPageViewModel({
             type: currentTab,
             period: period,
+            showInactive: showInactive,
             expandedTeamId:
                 _viewMode === 'teams' ? expandedTeamId : null
         });
@@ -1785,22 +1813,6 @@
         }
     }
 
-    /**
-     * Adapter from the append-path's (start, style, specs,
-     * options) arguments to TeamRender.renderPeriodRow's
-     * (period, index, isLast, options, canRemove) contract.
-     *
-     * Produces no markup itself. Every change to a period row's
-     * DOM shape belongs in TeamRender.renderPeriodRow.
-     *
-     * canRemove is false because the appended row starts with
-     * only one row-less-state ahead of it: updateRemoveButtons()
-     * runs immediately after this and reveals the remove button
-     * on every row once there is more than one.
-     *
-     * index is 0 because reindexPeriodRows() runs immediately
-     * after and rewrites data-period-index on every row.
-     */
     function buildNewPeriodRowHTML(
         startYear, style, specialisations, options
     ) {
@@ -1828,24 +1840,6 @@
         }
     }
 
-    /**
-     * Resolve the specialisation vocabulary for the append path.
-     *
-     * Primary source: modal.__specialisationOptions, stashed by
-     * showTeamForm from the form VM's specialisationOptions. This
-     * is the full vocabulary the aggregator handed the form, so a
-     * new row's select always sees every pickable entry, even if
-     * every existing row has already chipped the one the user
-     * wants.
-     *
-     * Fallback: scrape existing selects and chips. This preserves
-     * behaviour when the stash is absent — older callers that
-     * constructed a modal without going through showTeamForm, or
-     * a future change that stops stashing. The fallback never
-     * sees an entry that is selected in every row, so it is
-     * strictly worse than the stash; the stash is the intended
-     * path.
-     */
     function getSpecialisationOptions(form, modal) {
         var result = [];
         var seen = Object.create(null);
@@ -3602,8 +3596,8 @@
         if (inactiveEl) {
             TeamUI.setFilter(
                 tab,
-                'filterStatus',
-                inactiveEl.checked ? 'inactive' : 'active'
+                'showInactive',
+                inactiveEl.checked === true
             );
         }
 
