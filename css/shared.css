@@ -10,7 +10,18 @@
  *   - Custom properties ([data-theme="maximal"]) — tacky shocking light
  *   - Custom properties ([data-theme="gits"]) — cyberpunk abyss
  *   - Custom properties ([data-theme="stained-glass"]) — luminous fractured light
+ *   - Custom properties ([data-theme="stained-glass-dark"]) — dark leaded glass
  *   - Custom properties ([data-theme="art-deco"]) — 1920s metallic luxury
+ *   - Custom properties ([data-theme="nouveau"]) — organic art nouveau
+ *   - Custom properties ([data-theme="ukiyo-e"]) — traditional woodblock print
+ *   - Custom properties ([data-theme="nature"]) — monet's water lilies
+ *   - Custom properties ([data-theme="kmt"]) — brutalist monochrome
+ *   - Custom properties ([data-theme="gaslight"]) — victorian gaslit streets
+ *   - Custom properties ([data-theme="grotesque"]) — dark expressionist
+ *   - Custom properties ([data-theme="illuminated"]) — medieval scripture
+ *   - Custom properties ([data-theme="discowing"]) — 80s comic book
+ *   - Custom properties ([data-theme="choc-cake"]) — 16-bit pixel art
+ *   - Custom properties ([data-theme="dada"]) — cut-and-paste collage
  *   - Global reset, scrollbar, focus-visible, reduced motion
  *   - Theme transition
  *   - Theme toggle button
@@ -31,39 +42,6 @@
  * depends on this one but not on each other.
  *
  * Load order: shared.css MUST load first.
- *
- * THEME SYSTEM:
- *   Dark mode is the default. The other eight themes are
- *   activated by setting data-theme="light" / "vaporwave" /
- *   "pastel" / "carnival" / "maximal" / "gits" / "stained-glass" / 
- *   "art-deco" on <html>. All colors are driven by
- *   the tokens below, so a single attribute swap re-themes the
- *   app. See js/utils/theme-manager.js for the toggle logic.
- *
- * DOMAIN COLOR TOKENS:
- *   Beyond the base palette, this file declares four token
- *   families that domain modules reference by name:
- *
- *     --graph-node-accent-* / --graph-node-info-*
- *         Character network graph node fills and strokes
- *         (character-views.js).
- *
- *     --graph-node-status-*
- *         Social tab graph node fills by character status
- *         (social-graph.js).
- *
- *     --magic-*
- *         Magic type colors (magic-constants.js).
- *
- *     --relationship-*
- *         Relationship type colors (social-constants.js).
- *
- *     --chip-bg-subtle
- *         Inline title chip background on relationship rows
- *         (social-views.js).
- *
- *   These are declared here, in every theme variant, because
- *   they need to re-theme with everything else.
  */
 
 /* ============================================================
@@ -71,9 +49,6 @@
    ============================================================ */
 
 :root {
-    /* --------------------------------------------------------
-       BASE PALETTE
-       -------------------------------------------------------- */
     --bg: #0a1505;
     --panel: #0f1f08;
     --panel-alt: #142a0c;
@@ -94,43 +69,21 @@
     --warning-soft: rgba(201, 162, 75, 0.12);
     --warning-hover: rgba(201, 162, 75, 0.20);
 
-    /* --------------------------------------------------------
-       OVERLAY / BACKDROP
-       -------------------------------------------------------- */
     --overlay: rgba(0, 0, 0, 0.85);
     --overlay-light: rgba(0, 0, 0, 0.6);
 
-    /* --------------------------------------------------------
-       LAYOUT
-       -------------------------------------------------------- */
     --radius: 10px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     --header-height-mobile: 36px;
     --header-height-desktop: 48px;
 
-    /* --------------------------------------------------------
-       SCROLLBAR
-       -------------------------------------------------------- */
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
-
-    /* --------------------------------------------------------
-       GRAPH NODE PALETTE (character network graph)
-       --------------------------------------------------------
-       Used by character-views.js for the two-tone node circles
-       (lighter fill, darker stroke). Consumed inline in SVG
-       presentation attributes. */
 
     --graph-node-accent-fill: #8cbb3a;
     --graph-node-accent-stroke: #6a9b2a;
     --graph-node-info-fill: #4a9bc7;
     --graph-node-info-stroke: #3a7ba7;
-
-    /* --------------------------------------------------------
-       GRAPH NODE STATUS COLORS (social tab graph)
-       --------------------------------------------------------
-       Read by social-graph.js getNodeColor(). Each status carries
-       a token name. Consumed inline by the SVG node fill. */
 
     --graph-node-status-deceased:   #666666;
     --graph-node-status-instructor: #9b59b6;
@@ -142,15 +95,6 @@
     --graph-node-status-civilian:   #7f8c8d;
     --graph-node-status-other:      #7f8c8d;
 
-    /* --------------------------------------------------------
-       MAGIC TYPE COLORS
-       --------------------------------------------------------
-       Read by MagicConstants.getTypeColor(). Each type carries
-       the token name in its `color` field. Consumed inline by
-       character-stats-view.js and anywhere else that renders a
-       magic type color. */
-
-    /* Elemental */
     --magic-earth: #8B7355;
     --magic-water: #4A9BC7;
     --magic-fire:  #E67E22;
@@ -158,7 +102,6 @@
     --magic-metal: #95A5A6;
     --magic-wood:  #27AE60;
 
-    /* Body */
     --magic-blood:   #C0392B;
     --magic-bone:    #F5F5DC;
     --magic-mind:    #8E44AD;
@@ -166,21 +109,12 @@
     --magic-life:    #2ECC71;
     --magic-death:   #2C3E50;
 
-    /* Aether */
     --magic-space:        #3498DB;
     --magic-time:         #F39C12;
     --magic-dimension:    #9B59B6;
     --magic-void:         #1A1A2E;
     --magic-reality:      #F1C40F;
     --magic-transference: #E74C3C;
-
-    /* --------------------------------------------------------
-       RELATIONSHIP COLORS
-       --------------------------------------------------------
-       Read by SocialConstants.getColor(). Each relationship type
-       carries the token name in its `color` field. Consumed inline
-       by character-views.js (relationship rows, graph edges) and
-       by social-views.js. */
 
     --relationship-familial:     #8cbb3a;
     --relationship-professional: #c9a24b;
@@ -191,38 +125,20 @@
     --relationship-alliance:     #27ae60;
     --relationship-other:        #7f8c8d;
 
-    /* --------------------------------------------------------
-       SUBTLE CHIP BACKGROUND
-       --------------------------------------------------------
-       Used by social-views.js for the inline "title" chip on a
-       relationship row. A low-contrast wash that lifts a small
-       pill off the panel behind it. */
-
     --chip-bg-subtle: rgba(255, 255, 255, 0.05);
 }
 
 /* ============================================================
    TOKENS — LIGHT MODE (SOFT CREAM)
-   ============================================================
-   Activated by data-theme="light" on <html>.
-
-   The previous light palette used pure white (#ffffff) panels,
-   which was fatiguing. This palette uses a warm off-white and
-   a slightly deeper page background so the panel layer reads as
-   raised without glare. Contrast still meets accessibility
-   targets; the text is a deep ink rather than pure black.
- */
+   ============================================================ */
 
 [data-theme="light"] {
-    /* --------------------------------------------------------
-       BASE PALETTE
-       -------------------------------------------------------- */
-    --bg: #ece9df;              /* page: warm parchment */
-    --panel: #f7f4ec;           /* cards: soft cream, not white */
-    --panel-alt: #e3e0d3;       /* recessed wells */
+    --bg: #ece9df;
+    --panel: #f7f4ec;
+    --panel-alt: #e3e0d3;
     --border: #c8c3b0;
     --border-soft: #d9d5c6;
-    --text: #26301c;            /* deep ink green */
+    --text: #26301c;
     --text-dim: #5f6a52;
     --accent: #4f7a12;
     --accent-soft: rgba(79, 122, 18, 0.14);
@@ -237,35 +153,14 @@
     --warning-soft: rgba(156, 122, 30, 0.14);
     --warning-hover: rgba(156, 122, 30, 0.22);
 
-    /* --------------------------------------------------------
-       OVERLAY / BACKDROP
-       --------------------------------------------------------
-       Lighter in light mode so the panel behind stays legible. */
     --overlay: rgba(30, 45, 20, 0.55);
     --overlay-light: rgba(30, 45, 20, 0.4);
-
-    /* --------------------------------------------------------
-       LAYOUT
-       -------------------------------------------------------- */
     --shadow: 0 4px 20px rgba(30, 45, 20, 0.10);
-
-    /* --------------------------------------------------------
-       GRAPH NODE PALETTE (LIGHT MODE)
-       --------------------------------------------------------
-       Darker strokes, richer fills so nodes read against the
-       warm cream background. */
 
     --graph-node-accent-fill: #6f9b28;
     --graph-node-accent-stroke: #4d7218;
     --graph-node-info-fill: #3a7ba7;
     --graph-node-info-stroke: #2a5c80;
-
-    /* --------------------------------------------------------
-       GRAPH NODE STATUS COLORS (LIGHT MODE)
-       --------------------------------------------------------
-       Deepened for legibility against a warm cream background.
-       The identity of each status is preserved: senior is still
-       gold-tinged, student is still green, etc. */
 
     --graph-node-status-deceased:   #8a8a8a;
     --graph-node-status-instructor: #7a4090;
@@ -277,16 +172,6 @@
     --graph-node-status-civilian:   #5a6a6c;
     --graph-node-status-other:      #5a6a6c;
 
-    /* --------------------------------------------------------
-       MAGIC TYPE COLORS (LIGHT MODE)
-       --------------------------------------------------------
-       Adjusted for readability on a warm cream background.
-       Colors are slightly deepened, and hues that were nearly
-       invisible on white (bone, void) are re-tuned. The type's
-       IDENTITY is preserved — fire is still orange, death is
-       still dark, etc. */
-
-    /* Elemental */
     --magic-earth: #6B5638;
     --magic-water: #2d7ab5;
     --magic-fire:  #C25E0E;
@@ -294,7 +179,6 @@
     --magic-metal: #6A7A7B;
     --magic-wood:  #1F8B4A;
 
-    /* Body */
     --magic-blood:   #9C2A1E;
     --magic-bone:    #9A9170;
     --magic-mind:    #6E2F8A;
@@ -302,19 +186,12 @@
     --magic-life:    #1E9E4F;
     --magic-death:   #3A5068;
 
-    /* Aether */
     --magic-space:        #2172A8;
     --magic-time:         #C47810;
     --magic-dimension:    #7A4090;
     --magic-void:         #38384D;
     --magic-reality:      #C49A0A;
     --magic-transference: #B83830;
-
-    /* --------------------------------------------------------
-       RELATIONSHIP COLORS (LIGHT MODE)
-       --------------------------------------------------------
-       Slightly deepened for contrast against a warm cream panel.
-       The pairing matches the dark-mode palette one-for-one. */
 
     --relationship-familial:     #5a8a1a;
     --relationship-professional: #9c7a1e;
@@ -325,107 +202,47 @@
     --relationship-alliance:     #1e8b4a;
     --relationship-other:        #5a6a6c;
 
-    /* --------------------------------------------------------
-       SUBTLE CHIP BACKGROUND (LIGHT MODE)
-       --------------------------------------------------------
-       A faint black wash reads correctly on a cream panel; the
-       dark-mode white wash was invisible. */
-
     --chip-bg-subtle: rgba(0, 0, 0, 0.05);
 }
 
 /* ============================================================
    TOKENS — VAPORWAVE
-   ============================================================
-   Neon pink + electric cyan over a deep turquoise / violet
-   night palette.
-
-   Pink is the primary UI identity.
-   Cyan is the secondary interaction colour.
-   Violet provides depth without becoming a competing accent.
-
-   The base is deliberately violet-tinged rather than uniformly
-   teal, so the pink and cyan accents both sit on a neutral
-   atmospheric ground rather than fighting the background.
-
-   Semantic colour slots (danger / warning / magic types /
-   relationship types / graph statuses) remain distinguishable.
-   The theme re-skins their visual language; it does not erase
-   their meaning.
    ============================================================ */
 
 [data-theme="vaporwave"] {
-    /* --------------------------------------------------------
-       BASE PALETTE
-       -------------------------------------------------------- */
-
     --bg: #100b24;
     --panel: #171238;
     --panel-alt: #1d1747;
-
     --border: #40316f;
     --border-soft: #2b2354;
-
     --text: #f4e9ff;
     --text-dim: #a89ac7;
-
-    /* Hot neon pink */
     --accent: #ff4fd8;
     --accent-soft: rgba(255, 79, 216, 0.15);
     --accent-hover: rgba(255, 79, 216, 0.26);
-
-    /* Electric cyan */
     --info: #35e7ff;
     --info-soft: rgba(53, 231, 255, 0.14);
     --info-hover: rgba(53, 231, 255, 0.25);
-
-    /* Hot coral-red */
     --danger: #ff557f;
     --danger-soft: rgba(255, 85, 127, 0.14);
     --danger-hover: rgba(255, 85, 127, 0.25);
-
-    /* Retro yellow */
     --warning: #ffd166;
     --warning-soft: rgba(255, 209, 102, 0.14);
     --warning-hover: rgba(255, 209, 102, 0.25);
 
-    /* --------------------------------------------------------
-       OVERLAY / BACKDROP
-       -------------------------------------------------------- */
-
     --overlay: rgba(7, 4, 18, 0.88);
     --overlay-light: rgba(7, 4, 18, 0.68);
 
-    /* --------------------------------------------------------
-       LAYOUT
-       -------------------------------------------------------- */
-
     --radius: 10px;
-
-    --shadow:
-        0 4px 24px rgba(0, 0, 0, 0.45),
-        0 0 45px rgba(255, 79, 216, 0.06);
-
-    /* --------------------------------------------------------
-       SCROLLBAR
-       -------------------------------------------------------- */
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 0 45px rgba(255, 79, 216, 0.06);
 
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: #40316f;
 
-    /* --------------------------------------------------------
-       GRAPH NODE PALETTE
-       -------------------------------------------------------- */
-
     --graph-node-accent-fill: #ff4fd8;
     --graph-node-accent-stroke: #b92e9c;
-
     --graph-node-info-fill: #35e7ff;
     --graph-node-info-stroke: #209cb0;
-
-    /* --------------------------------------------------------
-       GRAPH NODE STATUS COLORS
-       -------------------------------------------------------- */
 
     --graph-node-status-deceased:   #625b78;
     --graph-node-status-instructor: #c77dff;
@@ -437,11 +254,6 @@
     --graph-node-status-civilian:   #a89ac7;
     --graph-node-status-other:      #a89ac7;
 
-    /* --------------------------------------------------------
-       MAGIC TYPE COLORS
-       -------------------------------------------------------- */
-
-    /* Elemental */
     --magic-earth: #b58a68;
     --magic-water: #35e7ff;
     --magic-fire:  #ff754f;
@@ -449,7 +261,6 @@
     --magic-metal: #b7c8d6;
     --magic-wood:  #61ffb0;
 
-    /* Body */
     --magic-blood:   #ff557f;
     --magic-bone:    #eee6d8;
     --magic-mind:    #c77dff;
@@ -457,17 +268,12 @@
     --magic-life:    #61ffb0;
     --magic-death:   #625b78;
 
-    /* Aether */
     --magic-space:        #35e7ff;
     --magic-time:         #ffd166;
     --magic-dimension:    #c77dff;
     --magic-void:         #100b24;
     --magic-reality:      #ff4fd8;
     --magic-transference: #ff557f;
-
-    /* --------------------------------------------------------
-       RELATIONSHIP COLORS
-       -------------------------------------------------------- */
 
     --relationship-familial:     #61ffb0;
     --relationship-professional: #ffd166;
@@ -478,108 +284,47 @@
     --relationship-alliance:     #54f5d0;
     --relationship-other:        #a89ac7;
 
-    /* --------------------------------------------------------
-       SUBTLE CHIP BACKGROUND
-       -------------------------------------------------------- */
-
     --chip-bg-subtle: rgba(255, 255, 255, 0.07);
 }
 
 /* ============================================================
    TOKENS — PASTEL 80s MAGICAL GIRL
-   ============================================================
-   Activated by data-theme="pastel" on <html>.
-
-   Soft bubblegum pink, lavender, powder blue, and cream. This
-   is the daytime-saturday-cartoon counterpart to the vaporwave
-   theme: same pink-and-blue heritage, but rendered as a retro
-   magical-girl control panel rather than a neon terminal.
-
-   Pink is the heroine. Cyan/powder-blue and lavender are her
-   supporting cast. Cream gives the whole thing somewhere to
-   breathe. Nothing is neon; every accent sits at bubblegum or
-   powder saturation, not laser saturation.
-
-   Semantic colour slots keep their identities (danger is rose,
-   warning is muted gold, success is mint), so a rose badge
-   still reads as a warning at a glance rather than blending
-   into the pink chrome.
    ============================================================ */
 
 [data-theme="pastel"] {
-    /* --------------------------------------------------------
-       BASE PALETTE
-       -------------------------------------------------------- */
-    --bg: #fff1f7;              /* very pale blush */
-    --panel: #fff8fb;           /* white with a pink tint */
-    --panel-alt: #fce5f0;       /* recessed wells */
-
-    --border: #e7a9c4;          /* dusty rose */
+    --bg: #fff1f7;
+    --panel: #fff8fb;
+    --panel-alt: #fce5f0;
+    --border: #e7a9c4;
     --border-soft: #f3cbdc;
-
-    --text: #4f3850;            /* warm dark mauve, not black */
+    --text: #4f3850;
     --text-dim: #987b91;
-
-    /* Bubblegum / rose pink — the primary accent */
     --accent: #ed72aa;
     --accent-soft: rgba(237, 114, 170, 0.16);
     --accent-hover: rgba(237, 114, 170, 0.28);
-
-    /* Powder blue — the secondary accent */
     --info: #79c9df;
     --info-soft: rgba(121, 201, 223, 0.16);
     --info-hover: rgba(121, 201, 223, 0.28);
-
-    /* Rose-red — danger, distinct from the accent pink by being
-       warmer and deeper, so a danger badge never disappears
-       against the chrome. */
     --danger: #e87591;
     --danger-soft: rgba(232, 117, 145, 0.16);
     --danger-hover: rgba(232, 117, 145, 0.28);
-
-    /* Muted gold — the 80s cartoon "warning" yellow, not a
-       saturated hazard yellow. */
     --warning: #d9a84a;
     --warning-soft: rgba(217, 168, 74, 0.16);
     --warning-hover: rgba(217, 168, 74, 0.28);
 
-    /* --------------------------------------------------------
-       OVERLAY / BACKDROP
-       -------------------------------------------------------- */
     --overlay: rgba(92, 50, 78, 0.28);
     --overlay-light: rgba(92, 50, 78, 0.20);
-
-    /* --------------------------------------------------------
-       LAYOUT
-       -------------------------------------------------------- */
     --radius: 10px;
-    --shadow:
-        0 4px 16px rgba(153, 86, 119, 0.16),
-        0 0 24px rgba(237, 114, 170, 0.10);
+    --shadow: 0 4px 16px rgba(153, 86, 119, 0.16), 0 0 24px rgba(237, 114, 170, 0.10);
 
-    /* --------------------------------------------------------
-       SCROLLBAR
-       -------------------------------------------------------- */
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
 
-    /* --------------------------------------------------------
-       GRAPH NODE PALETTE
-       -------------------------------------------------------- */
     --graph-node-accent-fill: #ed72aa;
     --graph-node-accent-stroke: #c9538a;
-
     --graph-node-info-fill: #79c9df;
     --graph-node-info-stroke: #57a5bb;
 
-    /* --------------------------------------------------------
-       GRAPH NODE STATUS COLORS
-       --------------------------------------------------------
-       Soft pastel variants. The identity of each status is
-       preserved: senior is still gold-tinged, student is still
-       pink, rookie is still green, etc. Saturation is dialed
-       down to match the pastel chrome.
-       -------------------------------------------------------- */
     --graph-node-status-deceased:   #a994b2;
     --graph-node-status-instructor: #a982d6;
     --graph-node-status-senior:     #d6a84f;
@@ -590,15 +335,6 @@
     --graph-node-status-civilian:   #9f8ca1;
     --graph-node-status-other:      #9f8ca1;
 
-    /* --------------------------------------------------------
-       MAGIC TYPE COLORS
-       --------------------------------------------------------
-       Pastel variants of the elemental/body/aether palette. The
-       hues are pulled toward the pink/blue/lavender core of the
-       theme but each type keeps its elemental identity.
-       -------------------------------------------------------- */
-
-    /* Elemental */
     --magic-earth: #b98c72;
     --magic-water: #73c8e5;
     --magic-fire:  #e99a72;
@@ -606,7 +342,6 @@
     --magic-metal: #9eabbc;
     --magic-wood:  #86b99a;
 
-    /* Body */
     --magic-blood:   #d86f83;
     --magic-bone:    #e6d7c3;
     --magic-mind:    #ad8bd0;
@@ -614,7 +349,6 @@
     --magic-life:    #82bd88;
     --magic-death:   #83728f;
 
-    /* Aether */
     --magic-space:        #73c8df;
     --magic-time:         #d6b45c;
     --magic-dimension:    #a889cf;
@@ -622,13 +356,6 @@
     --magic-reality:      #e36fa6;
     --magic-transference: #d88978;
 
-    /* --------------------------------------------------------
-       RELATIONSHIP COLORS
-       --------------------------------------------------------
-       The eight relationship types stay distinguishable. The
-       palette leans on mint, gold, rose, powder blue, lavender,
-       and peach, matching the magical-girl palette's range.
-       -------------------------------------------------------- */
     --relationship-familial:     #82bda9;
     --relationship-professional: #d5b35c;
     --relationship-romantic:     #df7698;
@@ -638,112 +365,47 @@
     --relationship-alliance:     #82bda9;
     --relationship-other:        #9e8b9b;
 
-    /* --------------------------------------------------------
-       SUBTLE CHIP BACKGROUND
-       -------------------------------------------------------- */
     --chip-bg-subtle: rgba(237, 114, 170, 0.10);
 }
 
 /* ============================================================
-   TOKENS — CARNIVAL ("THE RINGMASTER")
-   ============================================================
-   Activated by data-theme="carnival" on <html>.
-
-   Demented gothic carnival. Dirty white, blood red, charcoal,
-   near-black, and a very restrained muted grey. The red is
-   deliberately an old-painted-signage red (#b51f2d), not a
-   modern UI red and not pure #ff0000 — the latter would read
-   as a generic Halloween site rather than an unsettling
-   travelling-carnival poster.
-
-   The palette is brutally limited on purpose:
-     dirty white  →  carnival canvas / signage
-     blood red    →  active states, danger, selection
-     charcoal     →  panels and UI structure
-     near-black   →  depth, overlays, shadows
-     muted grey   →  secondary information
-     tiny gold    →  warnings and ornament only
-
-   Striped decoration (vertical dirty-white/red stripes) is
-   applied to the main nav and a few select surfaces further
-   down this file. Everything else stays charcoal so the app
-   does not become visually hostile.
+   TOKENS — CARNIVAL
    ============================================================ */
 
 [data-theme="carnival"] {
-    /* --------------------------------------------------------
-       BASE PALETTE
-       -------------------------------------------------------- */
-    --bg: #181719;              /* near-black charcoal */
-    --panel: #242225;           /* charcoal panel */
-    --panel-alt: #302d30;       /* recessed well */
-
+    --bg: #181719;
+    --panel: #242225;
+    --panel-alt: #302d30;
     --border: #625c60;
     --border-soft: #413d40;
-
-    --text: #eee9e5;            /* dirty white */
+    --text: #eee9e5;
     --text-dim: #aaa3a0;
-
-    /* Carnival red — the primary accent */
     --accent: #b51f2d;
     --accent-soft: rgba(181, 31, 45, 0.16);
     --accent-hover: rgba(181, 31, 45, 0.28);
-
-    /* Dirty white — the secondary accent */
     --info: #ddd7d0;
     --info-soft: rgba(221, 215, 208, 0.14);
     --info-hover: rgba(221, 215, 208, 0.26);
-
-    /* Danger: a hotter red, distinct from the accent by being
-       brighter and less brown, so a danger badge never blends
-       into the carnival-red chrome. */
     --danger: #d12d3c;
     --danger-soft: rgba(209, 45, 60, 0.16);
     --danger-hover: rgba(209, 45, 60, 0.28);
-
-    /* Muted carnival gold — the only non-red chromatic accent.
-       Reserved for warnings and ornament. */
     --warning: #c39b55;
     --warning-soft: rgba(195, 155, 85, 0.16);
     --warning-hover: rgba(195, 155, 85, 0.28);
 
-    /* --------------------------------------------------------
-       OVERLAY / BACKDROP
-       -------------------------------------------------------- */
     --overlay: rgba(0, 0, 0, 0.78);
     --overlay-light: rgba(0, 0, 0, 0.68);
-
-    /* --------------------------------------------------------
-       LAYOUT
-       -------------------------------------------------------- */
     --radius: 10px;
-    --shadow:
-        0 4px 14px rgba(0, 0, 0, 0.65),
-        0 0 18px rgba(181, 31, 45, 0.08);
+    --shadow: 0 4px 14px rgba(0, 0, 0, 0.65), 0 0 18px rgba(181, 31, 45, 0.08);
 
-    /* --------------------------------------------------------
-       SCROLLBAR
-       -------------------------------------------------------- */
     --scrollbar-track: var(--bg);
     --scrollbar-thumb: var(--border);
 
-    /* --------------------------------------------------------
-       GRAPH NODE PALETTE
-       -------------------------------------------------------- */
     --graph-node-accent-fill: #b51f2d;
     --graph-node-accent-stroke: #7f1721;
-
     --graph-node-info-fill: #ddd7d0;
     --graph-node-info-stroke: #a49d96;
 
-    /* --------------------------------------------------------
-       GRAPH NODE STATUS COLORS
-       --------------------------------------------------------
-       The status palette is intentionally desaturated. Only
-       "student" carries the carnival red; the rest sit in muted
-       greys, dirty whites, and one gold, so the graph reads as
-       a haunted poster rather than a rainbow.
-       -------------------------------------------------------- */
     --graph-node-status-deceased:   #4a4649;
     --graph-node-status-instructor: #d2ccc7;
     --graph-node-status-senior:     #c49a58;
@@ -754,17 +416,6 @@
     --graph-node-status-civilian:   #777174;
     --graph-node-status-other:      #777174;
 
-    /* --------------------------------------------------------
-       MAGIC TYPE COLORS
-       --------------------------------------------------------
-       Magic types are desaturated to a limited carnival palette.
-       Fire, blood, reality, and transference carry the red
-       family. Everything else sits in muted earths, greys, and
-       dirty whites so the elemental taxonomy still reads but
-       does not fight the chrome.
-       -------------------------------------------------------- */
-
-    /* Elemental */
     --magic-earth: #806c5c;
     --magic-water: #737e84;
     --magic-fire:  #c43a32;
@@ -772,7 +423,6 @@
     --magic-metal: #a5a4a2;
     --magic-wood:  #6f7c68;
 
-    /* Body */
     --magic-blood:   #b51f2d;
     --magic-bone:    #ddd5ca;
     --magic-mind:    #81757d;
@@ -780,7 +430,6 @@
     --magic-life:    #788c73;
     --magic-death:   #595359;
 
-    /* Aether */
     --magic-space:        #747b82;
     --magic-time:         #b89a61;
     --magic-dimension:    #83787f;
@@ -788,14 +437,6 @@
     --magic-reality:      #c32b39;
     --magic-transference: #a85f55;
 
-    /* --------------------------------------------------------
-       RELATIONSHIP COLORS
-       --------------------------------------------------------
-       Eight relationship types, but a brutally limited palette.
-       Two reds (romantic, rivalry), one gold (professional),
-       and five muted greys/dirty-whites. The distinction comes
-       from the grey temperature, not from chromatic variety.
-       -------------------------------------------------------- */
     --relationship-familial:     #87927f;
     --relationship-professional: #bda064;
     --relationship-romantic:     #c52c3b;
@@ -805,61 +446,39 @@
     --relationship-alliance:     #858d83;
     --relationship-other:        #777174;
 
-    /* --------------------------------------------------------
-       SUBTLE CHIP BACKGROUND
-       -------------------------------------------------------- */
     --chip-bg-subtle: rgba(238, 233, 229, 0.08);
 }
 
 /* ============================================================
-   TOKENS — MAXIMAL (TACKY SHOCKING LIGHT)
-   ============================================================
-   Activated by data-theme="maximal" on <html>.
-
-   Inspired by tacky 90s vaporwave and sticker-heavy UI. 
-   Hot pink and electric cyan fight for dominance on a cream 
-   and mint background. Borders are thick, shadows are hard 
-   offsets, and text is heavily weighted.
+   TOKENS — MAXIMAL
    ============================================================ */
 
 [data-theme="maximal"] {
-    /* BASE PALETTE */
     --bg: #fff0fb;
     --panel: #ffffff;
     --panel-alt: #e6fffb;
-    
     --border: #ff2ea6;
     --border-soft: #ffb8e3;
-    
     --text: #1a0033;
     --text-dim: #7a3fa8;
-
-    /* HOT PINK & CYAN */
     --accent: #ff2ea6;
     --accent-soft: rgba(255, 46, 166, 0.15);
     --accent-hover: rgba(255, 46, 166, 0.25);
-
     --info: #00e5ff;
     --info-soft: rgba(0, 229, 255, 0.18);
     --info-hover: rgba(0, 229, 255, 0.30);
-
-    /* ACID YELLOW & DEEP RED */
     --danger: #ff0066;
     --danger-soft: rgba(255, 0, 102, 0.15);
     --danger-hover: rgba(255, 0, 102, 0.25);
-
     --warning: #ffea00;
     --warning-soft: rgba(255, 234, 0, 0.25);
     --warning-hover: rgba(255, 234, 0, 0.35);
 
-    /* OVERLAY & SHADOWS */
     --overlay: rgba(26, 0, 51, 0.6);
     --overlay-light: rgba(26, 0, 51, 0.4);
-    
     --radius: 8px;
     --shadow: 4px 4px 0 #00e5ff, 0 0 20px rgba(255, 46, 166, 0.4);
 
-    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #ff2ea6;
     --graph-node-accent-stroke: #1a0033;
     --graph-node-info-fill: #00e5ff;
@@ -910,54 +529,34 @@
 
 /* ============================================================
    TOKENS — GITS (GHOST IN THE SHELL 1995)
-   ============================================================
-   Activated by data-theme="gits" on <html>.
-
-   Inspired heavily by the 1995 anime poster: deep abyssal teal
-   backgrounds, heavy black structural frames, radioactive cyan,
-   and hot cyberpunk magenta. High contrast, clinical, and harsh.
    ============================================================ */
 
 [data-theme="gits"] {
-    /* BASE PALETTE */
-    --bg: #04101a;              /* Deep underwater abyss */
-    --panel: #091a2a;           /* Dark structural steel */
+    --bg: #04101a;
+    --panel: #091a2a;
     --panel-alt: #0e243b;
-    
-    --border: #00f0ff;          /* Cyan framing */
+    --border: #00f0ff;
     --border-soft: #1d3a5e;
-    
-    --text: #ffffff;            /* Pure clinical white */
-    --text-dim: #7da5c4;        /* Muted tech blue */
-
-    /* RADIOACTIVE CYAN */
+    --text: #ffffff;
+    --text-dim: #7da5c4;
     --accent: #00f0ff;
     --accent-soft: rgba(0, 240, 255, 0.12);
     --accent-hover: rgba(0, 240, 255, 0.25);
-
-    /* NEON MAGENTA (From the poster's glowing lines) */
     --info: #ff00a8;
     --info-soft: rgba(255, 0, 168, 0.14);
     --info-hover: rgba(255, 0, 168, 0.28);
-
-    /* LASER CRIMSON */
     --danger: #ff2038;
     --danger-soft: rgba(255, 32, 56, 0.15);
     --danger-hover: rgba(255, 32, 56, 0.30);
-
-    /* WARNING GOLD */
     --warning: #f2b738;
     --warning-soft: rgba(242, 183, 56, 0.15);
     --warning-hover: rgba(242, 183, 56, 0.30);
 
-    /* OVERLAY & SHADOWS */
     --overlay: rgba(0, 0, 0, 0.85);
     --overlay-light: rgba(0, 0, 0, 0.70);
-    
-    --radius: 0px;              /* Stark, angular geometry */
+    --radius: 0px;
     --shadow: 0 4px 20px rgba(0, 240, 255, 0.15), 0 0 0 1px var(--border-soft);
 
-    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #00f0ff;
     --graph-node-accent-stroke: #04101a;
     --graph-node-info-fill: #ff00a8;
@@ -1008,55 +607,34 @@
 
 /* ============================================================
    TOKENS — STAINED GLASS (LUMINOUS CATHEDRAL)
-   ============================================================
-   Activated by data-theme="stained-glass" on <html>.
-
-   A light theme inspired by looking up at a sunlit cathedral 
-   window. The background is a bright, radiant white-blue. 
-   Panels are framed in thick "lead" (dark charcoal). Accents 
-   are vivid jewel tones (ruby red, lapis blue, emerald green).
    ============================================================ */
 
 [data-theme="stained-glass"] {
-    /* BASE PALETTE */
-    --bg: #f2f7fd;              /* Radiant backlit white-blue */
-    --panel: #ffffff;           /* Pure glass */
+    --bg: #f2f7fd;
+    --panel: #ffffff;
     --panel-alt: #e6eef8;
-    
-    --border: #2c2c2c;          /* Thick lead framing */
+    --border: #2c2c2c;
     --border-soft: #c5d4e3;
-    
-    --text: #1a1e24;            /* Very dark lead ink */
+    --text: #1a1e24;
     --text-dim: #5d6e80;
-
-    /* VIVID RUBY GLASS */
     --accent: #e31837;
     --accent-soft: rgba(227, 24, 55, 0.10);
     --accent-hover: rgba(227, 24, 55, 0.20);
-
-    /* LAPIS LAZULI & CYAN */
     --info: #0066cc;
     --info-soft: rgba(0, 102, 204, 0.10);
     --info-hover: rgba(0, 102, 204, 0.20);
-
-    /* DEEP RED WARNING */
     --danger: #990000;
     --danger-soft: rgba(153, 0, 0, 0.10);
     --danger-hover: rgba(153, 0, 0, 0.20);
-
-    /* AMBER YELLOW */
     --warning: #d48806;
     --warning-soft: rgba(212, 136, 6, 0.12);
     --warning-hover: rgba(212, 136, 6, 0.24);
 
-    /* OVERLAY & SHADOWS */
     --overlay: rgba(44, 44, 44, 0.5);
     --overlay-light: rgba(44, 44, 44, 0.3);
-    
-    --radius: 4px;              /* Rounded lead framing */
+    --radius: 4px;
     --shadow: 0 4px 15px rgba(44, 44, 44, 0.08), inset 0 0 10px rgba(255, 255, 255, 0.5);
 
-    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #e31837;
     --graph-node-accent-stroke: #2c2c2c;
     --graph-node-info-fill: #0066cc;
@@ -1106,55 +684,116 @@
 }
 
 /* ============================================================
-   TOKENS — ART DECO (THE GREAT GATSBY)
-   ============================================================
-   Activated by data-theme="art-deco" on <html>.
+   TOKENS — STAINED GLASS DARK
+   ============================================================ */
 
-   A light theme inspired by 1920s luxury. Warm champagne 
-   backgrounds, polished brass borders, and emerald/onyx 
-   geometric accents. Strict, sharp corners (radius 0).
+[data-theme="stained-glass-dark"] {
+    --bg: #0a1520;
+    --panel: #0e1d2e;
+    --panel-alt: #132a42;
+    --border: #3a7fa8;
+    --border-soft: #1d4a6e;
+    --text: #eaf6ff;
+    --text-dim: #9fc4de;
+    --accent: #5ee8ff;
+    --accent-soft: rgba(94, 232, 255, 0.12);
+    --accent-hover: rgba(94, 232, 255, 0.25);
+    --info: #ff4fa8;
+    --info-soft: rgba(255, 79, 168, 0.14);
+    --info-hover: rgba(255, 79, 168, 0.28);
+    --danger: #ff3d6e;
+    --danger-soft: rgba(255, 61, 110, 0.15);
+    --danger-hover: rgba(255, 61, 110, 0.30);
+    --warning: #ffd166;
+    --warning-soft: rgba(255, 209, 102, 0.15);
+    --warning-hover: rgba(255, 209, 102, 0.30);
+
+    --overlay: rgba(4, 10, 18, 0.88);
+    --overlay-light: rgba(4, 10, 18, 0.68);
+    --radius: 4px;
+    --shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #5ee8ff;
+    --graph-node-accent-stroke: #04101a;
+    --graph-node-info-fill: #ff4fa8;
+    --graph-node-info-stroke: #04101a;
+
+    --graph-node-status-deceased:   #6e9cb8;
+    --graph-node-status-instructor: #c77dff;
+    --graph-node-status-senior:     #ffd166;
+    --graph-node-status-junior:     #5ee8ff;
+    --graph-node-status-rookie:     #3dffc0;
+    --graph-node-status-student:    #ff4fa8;
+    --graph-node-status-support:    #ff8a5c;
+    --graph-node-status-civilian:   #9fc4de;
+    --graph-node-status-other:      #6e9cb8;
+
+    --magic-earth: #8f5e3f;
+    --magic-water: #5ee8ff;
+    --magic-fire:  #ff4fa8;
+    --magic-air:   #eaf6ff;
+    --magic-metal: #c0d0e0;
+    --magic-wood:  #3dffc0;
+    
+    --magic-blood:   #ff3d6e;
+    --magic-bone:    #f0e6d2;
+    --magic-mind:    #c77dff;
+    --magic-morphic: #5ee8ff;
+    --magic-life:    #3dffc0;
+    --magic-death:   #1d4a6e;
+    
+    --magic-space:        #5ee8ff;
+    --magic-time:         #ffd166;
+    --magic-dimension:    #c77dff;
+    --magic-void:         #0a1520;
+    --magic-reality:      #ff4fa8;
+    --magic-transference: #ff8a5c;
+
+    --relationship-familial:     #3dffc0;
+    --relationship-professional: #ffd166;
+    --relationship-romantic:     #ff4fa8;
+    --relationship-friendship:   #5ee8ff;
+    --relationship-mentor:       #c77dff;
+    --relationship-rivalry:      #ff8a5c;
+    --relationship-alliance:     #3a7fa8;
+    --relationship-other:        #9fc4de;
+
+    --chip-bg-subtle: rgba(94, 232, 255, 0.08);
+}
+
+/* ============================================================
+   TOKENS — ART DECO
    ============================================================ */
 
 [data-theme="art-deco"] {
-    /* BASE PALETTE */
-    --bg: #f4f0e6;              /* Champagne / warm parchment */
-    --panel: #ffffff;           /* Crisp linen */
+    --bg: #f4f0e6;
+    --panel: #ffffff;
     --panel-alt: #f0ebd8;
-    
-    --border: #b8975a;          /* Polished brass */
+    --border: #b8975a;
     --border-soft: #d1c2a5;
-    
-    --text: #1c1e21;            /* Onyx / deep ink */
+    --text: #1c1e21;
     --text-dim: #7d7768;
-
-    /* EMERALD GREEN */
     --accent: #0b6c46;
     --accent-soft: rgba(11, 108, 70, 0.10);
     --accent-hover: rgba(11, 108, 70, 0.20);
-
-    /* GOLD / BRASS */
     --info: #b8975a;
     --info-soft: rgba(184, 151, 90, 0.15);
     --info-hover: rgba(184, 151, 90, 0.25);
-
-    /* RUBY RED */
     --danger: #8c1c1c;
     --danger-soft: rgba(140, 28, 28, 0.10);
     --danger-hover: rgba(140, 28, 28, 0.20);
-
-    /* CHAMPAGNE */
     --warning: #a67c00;
     --warning-soft: rgba(166, 124, 0, 0.12);
     --warning-hover: rgba(166, 124, 0, 0.24);
 
-    /* OVERLAY & SHADOWS */
     --overlay: rgba(28, 30, 33, 0.6);
     --overlay-light: rgba(28, 30, 33, 0.4);
-    
-    --radius: 0px;              /* Strict, architectural geometry */
+    --radius: 0px;
     --shadow: 0 10px 25px rgba(28, 30, 33, 0.08), 0 0 0 1px var(--border);
 
-    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #0b6c46;
     --graph-node-accent-stroke: #b8975a;
     --graph-node-info-fill: #b8975a;
@@ -1204,12 +843,818 @@
 }
 
 /* ============================================================
+   TOKENS — NOUVEAU
+   ============================================================ */
+
+[data-theme="nouveau"] {
+    --bg: #f4ebd8;
+    --panel: #fbf6eb;
+    --panel-alt: #ebdcc6;
+    --border: #9a6a4d;
+    --border-soft: #c6a88e;
+    --text: #3b2b24;
+    --text-dim: #6b5244;
+    --accent: #c45c34;
+    --accent-soft: rgba(196, 92, 52, 0.12);
+    --accent-hover: rgba(196, 92, 52, 0.24);
+    --info: #6b8c7b;
+    --info-soft: rgba(107, 140, 123, 0.14);
+    --info-hover: rgba(107, 140, 123, 0.24);
+    --danger: #9b3e31;
+    --danger-soft: rgba(155, 62, 49, 0.12);
+    --danger-hover: rgba(155, 62, 49, 0.22);
+    --warning: #b08c42;
+    --warning-soft: rgba(176, 140, 66, 0.14);
+    --warning-hover: rgba(176, 140, 66, 0.26);
+
+    --overlay: rgba(59, 43, 36, 0.6);
+    --overlay-light: rgba(59, 43, 36, 0.4);
+    --radius: 12px;
+    --shadow: 0 10px 30px rgba(59, 43, 36, 0.08), 0 0 0 1px var(--border);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #c45c34;
+    --graph-node-accent-stroke: #3b2b24;
+    --graph-node-info-fill: #6b8c7b;
+    --graph-node-info-stroke: #3b2b24;
+
+    --graph-node-status-deceased:   #947a6b;
+    --graph-node-status-instructor: #8a5c6b;
+    --graph-node-status-senior:     #b08c42;
+    --graph-node-status-junior:     #6b8c7b;
+    --graph-node-status-rookie:     #7a9b6e;
+    --graph-node-status-student:    #c45c34;
+    --graph-node-status-support:    #d98c6b;
+    --graph-node-status-civilian:   #6b5244;
+    --graph-node-status-other:      #947a6b;
+
+    --magic-earth: #9a6a4d;
+    --magic-water: #6b8c7b;
+    --magic-fire:  #c45c34;
+    --magic-air:   #f4ebd8;
+    --magic-metal: #9b3e31;
+    --magic-wood:  #7a9b6e;
+    
+    --magic-blood:   #9b3e31;
+    --magic-bone:    #fbf6eb;
+    --magic-mind:    #8a5c6b;
+    --magic-morphic: #6b8c7b;
+    --magic-life:    #7a9b6e;
+    --magic-death:   #3b2b24;
+    
+    --magic-space:        #6b8c7b;
+    --magic-time:         #b08c42;
+    --magic-dimension:    #8a5c6b;
+    --magic-void:         #000000;
+    --magic-reality:      #c45c34;
+    --magic-transference: #d98c6b;
+
+    --relationship-familial:     #7a9b6e;
+    --relationship-professional: #b08c42;
+    --relationship-romantic:     #9b3e31;
+    --relationship-friendship:   #6b8c7b;
+    --relationship-mentor:       #8a5c6b;
+    --relationship-rivalry:      #d98c6b;
+    --relationship-alliance:     #9a6a4d;
+    --relationship-other:        #6b5244;
+
+    --chip-bg-subtle: rgba(59, 43, 36, 0.06);
+}
+
+/* ============================================================
+   TOKENS — UKIYO-E
+   ============================================================ */
+
+[data-theme="ukiyo-e"] {
+    --bg: #F4EAD5;
+    --panel: #F9F6EE;
+    --panel-alt: #E8E0D0;
+    --border: #292D30;
+    --border-soft: #8E9295;
+    --text: #292D30;
+    --text-dim: #5A5D60;
+    --accent: #234F70;
+    --accent-soft: rgba(35, 79, 112, 0.12);
+    --accent-hover: rgba(35, 79, 112, 0.22);
+    --info: #78917B;
+    --info-soft: rgba(120, 145, 123, 0.14);
+    --info-hover: rgba(120, 145, 123, 0.24);
+    --danger: #B83A32;
+    --danger-soft: rgba(184, 58, 50, 0.12);
+    --danger-hover: rgba(184, 58, 50, 0.22);
+    --warning: #D1A35F;
+    --warning-soft: rgba(209, 163, 95, 0.14);
+    --warning-hover: rgba(209, 163, 95, 0.26);
+
+    --overlay: rgba(41, 45, 48, 0.6);
+    --overlay-light: rgba(41, 45, 48, 0.4);
+    --radius: 0px;
+    --shadow: 2px 2px 0 var(--border);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #234F70;
+    --graph-node-accent-stroke: #292D30;
+    --graph-node-info-fill: #78917B;
+    --graph-node-info-stroke: #292D30;
+
+    --graph-node-status-deceased:   #8E9295;
+    --graph-node-status-instructor: #234F70;
+    --graph-node-status-senior:     #D1A35F;
+    --graph-node-status-junior:     #78917B;
+    --graph-node-status-rookie:     #B83A32;
+    --graph-node-status-student:    #234F70;
+    --graph-node-status-support:    #5A5D60;
+    --graph-node-status-civilian:   #8E9295;
+    --graph-node-status-other:      #8E9295;
+
+    --magic-earth: #D1A35F;
+    --magic-water: #234F70;
+    --magic-fire:  #B83A32;
+    --magic-air:   #F4EAD5;
+    --magic-metal: #292D30;
+    --magic-wood:  #78917B;
+    
+    --magic-blood:   #B83A32;
+    --magic-bone:    #F9F6EE;
+    --magic-mind:    #5A5D60;
+    --magic-morphic: #78917B;
+    --magic-life:    #78917B;
+    --magic-death:   #292D30;
+    
+    --magic-space:        #234F70;
+    --magic-time:         #D1A35F;
+    --magic-dimension:    #5A5D60;
+    --magic-void:         #000000;
+    --magic-reality:      #B83A32;
+    --magic-transference: #D1A35F;
+
+    --relationship-familial:     #78917B;
+    --relationship-professional: #D1A35F;
+    --relationship-romantic:     #B83A32;
+    --relationship-friendship:   #234F70;
+    --relationship-mentor:       #5A5D60;
+    --relationship-rivalry:      #B83A32;
+    --relationship-alliance:     #78917B;
+    --relationship-other:        #8E9295;
+
+    --chip-bg-subtle: rgba(41, 45, 48, 0.06);
+}
+
+/* ============================================================
+   TOKENS — NATURE (MONET'S WATER LILIES)
+   ============================================================ */
+
+[data-theme="nature"] {
+    --bg: #DDE8D8;
+    --panel: #EBF2E9;
+    --panel-alt: #D3E0D6;
+    --border: #6F8C81;
+    --border-soft: #9FB3A8;
+    --text: #2C3D37;
+    --text-dim: #4B615A;
+    --accent: #C982A0;
+    --accent-soft: rgba(201, 130, 160, 0.15);
+    --accent-hover: rgba(201, 130, 160, 0.28);
+    --info: #B5AED0;
+    --info-soft: rgba(181, 174, 208, 0.20);
+    --info-hover: rgba(181, 174, 208, 0.30);
+    --danger: #B34442;
+    --danger-soft: rgba(179, 68, 66, 0.12);
+    --danger-hover: rgba(179, 68, 66, 0.22);
+    --warning: #C49A45;
+    --warning-soft: rgba(196, 154, 69, 0.14);
+    --warning-hover: rgba(196, 154, 69, 0.26);
+
+    --overlay: rgba(44, 61, 55, 0.6);
+    --overlay-light: rgba(44, 61, 55, 0.4);
+    --radius: 16px;
+    --shadow: 0 8px 28px rgba(49, 79, 76, 0.08);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #C982A0;
+    --graph-node-accent-stroke: #2C3D37;
+    --graph-node-info-fill: #B5AED0;
+    --graph-node-info-stroke: #2C3D37;
+
+    --graph-node-status-deceased:   #6F867D;
+    --graph-node-status-instructor: #B5AED0;
+    --graph-node-status-senior:     #C49A45;
+    --graph-node-status-junior:     #5B8C74;
+    --graph-node-status-rookie:     #7A9B6E;
+    --graph-node-status-student:    #C982A0;
+    --graph-node-status-support:    #B34442;
+    --graph-node-status-civilian:   #4B615A;
+    --graph-node-status-other:      #6F867D;
+
+    --magic-earth: #C49A45;
+    --magic-water: #5B8C74;
+    --magic-fire:  #B34442;
+    --magic-air:   #DDE8D8;
+    --magic-metal: #6F867D;
+    --magic-wood:  #5B8C74;
+    
+    --magic-blood:   #B34442;
+    --magic-bone:    #EBF2E9;
+    --magic-mind:    #B5AED0;
+    --magic-morphic: #5B8C74;
+    --magic-life:    #5B8C74;
+    --magic-death:   #2C3D37;
+    
+    --magic-space:        #B5AED0;
+    --magic-time:         #C49A45;
+    --magic-dimension:    #C982A0;
+    --magic-void:         #000000;
+    --magic-reality:      #B34442;
+    --magic-transference: #C982A0;
+
+    --relationship-familial:     #5B8C74;
+    --relationship-professional: #C49A45;
+    --relationship-romantic:     #B34442;
+    --relationship-friendship:   #B5AED0;
+    --relationship-mentor:       #C982A0;
+    --relationship-rivalry:      #B34442;
+    --relationship-alliance:     #5B8C74;
+    --relationship-other:        #6F867D;
+
+    --chip-bg-subtle: rgba(44, 61, 55, 0.06);
+}
+
+/* ============================================================
+   TOKENS — KMT
+   ============================================================ */
+
+[data-theme="kmt"] {
+    --bg: #000000;
+    --panel: #0a0a0a;
+    --panel-alt: #141414;
+    --border: #888888;
+    --border-soft: #4a4a4a;
+    --text: #ffffff;
+    --text-dim: #cccccc;
+    --accent: #A30000;
+    --accent-soft: rgba(163, 0, 0, 0.20);
+    --accent-hover: rgba(163, 0, 0, 0.40);
+    --info: #aaaaaa;
+    --info-soft: rgba(170, 170, 170, 0.15);
+    --info-hover: rgba(170, 170, 170, 0.25);
+    --danger: #FF0000;
+    --danger-soft: rgba(255, 0, 0, 0.15);
+    --danger-hover: rgba(255, 0, 0, 0.25);
+    --warning: #B89900;
+    --warning-soft: rgba(184, 153, 0, 0.15);
+    --warning-hover: rgba(184, 153, 0, 0.25);
+
+    --overlay: rgba(0, 0, 0, 0.90);
+    --overlay-light: rgba(0, 0, 0, 0.70);
+    --radius: 0px;
+    --shadow: 0 0 0 1px var(--border-soft), 0 4px 0 rgba(0, 0, 0, 1);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #A30000;
+    --graph-node-accent-stroke: #ffffff;
+    --graph-node-info-fill: #aaaaaa;
+    --graph-node-info-stroke: #ffffff;
+
+    --graph-node-status-deceased:   #888888;
+    --graph-node-status-instructor: #cccccc;
+    --graph-node-status-senior:     #B89900;
+    --graph-node-status-junior:     #aaaaaa;
+    --graph-node-status-rookie:     #006600;
+    --graph-node-status-student:    #A30000;
+    --graph-node-status-support:    #FF0000;
+    --graph-node-status-civilian:   #888888;
+    --graph-node-status-other:      #888888;
+
+    --magic-earth: #B89900;
+    --magic-water: #aaaaaa;
+    --magic-fire:  #FF0000;
+    --magic-air:   #ffffff;
+    --magic-metal: #cccccc;
+    --magic-wood:  #006600;
+    
+    --magic-blood:   #FF0000;
+    --magic-bone:    #ffffff;
+    --magic-mind:    #cccccc;
+    --magic-morphic: #006600;
+    --magic-life:    #006600;
+    --magic-death:   #000000;
+    
+    --magic-space:        #aaaaaa;
+    --magic-time:         #B89900;
+    --magic-dimension:    #cccccc;
+    --magic-void:         #000000;
+    --magic-reality:      #FF0000;
+    --magic-transference: #A30000;
+
+    --relationship-familial:     #006600;
+    --relationship-professional: #B89900;
+    --relationship-romantic:     #FF0000;
+    --relationship-friendship:   #aaaaaa;
+    --relationship-mentor:       #cccccc;
+    --relationship-rivalry:      #FF0000;
+    --relationship-alliance:     #006600;
+    --relationship-other:        #888888;
+
+    --chip-bg-subtle: rgba(255, 255, 255, 0.10);
+}
+
+/* ============================================================
+   TOKENS — GASLIGHT
+   ============================================================ */
+
+[data-theme="gaslight"] {
+    --bg: #1A1A22;
+    --panel: #25242B;
+    --panel-alt: #32313A;
+    --border: #6B6878;
+    --border-soft: #4A4855;
+    --text: #E8E2D4;
+    --text-dim: #ABA294;
+    --accent: #D4B56C;
+    --accent-soft: rgba(212, 181, 108, 0.15);
+    --accent-hover: rgba(212, 181, 108, 0.30);
+    --info: #5A7B8C;
+    --info-soft: rgba(90, 123, 140, 0.14);
+    --info-hover: rgba(90, 123, 140, 0.24);
+    --danger: #A63C30;
+    --danger-soft: rgba(166, 60, 48, 0.15);
+    --danger-hover: rgba(166, 60, 48, 0.25);
+    --warning: #C49A45;
+    --warning-soft: rgba(196, 154, 69, 0.15);
+    --warning-hover: rgba(196, 154, 69, 0.25);
+
+    --overlay: rgba(26, 26, 34, 0.85);
+    --overlay-light: rgba(26, 26, 34, 0.65);
+    --radius: 4px;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #D4B56C;
+    --graph-node-accent-stroke: #1A1A22;
+    --graph-node-info-fill: #5A7B8C;
+    --graph-node-info-stroke: #1A1A22;
+
+    --graph-node-status-deceased:   #7B7469;
+    --graph-node-status-instructor: #5A7B8C;
+    --graph-node-status-senior:     #C49A45;
+    --graph-node-status-junior:     #D4B56C;
+    --graph-node-status-rookie:     #5B8C6A;
+    --graph-node-status-student:    #D4B56C;
+    --graph-node-status-support:    #A63C30;
+    --graph-node-status-civilian:   #ABA294;
+    --graph-node-status-other:      #7B7469;
+
+    --magic-earth: #C49A45;
+    --magic-water: #5A7B8C;
+    --magic-fire:  #A63C30;
+    --magic-air:   #E8E2D4;
+    --magic-metal: #6B6878;
+    --magic-wood:  #5B8C6A;
+    
+    --magic-blood:   #A63C30;
+    --magic-bone:    #E8E2D4;
+    --magic-mind:    #5A7B8C;
+    --magic-morphic: #5B8C6A;
+    --magic-life:    #5B8C6A;
+    --magic-death:   #1A1A22;
+    
+    --magic-space:        #5A7B8C;
+    --magic-time:         #C49A45;
+    --magic-dimension:    #D4B56C;
+    --magic-void:         #000000;
+    --magic-reality:      #A63C30;
+    --magic-transference: #6B6878;
+
+    --relationship-familial:     #5B8C6A;
+    --relationship-professional: #C49A45;
+    --relationship-romantic:     #A63C30;
+    --relationship-friendship:   #5A7B8C;
+    --relationship-mentor:       #D4B56C;
+    --relationship-rivalry:      #A63C30;
+    --relationship-alliance:     #5B8C6A;
+    --relationship-other:        #7B7469;
+
+    --chip-bg-subtle: rgba(232, 226, 212, 0.05);
+}
+
+/* ============================================================
+   TOKENS — GROTESQUE
+   ============================================================ */
+
+[data-theme="grotesque"] {
+    --bg: #0d0a0a;
+    --panel: #151111;
+    --panel-alt: #1f1818;
+    --border: #5e3b3b;
+    --border-soft: #382626;
+    --text: #e8dfd3;
+    --text-dim: #b8a89c;
+    --accent: #7A2424;
+    --accent-soft: rgba(122, 36, 36, 0.18);
+    --accent-hover: #963030;
+    --info: #4a6b55;
+    --info-soft: rgba(74, 107, 85, 0.14);
+    --info-hover: rgba(74, 107, 85, 0.24);
+    --warning: #b88d5a;
+    --warning-soft: rgba(184, 141, 90, 0.15);
+    --warning-hover: rgba(184, 141, 90, 0.25);
+    --danger: #D93025;
+    --danger-soft: rgba(217, 48, 37, 0.15);
+    --danger-hover: rgba(217, 48, 37, 0.25);
+
+    --overlay: rgba(13, 10, 10, 0.90);
+    --overlay-light: rgba(13, 10, 10, 0.70);
+    --radius: 6px;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.8), inset 0 0 0 1px #050303;
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #7A2424;
+    --graph-node-accent-stroke: #e8dfd3;
+    --graph-node-info-fill: #4a6b55;
+    --graph-node-info-stroke: #e8dfd3;
+
+    --graph-node-status-deceased:   #8a7a6e;
+    --graph-node-status-instructor: #5A4B6B;
+    --graph-node-status-senior:     #b88d5a;
+    --graph-node-status-junior:     #4a6b55;
+    --graph-node-status-rookie:     #5b8c6a;
+    --graph-node-status-student:    #7A2424;
+    --graph-node-status-support:    #D93025;
+    --graph-node-status-civilian:   #b8a89c;
+    --graph-node-status-other:      #8a7a6e;
+
+    --magic-earth: #b88d5a;
+    --magic-water: #4a6b55;
+    --magic-fire:  #D93025;
+    --magic-air:   #e8dfd3;
+    --magic-metal: #8a7a6e;
+    --magic-wood:  #4a6b55;
+    
+    --magic-blood:   #D93025;
+    --magic-bone:    #e8dfd3;
+    --magic-mind:    #5A4B6B;
+    --magic-morphic: #4a6b55;
+    --magic-life:    #4a6b55;
+    --magic-death:   #0d0a0a;
+    
+    --magic-space:        #4a6b55;
+    --magic-time:         #b88d5a;
+    --magic-dimension:    #5A4B6B;
+    --magic-void:         #000000;
+    --magic-reality:      #D93025;
+    --magic-transference: #8a7a6e;
+
+    --relationship-familial:     #4a6b55;
+    --relationship-professional: #b88d5a;
+    --relationship-romantic:     #D93025;
+    --relationship-friendship:   #4a6b55;
+    --relationship-mentor:       #5A4B6B;
+    --relationship-rivalry:      #D93025;
+    --relationship-alliance:     #4a6b55;
+    --relationship-other:        #8a7a6e;
+
+    --chip-bg-subtle: rgba(232, 223, 211, 0.05);
+}
+
+/* ============================================================
+   TOKENS — ILLUMINATED (MEDIEVAL SCRIPTURE)
+   ============================================================ */
+
+[data-theme="illuminated"] {
+    --bg: #F4EBD5;
+    --panel: #FBF7EA;
+    --panel-alt: #E8DFC8;
+    --border: #2B2118;
+    --border-soft: #8A7B6A;
+    --text: #1A130D;
+    --text-dim: #5A4B3C;
+    --accent: #2E4D7B;
+    --accent-soft: rgba(46, 77, 123, 0.15);
+    --accent-hover: rgba(46, 77, 123, 0.25);
+    --info: #7A9B6E;
+    --info-soft: rgba(122, 155, 110, 0.15);
+    --info-hover: rgba(122, 155, 110, 0.25);
+    --danger: #A63C30;
+    --danger-soft: rgba(166, 60, 48, 0.15);
+    --danger-hover: rgba(166, 60, 48, 0.25);
+    --warning: #C49A45;
+    --warning-soft: rgba(196, 154, 69, 0.15);
+    --warning-hover: rgba(196, 154, 69, 0.25);
+
+    --overlay: rgba(26, 19, 13, 0.75);
+    --overlay-light: rgba(26, 19, 13, 0.55);
+    --radius: 2px;
+    --shadow: 2px 2px 0 rgba(43, 33, 24, 0.2);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #2E4D7B;
+    --graph-node-accent-stroke: #1A130D;
+    --graph-node-info-fill: #7A9B6E;
+    --graph-node-info-stroke: #1A130D;
+
+    --graph-node-status-deceased:   #8A7B6A;
+    --graph-node-status-instructor: #2E4D7B;
+    --graph-node-status-senior:     #C49A45;
+    --graph-node-status-junior:     #7A9B6E;
+    --graph-node-status-rookie:     #4B6B50;
+    --graph-node-status-student:    #2E4D7B;
+    --graph-node-status-support:    #A63C30;
+    --graph-node-status-civilian:   #5A4B3C;
+    --graph-node-status-other:      #8A7B6A;
+
+    --magic-earth: #C49A45;
+    --magic-water: #2E4D7B;
+    --magic-fire:  #A63C30;
+    --magic-air:   #F4EBD5;
+    --magic-metal: #2B2118;
+    --magic-wood:  #4B6B50;
+    
+    --magic-blood:   #A63C30;
+    --magic-bone:    #FBF7EA;
+    --magic-mind:    #5A4B3C;
+    --magic-morphic: #7A9B6E;
+    --magic-life:    #4B6B50;
+    --magic-death:   #1A130D;
+    
+    --magic-space:        #2E4D7B;
+    --magic-time:         #C49A45;
+    --magic-dimension:    #5A4B3C;
+    --magic-void:         #000000;
+    --magic-reality:      #A63C30;
+    --magic-transference: #C49A45;
+
+    --relationship-familial:     #4B6B50;
+    --relationship-professional: #C49A45;
+    --relationship-romantic:     #A63C30;
+    --relationship-friendship:   #2E4D7B;
+    --relationship-mentor:       #5A4B3C;
+    --relationship-rivalry:      #A63C30;
+    --relationship-alliance:     #7A9B6E;
+    --relationship-other:        #8A7B6A;
+
+    --chip-bg-subtle: rgba(43, 33, 24, 0.06);
+}
+
+/* ============================================================
+   TOKENS — DISCOWING (80s COMIC BOOK)
+   ============================================================ */
+
+[data-theme="discowing"] {
+    --bg: #F8A342;
+    --panel: #FFFFFF;
+    --panel-alt: #F0F0F0;
+    --border: #000000;
+    --border-soft: #000000;
+    --text: #050505;
+    --text-dim: #1A2A40;
+    --accent: #0080FF;
+    --accent-soft: rgba(0, 128, 255, 0.15);
+    --accent-hover: rgba(0, 128, 255, 0.25);
+    --info: #0080FF;
+    --info-soft: rgba(0, 128, 255, 0.15);
+    --info-hover: rgba(0, 128, 255, 0.25);
+    --warning: #FFD700;
+    --warning-soft: rgba(255, 215, 0, 0.20);
+    --warning-hover: rgba(255, 215, 0, 0.35);
+    --danger: #FF0000;
+    --danger-soft: rgba(255, 0, 0, 0.15);
+    --danger-hover: rgba(255, 0, 0, 0.25);
+
+    --overlay: rgba(0, 0, 0, 0.85);
+    --overlay-light: rgba(0, 0, 0, 0.65);
+    --radius: 0px;
+    --shadow: 4px 4px 0px #000000;
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #0080FF;
+    --graph-node-accent-stroke: #000000;
+    --graph-node-info-fill: #FFD700;
+    --graph-node-info-stroke: #000000;
+
+    --graph-node-status-deceased:   #4A5A70;
+    --graph-node-status-instructor: #0080FF;
+    --graph-node-status-senior:     #FFD700;
+    --graph-node-status-junior:     #0080FF;
+    --graph-node-status-rookie:     #00A86B;
+    --graph-node-status-student:    #0080FF;
+    --graph-node-status-support:    #FF0000;
+    --graph-node-status-civilian:   #1A2A40;
+    --graph-node-status-other:      #4A5A70;
+
+    --magic-earth: #FFD700;
+    --magic-water: #0080FF;
+    --magic-fire:  #FF0000;
+    --magic-air:   #FFFFFF;
+    --magic-metal: #000000;
+    --magic-wood:  #00A86B;
+    
+    --magic-blood:   #FF0000;
+    --magic-bone:    #FFFFFF;
+    --magic-mind:    #1A2A40;
+    --magic-morphic: #00A86B;
+    --magic-life:    #00A86B;
+    --magic-death:   #050505;
+    
+    --magic-space:        #0080FF;
+    --magic-time:         #FFD700;
+    --magic-dimension:    #4A5A70;
+    --magic-void:         #000000;
+    --magic-reality:      #FF0000;
+    --magic-transference: #FFD700;
+
+    --relationship-familial:     #00A86B;
+    --relationship-professional: #FFD700;
+    --relationship-romantic:     #FF0000;
+    --relationship-friendship:   #0080FF;
+    --relationship-mentor:       #1A2A40;
+    --relationship-rivalry:      #FF0000;
+    --relationship-alliance:     #00A86B;
+    --relationship-other:        #4A5A70;
+
+    --chip-bg-subtle: rgba(0, 0, 0, 0.05);
+}
+
+/* ============================================================
+   TOKENS — CHOC CAKE (16-BIT PIXEL ART)
+   ============================================================ */
+
+[data-theme="choc-cake"] {
+    --bg: #2A0B1F;
+    --panel: #4B1F0A;
+    --panel-alt: #6B3110;
+    --border: #1A0000;
+    --border-soft: #1A0000;
+    --text: #F2B35A;
+    --text-dim: #D9821A;
+    --accent: #FF0000;
+    --accent-soft: rgba(255, 0, 0, 0.15);
+    --accent-hover: rgba(255, 0, 0, 0.25);
+    --info: #FFD700;
+    --info-soft: rgba(255, 215, 0, 0.15);
+    --info-hover: rgba(255, 215, 0, 0.25);
+    --warning: #FFA500;
+    --warning-soft: rgba(255, 165, 0, 0.15);
+    --warning-hover: rgba(255, 165, 0, 0.25);
+    --danger: #B30000;
+    --danger-soft: rgba(179, 0, 0, 0.15);
+    --danger-hover: rgba(179, 0, 0, 0.25);
+
+    --overlay: rgba(42, 11, 31, 0.85);
+    --overlay-light: rgba(42, 11, 31, 0.70);
+    --radius: 0px;
+    --shadow: 4px 4px 0px var(--border-soft);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--panel-alt);
+
+    --graph-node-accent-fill: #FF0000;
+    --graph-node-accent-stroke: #1A0000;
+    --graph-node-info-fill: #FFD700;
+    --graph-node-info-stroke: #1A0000;
+
+    --graph-node-status-deceased:   #B36010;
+    --graph-node-status-instructor: #D9821A;
+    --graph-node-status-senior:     #FFA500;
+    --graph-node-status-junior:     #D9821A;
+    --graph-node-status-rookie:     #6B8E23;
+    --graph-node-status-student:    #FF0000;
+    --graph-node-status-support:    #B30000;
+    --graph-node-status-civilian:   #B36010;
+    --graph-node-status-other:      #B36010;
+
+    --magic-earth: #FFA500;
+    --magic-water: #D9821A;
+    --magic-fire:  #FF0000;
+    --magic-air:   #F2B35A;
+    --magic-metal: #1A0000;
+    --magic-wood:  #6B8E23;
+    
+    --magic-blood:   #B30000;
+    --magic-bone:    #F2B35A;
+    --magic-mind:    #D9821A;
+    --magic-morphic: #6B8E23;
+    --magic-life:    #6B8E23;
+    --magic-death:   #1A0000;
+    
+    --magic-space:        #D9821A;
+    --magic-time:         #FFD700;
+    --magic-dimension:    #B36010;
+    --magic-void:         #000000;
+    --magic-reality:      #FF0000;
+    --magic-transference: #FFA500;
+
+    --relationship-familial:     #6B8E23;
+    --relationship-professional: #FFD700;
+    --relationship-romantic:     #FF0000;
+    --relationship-friendship:   #D9821A;
+    --relationship-mentor:       #B36010;
+    --relationship-rivalry:      #B30000;
+    --relationship-alliance:     #6B8E23;
+    --relationship-other:        #B36010;
+
+    --chip-bg-subtle: rgba(242, 179, 90, 0.1);
+}
+
+/* ============================================================
+   TOKENS — DADA (CUT-AND-PASTE COLLAGE)
+   ============================================================ */
+
+[data-theme="dada"] {
+    --bg: #E8E5DF;
+    --panel: #F4F2EC;
+    --panel-alt: #D6D2C9;
+    --border: #111111;
+    --border-soft: #111111;
+    --text: #1A1A1A;
+    --text-dim: #4A4A4A;
+    --accent: #D4A32A;
+    --accent-soft: rgba(212, 163, 42, 0.25);
+    --accent-hover: rgba(212, 163, 42, 0.40);
+    --info: #D9A5A5;
+    --info-soft: rgba(217, 165, 165, 0.25);
+    --info-hover: rgba(217, 165, 165, 0.40);
+    --danger: #C93A3A;
+    --danger-soft: rgba(201, 58, 58, 0.20);
+    --danger-hover: rgba(201, 58, 58, 0.35);
+    --warning: #E6A43A;
+    --warning-soft: rgba(230, 164, 58, 0.20);
+    --warning-hover: rgba(230, 164, 58, 0.35);
+
+    --overlay: rgba(17, 17, 17, 0.85);
+    --overlay-light: rgba(17, 17, 17, 0.65);
+    --radius: 1px;
+    --shadow: 3px 3px 0 rgba(0,0,0,0.15), -1px -1px 0 rgba(255,255,255,0.6);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #D4A32A;
+    --graph-node-accent-stroke: #111111;
+    --graph-node-info-fill: #D9A5A5;
+    --graph-node-info-stroke: #111111;
+
+    --graph-node-status-deceased:   #737373;
+    --graph-node-status-instructor: #4A4A4A;
+    --graph-node-status-senior:     #D4A32A;
+    --graph-node-status-junior:     #4A4A4A;
+    --graph-node-status-rookie:     #5A8C5A;
+    --graph-node-status-student:    #D4A32A;
+    --graph-node-status-support:    #C93A3A;
+    --graph-node-status-civilian:   #4A4A4A;
+    --graph-node-status-other:      #737373;
+
+    --magic-earth: #E6A43A;
+    --magic-water: #D9A5A5;
+    --magic-fire:  #C93A3A;
+    --magic-air:   #E8E5DF;
+    --magic-metal: #111111;
+    --magic-wood:  #5A8C5A;
+    
+    --magic-blood:   #C93A3A;
+    --magic-bone:    #F4F2EC;
+    --magic-mind:    #4A4A4A;
+    --magic-morphic: #5A8C5A;
+    --magic-life:    #5A8C5A;
+    --magic-death:   #111111;
+    
+    --magic-space:        #D9A5A5;
+    --magic-time:         #D4A32A;
+    --magic-dimension:    #4A4A4A;
+    --magic-void:         #000000;
+    --magic-reality:      #C93A3A;
+    --magic-transference: #E6A43A;
+
+    --relationship-familial:     #5A8C5A;
+    --relationship-professional: #D4A32A;
+    --relationship-romantic:     #C93A3A;
+    --relationship-friendship:   #D9A5A5;
+    --relationship-mentor:       #4A4A4A;
+    --relationship-rivalry:      #C93A3A;
+    --relationship-alliance:     #5A8C5A;
+    --relationship-other:        #737373;
+
+    --chip-bg-subtle: rgba(0, 0, 0, 0.05);
+}
+
+/* ============================================================
    THEME TRANSITION
-   ============================================================
-   Smooth color transitions when the theme attribute flips.
-   Limited to color properties so layout does not animate.
-   Respects prefers-reduced-motion.
- */
+   ============================================================ */
 
 html {
     transition: background-color 0.25s ease, color 0.25s ease;
@@ -1262,528 +1707,134 @@ a,
 }
 
 /* ============================================================
-   VAPORWAVE BACKDROP
-   ============================================================
-   Three overlapping radial fields:
-     - pink at the top-left
-     - cyan at the top-right
-     - violet at the bottom-center
-
-   Together they give the base an atmospheric pink-and-blue
-   quality rather than a flat uniform colour. The violet field
-   anchors the composition so the page does not read as two
-   isolated accent spots.
-
-   Inert in every other theme.
- */
-
-[data-theme="vaporwave"] body {
-    background:
-        radial-gradient(
-            circle at 8% 5%,
-            rgba(255, 79, 216, 0.22) 0%,
-            transparent 32%
-        ),
-        radial-gradient(
-            circle at 92% 18%,
-            rgba(53, 231, 255, 0.18) 0%,
-            transparent 34%
-        ),
-        radial-gradient(
-            circle at 50% 110%,
-            rgba(120, 72, 220, 0.18) 0%,
-            transparent 42%
-        ),
-        var(--bg);
-
-    background-attachment: fixed;
-}
-
-/* ============================================================
-   VAPORWAVE HEADING GLOW
-   ============================================================
-   A restrained two-layer text-shadow: pink core, cyan halo.
-   The glow is present but does not overwhelm the heading's own
-   legibility. Inert in every other theme.
- */
-
-[data-theme="vaporwave"] h1,
-[data-theme="vaporwave"] h2,
-[data-theme="vaporwave"] h3,
-[data-theme="vaporwave"] h4 {
-    text-shadow:
-        0 0 7px rgba(255, 79, 216, 0.42),
-        0 0 18px rgba(53, 231, 255, 0.18);
-}
-
-[data-theme="vaporwave"] #theme-toggle-btn {
-    color: var(--accent);
-    border-color: var(--accent);
-}
-
-/* ============================================================
-   PASTEL BACKDROP
-   ============================================================
-   Three soft radial fields:
-     - bubblegum pink at the top-left
-     - powder blue at the top-right
-     - lavender at the bottom-center
-
-   The fields are wider and softer than the vaporwave backdrop —
-   pastel wants atmospheric glow, not distinct colour spots.
-   Inert in every other theme.
- */
-
-[data-theme="pastel"] body {
-    background:
-        radial-gradient(
-            circle at 15% 10%,
-            rgba(255, 182, 213, 0.55) 0%,
-            transparent 34%
-        ),
-        radial-gradient(
-            circle at 85% 15%,
-            rgba(177, 225, 239, 0.45) 0%,
-            transparent 32%
-        ),
-        radial-gradient(
-            circle at 50% 100%,
-            rgba(211, 181, 235, 0.35) 0%,
-            transparent 38%
-        ),
-        var(--bg);
-
-    background-attachment: fixed;
-}
-
-/* ============================================================
-   PASTEL HEADING GLOW
-   ============================================================
-   A soft, warm-magenta heading colour with a very gentle pink
-   halo. This is the magical-girl equivalent of the vaporwave
-   neon glow — present, but not trying to electrocute anything.
-   The white offset shadow gives the letters a subtle "sticker"
-   lift against the blush background. Inert in every other
-   theme.
- */
-
-[data-theme="pastel"] h1,
-[data-theme="pastel"] h2,
-[data-theme="pastel"] h3,
-[data-theme="pastel"] h4 {
-    color: #c6538b;
-    text-shadow:
-        1px 1px 0 rgba(255, 255, 255, 0.9),
-        0 0 10px rgba(237, 114, 170, 0.18);
-}
-
-[data-theme="pastel"] #theme-toggle-btn {
-    color: #d95791;
-    border-color: #ed72aa;
-    background: rgba(255, 255, 255, 0.55);
-    box-shadow: 0 0 10px rgba(237, 114, 170, 0.15);
-}
-
-/* ============================================================
-   CARNIVAL BACKDROP
-   ============================================================
-   The unmistakable tent-stripe look, applied as a very faint
-   diagonal stripe field so the base reads as carnival canvas
-   without overwhelming the content layer. A radial blood-red
-   glow sits behind the top of the page, as if a single red
-   lantern were lit somewhere above the fold.
-
-   Inert in every other theme.
- */
-
-[data-theme="carnival"] body {
-    background:
-        repeating-linear-gradient(
-            105deg,
-            rgba(245, 241, 235, 0.055) 0,
-            rgba(245, 241, 235, 0.055) 22px,
-            rgba(181, 31, 45, 0.055) 22px,
-            rgba(181, 31, 45, 0.055) 44px
-        ),
-        radial-gradient(
-            circle at 50% 0%,
-            rgba(181, 31, 45, 0.12),
-            transparent 42%
-        ),
-        var(--bg);
-
-    background-attachment: fixed;
-}
-
-/* ============================================================
-   CARNIVAL HEADINGS
-   ============================================================
-   Old circus signage: dirty white letters with a hard red
-   drop-shadow and a faint red ambient halo. No neon. The
-   offset shadow reads as paint, not as electricity.
-
-   Inert in every other theme.
- */
-
-[data-theme="carnival"] h1,
-[data-theme="carnival"] h2,
-[data-theme="carnival"] h3,
-[data-theme="carnival"] h4 {
-    color: #eee9e5;
-    text-shadow:
-        2px 2px 0 #7f1721,
-        0 0 8px rgba(181, 31, 45, 0.25);
-}
-
-[data-theme="carnival"] #theme-toggle-btn {
-    color: #eee9e5;
-    border-color: #b51f2d;
-    background: #242225;
-    box-shadow:
-        inset 0 0 0 1px rgba(238, 233, 229, 0.05),
-        0 0 10px rgba(181, 31, 45, 0.18);
-}
-
-/* ============================================================
-   CARNIVAL STRIPED NAV
-   ============================================================
-   The main navigation uses actual alternating dirty-white/red
-   vertical stripes — the unmistakable carnival-tent look. This
-   is the only place in the app that gets the full stripe
-   treatment; everything else stays charcoal so the UI does not
-   become visual noise.
-
-   The active tab is a solid dirty-white plate so it reads as
-   "lit up" against the stripes. Inactive tabs are charcoal
-   with dirty-white labels so they sit back.
-
-   Inert in every other theme.
- */
-
-[data-theme="carnival"] header nav {
-    background:
-        repeating-linear-gradient(
-            90deg,
-            rgba(238, 233, 229, 0.10) 0,
-            rgba(238, 233, 229, 0.10) 14px,
-            rgba(181, 31, 45, 0.14) 14px,
-            rgba(181, 31, 45, 0.14) 28px
-        ),
-        #1c1a1d;
-
-    border-top: 1px solid #413d40;
-    border-bottom: 1px solid #413d40;
-    padding: 4px 6px;
-}
-
-[data-theme="carnival"] header nav a {
-    color: #d8d2cc;
-    background: rgba(24, 23, 25, 0.72);
-    border: 1px solid #413d40;
-    border-radius: 3px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-weight: 600;
-    font-size: 0.68rem;
-}
-
-[data-theme="carnival"] header nav a:hover {
-    color: #eee9e5;
-    background: rgba(48, 45, 48, 0.9);
-    border-color: #625c60;
-}
-
-[data-theme="carnival"] header nav a.active {
-    color: #1c1a1d;
-    background: #ddd7d0;
-    border-color: #ddd7d0;
-    box-shadow:
-        inset 0 -2px 0 #b51f2d,
-        0 0 10px rgba(181, 31, 45, 0.28);
-}
-
-/* ============================================================
-   CARNIVAL PANEL TEXTURE
-   ============================================================
-   A very faint vertical stripe texture on the primary surface
-   classes. Barely visible; the point is that panels do not
-   read as perfectly flat, the way canvas does not.
-
-   Scoped to the surface classes that appear across the app
-   (.panel, .card, .modal-content, .section). The .modal shell
-   is excluded on purpose — it is the overlay, not a panel.
-
-   Inert in every other theme.
- */
-
-[data-theme="carnival"] .panel,
-[data-theme="carnival"] .card,
-[data-theme="carnival"] .modal-content,
-[data-theme="carnival"] .section {
-    background:
-        linear-gradient(
-            90deg,
-            rgba(255, 255, 255, 0.018) 50%,
-            rgba(0, 0, 0, 0.018) 50%
-        ),
-        var(--panel);
-    background-size: 8px 100%;
-}
-
-/* ============================================================
-   MAXIMAL BACKDROP
-   ============================================================
-   Aggressive multi-radial gradient, bubblegum cream base.
-   Inert in every other theme.
- */
-
-[data-theme="maximal"] body {
-    background:
-        radial-gradient(600px 400px at 0% 0%, #ffd6f5 0%, transparent 60%),
-        radial-gradient(700px 500px at 100% 10%, #d6fff7 0%, transparent 55%),
-        radial-gradient(600px 400px at 50% 100%, #fff6a8 0%, transparent 55%),
-        repeating-linear-gradient(45deg, #fff0fb 0 20px, #ffe0f5 20px 40px);
-    background-attachment: fixed;
-}
-
-/* ============================================================
-   MAXIMAL HEADER & HEADINGS
-   ============================================================
-   Inverted gradient header with chunky sticker shadows.
- */
-
-[data-theme="maximal"] header {
-    background: linear-gradient(90deg, #ff2ea6 0%, #00e5ff 100%);
-    border-bottom: 3px solid var(--text);
-    box-shadow: 0 4px 0 var(--text), 0 8px 24px rgba(255, 46, 166, 0.4);
-}
-[data-theme="maximal"] header h1,
-[data-theme="maximal"] header nav a,
-[data-theme="maximal"] .header-actions button {
-    color: #fff;
-    text-shadow: 1px 1px 0 var(--text);
-}
-[data-theme="maximal"] header nav a.active {
-    background: var(--text);
-    color: var(--warning);
-    box-shadow: 2px 2px 0 var(--accent);
-}
-
-[data-theme="maximal"] h1,
-[data-theme="maximal"] h2,
-[data-theme="maximal"] h3,
-[data-theme="maximal"] h4 {
-    color: var(--text);
-    text-shadow: 2px 2px 0 #fff, 3px 3px 0 var(--accent);
-    font-weight: 900;
-}
-
-[data-theme="maximal"] .page-header h2,
-[data-theme="maximal"] .dashboard-title {
-    text-shadow:
-        2px 2px 0 var(--info),
-        4px 4px 0 var(--warning),
-        6px 6px 0 var(--text);
-}
-
-[data-theme="maximal"] ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, var(--accent), var(--info));
-    border: 2px solid var(--text);
-}
-[data-theme="maximal"] ::-webkit-scrollbar-track { background: var(--bg); }
-
-[data-theme="maximal"] :focus-visible {
-    outline: 3px solid var(--accent);
-    outline-offset: 3px;
-    box-shadow: 0 0 0 6px var(--info);
-}
-
-[data-theme="maximal"] #theme-toggle-btn {
-    color: #fff;
-    border-color: var(--text);
-    background: var(--accent);
-    box-shadow: 2px 2px 0 var(--text);
-}
-
-/* ============================================================
-   GITS BACKDROP & HEADINGS
+   BACKDROPS
    ============================================================ */
 
+[data-theme="vaporwave"] body {
+    background: radial-gradient(circle at 8% 5%, rgba(255, 79, 216, 0.22) 0%, transparent 32%), radial-gradient(circle at 92% 18%, rgba(53, 231, 255, 0.18) 0%, transparent 34%), radial-gradient(circle at 50% 110%, rgba(120, 72, 220, 0.18) 0%, transparent 42%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="pastel"] body {
+    background: radial-gradient(circle at 15% 10%, rgba(255, 182, 213, 0.55) 0%, transparent 34%), radial-gradient(circle at 85% 15%, rgba(177, 225, 239, 0.45) 0%, transparent 32%), radial-gradient(circle at 50% 100%, rgba(211, 181, 235, 0.35) 0%, transparent 38%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="carnival"] body {
+    background: repeating-linear-gradient(105deg, rgba(245, 241, 235, 0.055) 0, rgba(245, 241, 235, 0.055) 22px, rgba(181, 31, 45, 0.055) 22px, rgba(181, 31, 45, 0.055) 44px), radial-gradient(circle at 50% 0%, rgba(181, 31, 45, 0.12), transparent 42%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="maximal"] body {
+    background: radial-gradient(600px 400px at 0% 0%, #ffd6f5 0%, transparent 60%), radial-gradient(700px 500px at 100% 10%, #d6fff7 0%, transparent 55%), radial-gradient(600px 400px at 50% 100%, #fff6a8 0%, transparent 55%), repeating-linear-gradient(45deg, #fff0fb 0 20px, #ffe0f5 20px 40px);
+    background-attachment: fixed;
+}
 [data-theme="gits"] body {
-    background:
-        linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px),
-        radial-gradient(circle at 50% 0%, #0a2540 0%, var(--bg) 100%);
+    background: linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px), radial-gradient(circle at 50% 0%, #0a2540 0%, var(--bg) 100%);
     background-size: 100% 4px, 100% 100%;
     background-attachment: fixed;
 }
-
-[data-theme="gits"] h1,
-[data-theme="gits"] h2,
-[data-theme="gits"] h3,
-[data-theme="gits"] h4 {
-    color: var(--accent);
-    text-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
-    font-family: monospace;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-}
-
-[data-theme="gits"] header {
-    background: #000;
-    border-bottom: 2px solid var(--info); /* Magenta divider */
-}
-[data-theme="gits"] header nav a.active {
-    color: #000;
-    background: var(--accent);
-    box-shadow: 0 0 10px var(--accent);
-}
-[data-theme="gits"] #theme-toggle-btn {
-    color: var(--info);
-    border-color: var(--info);
-    background: transparent;
-    box-shadow: 0 0 10px rgba(255, 0, 168, 0.2);
-}
-
-/* ============================================================
-   STAINED GLASS BACKDROP & HEADINGS
-   ============================================================ */
-
 [data-theme="stained-glass"] body {
-    background:
-        linear-gradient(135deg, rgba(227, 24, 55, 0.04) 0%, transparent 40%),
-        linear-gradient(225deg, rgba(0, 102, 204, 0.04) 0%, transparent 40%),
-        radial-gradient(circle at 50% 50%, #ffffff 0%, var(--bg) 100%);
+    background: linear-gradient(135deg, rgba(227, 24, 55, 0.04) 0%, transparent 40%), linear-gradient(225deg, rgba(0, 102, 204, 0.04) 0%, transparent 40%), radial-gradient(circle at 50% 50%, #ffffff 0%, var(--bg) 100%);
     background-attachment: fixed;
 }
-
-[data-theme="stained-glass"] h1,
-[data-theme="stained-glass"] h2,
-[data-theme="stained-glass"] h3,
-[data-theme="stained-glass"] h4 {
-    color: #1a1e24;
-    text-shadow: 0 0 15px rgba(255, 255, 255, 1);
-    font-family: 'Fraunces', serif;
-    font-weight: 700;
-    letter-spacing: 0.02em;
+[data-theme="stained-glass-dark"] body {
+    background: repeating-linear-gradient(90deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(0deg, rgba(94,232,255,0.02) 0, rgba(94,232,255,0.02) 1px, transparent 1px, transparent 48px), radial-gradient(ellipse at 50% 30%, rgba(255,79,168,0.10) 0%, transparent 45%), radial-gradient(ellipse at 50% 0%, rgba(94,232,255,0.08) 0%, transparent 50%), linear-gradient(to bottom, transparent 60%, rgba(4,10,18,0.9) 100%), var(--bg);
+    background-attachment: fixed;
 }
-
-[data-theme="stained-glass"] header {
-    background: #ffffff;
-    border-bottom: 3px solid var(--border); /* Thick lead */
-}
-[data-theme="stained-glass"] .modal-content {
-    border: 3px solid var(--border);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05);
-}
-[data-theme="stained-glass"] #theme-toggle-btn {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: transparent;
-}
-
-/* ============================================================
-   ART DECO BACKDROP & HEADINGS
-   ============================================================ */
-
 [data-theme="art-deco"] body {
-    background:
-        linear-gradient(to right, rgba(184, 151, 90, 0.04) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(184, 151, 90, 0.04) 1px, transparent 1px),
-        var(--bg);
+    background: linear-gradient(to right, rgba(184, 151, 90, 0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(184, 151, 90, 0.04) 1px, transparent 1px), var(--bg);
     background-size: 40px 40px, 40px 40px, 100% 100%;
     background-attachment: fixed;
 }
-
-[data-theme="art-deco"] h1,
-[data-theme="art-deco"] h2,
-[data-theme="art-deco"] h3,
-[data-theme="art-deco"] h4 {
-    color: #1c1e21;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    font-family: 'Fraunces', serif;
-    font-weight: 900;
+[data-theme="nouveau"] body {
+    background: radial-gradient(circle at 50% 30%, rgba(196,92,52,0.05) 0%, transparent 50%), radial-gradient(circle at 0% 100%, rgba(107,140,123,0.08) 0%, transparent 40%), radial-gradient(circle at 100% 0%, rgba(107,140,123,0.08) 0%, transparent 40%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="ukiyo-e"] body {
+    background: linear-gradient(to bottom, rgba(217,108,92,0.15) 0%, transparent 40%), linear-gradient(to bottom, transparent 70%, rgba(35,79,112,0.1) 100%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="nature"] body {
+    background: radial-gradient(ellipse at 15% 15%, rgba(201, 130, 160, 0.16), transparent 38%), radial-gradient(ellipse at 82% 24%, rgba(181, 174, 208, 0.20), transparent 42%), radial-gradient(ellipse at 60% 85%, rgba(120, 155, 145, 0.20), transparent 48%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="kmt"] body {
+    background: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(to top, #3a0000 0%, #000000 40%), var(--bg);
+    background-size: 40px 40px, 40px 40px, 100% 100%, 100% 100%;
+    background-position: center top;
+    background-attachment: fixed;
+}
+[data-theme="gaslight"] body {
+    background: radial-gradient(circle at 20% 10%, rgba(232,226,212,0.08) 0%, transparent 40%), radial-gradient(circle at 80% 90%, var(--accent-soft) 0%, transparent 50%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="grotesque"] body {
+    background: radial-gradient(circle at 50% 10%, rgba(232,223,211,0.05) 0%, transparent 40%), radial-gradient(circle at 20% 40%, rgba(90,75,107,0.06) 0%, transparent 50%), radial-gradient(ellipse at 70% 60%, rgba(122,36,36,0.08) 0%, transparent 50%), radial-gradient(circle at 10% 80%, rgba(74,107,85,0.06) 0%, transparent 40%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="illuminated"] body {
+    background: radial-gradient(circle at 10% 5%, rgba(122,155,110,0.15) 0%, transparent 20%), radial-gradient(circle at 50% 2%, var(--accent-soft) 0%, transparent 25%), radial-gradient(circle at 90% 5%, var(--danger-soft) 0%, transparent 20%), var(--bg);
+    background-attachment: fixed;
+}
+[data-theme="discowing"] body {
+    background: radial-gradient(circle, rgba(0,0,0,0.15) 1px, transparent 1px), var(--bg);
+    background-size: 6px 6px; 
+    background-attachment: fixed;
+}
+[data-theme="choc-cake"] body {
+    background: linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), var(--bg);
+    background-size: 32px 32px;
+    background-position: 0 0, 16px 16px;
+    background-attachment: fixed;
+}
+[data-theme="dada"] body {
+    background: linear-gradient(to right, var(--info-soft) 0%, var(--info-soft) 20%, transparent 20%), linear-gradient(to left, var(--accent-soft) 0%, var(--accent-soft) 15%, transparent 15%), radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1.5px), var(--bg);
+    background-size: 100% 100%, 100% 100%, 5px 5px, 100% 100%;
+    background-attachment: fixed;
 }
 
-[data-theme="art-deco"] header {
-    background: var(--panel);
-    border-bottom: 2px solid var(--border);
-}
-[data-theme="art-deco"] header h1 span {
-    color: var(--info);
-}
-[data-theme="art-deco"] .modal-content {
-    border: 2px solid var(--border);
-    box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15);
-}
-[data-theme="art-deco"] #theme-toggle-btn {
-    color: var(--info);
-    border-color: var(--info);
-    background: transparent;
-    border-radius: 0;
-}
+/* ============================================================
+   HEADINGS & TYPOGRAPHY
+   ============================================================ */
+
+[data-theme="vaporwave"] h1, [data-theme="vaporwave"] h2, [data-theme="vaporwave"] h3, [data-theme="vaporwave"] h4 { text-shadow: 0 0 7px rgba(255, 79, 216, 0.42), 0 0 18px rgba(53, 231, 255, 0.18); }
+[data-theme="pastel"] h1, [data-theme="pastel"] h2, [data-theme="pastel"] h3, [data-theme="pastel"] h4 { color: #c6538b; text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.9), 0 0 10px rgba(237, 114, 170, 0.18); }
+[data-theme="carnival"] h1, [data-theme="carnival"] h2, [data-theme="carnival"] h3, [data-theme="carnival"] h4 { color: #eee9e5; text-shadow: 2px 2px 0 #7f1721, 0 0 8px rgba(181, 31, 45, 0.25); }
+[data-theme="maximal"] h1, [data-theme="maximal"] h2, [data-theme="maximal"] h3, [data-theme="maximal"] h4 { color: var(--text); text-shadow: 2px 2px 0 #fff, 3px 3px 0 var(--accent); font-weight: 900; }
+[data-theme="maximal"] .page-header h2, [data-theme="maximal"] .dashboard-title { text-shadow: 2px 2px 0 var(--info), 4px 4px 0 var(--warning), 6px 6px 0 var(--text); }
+[data-theme="gits"] h1, [data-theme="gits"] h2, [data-theme="gits"] h3, [data-theme="gits"] h4 { color: var(--accent); text-shadow: 0 0 8px rgba(0, 240, 255, 0.4); font-family: monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+[data-theme="stained-glass"] h1, [data-theme="stained-glass"] h2, [data-theme="stained-glass"] h3, [data-theme="stained-glass"] h4 { color: #1a1e24; text-shadow: 0 0 15px rgba(255, 255, 255, 1); font-family: 'Fraunces', serif; font-weight: 700; letter-spacing: 0.02em; }
+[data-theme="stained-glass-dark"] h1, [data-theme="stained-glass-dark"] h2, [data-theme="stained-glass-dark"] h3, [data-theme="stained-glass-dark"] h4 { text-shadow: 0 0 8px rgba(94,232,255,0.5), 0 0 24px rgba(255,79,168,0.15); }
+[data-theme="art-deco"] h1, [data-theme="art-deco"] h2, [data-theme="art-deco"] h3, [data-theme="art-deco"] h4 { color: #1c1e21; text-transform: uppercase; letter-spacing: 0.15em; font-family: 'Fraunces', serif; font-weight: 900; }
+[data-theme="nouveau"] h1, [data-theme="nouveau"] h2, [data-theme="nouveau"] h3, [data-theme="nouveau"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 500; letter-spacing: 0.02em; }
+[data-theme="ukiyo-e"] h1, [data-theme="ukiyo-e"] h2, [data-theme="ukiyo-e"] h3, [data-theme="ukiyo-e"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.03em; }
+[data-theme="nature"] h1, [data-theme="nature"] h2, [data-theme="nature"] h3, [data-theme="nature"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 500; letter-spacing: 0.01em; color: var(--text); }
+[data-theme="kmt"] h1, [data-theme="kmt"] h2, [data-theme="kmt"] h3, [data-theme="kmt"] h4 { font-family: monospace; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text); text-shadow: 2px 2px 0px #000000; }
+[data-theme="gaslight"] h1, [data-theme="gaslight"] h2, [data-theme="gaslight"] h3, [data-theme="gaslight"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.02em; color: var(--accent); text-shadow: 0 0 12px var(--accent-soft); }
+[data-theme="grotesque"] h1, [data-theme="grotesque"] h2, [data-theme="grotesque"] h3, [data-theme="grotesque"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 600; letter-spacing: 0.02em; color: var(--text); text-shadow: 0 0 10px rgba(122,36,36,0.3); }
+[data-theme="illuminated"] h1, [data-theme="illuminated"] h2 { font-family: 'UnifrakturMaguntia', 'Old English Text MT', 'Newsreader', Georgia, serif; color: var(--text); }
+[data-theme="illuminated"] h3, [data-theme="illuminated"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+[data-theme="discowing"] h1, [data-theme="discowing"] h2, [data-theme="discowing"] h3, [data-theme="discowing"] h4 { font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase; color: var(--accent); -webkit-text-stroke: 2px #000000; text-shadow: 3px 3px 0px #000000; }
+[data-theme="choc-cake"] h1, [data-theme="choc-cake"] h2, [data-theme="choc-cake"] h3, [data-theme="choc-cake"] h4 { font-family: 'VT323', 'Courier New', monospace; color: var(--text); text-transform: uppercase; letter-spacing: 0.1em; text-shadow: 2px 2px 0px var(--border-soft); }
+[data-theme="dada"] h1, [data-theme="dada"] h2, [data-theme="dada"] h3, [data-theme="dada"] h4 { font-family: 'Oswald', 'Impact', 'Arial Black', sans-serif; font-weight: 900; text-transform: uppercase; letter-spacing: -0.02em; text-shadow: 2px 2px 0 var(--accent), -1px -1px 0 var(--info); transform: rotate(-1.5deg) translateX(-4px); display: inline-block; }
 
 /* ============================================================
    RESET + GLOBAL
    ============================================================ */
 
-* {
-    box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
-::-webkit-scrollbar {
-    height: 10px;
-    width: 10px;
-}
-::-webkit-scrollbar-track {
-    background: var(--scrollbar-track);
-    border-radius: 6px;
-}
-::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 6px;
-    border: 2px solid var(--scrollbar-track);
-}
-::-webkit-scrollbar-thumb:hover {
-    background: var(--accent);
-}
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
-}
+::-webkit-scrollbar { height: 10px; width: 10px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 6px; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 6px; border: 2px solid var(--scrollbar-track); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); }
 
-html,
-body {
-    margin: 0;
-    min-height: 100vh;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Inter', sans-serif;
-    overflow-x: hidden;
-}
+html, body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; overflow-x: hidden; }
+h1, h2, h3, h4 { font-family: 'Fraunces', serif; font-weight: 700; margin: 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
-h1,
-h2,
-h3,
-h4 {
-    font-family: 'Fraunces', serif;
-    font-weight: 700;
-    margin: 0;
-}
-
-a {
-    color: var(--accent);
-    text-decoration: none;
-}
-a:hover {
-    text-decoration: underline;
-}
-
-/* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
+    *, *::before, *::after {
         transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
@@ -1791,11 +1842,7 @@ a:hover {
     }
 }
 
-/* Focus-visible for accessibility */
-:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ============================================================
    BUTTONS
@@ -1813,1109 +1860,250 @@ button {
     cursor: pointer;
     transition: 0.2s;
 }
-button:hover {
-    border-color: var(--accent);
-}
-button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
+button:hover { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-button.primary {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
-}
-button.primary:hover {
-    background: var(--accent-hover);
-}
+button.primary { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+button.primary:hover { background: var(--accent-hover); }
+button.danger { color: var(--danger); }
+button.danger:hover { border-color: var(--danger); background: var(--danger-soft); }
+button.secondary { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.secondary:hover { border-color: var(--border); background: var(--panel-alt); }
+button.warning { color: var(--warning); border-color: var(--warning); }
+button.warning:hover { background: var(--warning-soft); }
+button.info { color: var(--info); border-color: var(--info); }
+button.info:hover { background: var(--info-soft); }
+button.small { padding: 4px 10px; font-size: 0.72rem; }
 
-button.danger {
-    color: var(--danger);
-}
-button.danger:hover {
-    border-color: var(--danger);
-    background: var(--danger-soft);
-}
-
-button.secondary {
-    background: transparent;
-    border-color: transparent;
-    color: var(--text-dim);
-}
-button.secondary:hover {
-    border-color: var(--border);
-    background: var(--panel-alt);
-}
-
-button.warning {
-    color: var(--warning);
-    border-color: var(--warning);
-}
-button.warning:hover {
-    background: var(--warning-soft);
-}
-
-button.info {
-    color: var(--info);
-    border-color: var(--info);
-}
-button.info:hover {
-    background: var(--info-soft);
-}
-
-button.small {
-    padding: 4px 10px;
-    font-size: 0.72rem;
-}
+/* Overrides for specific themes on buttons */
+[data-theme="gits"] button { border-radius: 0; text-transform: uppercase; font-family: monospace; }
+[data-theme="art-deco"] button { border-radius: 0; text-transform: uppercase; letter-spacing: 0.05em; }
+[data-theme="discowing"] button { border-radius: 0; border: 2px solid #000; box-shadow: 2px 2px 0px #000; text-transform: uppercase; font-family: 'Impact', 'Arial Black', sans-serif; }
+[data-theme="discowing"] button:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0px #000; }
+[data-theme="choc-cake"] button { border-radius: 0; border: 2px solid var(--border-soft); box-shadow: 3px 3px 0px var(--border-soft); font-family: 'VT323', monospace; font-size: 1.1rem; text-transform: uppercase; }
+[data-theme="choc-cake"] button:hover { background: var(--text); color: var(--panel); }
+[data-theme="choc-cake"] button:active { transform: translate(3px, 3px); box-shadow: 0 0 0 var(--border-soft); }
+[data-theme="kmt"] button { border-radius: 0; text-transform: uppercase; font-family: monospace; font-weight: 700; border: 2px solid var(--border); }
+[data-theme="dada"] button { border-radius: 0; border: 2px solid var(--border); box-shadow: 2px 2px 0 var(--border); font-family: 'Courier New', monospace; font-weight: bold; text-transform: uppercase; }
+[data-theme="dada"] button:hover { transform: translate(-1px, -1px) rotate(-1deg); box-shadow: 3px 3px 0 var(--border); }
 
 /* ============================================================
    THEME TOGGLE BUTTON
-   ============================================================
-   Lives in the header-actions cluster. Cycles through the
-   available themes; the glyph previews the NEXT theme in the
-   cycle. Sized to match the other small header buttons.
- */
+   ============================================================ */
 
-#theme-toggle-btn {
-    font-size: 0.7rem;
-    padding: 3px 8px;
-    min-width: 28px;
-    text-align: center;
-    line-height: 1;
-    font-family: 'Inter', sans-serif;
-}
+#theme-toggle-btn { font-size: 0.7rem; padding: 3px 8px; min-width: 28px; text-align: center; line-height: 1; font-family: 'Inter', sans-serif; }
+
+[data-theme="maximal"] #theme-toggle-btn { color: #fff; border-color: var(--text); background: var(--accent); box-shadow: 2px 2px 0 var(--text); }
+[data-theme="gits"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; box-shadow: 0 0 10px rgba(255, 0, 168, 0.2); border-radius: 0; }
+[data-theme="stained-glass"] #theme-toggle-btn { color: var(--accent); border-color: var(--accent); background: transparent; }
+[data-theme="stained-glass-dark"] #theme-toggle-btn { color: var(--accent); border-color: var(--accent); background: transparent; }
+[data-theme="art-deco"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; border-radius: 0; }
 
 /* ============================================================
    HEADER + NAVIGATION
    ============================================================ */
 
-header {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, var(--panel), var(--bg));
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    width: 100%;
-}
+header { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--panel), var(--bg)); position: sticky; top: 0; z-index: 100; width: 100%; }
+.header-top { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: var(--header-height-mobile); gap: 8px; flex-shrink: 0; }
+header h1 { font-size: 0.9rem; letter-spacing: 0.02em; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; margin: 0; }
+header h1 span { color: var(--accent); }
+.burger-btn { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 1.2rem; padding: 2px 10px; cursor: pointer; line-height: 1.4; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 32px; min-height: 28px; }
+.burger-btn:hover { border-color: var(--accent); }
+.burger-btn.open { border-color: var(--accent); color: var(--accent); }
+.header-actions { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; width: 100%; padding: 4px 0; order: 2; border-top: 1px solid var(--border-soft); margin-top: 2px; }
+.header-actions button.small { font-size: 0.5rem; padding: 2px 5px; flex: 1; min-width: 30px; max-width: 55px; white-space: nowrap; }
+header nav { display: none; flex-direction: column; gap: 2px; width: 100%; padding: 6px 0; border-top: 1px solid var(--border-soft); order: 3; }
+header nav.open { display: flex; }
+header nav a { color: var(--text-dim); padding: 6px 8px; border-radius: 4px; font-size: 0.7rem; transition: 0.2s; text-decoration: none; text-align: center; }
+header nav a:hover { color: var(--text); background: var(--panel-alt); }
+header nav a.active { color: var(--accent); background: var(--accent-soft); }
 
-.header-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    min-height: var(--header-height-mobile);
-    gap: 8px;
-    flex-shrink: 0;
-}
+[data-theme="maximal"] header { background: linear-gradient(90deg, #ff2ea6 0%, #00e5ff 100%); border-bottom: 3px solid var(--text); box-shadow: 0 4px 0 var(--text), 0 8px 24px rgba(255, 46, 166, 0.4); }
+[data-theme="maximal"] header h1, [data-theme="maximal"] header nav a, [data-theme="maximal"] .header-actions button { color: #fff; text-shadow: 1px 1px 0 var(--text); }
+[data-theme="maximal"] header nav a.active { background: var(--text); color: var(--warning); box-shadow: 2px 2px 0 var(--accent); }
 
-header h1 {
-    font-size: 0.9rem;
-    letter-spacing: 0.02em;
-    flex: 0 1 auto;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 45%;
-    margin: 0;
-}
-header h1 span {
-    color: var(--accent);
-}
+[data-theme="gits"] header { background: #000; border-bottom: 2px solid var(--info); }
+[data-theme="gits"] header nav a.active { color: #000; background: var(--accent); box-shadow: 0 0 10px var(--accent); border-radius: 0; }
 
-.burger-btn {
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-size: 1.2rem;
-    padding: 2px 10px;
-    cursor: pointer;
-    line-height: 1.4;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    min-width: 32px;
-    min-height: 28px;
-}
-.burger-btn:hover {
-    border-color: var(--accent);
-}
-.burger-btn.open {
-    border-color: var(--accent);
-    color: var(--accent);
-}
+[data-theme="stained-glass"] header { background: #ffffff; border-bottom: 3px solid var(--border); }
+[data-theme="stained-glass-dark"] header { background: var(--panel); border-bottom: 1px solid var(--border); }
+[data-theme="art-deco"] header { background: var(--panel); border-bottom: 2px solid var(--border); }
+[data-theme="carnival"] header nav { background: repeating-linear-gradient(90deg, rgba(238, 233, 229, 0.10) 0, rgba(238, 233, 229, 0.10) 14px, rgba(181, 31, 45, 0.14) 14px, rgba(181, 31, 45, 0.14) 28px), #1c1a1d; border-top: 1px solid #413d40; border-bottom: 1px solid #413d40; padding: 4px 6px; }
+[data-theme="carnival"] header nav a { color: #d8d2cc; background: rgba(24, 23, 25, 0.72); border: 1px solid #413d40; border-radius: 3px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; font-size: 0.68rem; }
+[data-theme="carnival"] header nav a:hover { color: #eee9e5; background: rgba(48, 45, 48, 0.9); border-color: #625c60; }
+[data-theme="carnival"] header nav a.active { color: #1c1a1d; background: #ddd7d0; border-color: #ddd7d0; box-shadow: inset 0 -2px 0 #b51f2d, 0 0 10px rgba(181, 31, 45, 0.28); }
+[data-theme="discowing"] header nav a.active { background: var(--accent); color: #fff; border: 2px solid #000; box-shadow: 2px 2px 0 #000; }
+[data-theme="dada"] header nav a { font-family: 'Courier New', monospace; text-transform: uppercase; }
+[data-theme="dada"] header nav a.active { background: var(--accent); color: var(--text); transform: skewX(-5deg); }
 
-.header-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    align-items: center;
-    width: 100%;
-    padding: 4px 0;
-    order: 2;
-    border-top: 1px solid var(--border-soft);
-    margin-top: 2px;
-}
-.header-actions button.small {
-    font-size: 0.5rem;
-    padding: 2px 5px;
-    flex: 1;
-    min-width: 30px;
-    max-width: 55px;
-    white-space: nowrap;
-}
-
-header nav {
-    display: none;
-    flex-direction: column;
-    gap: 2px;
-    width: 100%;
-    padding: 6px 0;
-    border-top: 1px solid var(--border-soft);
-    order: 3;
-}
-header nav.open {
-    display: flex;
-}
-header nav a {
-    color: var(--text-dim);
-    padding: 6px 8px;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    transition: 0.2s;
-    text-decoration: none;
-    text-align: center;
-}
-header nav a:hover {
-    color: var(--text);
-    background: var(--panel-alt);
-}
-header nav a.active {
-    color: var(--accent);
-    background: var(--accent-soft);
-}
-
-/* Tablet / Desktop header */
 @media (min-width: 768px) {
-    header {
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        padding: 6px 16px;
-        gap: 8px;
-        min-height: var(--header-height-desktop);
-    }
-    .header-top {
-        width: auto;
-        flex: 0 0 auto;
-        min-height: auto;
-        gap: 0;
-    }
-    header h1 {
-        font-size: 1.2rem;
-        flex: 0 0 auto;
-        max-width: none;
-        white-space: nowrap;
-    }
-    .burger-btn {
-        display: none;
-    }
-    .header-actions {
-        width: auto;
-        order: 3;
-        flex: 0 1 auto;
-        justify-content: flex-end;
-        padding: 0;
-        border-top: none;
-        margin-top: 0;
-        gap: 4px;
-    }
-    .header-actions button.small {
-        flex: 0 0 auto;
-        font-size: 0.6rem;
-        padding: 3px 10px;
-        min-width: auto;
-        max-width: none;
-        white-space: nowrap;
-    }
-    header nav {
-        display: flex !important;
-        flex-direction: row;
-        width: auto;
-        order: 2;
-        flex: 1 1 auto;
-        justify-content: center;
-        border-top: none;
-        padding: 0;
-    }
-    header nav a {
-        flex: 0 0 auto;
-        padding: 4px 12px;
-        font-size: 0.75rem;
-    }
+    header { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 6px 16px; gap: 8px; min-height: var(--header-height-desktop); }
+    .header-top { width: auto; flex: 0 0 auto; min-height: auto; gap: 0; }
+    header h1 { font-size: 1.2rem; flex: 0 0 auto; max-width: none; white-space: nowrap; }
+    .burger-btn { display: none; }
+    .header-actions { width: auto; order: 3; flex: 0 1 auto; justify-content: flex-end; padding: 0; border-top: none; margin-top: 0; gap: 4px; }
+    .header-actions button.small { flex: 0 0 auto; font-size: 0.6rem; padding: 3px 10px; min-width: auto; max-width: none; white-space: nowrap; }
+    header nav { display: flex !important; flex-direction: row; width: auto; order: 2; flex: 1 1 auto; justify-content: center; border-top: none; padding: 0; }
+    header nav a { flex: 0 0 auto; padding: 4px 12px; font-size: 0.75rem; }
 }
 
 @media (max-width: 480px) {
-    header {
-        padding: 4px 6px;
-        gap: 2px;
-    }
-    .header-top {
-        min-height: 30px;
-        gap: 4px;
-    }
-    header h1 {
-        font-size: 0.75rem;
-        max-width: 40%;
-    }
-    .burger-btn {
-        font-size: 1rem;
-        min-width: 28px;
-        min-height: 24px;
-        padding: 0 6px;
-    }
-    .header-actions {
-        gap: 2px;
-        padding: 2px 0;
-    }
-    .header-actions button.small {
-        font-size: 0.4rem;
-        padding: 1px 3px;
-        min-width: 24px;
-        max-width: 40px;
-    }
-    header nav a {
-        font-size: 0.6rem;
-        padding: 4px 6px;
-    }
+    header { padding: 4px 6px; gap: 2px; }
+    .header-top { min-height: 30px; gap: 4px; }
+    header h1 { font-size: 0.75rem; max-width: 40%; }
+    .burger-btn { font-size: 1rem; min-width: 28px; min-height: 24px; padding: 0 6px; }
+    .header-actions { gap: 2px; padding: 2px 0; }
+    .header-actions button.small { font-size: 0.4rem; padding: 1px 3px; min-width: 24px; max-width: 40px; }
+    header nav a { font-size: 0.6rem; padding: 4px 6px; }
 }
 
 /* ============================================================
    MAIN LAYOUT
    ============================================================ */
 
-main {
-    padding: 8px 10px;
-    max-width: 1400px;
-    margin: 0 auto;
-    overflow-x: hidden;
-}
-@media (min-width: 768px) {
-    main {
-        padding: 16px 20px;
-    }
-}
+main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden; }
+@media (min-width: 768px) { main { padding: 16px 20px; } }
 
 /* ============================================================
    TABS
    ============================================================ */
 
-.tab-content {
-    display: none;
-}
-.tab-content.active {
-    display: block;
-}
+.tab-content { display: none; }
+.tab-content.active { display: block; }
 
 /* ============================================================
    PAGE HEADER
    ============================================================ */
 
-.page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-.page-header h2 {
-    font-size: 1rem;
-    color: var(--accent);
-}
-@media (min-width: 768px) {
-    .page-header h2 {
-        font-size: 1.3rem;
-    }
-}
-
-.text-dim {
-    color: var(--text-dim);
-}
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 4px; }
+.page-header h2 { font-size: 1rem; color: var(--accent); }
+@media (min-width: 768px) { .page-header h2 { font-size: 1.3rem; } }
+.text-dim { color: var(--text-dim); }
 
 /* ============================================================
    EMPTY STATE
    ============================================================ */
 
-.empty-state {
-    padding: 12px;
-    text-align: center;
-    color: var(--text-dim);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: 0.75rem;
-}
-@media (min-width: 768px) {
-    .empty-state {
-        padding: 20px;
-    }
-}
+.empty-state { padding: 12px; text-align: center; color: var(--text-dim); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.75rem; }
+@media (min-width: 768px) { .empty-state { padding: 20px; } }
 
 /* ============================================================
    FORM PRIMITIVES
    ============================================================ */
 
-.form-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-}
-@media (max-width: 600px) {
-    .form-grid {
-        grid-template-columns: 1fr;
-        gap: 4px;
-    }
-}
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; gap: 4px; } }
 
-.form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.form-group.full-width {
-    grid-column: 1 / -1;
-}
-.form-group label {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    font-weight: 500;
-}
-.form-group input,
-.form-group select,
-.form-group textarea {
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 4px 6px;
-    font-size: 0.7rem;
-    font-family: 'Inter', sans-serif;
-    width: 100%;
-}
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-.form-group textarea {
-    resize: vertical;
-    min-height: 40px;
-}
-.form-group .field-hint {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    margin-top: 2px;
-}
+.form-group { display: flex; flex-direction: column; gap: 2px; }
+.form-group.full-width { grid-column: 1 / -1; }
+.form-group label { font-size: 0.65rem; color: var(--text-dim); font-weight: 500; }
+.form-group input, .form-group select, .form-group textarea { background: var(--panel-alt); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 6px; font-size: 0.7rem; font-family: 'Inter', sans-serif; width: 100%; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--accent); }
+.form-group textarea { resize: vertical; min-height: 40px; }
+.form-group .field-hint { font-size: 0.6rem; color: var(--text-dim); margin-top: 2px; }
 
-.form-actions {
-    display: flex;
-    gap: 4px;
-    margin-top: 8px;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-}
-@media (min-width: 768px) {
-    .form-actions {
-        gap: 8px;
-        margin-top: 12px;
-    }
-}
+.form-actions { display: flex; gap: 4px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; }
+@media (min-width: 768px) { .form-actions { gap: 8px; margin-top: 12px; } }
 
 /* ============================================================
    SECTION HELPERS
    ============================================================ */
 
-.section-divider {
-    border-top: 1px solid var(--border);
-    padding-top: 8px;
-    margin-top: 4px;
-}
-.section-label {
-    font-size: 0.75rem;
-    color: var(--accent);
-    font-weight: 600;
-}
-.warning-label {
-    color: var(--warning) !important;
-}
-.info-label {
-    color: var(--info) !important;
-}
+.section-divider { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+.section-label { font-size: 0.75rem; color: var(--accent); font-weight: 600; }
+.warning-label { color: var(--warning) !important; }
+.info-label { color: var(--info) !important; }
 
 /* ============================================================
    MODAL SHELL
-   ============================================================
-   Owned by shared.css. Previously these rules were injected
-   from js/utils/modal.js; they now live here so a single
-   stylesheet governs modal appearance in every theme.
+   ============================================================ */
 
-   VISIBILITY CONVENTION:
-     - .modal is visible by default (display: flex).
-     - .modal.hidden hides it (display: none !important).
-     - .modal.visible is a redundant explicit form, kept for
-       callers that prefer it.
+.modal { position: fixed; inset: 0; background: var(--overlay-light); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 8px; overflow-y: auto; box-sizing: border-box; animation: modalFadeIn 0.25s ease; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.modal.hidden { display: none !important; }
+.modal.visible { display: flex; }
+.modal-content { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; max-width: 700px; width: 100%; max-height: 95vh; overflow-y: auto; box-shadow: 0 0 50px rgba(0, 0, 0, 0.35); margin: auto; box-sizing: border-box; animation: modalSlideIn 0.25s ease; }
 
-   The JS module (Modal) manages the class toggle; this file
-   only describes what each state looks like.
- */
+[data-theme="light"] .modal-content { box-shadow: 0 0 50px rgba(30, 45, 20, 0.18); }
+[data-theme="vaporwave"] .modal-content { box-shadow: 0 0 50px rgba(255, 79, 216, 0.18), 0 0 90px rgba(53, 231, 255, 0.10); }
+[data-theme="pastel"] .modal-content { box-shadow: 0 4px 24px rgba(153, 86, 119, 0.18), 0 0 40px rgba(237, 114, 170, 0.12); }
+[data-theme="carnival"] .modal-content { box-shadow: 0 0 40px rgba(0, 0, 0, 0.65), 0 0 30px rgba(181, 31, 45, 0.14); }
+[data-theme="maximal"] .modal-content { box-shadow: 6px 6px 0 #ff2ea6, 10px 10px 0 #00e5ff; border: 3px solid #1a0033; }
+[data-theme="gits"] .modal-content { box-shadow: 0 0 30px rgba(0, 240, 255, 0.15), inset 0 0 0 1px #00f0ff; border: 1px solid #00f0ff; border-radius: 0; }
+[data-theme="stained-glass"] .modal-content { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05); border: 3px solid #2c2c2c; }
+[data-theme="stained-glass-dark"] .modal-content { box-shadow: 0 0 40px rgba(94, 232, 255, 0.1), inset 0 0 0 1px #5ee8ff; border: 1px solid #5ee8ff; }
+[data-theme="art-deco"] .modal-content { box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15); border: 2px solid #b8975a; border-radius: 0; }
+[data-theme="discowing"] .modal-content { border-radius: 0; border: 3px solid #000; box-shadow: 6px 6px 0px #000; }
+[data-theme="choc-cake"] .modal-content { border-radius: 0; border: 3px solid var(--border-soft); box-shadow: 4px 4px 0px var(--border-soft); }
+[data-theme="dada"] .modal-content { border-radius: 1px; border: 2px solid var(--border); border-right-width: 4px; border-bottom-width: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,0.15); transform: rotate(-0.5deg); }
+[data-theme="kmt"] .modal-content { border-radius: 0; border: 2px solid var(--border); box-shadow: inset 0 0 0 1px #000, 0 0 0 2px var(--border-soft); }
 
-.modal {
-    position: fixed;
-    inset: 0;
-    background: var(--overlay-light);
-    z-index: 200;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px;
-    overflow-y: auto;
-    box-sizing: border-box;
-    animation: modalFadeIn 0.25s ease;
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-}
+@media (min-width: 768px) { .modal-content { padding: 16px; max-height: 90vh; } }
+.modal-content.small { max-width: 450px; }
+.modal-content.wide { max-width: 900px; }
 
-.modal.hidden {
-    display: none !important;
-}
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; gap: 4px; }
+.modal-header h3 { color: var(--accent); font-size: 0.95rem; }
+@media (min-width: 768px) { .modal-header h3 { font-size: 1.1rem; } }
 
-.modal.visible {
-    display: flex;
-}
+.close-modal { background: none; border: none; color: var(--text-dim); font-size: 1.2rem; cursor: pointer; padding: 0 4px; }
+.close-modal:hover { color: var(--text); }
 
-.modal-content {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px;
-    max-width: 700px;
-    width: 100%;
-    max-height: 95vh;
-    overflow-y: auto;
-    box-shadow: 0 0 50px rgba(0, 0, 0, 0.35);
-    margin: auto;
-    box-sizing: border-box;
-    animation: modalSlideIn 0.25s ease;
-}
+.modal-body .detail-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; gap: 2px; }
+.modal-body .detail-row .label { color: var(--text-dim); }
 
-[data-theme="light"] .modal-content {
-    box-shadow: 0 0 50px rgba(30, 45, 20, 0.18);
-}
+@keyframes modalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalSlideIn { from { transform: translateY(20px) scale(0.95); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
 
-[data-theme="vaporwave"] .modal-content {
-    box-shadow:
-        0 0 50px rgba(255, 79, 216, 0.18),
-        0 0 90px rgba(53, 231, 255, 0.10);
-}
-
-[data-theme="pastel"] .modal-content {
-    box-shadow:
-        0 4px 24px rgba(153, 86, 119, 0.18),
-        0 0 40px rgba(237, 114, 170, 0.12);
-}
-
-[data-theme="carnival"] .modal-content {
-    box-shadow:
-        0 0 40px rgba(0, 0, 0, 0.65),
-        0 0 30px rgba(181, 31, 45, 0.14);
-}
-
-[data-theme="maximal"] .modal-content {
-    box-shadow: 
-        6px 6px 0 #ff2ea6, 
-        10px 10px 0 #00e5ff;
-    border: 3px solid #1a0033;
-}
-
-[data-theme="gits"] .modal-content {
-    box-shadow: 0 0 30px rgba(0, 240, 255, 0.15), inset 0 0 0 1px #00f0ff;
-    border: 1px solid #00f0ff;
-}
-
-[data-theme="stained-glass"] .modal-content {
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 0 20px rgba(0, 102, 204, 0.05);
-    border: 3px solid #2c2c2c;
-}
-
-[data-theme="art-deco"] .modal-content {
-    box-shadow: 0 20px 40px rgba(28, 30, 33, 0.15);
-    border: 2px solid #b8975a;
-    border-radius: 0;
-}
-
-@media (min-width: 768px) {
-    .modal-content {
-        padding: 16px;
-        max-height: 90vh;
-    }
-}
-.modal-content.small {
-    max-width: 450px;
-}
-.modal-content.wide {
-    max-width: 900px;
-}
-
-.modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border-soft);
-    flex-wrap: wrap;
-    gap: 4px;
-}
-.modal-header h3 {
-    color: var(--accent);
-    font-size: 0.95rem;
-}
-@media (min-width: 768px) {
-    .modal-header h3 {
-        font-size: 1.1rem;
-    }
-}
-
-.close-modal {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 1.2rem;
-    cursor: pointer;
-    padding: 0 4px;
-}
-.close-modal:hover {
-    color: var(--text);
-}
-
-.modal-body .detail-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 2px 0;
-    border-bottom: 1px solid var(--border-soft);
-    flex-wrap: wrap;
-    gap: 2px;
-}
-.modal-body .detail-row .label {
-    color: var(--text-dim);
-}
-
-@keyframes modalFadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-@keyframes modalSlideIn {
-    from {
-        transform: translateY(20px) scale(0.95);
-        opacity: 0;
-    }
-    to {
-        transform: translateY(0) scale(1);
-        opacity: 1;
-    }
-}
-
-@media (max-width: 600px) {
-    .modal {
-        padding: 8px;
-    }
-    .modal-content {
-        padding: 10px;
-        max-height: 98vh;
-    }
-}
-
-/* ============================================================
-   RESEARCH MODAL
-   ============================================================
-   Profile-wide text search. Opened from the Research button
-   in the characters tab header. Uses the same .modal shell as
-   every other modal; the rules below only describe the search
-   input row, the results list, and the highlighted match span.
-
-   LAYOUT:
-     A single column. The input row is a flex strip with the
-     text input and a Clear button. The results host sits below
-     it, max-height capped so a long result set scrolls inside
-     the modal rather than pushing the modal off-screen.
-
-   RESULT GROUPING:
-     One .research-result-group per character, each with a
-     header (name + count) and one .research-result-row per
-     matched field. The whole group carries data-character-id;
-     the events layer reads it on click.
-
-   HIGHLIGHT:
-     The matched substring is wrapped in <mark class="research-match">.
-     The browser default yellow is replaced with a themed wash so
-     the highlight reads correctly against every palette.
-
-   Inert in every theme that does not open the modal.
- */
-
-.research-content {
-    max-width: 780px;
-}
-
-.research-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.research-search-row {
-    display: flex;
-    align-items: stretch;
-    gap: 6px;
-}
-
-.research-input {
-    flex: 1;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.85rem;
-    font-family: 'Inter', sans-serif;
-    min-width: 0;
-}
-
-.research-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.research-clear-btn {
-    flex: 0 0 auto;
-}
-
-.research-results {
-    max-height: 60vh;
-    overflow-y: auto;
-    padding-right: 2px;
-}
-
-.research-empty {
-    margin: 0;
-}
-
-.research-summary {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    padding: 2px 0 6px 0;
-    border-bottom: 1px solid var(--border-soft);
-    margin-bottom: 8px;
-}
-
-.research-groups {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.research-result-group {
-    background: var(--panel-alt);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    padding: 6px 8px;
-    cursor: pointer;
-    transition: 0.15s;
-}
-
-.research-result-group:hover {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-}
-
-.research-result-group-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 8px;
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.research-result-name {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--accent);
-}
-
-.research-result-count {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    white-space: nowrap;
-}
-
-.research-result-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 3px 0;
-    font-size: 0.72rem;
-    line-height: 1.35;
-}
-
-.research-result-field {
-    flex: 0 0 110px;
-    color: var(--text-dim);
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.research-result-snippet {
-    flex: 1;
-    color: var(--text);
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.research-match {
-    background: var(--accent-soft);
-    color: inherit;
-    padding: 0 2px;
-    border-radius: 2px;
-    box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-@media (max-width: 600px) {
-    .research-result-field {
-        flex: 0 0 80px;
-        font-size: 0.6rem;
-    }
-    .research-result-row {
-        font-size: 0.68rem;
-    }
-    .research-results {
-        max-height: 55vh;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .research-result-group {
-        transition: none;
-    }
-}
+@media (max-width: 600px) { .modal { padding: 8px; } .modal-content { padding: 10px; max-height: 98vh; } }
 
 /* ============================================================
    NOTIFICATION SYSTEM
-   ============================================================
-   Owned by shared.css. Previously these rules were injected
-   from js/utils/notification.js; they now live here so a
-   single stylesheet governs notification appearance in every
-   theme.
+   ============================================================ */
 
-   LAYOUT:
-     Bottom-right corner, stacked upward. Newest toast sits at
-     the bottom of the stack. The container is click-through so
-     it never blocks UI underneath it; each toast is clickable
-     so it can be dismissed.
-
-   SIZE:
-     Toast width is capped at 260px, text at 0.72rem. This is
-     deliberately small: the toast is an acknowledgement, not a
-     document. Long messages wrap; the box does not grow past
-     the cap.
-
-   STACKING:
-     The container has max-height: 40vh and overflow: hidden.
-     Combined with the notification.js cap of 3 simultaneous
-     toasts, this means the stack can never cover more than
-     about two fifths of the viewport. The rest of the app is
-     always reachable.
-
-   PULSE:
-     When notification.js dedupes a duplicate message it adds
-     a `.pulse` class for 240ms. That animation lives here.
- */
-
-.notification-container {
-    position: fixed;
-    bottom: 16px;
-    right: 16px;
-    top: auto;
-    left: auto;
-    z-index: 10000;
-
-    display: flex;
-    flex-direction: column-reverse; /* newest at bottom, stack upward */
-    align-items: flex-end;
-    gap: 6px;
-
-    max-width: 260px;
-    max-height: 40vh;
-    overflow: hidden;
-
-    pointer-events: none;           /* container is click-through */
-}
-
-.notification-container .notification {
-    pointer-events: auto;           /* toast itself is clickable */
-
-    padding: 6px 10px;
-    border-radius: 5px;
-
-    background: var(--panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
-
-    display: flex;
-    align-items: center;
-    gap: 6px;
-
-    width: 100%;
-    max-width: 260px;
-    min-width: 0;
-
-    font-size: 0.72rem;
-    line-height: 1.3;
-
-    opacity: 0;
-    transform: translateX(16px);
-    transition: opacity 0.25s ease, transform 0.25s ease;
-}
-
-.notification-container .notification.visible {
-    opacity: 1;
-    transform: translateX(0);
-}
-
-.notification-container .notification.hiding {
-    opacity: 0;
-    transform: translateX(16px);
-}
-
-.notification-container .notification .notification-icon {
-    font-size: 0.85rem;
-    line-height: 1;
-    flex-shrink: 0;
-    width: 14px;
-    text-align: center;
-}
-
-.notification-container .notification .notification-content {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.72rem;
-    line-height: 1.3;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.notification-container .notification .notification-close {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 0.85rem;
-    padding: 0 3px;
-    line-height: 1;
-    flex-shrink: 0;
-    opacity: 0.5;
-    transition: opacity 0.2s;
-}
-
-.notification-container .notification .notification-close:hover {
-    opacity: 1;
-    background: none;
-    border-color: transparent;
-}
-
-/* ---- Type accents ---- */
-
-.notification-container .notification-success {
-    border-left: 3px solid var(--accent);
-}
-.notification-container .notification-success .notification-icon {
-    color: var(--accent);
-}
-
-.notification-container .notification-error {
-    border-left: 3px solid var(--danger);
-}
-.notification-container .notification-error .notification-icon {
-    color: var(--danger);
-}
-
-.notification-container .notification-warning {
-    border-left: 3px solid var(--warning);
-}
-.notification-container .notification-warning .notification-icon {
-    color: var(--warning);
-}
-
-.notification-container .notification-info {
-    border-left: 3px solid var(--info);
-}
-.notification-container .notification-info .notification-icon {
-    color: var(--info);
-}
-
-/* ---- Dedup pulse ---- */
-/*
- * Applied by notification.js for 240ms when a duplicate message
- * is coalesced into an existing toast. The pulse is very subtle
- * — a small scale bump — so it reads as "I heard you" rather
- * than as a new event.
- */
-
-.notification-container .notification.pulse {
-    animation: notif-pulse 240ms ease-out;
-}
-
-@keyframes notif-pulse {
-    0%   { transform: scale(1); }
-    45%  { transform: scale(1.025); }
-    100% { transform: scale(1); }
-}
-
-/* ---- Narrow viewports ---- */
-/*
- * On phones the toast anchors to the bottom-left of the
- * viewport instead of the bottom-right, and stretches across
- * the width. The stack height cap stays; the stack simply
- * occupies the full row.
- */
-
-@media (max-width: 480px) {
-    .notification-container {
-        bottom: 10px;
-        left: 10px;
-        right: 10px;
-        max-width: none;
-        width: auto;
-        max-height: 34vh;
-        align-items: stretch;
-    }
-    .notification-container .notification {
-        max-width: none;
-        min-width: 0;
-        width: 100%;
-    }
-}
-
-/* ---- Reduced motion ---- */
-
-@media (prefers-reduced-motion: reduce) {
-    .notification-container .notification {
-        transition: none;
-    }
-    .notification-container .notification.pulse {
-        animation: none;
-    }
-    .modal {
-        animation: none;
-    }
-    .modal-content {
-        animation: none;
-    }
-}
+.notification-container { position: fixed; bottom: 16px; right: 16px; top: auto; left: auto; z-index: 10000; display: flex; flex-direction: column-reverse; align-items: flex-end; gap: 6px; max-width: 260px; max-height: 40vh; overflow: hidden; pointer-events: none; }
+.notification-container .notification { pointer-events: auto; padding: 6px 10px; border-radius: 5px; background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32); display: flex; align-items: center; gap: 6px; width: 100%; max-width: 260px; min-width: 0; font-size: 0.72rem; line-height: 1.3; opacity: 0; transform: translateX(16px); transition: opacity 0.25s ease, transform 0.25s ease; }
+.notification-container .notification.visible { opacity: 1; transform: translateX(0); }
+.notification-container .notification.hiding { opacity: 0; transform: translateX(16px); }
+.notification-container .notification .notification-icon { font-size: 0.85rem; line-height: 1; flex-shrink: 0; width: 14px; text-align: center; }
+.notification-container .notification .notification-content { flex: 1; min-width: 0; font-size: 0.72rem; line-height: 1.3; overflow-wrap: anywhere; word-break: break-word; }
+.notification-container .notification .notification-close { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.85rem; padding: 0 3px; line-height: 1; flex-shrink: 0; opacity: 0.5; transition: opacity 0.2s; }
+.notification-container .notification .notification-close:hover { opacity: 1; background: none; border-color: transparent; }
+.notification-container .notification-success { border-left: 3px solid var(--accent); }
+.notification-container .notification-success .notification-icon { color: var(--accent); }
+.notification-container .notification-error { border-left: 3px solid var(--danger); }
+.notification-container .notification-error .notification-icon { color: var(--danger); }
+.notification-container .notification-warning { border-left: 3px solid var(--warning); }
+.notification-container .notification-warning .notification-icon { color: var(--warning); }
+.notification-container .notification-info { border-left: 3px solid var(--info); }
+.notification-container .notification-info .notification-icon { color: var(--info); }
+.notification-container .notification.pulse { animation: notif-pulse 240ms ease-out; }
+@keyframes notif-pulse { 0% { transform: scale(1); } 45% { transform: scale(1.025); } 100% { transform: scale(1); } }
+@media (max-width: 480px) { .notification-container { bottom: 10px; left: 10px; right: 10px; max-width: none; width: auto; max-height: 34vh; align-items: stretch; } .notification-container .notification { max-width: none; min-width: 0; width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .notification-container .notification { transition: none; } .notification-container .notification.pulse { animation: none; } .modal { animation: none; } .modal-content { animation: none; } }
 
 /* ============================================================
    GENERIC BADGES
    ============================================================ */
 
-.badge {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 0.5rem;
-    font-weight: 600;
-}
-.badge.deceased {
-    color: var(--danger);
-}
-.badge.eliminated {
-    color: var(--danger);
-    background: var(--danger-soft);
-}
-.badge.warning {
-    color: var(--warning);
-    background: var(--warning-soft);
-}
-.badge.info {
-    color: var(--info);
-    background: var(--info-soft);
-}
-.badge.success {
-    color: var(--accent);
-    background: var(--accent-soft);
-}
-.badge.inactive {
-    color: var(--text-dim);
-    background: var(--panel-alt);
-}
+.badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.5rem; font-weight: 600; }
+.badge.deceased { color: var(--danger); }
+.badge.eliminated { color: var(--danger); background: var(--danger-soft); }
+.badge.warning { color: var(--warning); background: var(--warning-soft); }
+.badge.info { color: var(--info); background: var(--info-soft); }
+.badge.success { color: var(--accent); background: var(--accent-soft); }
+.badge.inactive { color: var(--text-dim); background: var(--panel-alt); }
 
-/* Legacy badge aliases - kept for backward compatibility */
-.deceased-badge {
-    color: var(--danger);
-    font-size: 0.5rem;
-    margin-left: 2px;
-    font-weight: 600;
-}
-.eliminated-badge {
-    color: var(--danger);
-    font-size: 0.5rem;
-    font-weight: 600;
-    background: var(--danger-soft);
-    padding: 1px 4px;
-    border-radius: 4px;
-    margin-left: 2px;
-}
-.warning-badge {
-    color: var(--warning);
-    font-size: 0.45rem;
-    font-weight: 600;
-    background: var(--warning-soft);
-    padding: 1px 4px;
-    border-radius: 4px;
-    margin-left: 2px;
-}
+.deceased-badge { color: var(--danger); font-size: 0.5rem; margin-left: 2px; font-weight: 600; }
+.eliminated-badge { color: var(--danger); font-size: 0.5rem; font-weight: 600; background: var(--danger-soft); padding: 1px 4px; border-radius: 4px; margin-left: 2px; }
+.warning-badge { color: var(--warning); font-size: 0.45rem; font-weight: 600; background: var(--warning-soft); padding: 1px 4px; border-radius: 4px; margin-left: 2px; }
 
 /* ============================================================
    MOBILE CONSOLIDATED OVERRIDES
    ============================================================ */
 
 @media (max-width: 480px) {
-    .page-header h2 {
-        font-size: 0.9rem;
-    }
-    .modal-content {
-        padding: 8px;
-        max-height: 98vh;
-    }
-    .modal-header h3 {
-        font-size: 0.8rem;
-    }
-    .form-grid {
-        gap: 4px;
-    }
+    .page-header h2 { font-size: 0.9rem; }
+    .modal-content { padding: 8px; max-height: 98vh; }
+    .modal-header h3 { font-size: 0.8rem; }
+    .form-grid { gap: 4px; }
 }
