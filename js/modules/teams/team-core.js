@@ -7,7 +7,7 @@
  * WHAT THIS OWNS:
  *   - Team CRUD (create, update, delete).
  *   - Member mutations: add interval, end interval, reopen interval,
- *     purge interval, remove member.
+ *     purge interval, replace interval, replace leave, remove member.
  *   - Batch member mutation (batchAddMembers).
  *   - Ranking mutations (add, remove).
  *   - Configuration (characterProvider injection).
@@ -201,12 +201,40 @@
  *   Both bounds are inclusive. Blank means unbounded on that side.
  *   Intervals within one member must not overlap.
  *   joinPeriod is IMMUTABLE once set: to move a stint start, purge
- *   and add a new interval.
+ *   and add a new interval (or call replaceMemberInterval).
  *
  * PERIOD SEMANTICS:
  *   Periods are positive integers. Blank ('', null, undefined) is
  *   the "unbounded" sentinel, distinct from a period. All writes go
  *   through canonicalisePeriod.
+ *
+ * REPLACEMENT PRIMITIVES:
+ *   replaceMemberInterval and replaceMemberLeave are composed
+ *   operations that run entirely inside one MutationPipeline
+ *   transaction. They exist because a purge-then-add or a
+ *   reopen-then-end split across two transactions loses state if
+ *   the second transaction fails. The composed primitives either
+ *   apply both halves or neither.
+ *
+ *   replaceMemberInterval:
+ *     Removes the interval identified by oldJoin and adds the
+ *     interval (newJoin, newLeave) in one transaction. The member
+ *     entry is preserved across the operation even if the purge
+ *     would have removed the last interval; the role is carried
+ *     over (and can be overridden via the optional `role` arg).
+ *     Rejects an overlap with any other interval on the same
+ *     member, or an out-of-bounds new interval.
+ *
+ *   replaceMemberLeave:
+ *     Sets the leave period on the interval identified by
+ *     joinPeriod to newLeave, whether the interval was open
+ *     (leavePeriod '') or closed at some earlier year. This is
+ *     the ONLY correct way to extend an already-closed stint:
+ *     calling endMemberInterval to extend would fail with
+ *     "already closed at or before"; calling reopen then end
+ *     separately would leave the interval open if the second
+ *     transaction failed. replaceMemberLeave reopens internally
+ *     and closes to newLeave, atomically.
  *
  * DEATH / CAREER-TRANSITION CASCADE (endStintsForCharacter):
  *   For every open professional-team stint, set leavePeriod to the
@@ -228,8 +256,9 @@
  *   diagnostic, but does not skip the close.
  *
  * ADD-AFTER-DEATH GUARD:
- *   addMember and batchAddMembers reject assignments whose joinPeriod
- *   is strictly after the character's deathYear.
+ *   addMember, addMemberInterval, batchAddMembers, and
+ *   replaceMemberInterval reject assignments whose joinPeriod is
+ *   strictly after the character's deathYear.
  *
  * TEAM NAMING HOOK:
  *   After any successful member add, this module fires
@@ -757,17 +786,6 @@
         return canonicalisePeriodsArray(periods);
     }
 
-    /**
-     * Canonicalise a single period built from a record's top-level
-     * scalars.
-     *
-     * startPeriod is REQUIRED on create. A missing startPeriod is
-     * a caller error, not a signal to default to the current
-     * calendar year. The previous default masked malformed input;
-     * a team created through the form without a start year would
-     * silently anchor to today's year, which is almost never what
-     * the user meant.
-     */
     function canonicaliseSinglePeriod(fallback) {
         if (!isNonEmptyString(fallback.name)) {
             return {
@@ -912,25 +930,6 @@
     // ============================================================
     // ACADEMY CASCADE HOOK
     // ============================================================
-    //
-    // deleteTeam cleans academy.weeklyTeams[classId][teamId].
-    //
-    // POLICY (defensive):
-    //   AcademyCascade's runStripHelper throws when a required
-    //   module is missing, which would roll back the whole delete.
-    //   That is a bigger failure than a dangling weeklyTeams
-    //   record, which renders as an empty slot rather than a
-    //   broken page. So this hook warns-and-continues, matching
-    //   fireMissionCascade's existing policy in the same mutate.
-    //
-    //   If AcademyCascade is present but its teamDeleted call
-    //   throws (for instance, because AcademyWeeklyTeams is not
-    //   loaded), we warn and continue. The delete still commits.
-    //
-    // Tournaments stay strict: TournamentCore.stripTeamRefs is
-    // mandatory at the call site in deleteTeam, and the caller
-    // refuses the delete when it is missing. See deleteTeam's
-    // preflight.
 
     var _academyCascadeUnavailableWarned = false;
 
@@ -1254,6 +1253,23 @@
         return { valid: true, role: trimmed };
     }
 
+    function resolveRoleFromArg(role) {
+        if (role === undefined || role === null) {
+            return { valid: true, role: null };
+        }
+        if (typeof role !== 'string') {
+            return {
+                valid: false,
+                message: 'Role must be a string.'
+            };
+        }
+        var trimmed = role.trim();
+        if (trimmed === '') {
+            return { valid: true, role: null };
+        }
+        return { valid: true, role: trimmed };
+    }
+
     // ============================================================
     // VALIDATION
     // ============================================================
@@ -1305,13 +1321,6 @@
         return { valid: true };
     }
 
-    /**
-     * Validate a fully-built team record.
-     *
-     * Includes a boolean check for nameIsAuto. A non-boolean value
-     * is a canonicaliser bug, not a caller bug; failing loudly is
-     * the right response.
-     */
     function validateCompleteTeam(team) {
         if (!isObject(team)) {
             return {
@@ -1512,14 +1521,6 @@
         candidate.endPeriod = last.endPeriod;
     }
 
-    /**
-     * Build a new team candidate.
-     *
-     * nameIsAuto defaults to true. A caller that did not pass the
-     * flag gets the default (create-time has no user-typed name
-     * yet). A caller that wants a manual name passes
-     * nameIsAuto: false.
-     */
     function buildNewTeam(teamData) {
         var periodsInput = teamData.periods;
         var fallback = {
@@ -1569,26 +1570,6 @@
         return candidate;
     }
 
-    /**
-     * Build an updated team candidate from an existing record and
-     * a partial `updates` object.
-     *
-     * - Rejects periods + top-level startPeriod/endPeriod when
-     *   both are present. The top-level fields are overwritten by
-     *   projectPeriodScalars() at the end of this function, so a
-     *   caller who passes both would silently see their
-     *   startPeriod/endPeriod discarded. Making that an explicit
-     *   rejection surfaces the conflict instead of masking it.
-     *
-     * - Rejects a non-array `updates.periods` with an explicit
-     *   message. The fallthrough to canonicalisePeriods would
-     *   synthesise a single period from the fallback, which is
-     *   not what a caller who passed a string meant.
-     *
-     * - Accepts `updates.nameIsAuto` as a boolean; a non-boolean
-     *   value is rejected. Absent, the flag is preserved from the
-     *   existing record (the candidate is a deepClone of it).
-     */
     function buildUpdatedTeam(existing, updates) {
         var candidate = deepClone(existing);
 
@@ -2458,12 +2439,6 @@
         });
     }
 
-    /**
-     * batchAddMembers performs the same type-bounds validation
-     * that addMember does (via validateMemberIntervals), and role
-     * overwrites the existing entry's role on the "already exists"
-     * branch, matching addMember.
-     */
     function batchAddMembers(assignments) {
         if (failIfMissing(
             checkMemberDependencies(), 'batchAddMembers'
@@ -2917,8 +2892,8 @@
             updates.intervals !== undefined) {
             return Promise.resolve(failure(
                 'updateMember does not accept interval edits. Use ' +
-                'endMemberInterval, reopenMemberInterval, or ' +
-                'addMemberInterval instead.'
+                'endMemberInterval, reopenMemberInterval, ' +
+                'replaceMemberLeave, or addMemberInterval instead.'
             ));
         }
 
@@ -3102,12 +3077,6 @@
         });
     }
 
-    /**
-     * The internal `leavePeriod` parameter matches the canonical
-     * field name and the module's vocabulary. The public API name
-     * is unchanged; every caller already passes a period, not a
-     * week.
-     */
     function endMemberInterval(
         teamId,
         characterId,
@@ -3191,7 +3160,9 @@
             if (currentLeaveNum <= newLeaveNum) {
                 return Promise.resolve(failure(
                     'Interval is already closed at or before ' +
-                    'period ' + leaveCanon + '.'
+                    'period ' + leaveCanon + '. Use ' +
+                    'replaceMemberLeave to extend an already-closed ' +
+                    'stint.'
                 ));
             }
         }
@@ -3639,6 +3610,587 @@
     }
 
     // ============================================================
+    // REPLACEMENT PRIMITIVES (atomic)
+    // ============================================================
+
+    /**
+     * Replace one interval on a member: purge the interval
+     * identified by `oldJoin`, add `(newJoin, newLeave)`, in ONE
+     * MutationPipeline transaction.
+     *
+     * The member entry is preserved across the operation, even
+     * when the purge would remove the last interval. The existing
+     * role is carried over; if `role` is supplied and non-empty,
+     * it overrides.
+     *
+     * Rejects:
+     *   - missing team or character
+     *   - oldJoin not found
+     *   - newInterval out of bounds for the team type
+     *   - newInterval overlapping any other interval on the same
+     *     member (the interval being replaced is excluded from
+     *     the overlap check, since it is going away)
+     *   - newJoin strictly after the character's death year
+     */
+    function replaceMemberInterval(
+        teamId,
+        characterId,
+        oldJoin,
+        newJoin,
+        newLeave,
+        role
+    ) {
+        if (failIfMissing(
+            checkMemberDependencies(), 'replaceMemberInterval'
+        )) {
+            return Promise.resolve(
+                failure('Dependencies not loaded. Please refresh.')
+            );
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(characterId)) {
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
+        }
+
+        var targetOldJoin = canonicalisePeriod(oldJoin);
+        if (targetOldJoin === null || targetOldJoin === '') {
+            return Promise.resolve(
+                failure('Valid old join period is required.')
+            );
+        }
+
+        var targetNewJoin = canonicalisePeriod(newJoin);
+        if (targetNewJoin === null || targetNewJoin === '') {
+            return Promise.resolve(
+                failure('Valid new join period is required.')
+            );
+        }
+
+        var targetNewLeave = canonicalisePeriod(newLeave);
+        if (targetNewLeave === null) {
+            return Promise.resolve(
+                failure('Invalid new leave period.')
+            );
+        }
+
+        var roleRes = resolveRoleFromArg(role);
+        if (!roleRes.valid) {
+            return Promise.resolve(failure(roleRes.message));
+        }
+        var proposedRole = roleRes.role;
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(characterId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var entry = null;
+        for (var i = 0; i < current.members.length; i++) {
+            if (String(current.members[i].characterId) ===
+                targetChar) {
+                entry = current.members[i];
+                break;
+            }
+        }
+        if (!entry || !Array.isArray(entry.intervals)) {
+            return Promise.resolve(failure(
+                'Character is not a member of this team.'
+            ));
+        }
+
+        var replacedInterval = null;
+        for (var j = 0; j < entry.intervals.length; j++) {
+            var iv = entry.intervals[j];
+            if (!iv) { continue; }
+            var ivJoin = canonicalisePeriod(iv.joinPeriod);
+            if (ivJoin === targetOldJoin) {
+                replacedInterval = iv;
+                break;
+            }
+        }
+        if (!replacedInterval) {
+            return Promise.resolve(failure(
+                'The interval being replaced was not found.'
+            ));
+        }
+
+        var incomingInterval = {
+            joinPeriod: targetNewJoin,
+            leavePeriod: targetNewLeave
+        };
+
+        var shapeCheck = validateIntervalShape(incomingInterval);
+        if (!shapeCheck.valid) {
+            return Promise.resolve(failure(shapeCheck.message));
+        }
+
+        if (!TeamConstants.isValidPeriod(
+            targetNewJoin, current.type
+        )) {
+            return Promise.resolve(failure(
+                'New join period is out of bounds for team type.'
+            ));
+        }
+        if (targetNewLeave !== '' &&
+            !TeamConstants.isValidPeriod(
+                targetNewLeave, current.type
+            )) {
+            return Promise.resolve(failure(
+                'New leave period is out of bounds for team type.'
+            ));
+        }
+
+        for (var k = 0; k < entry.intervals.length; k++) {
+            var other = entry.intervals[k];
+            if (!other || other === replacedInterval) { continue; }
+            if (intervalsOverlap(incomingInterval, other)) {
+                return Promise.resolve(failure(
+                    'The replacement interval would overlap an ' +
+                    'existing interval for this character on this ' +
+                    'team.'
+                ));
+            }
+        }
+
+        var preflightChar = findCharacterInData(
+            getDataStore(), targetChar
+        );
+        if (preflightChar) {
+            var preflightDeath = parseDeathYear(
+                preflightChar.deathYear
+            );
+            if (preflightDeath !== null) {
+                var preflightJoinNum = parsePeriod(targetNewJoin);
+                if (preflightJoinNum !== null &&
+                    preflightJoinNum > preflightDeath) {
+                    return Promise.resolve(failure(
+                        'New join period is after the character\'s ' +
+                        'death year (' + preflightDeath + ').'
+                    ));
+                }
+            }
+        }
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
+                }
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) ===
+                        targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry ||
+                    !Array.isArray(liveEntry.intervals)) {
+                    return {
+                        valid: false,
+                        message: 'Character is no longer a member ' +
+                            'of this team.'
+                    };
+                }
+
+                var liveFound = false;
+                for (var j = 0;
+                     j < liveEntry.intervals.length;
+                     j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) { continue; }
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
+                    if (ivJoin === targetOldJoin) {
+                        liveFound = true;
+                        break;
+                    }
+                }
+                if (!liveFound) {
+                    return {
+                        valid: false,
+                        message: 'The interval being replaced was ' +
+                            'removed by another change.'
+                    };
+                }
+
+                for (var k = 0;
+                     k < liveEntry.intervals.length;
+                     k++) {
+                    var other = liveEntry.intervals[k];
+                    if (!other) { continue; }
+                    var otherJoin = canonicalisePeriod(
+                        other.joinPeriod
+                    );
+                    if (otherJoin === targetOldJoin) { continue; }
+                    if (intervalsOverlap(incomingInterval, other)) {
+                        return {
+                            valid: false,
+                            message: 'The replacement interval ' +
+                                'would overlap an existing interval ' +
+                                'for this character on this team.'
+                        };
+                    }
+                }
+
+                var char = findCharacterInData(
+                    snapshot, targetChar
+                );
+                if (char) {
+                    var death = parseDeathYear(char.deathYear);
+                    if (death !== null) {
+                        var jn = parsePeriod(targetNewJoin);
+                        if (jn !== null && jn > death) {
+                            return {
+                                valid: false,
+                                message: 'New join period is ' +
+                                    'after the character\'s death ' +
+                                    'year (' + death + ').'
+                            };
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
+                }
+
+                var idx = -1;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) ===
+                        targetChar) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Member not found.');
+                }
+
+                var liveEntry = target.members[idx];
+                if (!Array.isArray(liveEntry.intervals)) {
+                    throw new Error(
+                        'Member has no intervals array.'
+                    );
+                }
+
+                var replaced = false;
+                liveEntry.intervals = liveEntry.intervals.filter(
+                    function(iv) {
+                        if (!iv || typeof iv !== 'object') {
+                            return true;
+                        }
+                        var ivJoin = canonicalisePeriod(
+                            iv.joinPeriod
+                        );
+                        if (ivJoin === targetOldJoin) {
+                            replaced = true;
+                            return false;
+                        }
+                        return true;
+                    }
+                );
+
+                if (!replaced) {
+                    throw new Error(
+                        'The interval being replaced was not found.'
+                    );
+                }
+
+                liveEntry.intervals.push({
+                    joinPeriod: targetNewJoin,
+                    leavePeriod: targetNewLeave
+                });
+
+                if (proposedRole !== null) {
+                    liveEntry.role = proposedRole;
+                }
+
+                target.updatedAt = new Date().toISOString();
+
+                var char = findCharacterInData(
+                    snapshot, targetChar
+                );
+                if (char) {
+                    var deathYear = parseDeathYear(
+                        char.deathYear
+                    );
+                    if (deathYear !== null) {
+                        endStintsForCharacter(
+                            snapshot, targetChar, deathYear
+                        );
+                    }
+                }
+
+                return {
+                    teamId: targetId,
+                    characterId: targetChar,
+                    oldJoin: targetOldJoin,
+                    newJoin: targetNewJoin,
+                    newLeave: targetNewLeave
+                };
+            },
+
+            logMessage: 'Replaced member interval on team: ' +
+                (current.name || targetId),
+            successMessage: 'Interval replaced.',
+            failureMessage: 'Failed to replace interval.'
+        });
+    }
+
+    /**
+     * Set the leave period on an interval to `newLeave`, whether
+     * the interval was open (leavePeriod '') or already closed at
+     * some earlier year. Runs entirely inside one transaction.
+     *
+     * This is the ONLY correct way to extend an already-closed
+     * stint. endMemberInterval refuses to extend (its job is to
+     * close an open stint); reopen-then-end split across two
+     * transactions would leave the interval open if the second
+     * transaction failed.
+     *
+     * Passing `newLeave = ''` opens the interval (equivalent to
+     * reopenMemberInterval when the interval was closed).
+     */
+    function replaceMemberLeave(
+        teamId,
+        characterId,
+        joinPeriod,
+        newLeave
+    ) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'replaceMemberLeave'
+        )) {
+            return Promise.resolve(
+                failure('Dependencies not loaded. Please refresh.')
+            );
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        if (!isNonEmptyString(characterId)) {
+            return Promise.resolve(
+                failure('Character ID is required.')
+            );
+        }
+
+        var targetJoin = canonicalisePeriod(joinPeriod);
+        if (targetJoin === null || targetJoin === '') {
+            return Promise.resolve(
+                failure('Valid join period is required.')
+            );
+        }
+
+        var targetLeave = canonicalisePeriod(newLeave);
+        if (targetLeave === null) {
+            return Promise.resolve(
+                failure('Invalid leave period.')
+            );
+        }
+
+        var targetId = String(teamId).trim();
+        var targetChar = String(characterId).trim();
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current || !Array.isArray(current.members)) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var entry = null;
+        for (var i = 0; i < current.members.length; i++) {
+            if (String(current.members[i].characterId) ===
+                targetChar) {
+                entry = current.members[i];
+                break;
+            }
+        }
+        if (!entry || !Array.isArray(entry.intervals)) {
+            return Promise.resolve(failure(
+                'Character is not a member of this team.'
+            ));
+        }
+
+        var found = false;
+        for (var j = 0; j < entry.intervals.length; j++) {
+            var iv = entry.intervals[j];
+            if (!iv) { continue; }
+            var ivJoin = canonicalisePeriod(iv.joinPeriod);
+            if (ivJoin === targetJoin) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return Promise.resolve(failure('Interval not found.'));
+        }
+
+        if (targetLeave !== '' && !TeamConstants.isValidPeriod(
+            targetLeave, current.type
+        )) {
+            return Promise.resolve(failure(
+                'Leave period is out of bounds for team type.'
+            ));
+        }
+
+        if (targetLeave !== '') {
+            var joinNum = parseInt(targetJoin, 10);
+            var leaveNum = parseInt(targetLeave, 10);
+            if (leaveNum < joinNum) {
+                return Promise.resolve(failure(
+                    'Leave cannot be before join.'
+                ));
+            }
+        }
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
+                }
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) ===
+                        targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry ||
+                    !Array.isArray(liveEntry.intervals)) {
+                    return {
+                        valid: false,
+                        message: 'Character is no longer a member ' +
+                            'of this team.'
+                    };
+                }
+
+                var liveFound = false;
+                for (var j = 0;
+                     j < liveEntry.intervals.length;
+                     j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) { continue; }
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
+                    if (ivJoin === targetJoin) {
+                        liveFound = true;
+                        break;
+                    }
+                }
+                if (!liveFound) {
+                    return {
+                        valid: false,
+                        message: 'Interval no longer exists.'
+                    };
+                }
+
+                if (targetLeave !== '') {
+                    var proposed = {
+                        joinPeriod: targetJoin,
+                        leavePeriod: targetLeave
+                    };
+                    for (var k = 0;
+                         k < liveEntry.intervals.length;
+                         k++) {
+                        var other = liveEntry.intervals[k];
+                        if (!other) { continue; }
+                        var otherJoin = canonicalisePeriod(
+                            other.joinPeriod
+                        );
+                        if (otherJoin === targetJoin) { continue; }
+                        if (intervalsOverlap(proposed, other)) {
+                            return {
+                                valid: false,
+                                message: 'The proposed leave ' +
+                                    'period would overlap another ' +
+                                    'interval.'
+                            };
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target || !Array.isArray(target.members)) {
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
+                }
+
+                var liveEntry = null;
+                for (var i = 0; i < target.members.length; i++) {
+                    if (String(target.members[i].characterId) ===
+                        targetChar) {
+                        liveEntry = target.members[i];
+                        break;
+                    }
+                }
+                if (!liveEntry ||
+                    !Array.isArray(liveEntry.intervals)) {
+                    throw new Error('Member not found.');
+                }
+
+                for (var j = 0;
+                     j < liveEntry.intervals.length;
+                     j++) {
+                    var iv = liveEntry.intervals[j];
+                    if (!iv) { continue; }
+                    var ivJoin = canonicalisePeriod(
+                        iv.joinPeriod
+                    );
+                    if (ivJoin === targetJoin) {
+                        iv.leavePeriod = targetLeave;
+                        target.updatedAt =
+                            new Date().toISOString();
+                        return {
+                            teamId: targetId,
+                            characterId: targetChar,
+                            joinPeriod: targetJoin,
+                            leavePeriod: targetLeave
+                        };
+                    }
+                }
+
+                throw new Error('Interval not found.');
+            },
+
+            logMessage: 'Set leave on member interval, team: ' +
+                (current.name || targetId),
+            successMessage: 'Leave updated.',
+            failureMessage: 'Failed to update leave.'
+        });
+    }
+
+    // ============================================================
     // RANKING MUTATIONS
     // ============================================================
 
@@ -3851,24 +4403,6 @@
     // CROSS-DOMAIN CASCADES
     // ============================================================
 
-    /**
-     * Close every open stint on a professional-team character at
-     * the death year, regardless of whether the stint's join year
-     * is before, equal to, or after the death year.
-     *
-     * The join-after-death guard on the write path (addMember,
-     * batchAddMembers) prevents new stints from starting after
-     * death. A legacy record can still reach this cascade with
-     * such a stint, because the guard did not exist when the
-     * record was written. Leaving it open produces a record
-     * where a dead person is on a team, which is worse than an
-     * impossible-range interval.
-     *
-     * The `skippedStartsAfterDeath` counter is retained as a
-     * diagnostic: it counts stints whose join > deathYear. Those
-     * stints are still closed; the counter tells a caller how
-     * many impossible records were repaired.
-     */
     function endStintsForCharacter(appData, charId, deathYear) {
         var result = {
             stintsEnded: 0,
@@ -4002,6 +4536,8 @@
         endMemberInterval: endMemberInterval,
         reopenMemberInterval: reopenMemberInterval,
         purgeMemberInterval: purgeMemberInterval,
+        replaceMemberInterval: replaceMemberInterval,
+        replaceMemberLeave: replaceMemberLeave,
 
         addRanking: addRanking,
         removeRanking: removeRanking,
