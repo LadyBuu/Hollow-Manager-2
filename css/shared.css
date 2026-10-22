@@ -1,14 +1,47 @@
 /**
  * css/shared.css - Hollow Blades Manager Shared Styles
- * ...
- * THEME CYCLE (Alternating Dark/Light):
- *   dark (D), light (L), vaporwave (D), pastel (L), 
- *   carnival (D), maximal (L), gits (D), stained-glass (L), 
- *   art-deco (L), stained-glass-dark (D), nature (L), 
- *   kmt (D), gaslight (D), grotesque (D), illuminated (L), 
- *   discowing (L), choc-cake (D), dada (L), ukiyo-e (L),
- *   nouveau (L)
- * ...
+ *
+ * TOKENS, reset, and cross-module primitives:
+ *   - Custom properties (:root) — dark mode
+ *   - Custom properties ([data-theme="light"]) — soft cream light mode
+ *   - Custom properties ([data-theme="vaporwave"]) — neon pink/cyan on violet night
+ *   - Custom properties ([data-theme="pastel"]) — pastel 80s magical-girl
+ *   - Custom properties ([data-theme="carnival"]) — demented gothic carnival
+ *   - Custom properties ([data-theme="maximal"]) — tacky shocking light
+ *   - Custom properties ([data-theme="gits"]) — cyberpunk abyss
+ *   - Custom properties ([data-theme="stained-glass"]) — luminous fractured light
+ *   - Custom properties ([data-theme="stained-glass-dark"]) — dark leaded glass
+ *   - Custom properties ([data-theme="deco-nouveau"]) — metallic geometry meets organic curves
+ *   - Custom properties ([data-theme="grotesque"]) — dark expressionist distortion
+ *   - Custom properties ([data-theme="illuminated"]) — medieval scripture
+ *   - Custom properties ([data-theme="discowing"]) — 80s comic book
+ *   - Custom properties ([data-theme="choc-cake"]) — 16-bit pixel art
+ *   - Custom properties ([data-theme="dada"]) — cut-and-paste collage
+ *   - Custom properties ([data-theme="ukiyo-e"]) — traditional woodblock print
+ *   - Custom properties ([data-theme="brutalist"]) — confrontational architecture
+ *   - Custom properties ([data-theme="orchestrion"]) — mechanical steampunk
+ *   - Custom properties ([data-theme="rococo"]) — french salon opulence
+ *   - Custom properties ([data-theme="nautical-tile"]) — portuguese azulejo
+ *   - Global reset, scrollbar, focus-visible, reduced motion
+ *   - Theme transition
+ *   - Theme toggle button
+ *   - Buttons (all variants)
+ *   - Header + burger navigation
+ *   - Main layout container
+ *   - Tabs
+ *   - Page header
+ *   - Empty state
+ *   - Form primitives (form-group, form-grid, form-actions)
+ *   - Section helpers (section-divider, section-label)
+ *   - Modal shell
+ *   - Research modal (search + results)
+ *   - Notification system
+ *   - Generic badges + legacy badge aliases
+ *
+ * Every other CSS file (dashboard.css, characters.css, etc.)
+ * depends on this one but not on each other.
+ *
+ * Load order: shared.css MUST load first.
  */
 
 /* ============================================================
@@ -713,51 +746,34 @@
 
 /* ============================================================
    TOKENS — DECO NOUVEAU
-   ============================================================
-   Merged theme: The strict metallic geometry of Art Deco meets
-   the organic, flowing curves of Art Nouveau.
    ============================================================ */
 
 [data-theme="deco-nouveau"] {
-    /* BASE PALETTE */
-    --bg: #f4f0e6;              /* Champagne / warm parchment */
-    --panel: #fcfaf5;           /* Crisp linen */
+    --bg: #f4f0e6;
+    --panel: #fcfaf5;
     --panel-alt: #f0ebd8;
-    
-    --border: #b8975a;          /* Polished brass */
+    --border: #b8975a;
     --border-soft: #d1c2a5;
-    
-    --text: #1c1e21;            /* Onyx / deep ink */
+    --text: #1c1e21;
     --text-dim: #7d7768;
-
-    /* EMERALD GREEN */
     --accent: #0b6c46;
     --accent-soft: rgba(11, 108, 70, 0.10);
     --accent-hover: rgba(11, 108, 70, 0.20);
-
-    /* GOLD / BRASS */
     --info: #b8975a;
     --info-soft: rgba(184, 151, 90, 0.15);
     --info-hover: rgba(184, 151, 90, 0.25);
-
-    /* RUBY RED */
     --danger: #8c1c1c;
     --danger-soft: rgba(140, 28, 28, 0.10);
     --danger-hover: rgba(140, 28, 28, 0.20);
-
-    /* CHAMPAGNE */
     --warning: #a67c00;
     --warning-soft: rgba(166, 124, 0, 0.12);
     --warning-hover: rgba(166, 124, 0, 0.24);
 
-    /* OVERLAY & SHADOWS */
     --overlay: rgba(28, 30, 33, 0.6);
     --overlay-light: rgba(28, 30, 33, 0.4);
-    
-    --radius: 12px;             /* Organic curves */
+    --radius: 12px;
     --shadow: 0 10px 25px rgba(28, 30, 33, 0.08), 0 0 0 2px var(--border);
 
-    /* GRAPH & DOMAIN COLORS */
     --graph-node-accent-fill: #0b6c46;
     --graph-node-accent-stroke: #b8975a;
     --graph-node-info-fill: #b8975a;
@@ -831,7 +847,7 @@
 
     --overlay: rgba(13, 10, 10, 0.90);
     --overlay-light: rgba(13, 10, 10, 0.70);
-    --radius: 40px 10px 40px 10px; /* Organic, distorted shape */
+    --radius: 40px 10px 40px 10px;
     --shadow: 10px 15px 30px rgba(0, 0, 0, 0.8), inset 0 0 0 1px #050303;
 
     --scrollbar-track: var(--bg);
@@ -1279,6 +1295,322 @@
 }
 
 /* ============================================================
+   TOKENS — BRUTALIST (CONFRONTATIONAL ARCHITECTURE)
+   ============================================================ */
+
+[data-theme="brutalist"] {
+    --bg: #E6E6E6;
+    --panel: #FFFFFF;
+    --panel-alt: #D0D0D0;
+    --border: #000000;
+    --border-soft: #000000;
+    --text: #050505;
+    --text-dim: #333333;
+    --accent: #FF3300;
+    --accent-soft: rgba(255, 51, 0, 0.15);
+    --accent-hover: rgba(255, 51, 0, 0.25);
+    --info: #000000;
+    --info-soft: rgba(0, 0, 0, 0.08);
+    --info-hover: rgba(0, 0, 0, 0.15);
+    --danger: #CC0000;
+    --danger-soft: rgba(204, 0, 0, 0.15);
+    --danger-hover: rgba(204, 0, 0, 0.25);
+    --warning: #FF3300;
+    --warning-soft: rgba(255, 51, 0, 0.15);
+    --warning-hover: rgba(255, 51, 0, 0.25);
+
+    --overlay: rgba(0, 0, 0, 0.85);
+    --overlay-light: rgba(0, 0, 0, 0.65);
+    --radius: 0px;
+    --shadow: 8px 8px 0px #000000;
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #FF3300;
+    --graph-node-accent-stroke: #000000;
+    --graph-node-info-fill: #000000;
+    --graph-node-info-stroke: #000000;
+
+    --graph-node-status-deceased:   #666666;
+    --graph-node-status-instructor: #333333;
+    --graph-node-status-senior:     #FF3300;
+    --graph-node-status-junior:     #333333;
+    --graph-node-status-rookie:     #006600;
+    --graph-node-status-student:    #FF3300;
+    --graph-node-status-support:    #CC0000;
+    --graph-node-status-civilian:   #333333;
+    --graph-node-status-other:      #666666;
+
+    --magic-earth: #FF3300;
+    --magic-water: #000000;
+    --magic-fire:  #CC0000;
+    --magic-air:   #FFFFFF;
+    --magic-metal: #000000;
+    --magic-wood:  #006600;
+    --magic-blood:   #CC0000;
+    --magic-bone:    #FFFFFF;
+    --magic-mind:    #333333;
+    --magic-morphic: #006600;
+    --magic-life:    #006600;
+    --magic-death:   #050505;
+    --magic-space:        #000000;
+    --magic-time:         #FF3300;
+    --magic-dimension:    #333333;
+    --magic-void:         #000000;
+    --magic-reality:      #CC0000;
+    --magic-transference: #FF3300;
+
+    --relationship-familial:     #006600;
+    --relationship-professional: #333333;
+    --relationship-romantic:     #CC0000;
+    --relationship-friendship:   #000000;
+    --relationship-mentor:       #333333;
+    --relationship-rivalry:      #FF3300;
+    --relationship-alliance:     #006600;
+    --relationship-other:        #666666;
+
+    --chip-bg-subtle: rgba(0, 0, 0, 0.08);
+}
+
+/* ============================================================
+   TOKENS — ORCHESTRION (MECHANICAL)
+   ============================================================ */
+
+[data-theme="orchestrion"] {
+    --bg: #1F1410;
+    --panel: #2E1F18;
+    --panel-alt: #3D2A20;
+    --border: #C48E3A;
+    --border-soft: #7A5520;
+    --text: #EAD8C0;
+    --text-dim: #BCA283;
+    --accent: #A82C2C;
+    --accent-soft: rgba(168, 44, 44, 0.20);
+    --accent-hover: rgba(168, 44, 44, 0.35);
+    --info: #5B8C8A;
+    --info-soft: rgba(91, 140, 138, 0.20);
+    --info-hover: rgba(91, 140, 138, 0.35);
+    --danger: #D93838;
+    --danger-soft: rgba(217, 56, 56, 0.20);
+    --danger-hover: rgba(217, 56, 56, 0.35);
+    --warning: #D4A35F;
+    --warning-soft: rgba(212, 163, 95, 0.20);
+    --warning-hover: rgba(212, 163, 95, 0.35);
+
+    --overlay: rgba(15, 10, 8, 0.90);
+    --overlay-light: rgba(15, 10, 8, 0.70);
+    --radius: 2px;
+    --shadow: 2px 2px 0px #110A07, inset 0 1px 0px rgba(255,255,255,0.1);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border-soft);
+
+    --graph-node-accent-fill: #A82C2C;
+    --graph-node-accent-stroke: #EAD8C0;
+    --graph-node-info-fill: #5B8C8A;
+    --graph-node-info-stroke: #EAD8C0;
+
+    --graph-node-status-deceased:   #8A7055;
+    --graph-node-status-instructor: #5B8C8A;
+    --graph-node-status-senior:     #D4A35F;
+    --graph-node-status-junior:     #5B8C8A;
+    --graph-node-status-rookie:     #6B8C5A;
+    --graph-node-status-student:    #A82C2C;
+    --graph-node-status-support:    #D93838;
+    --graph-node-status-civilian:   #BCA283;
+    --graph-node-status-other:      #8A7055;
+
+    --magic-earth: #D4A35F;
+    --magic-water: #5B8C8A;
+    --magic-fire:  #D93838;
+    --magic-air:   #EAD8C0;
+    --magic-metal: #C48E3A;
+    --magic-wood:  #6B8C5A;
+    --magic-blood:   #D93838;
+    --magic-bone:    #EAD8C0;
+    --magic-mind:    #5B8C8A;
+    --magic-morphic: #6B8C5A;
+    --magic-life:    #6B8C5A;
+    --magic-death:   #1F1410;
+    --magic-space:        #5B8C8A;
+    --magic-time:         #D4A35F;
+    --magic-dimension:    #BCA283;
+    --magic-void:         #000000;
+    --magic-reality:      #D93838;
+    --magic-transference: #A82C2C;
+
+    --relationship-familial:     #6B8C5A;
+    --relationship-professional: #D4A35F;
+    --relationship-romantic:     #D93838;
+    --relationship-friendship:   #5B8C8A;
+    --relationship-mentor:       #BCA283;
+    --relationship-rivalry:      #A82C2C;
+    --relationship-alliance:     #6B8C5A;
+    --relationship-other:        #8A7055;
+
+    --chip-bg-subtle: rgba(196, 142, 58, 0.1);
+}
+
+/* ============================================================
+   TOKENS — ROCOCO (FRENCH SALON OPULENCE)
+   ============================================================ */
+
+[data-theme="rococo"] {
+    --bg: #E8F0F2;
+    --panel: #FFF9F9;
+    --panel-alt: #F2E8E8;
+    --border: #B89025;
+    --border-soft: #E0D0C0;
+    --text: #3A4245;
+    --text-dim: #6E7A7D;
+    --accent: #527F96;
+    --accent-soft: rgba(82, 127, 150, 0.15);
+    --accent-hover: rgba(82, 127, 150, 0.25);
+    --info: #7CA5B8;
+    --info-soft: rgba(124, 165, 184, 0.20);
+    --info-hover: rgba(124, 165, 184, 0.35);
+    --danger: #C25959;
+    --danger-soft: rgba(194, 89, 89, 0.15);
+    --danger-hover: rgba(194, 89, 89, 0.25);
+    --warning: #C49A45;
+    --warning-soft: rgba(196, 154, 69, 0.15);
+    --warning-hover: rgba(196, 154, 69, 0.25);
+
+    --overlay: rgba(58, 66, 69, 0.75);
+    --overlay-light: rgba(58, 66, 69, 0.55);
+    --radius: 24px;
+    --shadow: 0 10px 25px rgba(184, 144, 37, 0.15), 0 0 0 1px rgba(212, 175, 55, 0.3);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #527F96;
+    --graph-node-accent-stroke: #3A4245;
+    --graph-node-info-fill: #7CA5B8;
+    --graph-node-info-stroke: #3A4245;
+
+    --graph-node-status-deceased:   #8A9A9D;
+    --graph-node-status-instructor: #527F96;
+    --graph-node-status-senior:     #C49A45;
+    --graph-node-status-junior:     #7CA5B8;
+    --graph-node-status-rookie:     #7A9B6E;
+    --graph-node-status-student:    #E5A9B8;
+    --graph-node-status-support:    #C25959;
+    --graph-node-status-civilian:   #6E7A7D;
+    --graph-node-status-other:      #8A9A9D;
+
+    --magic-earth: #C49A45;
+    --magic-water: #527F96;
+    --magic-fire:  #C25959;
+    --magic-air:   #FFF9F9;
+    --magic-metal: #B89025;
+    --magic-wood:  #7A9B6E;
+    --magic-blood:   #C25959;
+    --magic-bone:    #FFF9F9;
+    --magic-mind:    #7CA5B8;
+    --magic-morphic: #7A9B6E;
+    --magic-life:    #7A9B6E;
+    --magic-death:   #3A4245;
+    --magic-space:        #527F96;
+    --magic-time:         #C49A45;
+    --magic-dimension:    #E5A9B8;
+    --magic-void:         #000000;
+    --magic-reality:      #C25959;
+    --magic-transference: #7CA5B8;
+
+    --relationship-familial:     #7A9B6E;
+    --relationship-professional: #C49A45;
+    --relationship-romantic:     #C25959;
+    --relationship-friendship:   #527F96;
+    --relationship-mentor:       #7CA5B8;
+    --relationship-rivalry:      #C25959;
+    --relationship-alliance:     #7A9B6E;
+    --relationship-other:        #6E7A7D;
+
+    --chip-bg-subtle: rgba(212, 175, 55, 0.1);
+}
+
+/* ============================================================
+   TOKENS — NAUTICAL TILE (PORTUGUESE AZULEJO)
+   ============================================================ */
+
+[data-theme="nautical-tile"] {
+    --bg: #E4EAF0;
+    --panel: #FFFFFF;
+    --panel-alt: #F0F4F8;
+    --border: #1A3B6B;
+    --border-soft: #0D2342;
+    --text: #0D2342;
+    --text-dim: #3B5B82;
+    --accent: #1F4A8A;
+    --accent-soft: rgba(31, 74, 138, 0.15);
+    --accent-hover: rgba(31, 74, 138, 0.25);
+    --info: #7AA6D0;
+    --info-soft: rgba(122, 166, 208, 0.20);
+    --info-hover: rgba(122, 166, 208, 0.35);
+    --danger: #A62C2C;
+    --danger-soft: rgba(166, 44, 44, 0.15);
+    --danger-hover: rgba(166, 44, 44, 0.25);
+    --warning: #C49A45;
+    --warning-soft: rgba(196, 154, 69, 0.15);
+    --warning-hover: rgba(196, 154, 69, 0.25);
+
+    --overlay: rgba(13, 35, 66, 0.75);
+    --overlay-light: rgba(13, 35, 66, 0.55);
+    --radius: 2px;
+    --shadow: 2px 2px 0px rgba(13, 35, 66, 0.15);
+
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: var(--border);
+
+    --graph-node-accent-fill: #1F4A8A;
+    --graph-node-accent-stroke: #0D2342;
+    --graph-node-info-fill: #7AA6D0;
+    --graph-node-info-stroke: #0D2342;
+
+    --graph-node-status-deceased:   #5A7A9E;
+    --graph-node-status-instructor: #3B5B82;
+    --graph-node-status-senior:     #C49A45;
+    --graph-node-status-junior:     #7AA6D0;
+    --graph-node-status-rookie:     #2C6B4A;
+    --graph-node-status-student:    #1F4A8A;
+    --graph-node-status-support:    #A62C2C;
+    --graph-node-status-civilian:   #5A7A9E;
+    --graph-node-status-other:      #5A7A9E;
+
+    --magic-earth: #C49A45;
+    --magic-water: #1F4A8A;
+    --magic-fire:  #A62C2C;
+    --magic-air:   #FFFFFF;
+    --magic-metal: #0D2342;
+    --magic-wood:  #2C6B4A;
+    --magic-blood:   #A62C2C;
+    --magic-bone:    #FFFFFF;
+    --magic-mind:    #3B5B82;
+    --magic-morphic: #2C6B4A;
+    --magic-life:    #2C6B4A;
+    --magic-death:   #0D2342;
+    --magic-space:        #1F4A8A;
+    --magic-time:         #C49A45;
+    --magic-dimension:    #7AA6D0;
+    --magic-void:         #000000;
+    --magic-reality:      #A62C2C;
+    --magic-transference: #3B5B82;
+
+    --relationship-familial:     #2C6B4A;
+    --relationship-professional: #C49A45;
+    --relationship-romantic:     #A62C2C;
+    --relationship-friendship:   #1F4A8A;
+    --relationship-mentor:       #3B5B82;
+    --relationship-rivalry:      #A62C2C;
+    --relationship-alliance:     #2C6B4A;
+    --relationship-other:        #5A7A9E;
+
+    --chip-bg-subtle: rgba(31, 74, 138, 0.08);
+}
+
+/* ============================================================
    THEME TRANSITION
    ============================================================ */
 
@@ -1308,6 +1640,10 @@ button, input, select, textarea, a, .panel, .modal, .modal-content, .notificatio
 [data-theme="choc-cake"] body { background: linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), linear-gradient(45deg, rgba(0,0,0,0.15) 25%, transparent 25%, transparent 75%, rgba(0,0,0,0.15) 75%), var(--bg); background-size: 32px 32px; background-position: 0 0, 16px 16px; background-attachment: fixed; }
 [data-theme="dada"] body { background: linear-gradient(to right, var(--info-soft) 0%, var(--info-soft) 20%, transparent 20%), linear-gradient(to left, var(--accent-soft) 0%, var(--accent-soft) 15%, transparent 15%), radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1.5px), var(--bg); background-size: 100% 100%, 100% 100%, 5px 5px, 100% 100%; background-attachment: fixed; }
 [data-theme="ukiyo-e"] body { background: linear-gradient(to bottom, rgba(217,108,92,0.15) 0%, transparent 40%), linear-gradient(to bottom, transparent 70%, rgba(35,79,112,0.1) 100%), var(--bg); background-attachment: fixed; }
+[data-theme="brutalist"] body { background: repeating-linear-gradient(90deg, rgba(0,0,0,0.03) 0, rgba(0,0,0,0.03) 1px, transparent 1px, transparent 4px), repeating-linear-gradient(0deg, rgba(0,0,0,0.03) 0, rgba(0,0,0,0.03) 1px, transparent 1px, transparent 4px), var(--bg); background-attachment: fixed; }
+[data-theme="orchestrion"] body { background: repeating-linear-gradient(90deg, rgba(196,142,58,0.03) 0, rgba(196,142,58,0.03) 1px, transparent 1px, transparent 12px), repeating-linear-gradient(0deg, rgba(0,0,0,0.1) 0, rgba(0,0,0,0.1) 2px, transparent 2px, transparent 8px), var(--bg); background-attachment: fixed; }
+[data-theme="rococo"] body { background: radial-gradient(circle at 10% 10%, var(--info-soft) 0%, transparent 40%), radial-gradient(circle at 90% 90%, var(--accent-soft) 0%, transparent 40%), radial-gradient(circle at 50% 50%, var(--surface) 0%, var(--bg) 100%); background-attachment: fixed; }
+[data-theme="nautical-tile"] body { background: linear-gradient(to right, rgba(13,35,66,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(13,35,66,0.06) 1px, transparent 1px), var(--bg); background-size: 80px 80px; background-attachment: fixed; }
 
 /* ============================================================
    HEADINGS & TYPOGRAPHY
@@ -1329,6 +1665,13 @@ button, input, select, textarea, a, .panel, .modal, .modal-content, .notificatio
 [data-theme="choc-cake"] h1, [data-theme="choc-cake"] h2, [data-theme="choc-cake"] h3, [data-theme="choc-cake"] h4 { font-family: 'VT323', 'Courier New', monospace; color: var(--text); text-transform: uppercase; letter-spacing: 0.1em; text-shadow: 2px 2px 0px var(--border-soft); }
 [data-theme="dada"] h1, [data-theme="dada"] h2, [data-theme="dada"] h3, [data-theme="dada"] h4 { font-family: 'Oswald', 'Impact', 'Arial Black', sans-serif; font-weight: 900; text-transform: uppercase; letter-spacing: -0.02em; text-shadow: 2px 2px 0 var(--accent), -1px -1px 0 var(--info); transform: rotate(-1.5deg) translateX(-4px); display: inline-block; }
 [data-theme="ukiyo-e"] h1, [data-theme="ukiyo-e"] h2, [data-theme="ukiyo-e"] h3, [data-theme="ukiyo-e"] h4 { font-family: 'Newsreader', Georgia, serif; font-weight: 700; letter-spacing: 0.03em; }
+[data-theme="brutalist"] h1, [data-theme="brutalist"] h2 { font-family: 'Arial Black', 'Impact', sans-serif; font-weight: 900; text-transform: uppercase; letter-spacing: -0.04em; line-height: 0.9; font-size: 32px; }
+[data-theme="brutalist"] h3, [data-theme="brutalist"] h4 { font-family: 'Arial Black', 'Impact', sans-serif; font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 4px solid var(--border-strong); padding-bottom: 4px; }
+[data-theme="orchestrion"] h1, [data-theme="orchestrion"] h2 { font-family: 'Oswald', 'Arial Narrow', sans-serif; text-transform: uppercase; letter-spacing: 0.05em; color: var(--border-strong); border-bottom: 2px solid var(--accent); padding-bottom: 4px; }
+[data-theme="orchestrion"] h3, [data-theme="orchestrion"] h4 { font-family: 'Courier New', Courier, monospace; font-weight: 700; text-transform: uppercase; font-size: 11px; color: var(--info); }
+[data-theme="rococo"] h1, [data-theme="rococo"] h2, [data-theme="rococo"] h3, [data-theme="rococo"] h4 { font-family: 'Playfair Display', 'Newsreader', Georgia, serif; font-weight: 400; color: var(--text); letter-spacing: 0.02em; text-shadow: 1px 1px 0px var(--border); }
+[data-theme="rococo"] h1 { font-style: italic; font-size: 28px; }
+[data-theme="nautical-tile"] h1, [data-theme="nautical-tile"] h2, [data-theme="nautical-tile"] h3, [data-theme="nautical-tile"] h4 { font-family: 'Playfair Display', 'Newsreader', Georgia, serif; color: var(--border); font-weight: 700; letter-spacing: 0.02em; }
 
 /* ============================================================
    RESET + GLOBAL
@@ -1388,34 +1731,20 @@ button.small { padding: 4px 10px; font-size: 0.72rem; }
 [data-theme="kmt"] button { border-radius: 0; text-transform: uppercase; font-family: monospace; font-weight: 700; border: 2px solid var(--border); }
 [data-theme="dada"] button { border-radius: 0; border: 2px solid var(--border); box-shadow: 2px 2px 0 var(--border); font-family: 'Courier New', monospace; font-weight: bold; text-transform: uppercase; }
 [data-theme="dada"] button:hover { transform: translate(-1px, -1px) rotate(-1deg); box-shadow: 3px 3px 0 var(--border); }
+[data-theme="brutalist"] button { border-radius: 0; border: 3px solid var(--border); box-shadow: 4px 4px 0 var(--border); font-family: 'Arial Black', 'Impact', sans-serif; text-transform: uppercase; }
+[data-theme="brutalist"] button:active { transform: translate(4px, 4px); box-shadow: none; }
+[data-theme="orchestrion"] button { border-radius: 2px; border: 2px solid var(--border); box-shadow: 2px 2px 0px #110A07, inset 0 1px 0px rgba(255,255,255,0.1); font-family: 'Oswald', sans-serif; text-transform: uppercase; }
+[data-theme="orchestrion"] button:active { transform: translateY(2px); box-shadow: none; background: var(--bg); }
+[data-theme="rococo"] button { border-radius: 999px; border: 1px solid var(--border); box-shadow: 0 2px 5px rgba(184,144,37,0.2); font-family: 'Playfair Display', serif; }
+[data-theme="nautical-tile"] button { border-radius: 0; border: 2px solid var(--border); box-shadow: 2px 2px 0px rgba(13,35,66,0.15); font-family: 'Playfair Display', serif; }
 
 /* ============================================================
    THEME TOGGLE & INDICATOR
    ============================================================ */
 
-.theme-controls {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-#theme-label {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-dim);
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-#theme-toggle-btn { 
-    font-size: 0.7rem; 
-    padding: 3px 8px; 
-    min-width: 28px; 
-    text-align: center; 
-    line-height: 1; 
-    font-family: 'Inter', sans-serif; 
-}
+.theme-controls { display: flex; align-items: center; gap: 6px; }
+#theme-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 600; white-space: nowrap; }
+#theme-toggle-btn { font-size: 0.7rem; padding: 3px 8px; min-width: 28px; text-align: center; line-height: 1; font-family: 'Inter', sans-serif; }
 
 [data-theme="maximal"] #theme-toggle-btn { color: #fff; border-color: var(--text); background: var(--accent); box-shadow: 2px 2px 0 var(--text); }
 [data-theme="gits"] #theme-toggle-btn { color: var(--info); border-color: var(--info); background: transparent; box-shadow: 0 0 10px rgba(255, 0, 168, 0.2); border-radius: 0; }
@@ -1459,6 +1788,15 @@ header nav a.active { color: var(--accent); background: var(--accent-soft); }
 [data-theme="discowing"] header nav a.active { background: var(--accent); color: #fff; border: 2px solid #000; box-shadow: 2px 2px 0 #000; }
 [data-theme="dada"] header nav a { font-family: 'Courier New', monospace; text-transform: uppercase; }
 [data-theme="dada"] header nav a.active { background: var(--accent); color: var(--text); transform: skewX(-5deg); }
+[data-theme="brutalist"] header nav { border-top: 2px solid var(--border); }
+[data-theme="brutalist"] header nav a { border-radius: 0; border-bottom: 2px solid transparent; font-family: 'Arial Black', sans-serif; text-transform: uppercase; font-size: 14px; }
+[data-theme="brutalist"] header nav a.active { background: var(--accent); color: var(--bg); border-left: 8px solid var(--border); }
+[data-theme="orchestrion"] header { background: var(--panel-alt); border-bottom: 2px solid var(--border); }
+[data-theme="orchestrion"] header nav a.active { background: var(--accent); color: var(--bg); border: 2px solid var(--border); box-shadow: inset 0 0 0 2px var(--bg); }
+[data-theme="rococo"] header { background: var(--panel); border-bottom: 2px solid var(--border); }
+[data-theme="rococo"] header nav a.active { background: var(--accent); color: var(--bg); border-radius: 20px; border: 1px solid var(--border); }
+[data-theme="nautical-tile"] header { background: var(--panel); border-bottom: 3px solid var(--border); }
+[data-theme="nautical-tile"] header nav a.active { background: var(--border); color: var(--panel); border: 2px solid var(--border-soft); border-radius: 0; }
 
 @media (min-width: 768px) {
     header { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 6px 16px; gap: 8px; min-height: var(--header-height-desktop); }
@@ -1561,6 +1899,10 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 [data-theme="choc-cake"] .modal-content { border-radius: 0; border: 3px solid var(--border-soft); box-shadow: 4px 4px 0px var(--border-soft); }
 [data-theme="dada"] .modal-content { border-radius: 1px; border: 2px solid var(--border); border-right-width: 4px; border-bottom-width: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,0.15); transform: rotate(-0.5deg); }
 [data-theme="kmt"] .modal-content { border-radius: 0; border: 2px solid var(--border); box-shadow: inset 0 0 0 1px #000, 0 0 0 2px var(--border-soft); }
+[data-theme="brutalist"] .modal-content { border: 4px solid var(--border); box-shadow: 8px 8px 0 var(--border); border-radius: 0; }
+[data-theme="orchestrion"] .modal-content { border: 2px solid var(--border); box-shadow: 2px 2px 0px #110A07, inset 0 0 0 1px var(--border-soft); border-radius: 2px; }
+[data-theme="rococo"] .modal-content { border: 1px solid var(--border); box-shadow: 0 10px 25px rgba(184,144,37,0.15); border-radius: 24px; }
+[data-theme="nautical-tile"] .modal-content { border: 4px solid var(--border); box-shadow: 2px 2px 0px rgba(13,35,66,0.15), inset 0 0 0 2px var(--panel), inset 0 0 0 4px var(--info); border-radius: 0; }
 
 @media (min-width: 768px) { .modal-content { padding: 16px; max-height: 90vh; } }
 .modal-content.small { max-width: 450px; }
