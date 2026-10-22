@@ -27,44 +27,63 @@
  *   rejected.
  *
  * JOIN IS IMMUTABLE:
- *   Changing a join is a purge-and-add, which is a destructive
- *   sequence. The adapter requires the replacement's leave period
- *   up front, and stops on purge failure rather than attempting
- *   the add on top of a failed purge.
+ *   Changing a join is a replace (purge-and-add) operation. It
+ *   runs inside ONE transaction via TeamCore.replaceMemberInterval,
+ *   so a failure at any point leaves the original stint in place.
+ *   The replacement requires its leave period up front; replacing
+ *   the start without knowing the end would silently discard the
+ *   existing leave period.
  *
  * ROLE IS PER-MEMBER:
  *   TeamCore stores role on the member entry. A role change routes
  *   to TeamCore.updateMember regardless of which row it came from.
  *
  * DISPATCH ORDER (updateMembers):
- *   1. Role updates (deduplicated by characterId).
- *   2. Join replacements (purge + add).
- *   3. Leave-only edits.
+ *   1. Role updates (deduplicated by characterId) — only for
+ *      changes that do NOT also touch the join. A change that
+ *      touches the join routes the role through
+ *      replaceMemberInterval, so the role survives the purge.
+ *   2. Join replacements (atomic via replaceMemberInterval).
+ *   3. Leave-only edits (atomic via replaceMemberLeave; handles
+ *      both shorten AND extend of an already-closed stint).
  *
- * TWO-TRANSACTION LIMITATION:
- *   This adapter composes multiple TeamCore mutation calls per
- *   user action. Each TeamCore call is its own MutationPipeline
- *   transaction; the adapter cannot make them atomic.
+ * ATOMICITY:
+ *   Every stage is now a single TeamCore transaction:
+ *   - role only     → updateMember (one transaction)
+ *   - join replace  → replaceMemberInterval (one transaction)
+ *   - leave edit    → replaceMemberLeave (one transaction)
  *
- *   Two paths are affected:
+ *   addMember remains a two-transaction compose (addMemberInterval
+ *   then updateMember for the role), because TeamCore does not
+ *   expose a combined create-with-role primitive and the two
+ *   transactions are independent enough that the current
+ *   reporting is honest (addMessage says "Member was added, but
+ *   the requested role could not be assigned" when the role half
+ *   fails, and the user sees the actual state).
  *
- *     addMember          addMemberInterval then updateMember
- *     updateMembers      purgeMemberInterval then addMemberInterval
- *                        (for join replacement)
+ * ACTIVE VS FORMER PARTITION:
+ *   buildVM partitions the adapter's active / former lists by
+ *   interval bounds, not by TeamQueries.isMemberActive /
+ *   isMemberFormer. Those predicates are year-scoped and answer
+ *   "is this member active/former at periodNum". The manager
+ *   needs "does this member have any stint the user should see
+ *   in the active list", which is:
  *
- *   If the SECOND call fails after the first succeeds, the first
- *   call's mutation is committed. The adapter reports this
- *   honestly: the response is { success: false } with a message
- *   that names both halves ("Member was added, but the requested
- *   role could not be assigned."). The caller's UI (the manager)
- *   surfaces the message and re-renders, so the user sees the
- *   actual state.
+ *     ACTIVE list:  member has at least one interval that is
+ *                   open (leavePeriod ''), or whose leavePeriod
+ *                   is >= periodNum, or whose joinPeriod is
+ *                   > periodNum (a future stint).
  *
- *   A truly atomic version of either path would need a combined
- *   TeamCore mutation (addMemberWithRole, replaceMemberInterval)
- *   that runs inside one transaction. That is not this adapter's
- *   job to invent; the current behaviour is documented and the
- *   failure mode is honest.
+ *     FORMER list:  member has intervals but none of them match
+ *                   the active condition — i.e. every stint is
+ *                   closed at a period < periodNum and none are
+ *                   open or future.
+ *
+ *   The old predicate-based partition dropped members with a
+ *   single future stint entirely (neither "active now" nor
+ *   "former before now"), so the user could not see or edit
+ *   them. The interval-bounds partition includes them in the
+ *   active list where they belong.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamAggregator
@@ -114,6 +133,14 @@
         typeof TeamCore.purgeMemberInterval !== 'function') {
         _missing.push('TeamCore.purgeMemberInterval');
     }
+    if (!TeamCore ||
+        typeof TeamCore.replaceMemberInterval !== 'function') {
+        _missing.push('TeamCore.replaceMemberInterval');
+    }
+    if (!TeamCore ||
+        typeof TeamCore.replaceMemberLeave !== 'function') {
+        _missing.push('TeamCore.replaceMemberLeave');
+    }
     if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
         _missing.push('TeamCore.removeMember');
     }
@@ -151,10 +178,6 @@
         return Promise.resolve({ success: false, message: message });
     }
 
-    /**
-     * Normalise an identifier to an object with three fields.
-     * Missing fields are ''. Callers check the fields they need.
-     */
     function extractIdentifier(identifier) {
         if (identifier === null || identifier === undefined) {
             return { characterId: '', joinPeriod: '', memberId: '' };
@@ -183,14 +206,61 @@
         return { characterId: '', joinPeriod: '', memberId: '' };
     }
 
+    /**
+     * Does this interval belong in the ACTIVE partition?
+     *
+     * True when the stint is:
+     *   - open (leavePeriod ''), OR
+     *   - still running at periodNum (leavePeriod >= periodNum), OR
+     *   - starts after periodNum (joinPeriod > periodNum).
+     *
+     * The third case is what includes a purely-future stint so the
+     * user can see and edit it in the manager. Before this
+     * classification, a member with one old closed stint and one
+     * future stint was classified as "former" by the year-scoped
+     * predicates and the future stint was filtered out of both
+     * partitions.
+     */
+    function isIntervalVisibleAt(interval, periodNum) {
+        if (!interval || typeof interval !== 'object') {
+            return false;
+        }
+
+        var leaveStr = (interval.leavePeriod === undefined ||
+                        interval.leavePeriod === null)
+            ? ''
+            : String(interval.leavePeriod).trim();
+        var joinStr = (interval.joinPeriod === undefined ||
+                       interval.joinPeriod === null)
+            ? ''
+            : String(interval.joinPeriod).trim();
+
+        if (leaveStr === '') { return true; }
+
+        var leaveNum = parseInt(leaveStr, 10);
+        if (!isNaN(leaveNum) && leaveNum >= periodNum) { return true; }
+
+        var joinNum = parseInt(joinStr, 10);
+        if (!isNaN(joinNum) && joinNum > periodNum) { return true; }
+
+        return false;
+    }
+
+    function hasVisibleInterval(member, periodNum) {
+        if (!member || !Array.isArray(member.intervals)) {
+            return false;
+        }
+        for (var i = 0; i < member.intervals.length; i++) {
+            if (isIntervalVisibleAt(member.intervals[i], periodNum)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ============================================================
     // VM TRANSLATION
     // ============================================================
-    //
-    // TeamAggregator.getMemberModalViewModel returns member VMs with
-    // per-interval activeAtPeriod flags. This adapter partitions
-    // them into active/former using the TeamQueries predicates,
-    // which are the canonical owner of those definitions.
 
     function buildVM(teamId, period) {
         var raw = TeamAggregator.getMemberModalViewModel(
@@ -228,14 +298,11 @@
             var m = membersRaw[i];
             if (!m || !m.characterId) { continue; }
 
-            if (TeamQueries.isMemberActive(m, periodNum)) {
+            if (hasVisibleInterval(m, periodNum)) {
                 active.push(buildMemberVM(m, periodNum, false));
                 continue;
             }
-            if (TeamQueries.isMemberFormer(m, periodNum)) {
-                former.push(buildMemberVM(m, periodNum, true));
-            }
-            // Neither: only-future stints. Not shown.
+            former.push(buildMemberVM(m, periodNum, true));
         }
 
         return {
@@ -307,15 +374,6 @@
         return buildVM(teamId, period);
     }
 
-    /**
-     * Add a member.
-     *
-     * Role failure surfaces as a failure of the whole operation.
-     * TeamCore.addMemberInterval and TeamCore.updateMember are two
-     * separate pipeline transactions; the adapter cannot roll back
-     * the interval after a role failure. It reports the failure
-     * honestly so the caller knows the resulting state.
-     */
     function addMember(teamId, period, opts) {
         if (!isNonEmptyString(teamId)) {
             return failure('Team ID is required.');
@@ -373,11 +431,14 @@
      *   { characterId, joinPeriod, join, leave }
      *   { characterId, joinPeriod, join, leave, role }
      *
-     * Join replacement requires both `join` and `leave`: replacing
-     * the start without knowing the end would silently discard the
-     * existing leave period. The adapter enforces this.
+     * A join change requires both `join` and `leave`: replacing
+     * the start without knowing the end would silently discard
+     * the existing leave period.
      *
-     * Stages run in order. The chain stops on the first failure.
+     * Every stage is now a single TeamCore transaction (see the
+     * file header's ATOMICITY note). The chain stops on the
+     * first failure and returns its message; since each stage is
+     * atomic, the message describes the actual state.
      */
     function updateMembers(teamId, period, changes) {
         if (!isNonEmptyString(teamId)) {
@@ -387,7 +448,7 @@
             return Promise.resolve({ success: true });
         }
 
-        var roleByChar = Object.create(null);
+        var roleOnlyByChar = Object.create(null);
         var joinReplacements = [];
         var leaveEdits = [];
 
@@ -410,10 +471,6 @@
             var hasLeave = c.leave !== undefined &&
                            c.leave !== null;
 
-            if (hasRole) {
-                roleByChar[charId] = String(c.role);
-            }
-
             if (hasJoin) {
                 if (!hasLeave) {
                     return failure(
@@ -425,9 +482,14 @@
                     characterId: charId,
                     oldJoin: originalJoin,
                     newJoin: String(c.join),
-                    newLeave: String(c.leave)
+                    newLeave: String(c.leave),
+                    role: hasRole ? String(c.role) : null
                 });
                 continue;
+            }
+
+            if (hasRole) {
+                roleOnlyByChar[charId] = String(c.role);
             }
 
             if (hasLeave) {
@@ -442,15 +504,22 @@
         var chain = Promise.resolve();
         var failureResult = null;
 
-        // ---- Stage 1: roles ----
-        var roleCharIds = Object.keys(roleByChar);
+        // ---- Stage 1: role-only updates ----
+        //
+        // Role updates for changes that did NOT touch the join.
+        // A join change routes its role through
+        // replaceMemberInterval in stage 2 instead, so the role
+        // survives the purge; a separate role update for the same
+        // change would be redundant and could conflict with the
+        // purge's member-entry churn.
+        var roleCharIds = Object.keys(roleOnlyByChar);
         roleCharIds.forEach(function(charId) {
             chain = chain.then(function() {
                 if (failureResult) { return; }
                 return TeamCore.updateMember(
                     teamId,
                     charId,
-                    { role: roleByChar[charId] }
+                    { role: roleOnlyByChar[charId] }
                 ).then(function(result) {
                     if (!result || !result.success) {
                         failureResult = result || {
@@ -462,65 +531,45 @@
             });
         });
 
-        // ---- Stage 2: join replacements ----
+        // ---- Stage 2: join replacements (atomic) ----
         //
-        // Purge failure stops the replacement. Attempting the add
-        // on top of a failed purge would produce two intervals.
+        // One transaction per replacement. If the new interval
+        // would overlap another stint, or start after the
+        // character's death year, replaceMemberInterval rejects
+        // it and the original stint is preserved.
         joinReplacements.forEach(function(jr) {
             chain = chain.then(function() {
                 if (failureResult) { return; }
-                return TeamCore.purgeMemberInterval(
+                return TeamCore.replaceMemberInterval(
                     teamId,
                     jr.characterId,
-                    jr.oldJoin
-                ).then(function(purgeResult) {
-                    if (!purgeResult || !purgeResult.success) {
-                        failureResult = purgeResult || {
+                    jr.oldJoin,
+                    jr.newJoin,
+                    jr.newLeave,
+                    jr.role
+                ).then(function(result) {
+                    if (!result || !result.success) {
+                        failureResult = result || {
                             success: false,
-                            message: 'Failed to remove the old ' +
-                                'interval before replacement.'
+                            message: 'Failed to replace the interval.'
                         };
-                        return;
                     }
-                    return TeamCore.addMemberInterval(
-                        teamId,
-                        jr.characterId,
-                        jr.newJoin,
-                        jr.newLeave
-                    ).then(function(addResult) {
-                        if (!addResult || !addResult.success) {
-                            failureResult = addResult || {
-                                success: false,
-                                message: 'Failed to add the ' +
-                                    'replacement interval.'
-                            };
-                        }
-                    });
                 });
             });
         });
 
-        // ---- Stage 3: leave-only edits ----
+        // ---- Stage 3: leave-only edits (atomic) ----
+        //
+        // One transaction per edit. replaceMemberLeave handles
+        // both shortening an open stint and extending an already-
+        // closed one (the latter is what endMemberInterval would
+        // refuse with "already closed at or before"). A blank
+        // leave reopens the stint, which is what the manager
+        // means when the user clears the leave field.
         leaveEdits.forEach(function(le) {
             chain = chain.then(function() {
                 if (failureResult) { return; }
-
-                if (le.leave === '') {
-                    return TeamCore.reopenMemberInterval(
-                        teamId,
-                        le.characterId,
-                        le.joinPeriod
-                    ).then(function(result) {
-                        if (!result || !result.success) {
-                            failureResult = result || {
-                                success: false,
-                                message: 'Failed to clear leave.'
-                            };
-                        }
-                    });
-                }
-
-                return TeamCore.endMemberInterval(
+                return TeamCore.replaceMemberLeave(
                     teamId,
                     le.characterId,
                     le.joinPeriod,
@@ -542,14 +591,6 @@
         });
     }
 
-    /**
-     * Remove one stint.
-     *
-     * Stint identity is (characterId, joinPeriod). A bare memberId
-     * is not sufficient: a member entry can carry multiple stints,
-     * and picking one arbitrarily is not a substitute for naming
-     * the one the user asked for.
-     */
     function removeStint(teamId, period, identifier) {
         var id = extractIdentifier(identifier);
 
@@ -567,9 +608,6 @@
         );
     }
 
-    /**
-     * Rejoin: clear the leave on the identified stint.
-     */
     function rejoinStint(teamId, period, identifier) {
         var id = extractIdentifier(identifier);
 
@@ -587,9 +625,6 @@
         );
     }
 
-    /**
-     * Remove the whole member entry (all stints).
-     */
     function removeMember(teamId, period, charId) {
         if (!isNonEmptyString(charId)) {
             return failure('Character ID is required.');
