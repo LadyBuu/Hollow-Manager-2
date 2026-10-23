@@ -24,6 +24,7 @@
     <link rel="stylesheet" href="css/academy/weekly-teams.css" />
     <link rel="stylesheet" href="css/academy/character-detail.css" />
     <link rel="stylesheet" href="css/academy/class-detail.css" />
+    <link rel="stylesheet" href="css/academy/shared-groups.css" />
 
     <link rel="stylesheet" href="css/calendar.css" />
 
@@ -148,13 +149,6 @@
 
     <!-- ============================================================
          IMPORT / EXPORT (FOUNDATION)
-         ============================================================
-         Only modules that depend exclusively on the utilities
-         and shared queries above. Domain-dependent import/export
-         modules (team-export, team-export-picker,
-         schedule-export, class-roster-export,
-         graduates-export-picker) are loaded much later, after
-         the domain blocks they read from.
          ============================================================ -->
 
     <!-- Core -->
@@ -168,16 +162,13 @@
     <script src="js/import-export/import-pipeline.js"></script>
     <script src="js/import-export/json-io.js"></script>
 
-    <!-- Consolidated character export bundle.
-         Installs: CharacterCSV, CharacterRosterExport, CharacterExport,
-                   and the four legacy template aliases. -->
+    <!-- Consolidated character export bundle. -->
     <script src="js/import-export/character-export.js"></script>
 
     <!-- Mission CSV (schema, export, import, template). -->
     <script src="js/modules/missions/mission-csv.js"></script>
 
-    <!-- Character export picker. Reads only the character CSV /
-         roster / report globals, all installed above. -->
+    <!-- Character export picker. -->
     <script src="js/import-export/character-export-picker.js"></script>
 
     <!-- ============================================================
@@ -262,22 +253,10 @@
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-views.js"></script>
 
-    <!-- Bulk create modal. Reads CharacterCRUD.save, uses Modal,
-         DomUtils, NotificationSystem. Refreshes CharacterList on
-         completion via a lazy lookup. -->
     <script src="js/modules/characters/character-bulk-create.js"></script>
 
-    <!-- JSON import/export for a single character's full profile.
-         Loads after CharacterCRUD (uses normaliseCharacterData) and
-         before character-events.js (which binds the import/export
-         button click handlers). -->
     <script src="js/import-export/character-json-io.js"></script>
 
-    <!-- Career wizard: absorbs no state of its own beyond the
-         modal. Reads CharacterQueries and CharacterCRUD lazily.
-         Must load after character-crud.js (for
-         applyCareerStatusTimeline) and before character-events.js
-         (which binds the #career-wizard-btn click handler). -->
     <script src="js/modules/characters/career-status-wizard.js"></script>
 
     <script src="js/modules/characters/character-events.js"></script>
@@ -285,20 +264,6 @@
 
     <!-- ============================================================
          Research domain
-         ============================================================
-         Modal-based profile search. Opened from the Research
-         button in the characters tab header. Loads after the
-         character domain (uses CharacterQueries, and calls
-         CharacterDetail.open on result click). No TabManager
-         registration; the module is a modal, not a tab.
-
-         Ordering within this block:
-           1. research-queries.js   needs CharacterQueries
-           2. research-view.js      needs DomUtils
-           3. research-events.js    needs Modal, ResearchQueries,
-                                    ResearchView; reads
-                                    CharacterDetail lazily
-           4. index.js              asserts the above three
          ============================================================ -->
     <script src="js/modules/research/research-queries.js"></script>
     <script src="js/modules/research/research-view.js"></script>
@@ -327,6 +292,11 @@
 
     <script src="js/modules/academy/academy-weekly-teams-view.js"></script>
 
+    <!-- v34 — Shared Groups view (renderer). Loads with the rest
+         of the Academy view shell, after AcademyAggregator, before
+         the controllers block that resolves it. -->
+    <script src="js/modules/academy/academy-shared-groups-view.js"></script>
+
     <script src="js/modules/academy/academy-tournament-view.js"></script>
     <script src="js/modules/academy/academy-tournament-events.js"></script>
     <script src="js/modules/academy/academy-tournament-aggregator.js"></script>
@@ -345,42 +315,14 @@
 
     <!-- ============================================================
          Team domain
-         ============================================================
-         Full module stack. Load order within this block:
-
-           queries     -> aggregator
-           aggregator  -> render, events
-           core        -> events
-           naming      -> core (post-commit hook)
-           kill-modal  -> events (opened from .kill-team)
-           matchmaking -> view
-           timeline    -> aggregator
-           rankings    -> aggregator
-           rankings-view -> render (renderContainer delegates)
-           member-adapter-teams -> events (passed to MemberManager)
-           verifier    -> verifier-view -> events
-           export      -> export-picker -> events
-           render + events -> index
-
-         team-export.js and team-export-picker.js are members of
-         the team domain: they read TeamQueries, TeamConstants,
-         and CharacterQueries, all loaded earlier. They sit here
-         rather than in the generic import/export block so the
-         whole team surface loads as one unit.
          ============================================================ -->
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
 
-    <!-- Naming: fires on member add via TeamCore's post-commit
-         hook. Needs TeamCore.updateTeam and TeamQueries; both are
-         loaded above. -->
     <script src="js/modules/teams/team-naming.js"></script>
 
-    <!-- Kill modal: opened from the .kill-team button in
-         team-render. Needs CharacterCRUD.save, loaded in the
-         character domain block above. -->
     <script src="js/modules/teams/team-kill-modal.js"></script>
 
     <script src="js/modules/teams/team-matchmaking.js"></script>
@@ -389,38 +331,15 @@
     <script src="js/modules/teams/timeline-queries.js"></script>
     <script src="js/modules/teams/timeline-view.js"></script>
 
-    <!-- Rankings view. renderContainer delegates to
-         TeamRankingsView.renderRankingsTab, so this must load
-         before team-render.js's render path is invoked. Scripted
-         here so the whole rankings surface loads with the rest
-         of the team domain. -->
     <script src="js/modules/teams/team-rankings-view.js"></script>
 
     <script src="js/modules/teams/member-adapter-teams.js"></script>
 
-    <!-- Team verifier. Loads before team-events so its public API
-         is available when the Verify button's click handler
-         resolves it lazily.
-
-         Ordering within this block:
-           1. team-verifier.js        needs TeamQueries,
-                                      TeamConstants,
-                                      CharacterQueries
-           2. team-verifier-view.js   needs TeamVerifier, Modal,
-                                      DomUtils,
-                                      NotificationSystem; reads
-                                      TeamEvents lazily -->
     <script src="js/modules/teams/team-verifier.js"></script>
     <script src="js/modules/teams/team-verifier-view.js"></script>
 
-    <!-- Team export bundle. Installs: TeamExport. Reads
-         TeamQueries, TeamConstants, CharacterQueries, and
-         ExportUtils; all loaded above. -->
     <script src="js/import-export/team-export.js"></script>
 
-    <!-- Team export picker. Needs TeamExport (above) and
-         TeamQueries / TeamConstants / Modal / NotificationSystem /
-         DomUtils, all loaded earlier. -->
     <script src="js/import-export/team-export-picker.js"></script>
 
     <script src="js/modules/teams/team-events.js"></script>
@@ -428,18 +347,6 @@
 
     <!-- ============================================================
          Departments domain
-         ============================================================
-         Full module stack. Loads after Team domain (DepartmentCore
-         and DepartmentEvents consume TeamQueries for cross-team
-         context) and before the Academy controllers block, which
-         no longer depends on Departments.
-
-         Intra-domain load order:
-           constants  -> schema
-           schema     -> queries, core
-           queries    -> aggregator
-           aggregator -> render, events
-           render + events -> index
          ============================================================ -->
     <script src="js/modules/departments/department-constants.js"></script>
     <script src="js/modules/departments/department-schema.js"></script>
@@ -466,6 +373,15 @@
     <script src="js/modules/academy/controllers/academy-location-controller.js"></script>
     <script src="js/modules/academy/controllers/academy-repair-controller.js"></script>
 
+    <!-- v34 — Shared Groups controller. Loads after the view
+         (resolved at IIFE time: it captures
+         AcademySharedGroupsView and AcademyAggregator). Loads
+         before index.js, which registers it with
+         AcademyControllers. The People controller resolves it
+         lazily at click time, so it does not need to load before
+         academy-people-controller.js. -->
+    <script src="js/modules/academy/controllers/academy-shared-groups-controller.js"></script>
+
     <script src="js/modules/academy/academy-weekly-teams-operations.js"></script>
 
     <script src="js/modules/academy/index.js"></script>
@@ -489,28 +405,7 @@
 
     <!-- ============================================================
          IMPORT / EXPORT (DOMAIN-DEPENDENT, ACADEMY)
-         ============================================================
-         These modules read from the Academy domain at load time,
-         so they must load after the Academy block above. They are
-         grouped here, immediately before ui.js, because they are
-         the last import/export consumers to become resolvable.
-
-         Ordering within this block matters:
-           1. class-roster-export.js
-              Installs the GraduatesExport compatibility alias. Its
-              own dependencies (CharacterQueries, AcademyClasses,
-              AcademyAggregator, CSV, ExportUtils) are all loaded by
-              this point.
-           2. schedule-export.js
-              Reads AcademyClasses, AcademyTeachingSessions,
-              AcademyTeachingGroups, AcademyInstructorCommitments,
-              AcademyDisciplines, CharacterQueries, CalendarConstants,
-              CalendarValidation, ExportUtils. All loaded.
-           3. graduates-export-picker.js
-              Needs ClassRosterExport (installed by step 1) and
-              AcademyClasses.getClasses (loaded above).
          ============================================================ -->
-
     <script src="js/import-export/class-roster-export.js"></script>
     <script src="js/import-export/schedule-export.js"></script>
     <script src="js/import-export/graduates-export-picker.js"></script>
