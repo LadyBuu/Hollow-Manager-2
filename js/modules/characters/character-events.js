@@ -24,9 +24,52 @@
  *     those.
  *   - The Career Wizard modal. CareerStatusWizard owns its own
  *     lifecycle; this file only routes the button click to it.
- *     The "Apply does nothing" bug in that modal is a
- *     wizard-internal re-render race, fixed in
- *     career-status-wizard.js, not here.
+ *
+ * POST-MUTATION RE-RENDER — CACHE INVALIDATION:
+ *   CharacterForm.render() has a "same-character re-render"
+ *   path: when the previous render and the current render are
+ *   for the same character, it snapshots the current DOM values
+ *   before rebuilding, then restores the snapshot after
+ *   populateFormFields has written the stored values. That merge
+ *   is what preserves unsaved edits when the user adds a class,
+ *   ends a stint, or closes a sub-modal without saving.
+ *
+ *   That same merge is WRONG after a domain mutation has just
+ *   committed. The DOM at that moment still holds the
+ *   PRE-MUTATION values; snapshotCurrentForm captures them; the
+ *   rebuild reads the POST-MUTATION store; restoreSnapshot then
+ *   writes the pre-mutation values back over the top of the
+ *   freshly-populated form. The user sees their pre-mutation
+ *   state and concludes the mutation did nothing, even though
+ *   window.data was updated.
+ *
+ *   Concretely, before this fix:
+ *     - Career Wizard (applyCareerStatusTimeline) succeeded,
+ *       careerStatus went from [] to [4 entries], the wizard
+ *       closed, the re-render merged the pre-mutation empty
+ *       list back in, and the user saw no entries.
+ *     - Career Transition (setCareerTransition) had the same
+ *       shape.
+ *     - Save (CharacterCRUD.save) had the same shape: a field
+ *       changed on the Professional tab and saved, the
+ *       re-render merged the pre-save value back in, and the
+ *       user saw stale data until they switched characters.
+ *
+ *   The fix is to call CharacterForm.invalidateRenderCache()
+ *   before the post-mutation render. That clears
+ *   `_lastRenderedEditId`, which makes the next render treat
+ *   itself as a fresh character and skip the snapshot/restore
+ *   merge. The form then renders the stored state directly.
+ *
+ *   Three call sites need it:
+ *     1. _careerWizardListener (careerWizardClosed event)
+ *     2. closeCareerTransitionModal (after a successful Apply)
+ *     3. handleSave (success path)
+ *
+ *   Every call is guarded. If the patched character-form.js is
+ *   not deployed yet, the guard falls through to the previous
+ *   behaviour (the merge), which is the buggy behaviour but
+ *   still functional — not a crash.
  *
  * DELEGATE SCOPE:
  *   Every delegated listener installed by this module is scoped
@@ -38,8 +81,8 @@
  *   After a successful save, CharacterForm.render(savedId) is
  *   called unconditionally, for both creates and edits. This
  *   ensures the form reflects what was actually stored. The
- *   re-render merge in character-form.js preserves any in-flight
- *   edits.
+ *   cache is invalidated first so the stored values are shown
+ *   rather than the pre-save DOM snapshot.
  *
  *   On a failed save, result.message is surfaced via
  *   NotificationSystem when present. The pipeline shows its own
@@ -56,8 +99,8 @@
  * CAREER WIZARD CLOSE:
  *   The wizard dispatches a `careerWizardClosed` CustomEvent on
  *   document when it closes. This module listens for that event,
- *   re-renders the character form, and removes the listener. No
- *   polling or MutationObserver.
+ *   invalidates the render cache, re-renders the character form,
+ *   and removes the listener. No polling or MutationObserver.
  *
  * CAREER TRANSITION MODAL:
  *   The inline "Career Transition" modal (#career-transition-btn)
@@ -251,6 +294,28 @@
     function getSocialEvents() { return window.SocialEvents || null; }
     function getSocialQueries() { return window.SocialQueries || null; }
     function getCharacterJSONIO() { return window.CharacterJSONIO || null; }
+
+    // ============================================================
+    // RENDER CACHE INVALIDATION
+    // ============================================================
+    //
+    // See the POST-MUTATION RE-RENDER — CACHE INVALIDATION note
+    // in the file header. Called from every post-mutation render
+    // site. Guarded so this file works even before the patched
+    // character-form.js is deployed.
+
+    function invalidateFormRenderCache() {
+        if (!CharacterForm) { return; }
+        if (typeof CharacterForm.invalidateRenderCache === 'function') {
+            try {
+                CharacterForm.invalidateRenderCache();
+            } catch (e) {
+                console.warn(
+                    '[CharacterEvents] invalidateRenderCache threw:', e
+                );
+            }
+        }
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -585,6 +650,17 @@
     // ============================================================
     // CAREER WIZARD CLOSED
     // ============================================================
+    //
+    // The wizard has just committed a domain mutation
+    // (applyCareerStatusTimeline). The DOM at this moment still
+    // holds the pre-mutation career-status rows. Without
+    // invalidating the render cache first, CharacterForm.render
+    // would snapshot those stale values and merge them back over
+    // the freshly-populated 4-entry list, leaving the user with
+    // the impression that the wizard did nothing.
+    //
+    // See the POST-MUTATION RE-RENDER — CACHE INVALIDATION note
+    // in the file header.
 
     function installCareerWizardListener() {
         if (_careerWizardListener) { return; }
@@ -596,6 +672,7 @@
                     : null;
             if (currentId) {
                 try {
+                    invalidateFormRenderCache();
                     CharacterForm.render(currentId);
                 } catch (err) {
                     console.warn(
@@ -736,6 +813,7 @@
         var charId = resolveCharacterIdForStint();
         if (charId) {
             try {
+                invalidateFormRenderCache();
                 CharacterForm.render(charId);
             } catch (err) {
                 console.warn(
@@ -883,19 +961,6 @@
     // ============================================================
     // CAREER WIZARD BUTTON
     // ============================================================
-    //
-    // This handler routes the Career Wizard button to
-    // CareerStatusWizard.openModal. The wizard owns its own
-    // modal lifecycle, its own Apply handler, and its own
-    // mutation. Nothing about the wizard's internals is
-    // implemented here.
-    //
-    // The "Apply does nothing" bug in the wizard was a
-    // re-render race inside career-status-wizard.js: the
-    // wizard's own `handleContentChange` called
-    // `renderContent()` on every change event, which destroyed
-    // and recreated the Apply button mid-click. That is fixed
-    // in the wizard, not here.
 
     function handleCareerWizardOpen() {
         var charId = typeof window.getCurrentEditId === 'function'
@@ -933,12 +998,6 @@
     // ============================================================
     // CAREER TRANSITION MODAL
     // ============================================================
-    //
-    // The inline "Career Transition" modal. Separate from the
-    // Career Wizard button above. This one appends a single
-    // terminal entry to the character's careerStatus array.
-    //
-    // See the CAREER TRANSITION MODAL note in the file header.
 
     var TRANSITION_STATUSES = [
         {
@@ -1274,6 +1333,11 @@
             if (currentId &&
                 String(currentId) === String(charIdAtClose)) {
                 try {
+                    // The Apply path just committed a domain
+                    // mutation. Invalidate the render cache so the
+                    // form shows the post-mutation state rather
+                    // than the pre-mutation DOM snapshot.
+                    invalidateFormRenderCache();
                     CharacterForm.render(currentId);
                 } catch (renderErr) {
                     console.warn(
@@ -3501,6 +3565,15 @@
                             window.setCurrentEditId(savedId);
                         }
 
+                        // The save just committed a domain
+                        // mutation. Invalidate the render cache
+                        // so the post-save form shows the stored
+                        // values rather than the pre-save DOM
+                        // snapshot. Without this, "I saved but the
+                        // change didn't stick" symptoms appear on
+                        // fields the user edited (career entries,
+                        // weapons, stats, etc.).
+                        invalidateFormRenderCache();
                         CharacterForm.render(savedId);
 
                         var char =
@@ -3633,6 +3706,7 @@
         AcademyClasses.addToClass(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
+                    invalidateFormRenderCache();
                     CharacterForm.render(charId);
                     var refreshedChar =
                         CharacterQueries.getCharacterById(charId);
@@ -3674,6 +3748,7 @@
         AcademyClasses.addClassByName(charId, name)
             .then(function(result) {
                 if (result && result.success) {
+                    invalidateFormRenderCache();
                     CharacterForm.render(charId);
                     var refreshedChar =
                         CharacterQueries.getCharacterById(charId);
@@ -3702,6 +3777,7 @@
         AcademyClasses.removeClassById(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
+                    invalidateFormRenderCache();
                     CharacterForm.render(charId);
                     var refreshedChar =
                         CharacterQueries.getCharacterById(charId);
