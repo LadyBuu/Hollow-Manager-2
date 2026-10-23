@@ -35,6 +35,23 @@
  *     }
  *   }
  *
+ * PICKER FILTER — CLIENT-SIDE:
+ *   The picker renders EVERY character in `characters` with a
+ *   `data-search-key` attribute on each row. The view does NOT
+ *   filter at render time; the initial render includes every row.
+ *   The controller's applyPickerFilterInPlace() shows and hides
+ *   rows in place based on the current filter.
+ *
+ *   This is deliberate:
+ *     - Typing in the search box does not re-render.
+ *     - Focus and caret position in the search input survive.
+ *     - The picker's scroll position survives.
+ *     - The character list is not rebuilt on every keystroke.
+ *
+ *   The controller toggles the `.is-hidden` class on rows to hide
+ *   them, and shows a `.academy-shared-groups-no-matches` element
+ *   when zero rows match.
+ *
  * EVENTS EMITTED:
  *   - .academy-shared-groups-class-select     (change)
  *   - #academy-shared-groups-search           (input)
@@ -45,44 +62,8 @@
  *
  * LAYOUT:
  *   Top bar spans the width. Below it, a two-column layout:
- *     LEFT:   picker panel (search + checkbox list of characters,
- *             filtered by the search term; selected characters
- *             float to the top of the list, and also appear in a
- *             compact "chips" strip above the search box).
+ *     LEFT:   picker panel (search + checkbox list of characters)
  *     RIGHT:  result panel.
- *
- *   The picker's "selected chips" strip exists so that a user who
- *   has scrolled or searched away from a selected character still
- *   sees who is currently in the set. Removing a chip is a single
- *   click; it is the fastest way to change the selection without
- *   scrolling.
- *
- *   The picker's checkbox rows live in a scrollable body. The
- *   selected characters are rendered in the same order they
- *   appear in `characters[]`, so the list does not reshuffle as
- *   the user checks boxes.
- *
- * RESULTS:
- *   Empty selection (fewer than 2 characters): "Select at least
- *   two characters to see which groups they share."
- *
- *   Two or more selected, no matches: "No shared groups. These
- *   characters are not enrolled in the same group for any
- *   discipline during the selected period."
- *
- *   Matches: a list of rows grouped by class then discipline is
- *   NOT imposed here; the aggregator returns them sorted by
- *   (class, discipline, group) and the view renders in that
- *   order, with a small header inserted whenever the class or
- *   discipline changes. That keeps the renderer stateless while
- *   still producing visual grouping.
- *
- *   Each row shows:
- *     Group name (e.g. "English A" or a custom name)
- *     Instructor name (or "Unassigned")
- *     Roster size at the most recent shared week
- *     "Together: Alice, Bob" (the subset in this group)
- *     "Weeks: 3–7, 12" (contiguous ranges)
  *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
@@ -138,7 +119,7 @@
 
     function renderWeekRanges(ranges) {
         if (!Array.isArray(ranges) || ranges.length === 0) {
-            return '—';
+            return '\u2014';
         }
         var parts = [];
         for (var i = 0; i < ranges.length; i++) {
@@ -152,7 +133,7 @@
                 parts.push(r.start + '\u2013' + r.end);
             }
         }
-        if (parts.length === 0) { return '—'; }
+        if (parts.length === 0) { return '\u2014'; }
         return parts.join(', ');
     }
 
@@ -289,6 +270,18 @@
     // ============================================================
     // PICKER PANEL (left)
     // ============================================================
+    //
+    // The picker renders EVERY character in vm.characters. Filtering
+    // is done client-side by the controller via applyPickerFilter-
+    // InPlace(). See the PICKER FILTER note in the file header.
+    //
+    // Each row carries:
+    //   data-character-id
+    //   data-search-key    (lowercased name)
+    //
+    // The controller toggles .is-hidden on rows to hide them, and
+    // toggles .is-selected to reflect current state without
+    // re-rendering.
 
     function renderPickerPanel(vm) {
         var characters = vm.characters;
@@ -315,42 +308,31 @@
 
         if (characters.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No characters available.' +
+                        'No characters in this scope. Select a ' +
+                        'class that has members, or switch to ' +
+                        '"All classes".' +
                     '</p>';
             html += '</div>';
             html += '</div>';
             return html;
         }
 
-        var filterLower = vm.filter.toLowerCase().trim();
-        var rendered = 0;
-
         for (var j = 0; j < characters.length; j++) {
             var c = characters[j];
             if (!c || !c.id) { continue; }
-
             var cId = String(c.id);
             var isSelected = selectedSet[cId] === true;
-
-            // A selected character is visible even when the search
-            // filter does not match its name: the user is actively
-            // working with it, and hiding it under a filter would
-            // make the selection look "lost".
-            if (filterLower !== '' &&
-                c.name.toLowerCase().indexOf(filterLower) === -1 &&
-                !isSelected) {
-                continue;
-            }
-
-            rendered++;
             html += renderCharacterRow(c, isSelected);
         }
 
-        if (rendered === 0) {
-            html += '<p class="empty-state small">' +
-                        'No characters match the search.' +
-                    '</p>';
-        }
+        // The "no matches" element is rendered hidden by default.
+        // The controller shows it when the current filter matches
+        // zero rows.
+        html += '<p class="empty-state small ' +
+                    'academy-shared-groups-no-matches" ' +
+                    'style="display:none;">' +
+                    'No characters match the search.' +
+                '</p>';
 
         html += '</div>';
         html += '</div>';
@@ -420,8 +402,14 @@
             rowClass += ' is-selected';
         }
 
+        var searchKey = String(character.name || '').toLowerCase();
+
         var html = '';
-        html += '<label class="' + rowClass + '">';
+        html += '<label class="' + rowClass + '" ' +
+                    'data-character-id="' +
+                        escapeAttribute(character.id) + '" ' +
+                    'data-search-key="' +
+                        escapeAttribute(searchKey) + '">';
         html += '<input type="checkbox" ' +
                     'class="academy-shared-groups-char-checkbox" ' +
                     'data-character-id="' +
