@@ -34,6 +34,32 @@
  *   mutate() from the same snapshot, so the applied state never
  *   diverges from what was validated.
  *
+ *   EVERY pipeline validate() callback resolves references
+ *   against the `appData` argument it is handed. None of them
+ *   re-reads window.data. An earlier revision of
+ *   setCareerTransition did; that has been corrected.
+ *
+ * CHARACTER INDEX INVALIDATION:
+ *   invalidateCharacterIndex() is called AFTER the pipeline
+ *   promise resolves successfully, not inside mutate(). The
+ *   in-mutate call ran before commit; if the pipeline replaced
+ *   the characters array reference (clone commit), the index
+ *   would rebuild against the pre-commit array on its next
+ *   access. Post-commit invalidation is unambiguous: the index
+ *   rebuilds against whatever array the committed store now
+ *   holds. CharacterQueries.getIdIndex rebuilds lazily, so the
+ *   next read after a successful mutation sees the new record.
+ *
+ * CASCADE FAILURE POLICY:
+ *   TeamCore.endStintsForCharacter is a best-effort cascade.
+ *   If it throws, the throw is caught, logged, and the enclosing
+ *   mutation still commits. A cascade failure is not a reason to
+ *   lose the user's work — the career-status change or the
+ *   character save is the primary intent; the cascade is a
+ *   downstream consequence. Earlier revisions let the cascade
+ *   throw propagate, which rolled back the entire transaction and
+ *   produced exactly the "career transition does nothing" symptom.
+ *
  * PARTIAL DTO SEMANTICS:
  *   normaliseCharacterData only includes a field in its output
  *   when the field is present (not undefined) in the input DTO.
@@ -418,6 +444,17 @@
         }
     }
 
+    /**
+     * Run the death cascade against the snapshot.
+     *
+     * CASCADE FAILURE POLICY: the cascade is best-effort. If it
+     * throws, log and continue. The primary intent of the enclosing
+     * mutation is the character save; the cascade is a downstream
+     * consequence. A cascade throw used to propagate and roll back
+     * the whole transaction, which produced exactly the
+     * "mutation did nothing" symptom users saw on the career-
+     * transition path.
+     */
     function runDeathCascade(data, charId, deathYear) {
         var TeamCore = getTeamCore();
         if (!TeamCore ||
@@ -428,7 +465,16 @@
             );
             return null;
         }
-        return TeamCore.endStintsForCharacter(data, charId, deathYear);
+        try {
+            return TeamCore.endStintsForCharacter(data, charId, deathYear);
+        } catch (e) {
+            console.warn(
+                '[CharacterCRUD] Death cascade threw for character ' +
+                charId + ': ' + (e && e.message ? e.message : e) +
+                '. The save itself is preserved.'
+            );
+            return null;
+        }
     }
 
     function applyFillerStripIfSet(normalised, isFiller) {
@@ -597,7 +643,7 @@
 
         // Trim to max if the merge pushed it over. The trim drops
         // from the end; new moves are appended at the end, so this
-        // prefers preserving older moves.
+        // preserves older moves where possible.
         var max = getMaxSpecialMoves();
         if (result.physical.length > max) {
             result.physical = result.physical.slice(0, max);
@@ -771,8 +817,13 @@
     }
 
     /**
-     * Reconcile a career-status array. See the file header of the
-     * previous version for the full rules. Unchanged.
+     * Reconcile a career-status array.
+     *
+     *   - Sort by (startYear, original index).
+     *   - Close every non-last entry whose endYear is missing or
+     *     earlier than the next entry's startYear.
+     *
+     * Mutates and returns the same array.
      */
     function closeOpenCareerEntries(entries) {
         if (!Array.isArray(entries) || entries.length === 0) {
@@ -862,9 +913,24 @@
             return result;
         }
 
-        var cascadeResult = TeamCore.endStintsForCharacter(
-            data, charId, year
-        );
+        var cascadeResult;
+        try {
+            cascadeResult = TeamCore.endStintsForCharacter(
+                data, charId, year
+            );
+        } catch (e) {
+            // Cascade failure must not roll back the write. Log
+            // and continue; the career-status change is the
+            // user's primary intent.
+            console.warn(
+                '[CharacterCRUD] Career-transition cascade threw ' +
+                'for character ' + charId + ': ' +
+                (e && e.message ? e.message : e) +
+                '. The career-status change is preserved.'
+            );
+            result.reason = 'cascade-threw';
+            return result;
+        }
 
         result.fired = true;
         result.reason = 'transitioned';
@@ -1484,7 +1550,7 @@
             name = CharacterQueries.getDisplayName(existingChar);
         }
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function() {
                 var reValidation = validateCharacter(normalised);
                 if (!reValidation.valid) {
@@ -1565,6 +1631,14 @@
             },
 
             failureMessage: 'Failed to save character.'
+        });
+
+        // ---- Post-commit invalidation. ----
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
@@ -1678,8 +1752,6 @@
 
         current.updatedAt = new Date().toISOString();
 
-        invalidateCharacterIndex();
-
         var nextDeathYear = parseYearInt(current.deathYear);
         if (nextDeathYear !== null) {
             runDeathCascade(data, current.id, nextDeathYear);
@@ -1729,7 +1801,6 @@
         newChar = applyFillerStripIfSet(newChar, isFiller);
 
         data.characters.push(newChar);
-        invalidateCharacterIndex();
 
         var nextDeathYear = parseYearInt(newChar.deathYear);
         if (nextDeathYear !== null) {
@@ -1761,14 +1832,13 @@
     //   (recordHasAuthoredContent, which delegates to
     //   CharacterStrip.hasAuthoredContent). It is the single
     //   enforcement point: filler-manager-modal's own pre-filter
-    //   is now advisory.
+    //   is advisory.
     //
     //   Why mutate, not validate: validate runs against
     //   window.data pre-flight; mutate runs against the same
     //   snapshot the strip runs against. Reading and stripping in
     //   the same transaction closes the race a UI-layer check
-    //   leaves open (the character could gain content between the
-    //   modal's Apply click and the pipeline's mutate pass).
+    //   leaves open.
 
     function setFillerFlag(ids, value) {
         if (!checkDependencies()) {
@@ -1815,7 +1885,7 @@
             });
         }
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function(data) {
                 if (!data || !Array.isArray(data.characters)) {
                     return {
@@ -1840,10 +1910,6 @@
                 var missingIds = [];
 
                 // ---- Fast lookup by id, built once per mutate. ----
-                //
-                // idList is small (tens to hundreds, in practice a
-                // few dozen). A Map keeps the per-id walk O(1)
-                // rather than O(n) over the character store.
                 var byId = new Map();
                 for (var j = 0; j < data.characters.length; j++) {
                     var c = data.characters[j];
@@ -1862,11 +1928,6 @@
                     }
 
                     // ---- Authored-content check on flag. ----
-                    //
-                    // The check runs against the snapshot record,
-                    // the same record the strip below would
-                    // process. A character with content is
-                    // skipped, not flagged, not stripped.
                     if (value === true &&
                         recordHasAuthoredContent(char)) {
                         skippedIds.push(id);
@@ -1878,10 +1939,6 @@
                     updated++;
 
                     // ---- Strip pass on flag. ----
-                    //
-                    // Only when flagging. Unflagging only clears
-                    // the flag; the strip is a save-time operation
-                    // and is not run in reverse.
                     if (value === true &&
                         Strip &&
                         typeof Strip.stripEmptyFields === 'function') {
@@ -1906,8 +1963,6 @@
                         stripped++;
                     }
                 }
-
-                invalidateCharacterIndex();
 
                 return {
                     updated: updated,
@@ -1962,6 +2017,13 @@
             },
 
             failureMessage: 'Failed to update filler flag.'
+        });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
@@ -2067,7 +2129,7 @@
             updatedAt: now
         });
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function() {
                 var a = CharacterQueries.getCharacterById(
                     parentAIdStr
@@ -2107,7 +2169,6 @@
                 }
 
                 data.characters.push(childRecord);
-                invalidateCharacterIndex();
 
                 var socialFailure = null;
                 var SocialCore = getSocialCore();
@@ -2161,6 +2222,13 @@
                 return 'Child created successfully!';
             },
             failureMessage: 'Failed to create child.'
+        });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
@@ -2321,7 +2389,7 @@
             });
         }
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function() {
                 if (!Array.isArray(window.data &&
                     window.data.characters)) {
@@ -2406,6 +2474,13 @@
 
             failureMessage: 'Failed to backfill death cascades.'
         });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
+        });
     }
 
     // ============================================================
@@ -2464,7 +2539,7 @@
 
         var name = CharacterQueries.getDisplayName(char);
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function(appData) {
                 var currentChar = null;
                 if (appData && Array.isArray(appData.characters)) {
@@ -2542,6 +2617,13 @@
             },
 
             failureMessage: 'Failed to set role for class.'
+        });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
@@ -2633,11 +2715,31 @@
         var statusLabel = normalisedStatus.charAt(0).toUpperCase() +
             normalisedStatus.slice(1);
 
-        return getMutationPipeline().performMutation({
-            validate: function() {
-                var current =
-                    CharacterQueries.getCharacterById(targetChar);
-                if (!current) {
+        var pipelinePromise = getMutationPipeline().performMutation({
+            // ---- Snapshot-scoped validate. ----
+            //
+            // Reads the character from the pipeline snapshot,
+            // never from the live store. This matches every
+            // other mutation in this file and closes the
+            // "silently rejected because of a stale read"
+            // failure mode an earlier revision had.
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+
+                var found = false;
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var c = appData.characters[i];
+                    if (c && String(c.id) === targetChar) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return {
                         valid: false,
                         message: 'Character no longer exists.'
@@ -2680,8 +2782,6 @@
                 target.careerStatus = existing;
                 target.updatedAt = new Date().toISOString();
 
-                invalidateCharacterIndex();
-
                 var cascade = {
                     fired: false,
                     year: yearNum,
@@ -2689,23 +2789,38 @@
                     teamsTouched: 0
                 };
 
+                // ---- Cascade failure must not roll back. ----
                 var TeamCore = getTeamCore();
                 if (TeamCore &&
                     typeof TeamCore.endStintsForCharacter ===
                     'function') {
-                    var cascadeResult =
-                        TeamCore.endStintsForCharacter(
-                            data, targetChar, yearNum
+                    try {
+                        var cascadeResult =
+                            TeamCore.endStintsForCharacter(
+                                data, targetChar, yearNum
+                            );
+                        cascade.fired = true;
+                        if (cascadeResult &&
+                            typeof cascadeResult === 'object') {
+                            cascade.stintsEnded =
+                                typeof cascadeResult.stintsEnded ===
+                                'number'
+                                    ? cascadeResult.stintsEnded
+                                    : 0;
+                            cascade.teamsTouched =
+                                typeof cascadeResult.teamsTouched ===
+                                'number'
+                                    ? cascadeResult.teamsTouched
+                                    : 0;
+                        }
+                    } catch (e) {
+                        console.warn(
+                            '[CharacterCRUD] Career-transition ' +
+                            'cascade threw for character ' +
+                            targetChar + ': ' +
+                            (e && e.message ? e.message : e) +
+                            '. The career-status change is preserved.'
                         );
-                    cascade.fired = true;
-                    if (cascadeResult &&
-                        typeof cascadeResult === 'object') {
-                        cascade.stintsEnded =
-                            typeof cascadeResult.stintsEnded ===
-                            'number' ? cascadeResult.stintsEnded : 0;
-                        cascade.teamsTouched =
-                            typeof cascadeResult.teamsTouched ===
-                            'number' ? cascadeResult.teamsTouched : 0;
                     }
                 } else {
                     console.warn(
@@ -2749,6 +2864,13 @@
             },
 
             failureMessage: 'Failed to set career transition.'
+        });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
@@ -2879,11 +3001,23 @@
         }
         var name = CharacterQueries.getDisplayName(char);
 
-        return getMutationPipeline().performMutation({
-            validate: function() {
-                var current =
-                    CharacterQueries.getCharacterById(targetChar);
-                if (!current) {
+        var pipelinePromise = getMutationPipeline().performMutation({
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+                var found = false;
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var c = appData.characters[i];
+                    if (c && String(c.id) === targetChar) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
                     return {
                         valid: false,
                         message: 'Character no longer exists.'
@@ -2930,8 +3064,6 @@
                 target.careerStatus = finalStages;
                 target.updatedAt = new Date().toISOString();
 
-                invalidateCharacterIndex();
-
                 var cascade = applyCareerTransitionCascade(
                     data,
                     targetChar,
@@ -2977,6 +3109,13 @@
 
             failureMessage: 'Failed to replace career status.'
         });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
+        });
     }
 
     // ============================================================
@@ -3011,7 +3150,7 @@
 
         var name = CharacterQueries.getDisplayName(char);
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function() {
                 var currentChar =
                     CharacterQueries.getCharacterById(targetId);
@@ -3111,7 +3250,8 @@
                                 if (!rel) { return false; }
                                 return String(rel.character1) !==
                                     targetId &&
-                                    String(rel.character2) !== targetId;
+                                    String(rel.character2) !==
+                                    targetId;
                             }
                         );
                     cascade.socialRelationshipsRemoved =
@@ -3165,8 +3305,6 @@
                         'Character not found in data store.'
                     );
                 }
-
-                invalidateCharacterIndex();
 
                 return { deleted: true, cascade: cascade };
             },
@@ -3225,6 +3363,13 @@
             successMessage: 'Character deleted successfully!',
             failureMessage: 'Failed to delete character.'
         });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
+        });
     }
 
     // ============================================================
@@ -3257,7 +3402,7 @@
             });
         }
 
-        return getMutationPipeline().performMutation({
+        var pipelinePromise = getMutationPipeline().performMutation({
             validate: function(data) {
                 var count = Array.isArray(data.characters)
                     ? data.characters.length : 0;
@@ -3314,7 +3459,6 @@
                 }
 
                 data.characters = [];
-                invalidateCharacterIndex();
 
                 return { deletedCount: count };
             },
@@ -3330,6 +3474,13 @@
             },
 
             failureMessage: 'Failed to delete all characters.'
+        });
+
+        return pipelinePromise.then(function(result) {
+            if (result && result.success) {
+                invalidateCharacterIndex();
+            }
+            return result;
         });
     }
 
