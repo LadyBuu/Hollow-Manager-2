@@ -45,6 +45,9 @@
  *   Free slots (v33):
  *     getFreeSlotCandidateStudentsViewModel(classId, disciplineId, week)
  *
+ *   Shared groups (v34):
+ *     getSharedGroupsViewModel(charIds, options)
+ *
  * IMPORTANT:
  *   - Projection builder. Never mutates. No UI dependencies.
  *   - Composes domain modules. Never walks raw storage.
@@ -58,213 +61,96 @@
  *
  *   "Who is an instructor of this class?"
  *
- *     character.mode === 'instructor'
- *       AND this class is in character.classIds
+ *     AcademyClasses.getClassInstructorIdsAllTime(classId)
  *
- *   That WAS the rule. It is no longer the rule. See the
- *   INSTRUCTOR-OF-CLASS — v31 UPDATE below.
+ *   which walks the class's enrolment intervals and returns every
+ *   character who has any instructor-role interval in this class.
+ *   The character-wide `mode` field is a legacy tombstone and is
+ *   NOT consulted.
  *
  *   "Who is actively teaching this class this week?"
  *
  *     AcademyClasses.getClassInstructorIds(classId, week)
  *
  *   Week-scoped. Reads per-discipline instructor enrolments and
- *   filters by week. A character who taught weeks 1-4 is NOT in the
- *   week-12 answer, even though they are still an instructor of
- *   this class.
- *
- *   This is the answer used for schedule collision detection, the
- *   teaching projector, the ranking view's instructor-exclusion
- *   list (ranking eligibility is a live-schedule question), and
- *   anywhere else that needs to know what is actually running.
- *
- * INSTRUCTOR-OF-CLASS — v31 UPDATE (this revision):
- *   Prior to v31, the year-level question was answered by reading
- *   `character.mode` and `character.classIds`:
- *
- *     character.mode === 'instructor'
- *       AND this class is in character.classIds
- *
- *   That rule worked while mode was the canonical per-character
- *   fact. In v31 the role model changed: the role is CLASS-SCOPED
- *   and lives on the enrolment interval's `role` field. The
- *   character-wide `mode` field is a legacy TOMBSTONE — the v31
- *   migration leaves it in place but no reader is supposed to
- *   consult it. The canonical year-level query is:
- *
- *     AcademyClasses.getClassInstructorIdsAllTime(classId)
- *
- *   which walks the class's enrolment intervals and returns every
- *   character who has any instructor-role interval in this class.
- *
- *   `getClassInstructorSetForClass` now delegates to that query.
- *   It no longer reads `character.mode`.
- *
- *   WHAT WAS BROKEN:
- *     The previous implementation of getClassInstructorSetForClass
- *     read the tombstone. This caused a divergence between two
- *     views that both claim to answer the same question:
- *
- *       - The character detail panel's role badge is driven by
- *         AcademyUI.getCharacterMode, which reads the enrolment
- *         intervals. It correctly showed "Student of <Class>"
- *         after the user toggled a character back to student.
- *
- *       - The People sidebar's "Instructor" badge and the class
- *         roster were driven by getClassInstructorSetForClass,
- *         which read the tombstone. It kept showing "Instructor"
- *         because character.mode was still 'instructor' — the
- *         v31 migration never cleared the field, by design.
- *
- *     The user toggled the class-scoped role via the detail panel
- *     checkbox; the write went to the enrolment intervals; the
- *     sidebar did not update because it was reading a different
- *     source.
- *
- *   The sidebar, the roster, and the class-instructor filters all
- *   now agree with the detail panel because they all read the
- *   same store.
+ *   filters by week.
  *
  * INSTRUCTOR DISCIPLINES (v27):
  *   getClassInstructorDisciplines(classId, instructorId, week)
  *   answers "which of this class's disciplines does this specific
- *   instructor teach during this week?" It reads per-discipline
- *   instructor enrolments, filtered to the class's offerings that
- *   are active in the week.
- *
- *   It is the per-instructor mirror of
- *   AcademyClasses.getClassInstructorIds, which answers the same
- *   question for every instructor at once.
- *
- *   The result is what the instructor-schedule modal's discipline
- *   dropdown consumes.
+ *   instructor teach during this week?"
  *
  * INSTRUCTOR GROUP PICKER (v28):
  *   getInstructorGroupPickerViewModel(classId, instructorId,
  *   disciplineId, week) answers "which existing teaching groups
  *   exist for this (class, discipline, instructor) triple that
- *   are active during this week, and what are their display names
- *   and counts?"
- *
- *   The result is what the instructor-schedule modal's group
- *   dropdown consumes.
- *
- *   DEPENDENCY NOTE:
- *     This projection requires AcademyTeachingGroups and
- *     AcademyTeachingSessions. Neither is a load-time dependency
- *     of this aggregator; both are resolved at call time. A
- *     missing module throws — it is not silently treated as "no
- *     groups." See the function's own comment for why.
+ *   are active during this week?"
  *
  * REBALANCE INPUT (v32):
  *   getRebalanceInputViewModel(classId, disciplineId, week, options)
  *   assembles the input object AcademyBalanceSuggestions.suggest
- *   consumes. It does NOT run the algorithm; that is the caller's
- *   job.
- *
- *   The VM carries:
- *     - every enrolled student of this class-discipline who is
- *       active this week (via AcademyEnrolments.getEnrolledStudents)
- *     - each student's occupied slots for the week (via
- *       AcademyTeachingProjector.projectForStudent)
- *     - every existing teaching group of this (class, discipline)
- *       pair (via AcademyTeachingGroups.getGroupsForDiscipline)
- *     - each group's sessions (via
- *       AcademyTeachingSessions.getSessionsForGroup)
- *
- *   ELIMINATED STUDENTS:
- *     A student who was enrolled at the start of the year but has
- *     since been eliminated is NOT included in the rebalance
- *     input. Enrolment is a year-level fact; participation is not.
- *     An eliminated student cannot take the class, so they cannot
- *     be placed into a group.
- *
- *     The check uses EliminationQueries.isCharacterEliminatedByWeek,
- *     which applies the same boundary the roster derivation uses:
- *     eliminated at week E counts for weeks > E, not for week E
- *     itself. A student eliminated in week 4 is still eligible
- *     during week 4 and ineligible from week 5 onward.
- *
- *     When EliminationQueries is not loaded, the check is skipped.
- *     That preserves the pre-fix behavior rather than silently
- *     excluding students on the basis of a module that is not
- *     present.
- *
- *   The VM also carries presentation metadata the rebalance modal
- *   needs: student names, group display names, group instructor
- *   names, group member counts. The algorithm ignores the metadata;
- *   it consumes only the students[].id, students[].currentGroupId,
- *   students[].occupied, groups[].groupId, and groups[].sessions
- *   fields.
- *
- *   The occupied list for a student INCLUDES the sessions of the
- *   groups they are already in. That is deliberate: the algorithm
- *   subtracts the current group's sessions before building the
- *   allowed-groups matrix (see AcademyBalanceSuggestions), because
- *   the rebalance is precisely the operation that relocates the
- *   student. The caller that wants "rebalance but leave Alice
- *   alone" passes Alice in `excludedStudentIds`.
- *
- *   Options:
- *     { excludedStudentIds?: string[], groupIds?: string[] }
- *
- *   FAILURE POLICY:
- *     Missing class, missing discipline, invalid week → null.
- *     Missing enrolled students → empty students array (a class
- *     with no students is a legitimate state).
- *     Projector failure for a student → that student's occupied
- *     array is empty, and the student carries
- *     `occupiedUnavailable: true` so the caller can warn.
- *     Missing teaching groups module → null (the rebalance is
- *     meaningless without groups).
- *     Missing teaching sessions module → each group's sessions
- *     array is empty; the group can accept any student.
+ *   consumes. It does NOT run the algorithm.
  *
  * FREE SLOT CANDIDATE STUDENTS (v33):
  *   getFreeSlotCandidateStudentsViewModel(classId, disciplineId,
- *   week) answers "which students are eligible to be placed into a
- *   new session for this discipline right now?"
+ *   week) answers "which students are eligible to be placed into
+ *   a new session for this discipline right now?"
  *
- *   This is the student list the free-slots filter panel consumes.
- *   The question is deliberately narrower than "every enrolled
- *   student" and the answer is deliberately conservative:
+ * SHARED GROUPS (v34):
+ *   getSharedGroupsViewModel(charIds, options) answers "which
+ *   teaching groups contain at least two of these characters, and
+ *   during which weeks?" The question is GROUP-CENTRIC: two
+ *   characters enrolled in the same discipline but placed in
+ *   different groups are NOT reported. That is the strict reading
+ *   of "same group" and the one the UI advertises.
  *
- *     A student is a candidate when ALL of the following hold:
- *       - they are enrolled in this discipline for this class at
- *         this week
- *       - they are not in instructor mode (instructors are not
- *         students)
- *       - they are not eliminated as of this week
- *       - they are not deceased
- *       - they are not currently an active member of any teaching
- *         group of this (class, discipline) pair at this week
+ *   The query is CLASS-SCOPED implicitly: a teaching group belongs
+ *   to exactly one class, so a group match implies a class match.
  *
- *   The last condition is the important one. A student already in
- *   a group has nowhere to go; the free-slots panel is a search
- *   for candidates who need placement, not a roster. Excluding
- *   assigned students keeps the list short and its meaning clear.
+ *   Instructor-role enrolments are excluded from the pool: an
+ *   instructor teaching English is not "in the same group" as a
+ *   student studying English, even if they appear in the group's
+ *   members[] array as an owner. Instructors are addressed by a
+ *   different query (getClassInstructorIds).
  *
- *   The result is an array of:
- *     { id, name, status }
- *   sorted by name ascending, then id ascending.
+ *   A character's group can change week-to-week. The projection
+ *   walks each character's enrolment weeks and resolves the group
+ *   per week. Two characters who shared a group in week 3 but were
+ *   split in week 8 report a weeks list of [3, ..., 7] and do not
+ *   report week 8.
+ *
+ *   OPTIONS:
+ *     classId  string|null  When supplied, only that class is
+ *                           inspected. When null (default), every
+ *                           class either character is enrolled in
+ *                           is walked. The launcher from a
+ *                           character's schedule passes the
+ *                           currently selected class when one is
+ *                           selected, and null otherwise.
+ *     week     number|null  When supplied, only that week is
+ *                           inspected. When null (default), every
+ *                           week either character's enrolment
+ *                           covers is walked.
+ *
+ *   SORT:
+ *     Rows sorted by (className, disciplineName, groupName).
+ *     Characters within a row sorted by display name.
  *
  *   FAILURE POLICY:
- *     Missing class, missing discipline, invalid week → null.
- *     Missing AcademyTeachingGroups → throws (via require); the
- *       "already assigned" question cannot be answered without it.
- *     Missing enrolment or elimination data → conservative
- *       exclusion. If we cannot confirm a student is unassigned
- *       and eligible, they do not appear.
+ *     Non-array charIds, or fewer than two distinct charIds → an
+ *     empty VM (not null). Callers render "no shared groups" as a
+ *     normal outcome; distinguishing "no selection" from "no
+ *     matches" is not the projection's job.
  *
- *   WHY THIS PROJECTION EXISTS:
- *     An earlier revision built this list inside the view
- *     (academy-discipline-view.js). That put domain reads —
- *     enrolment, elimination, teaching-group membership — inside a
- *     renderer. Moving it here centralizes the "who is a valid
- *     candidate for a new slot" question in one place, so the
- *     rebalance modal and the free-slots panel agree by
- *     construction. It also means the view is a renderer again,
- *     which is what it was supposed to be.
+ *     A character with no classes, no enrolments, or no groups
+ *     contributes nothing. That is a legitimate "they share
+ *     nothing with anyone" outcome, not a failure.
+ *
+ *     Missing AcademyTeachingGroups → throws (via require). The
+ *     question cannot be answered without group membership.
+ *
+ *     Missing CharacterQueries → throws. Names are part of the
+ *     contract.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -277,7 +163,7 @@
  *   Each team member entry on a persistent Team entity is:
  *
  *     {
- *       memberId,        // stable per-entry identifier
+ *       memberId,
  *       characterId,
  *       role,
  *       intervals: [
@@ -286,66 +172,10 @@
  *       ]
  *     }
  *
- *   The member VM carries the entry's `intervals` array verbatim
- *   (each interval gets its own periodDisplay string), plus a flat
- *   `periodDisplay` summary for list views that don't expand them.
- *
  * WEEKLY TEAMS WEEK FILTER:
  *   The team list for a given (class, week) is filtered by the
  *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
  *   weekly-team window record. Both must contain the week.
- *
- * WEEKLY TEAMS ROSTER:
- *   The roster for a team comes from the PERSISTENT Team entity's
- *   members[] array, filtered by week through
- *   TeamQueries.getActiveTeamMembers. The weekly-team record carries
- *   ONLY the week window.
- *
- * FORMER MEMBERS:
- *   getWeeklyTeamMemberManagerViewModel returns BOTH:
- *     members       — active at the display week
- *     formerMembers — entries with no interval containing the
- *                     display week, but at least one interval whose
- *                     leavePeriod is present and strictly less than
- *                     the display week
- *
- * ORPHAN TEAMS:
- *   Academic Teams with classId === null are surfaced by
- *   getUnassignedTeamsViewModel and by the orphanTeams field on the
- *   Weekly Teams VM.
- *
- * CLASS-DISCIPLINE PICKER (v27):
- *   The picker VM is derived from two sources:
- *     - AcademyDisciplines.getDisciplines()          (global list)
- *     - AcademyClassDisciplinesQueries.hasClassDiscipline
- *                                                     (offered?)
- *
- *   The picker is a MARKER EDITOR. It shows which disciplines a
- *   class offers, and the per-class `mandatory` flag on each offered
- *   discipline. It does NOT show instructors.
- *
- * DISCIPLINE LIST (v27):
- *   getDisciplineListViewModel does not carry instructorIds or
- *   instructorNames.
- *
- * SCHEDULE SOURCE:
- *   Location schedule projections read from
- *   AcademyCalendarAggregator, which is projector-backed.
- *
- * ELIMINATION SEMANTICS:
- *   The People sidebar and the weekly-team candidate pool both use
- *   the SAME definition of "eliminated": eliminated as of the
- *   displayed week, computed by
- *   EliminationQueries.isCharacterEliminatedByWeek. Boundary rule:
- *   elimination at week E counts for week W when E < W.
- *
- *   People filter values: 'active', 'eliminated', 'deceased', 'all'.
- *   'active' excludes both deceased and eliminated.
- *
- * FAIL-CLOSED ELIGIBILITY:
- *   getWeeklyTeamMemberManagerViewModel treats EliminationQueries as
- *   a required dependency. Missing or throwing → the projection
- *   throws. It does NOT silently treat the candidate as eligible.
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyClasses
@@ -366,11 +196,9 @@
  *   - AcademyCalendarAggregator
  *   - AcademyGrades
  *   - EliminationQueries
- *   - AcademyTeachingGroups      (rebalance VM, free-slot candidates,
- *                                 and the instructor group picker)
- *   - AcademyTeachingSessions    (rebalance VM and the instructor
- *                                 group picker)
- *   - AcademyTeachingProjector   (rebalance VM)
+ *   - AcademyTeachingGroups
+ *   - AcademyTeachingSessions
+ *   - AcademyTeachingProjector
  */
 
 (function() {
@@ -533,18 +361,7 @@
     // ============================================================
     // LAZY-BUT-MANDATORY DEPENDENCIES
     // ============================================================
-    //
-    // Resolved at call time by the projections that need them.
-    // Missing at call time throws; it is not silently treated as
-    // "no data." This is the "lazy ≠ optional" pattern: load order
-    // is deferred, mandatory-ness is not.
 
-    /**
-     * Resolve AcademyTeachingGroups for the group-picker projection,
-     * the rebalance VM, and the free-slot candidate students
-     * projection.
-     * Throws when the module is missing or malformed.
-     */
     function requireAcademyTeachingGroups(contextLabel) {
         var ATG = window.AcademyTeachingGroups;
         if (!ATG ||
@@ -559,11 +376,6 @@
         return ATG;
     }
 
-    /**
-     * Resolve AcademyTeachingSessions for the group-picker
-     * projection's session counts and for the rebalance VM.
-     * Throws when the module is missing or malformed.
-     */
     function requireAcademyTeachingSessions(contextLabel) {
         var ATS = window.AcademyTeachingSessions;
         if (!ATS || typeof ATS.getSessionsForGroup !== 'function') {
@@ -576,10 +388,6 @@
         return ATS;
     }
 
-    /**
-     * Resolve AcademyTeachingProjector for the rebalance VM.
-     * Throws when the module is missing or malformed.
-     */
     function requireAcademyTeachingProjector(contextLabel) {
         var ATP = window.AcademyTeachingProjector;
         if (!ATP ||
@@ -605,9 +413,6 @@
         return typeof value === 'number' && isFinite(value);
     }
 
-    /**
-     * Resolve a week to a bounded integer, or null.
-     */
     function resolveWeek(week) {
         if (week === undefined || week === null || week === '') {
             return null;
@@ -638,28 +443,6 @@
         return '-';
     }
 
-    /**
-     * Return the IDs of every instructor actively teaching in this
-     * class at the given week.
-     *
-     * Delegates to AcademyClasses.getClassInstructorIds, which is
-     * the canonical WEEK-SCOPED query. Returns an empty array when
-     * the query is unavailable or the class has no active
-     * instructors that week.
-     *
-     * USE THIS FOR:
-     *   - Schedule collision detection
-     *   - "Who is teaching this class this week?" displays
-     *
-     * DO NOT USE THIS FOR:
-     *   - Roster derivation
-     *   - Role classification
-     *   - Candidate pools
-     *   - Anything that answers "who is an instructor OF this class?"
-     *
-     * Those questions are YEAR-LEVEL and use
-     * getClassInstructorSetForClass below.
-     */
     function getClassInstructorIds(classId, week, disciplineId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -687,38 +470,6 @@
         }
     }
 
-    /**
-     * Return the set of characters who are instructors OF THIS CLASS.
-     *
-     * THE RULE (v31, this revision):
-     *
-     *     AcademyClasses.getClassInstructorIdsAllTime(classId)
-     *
-     * which walks the class's enrolment intervals and returns
-     * every character who has any instructor-role interval in
-     * this class. The role is a CLASS-SCOPED fact on the
-     * enrolment; the character-wide `mode` field is a legacy
-     * tombstone and is NOT consulted.
-     *
-     * WHAT THIS REPLACED:
-     *   Prior to this revision, the function walked
-     *   CharacterQueries.getCharacters() and tested
-     *   `character.mode === 'instructor'` plus
-     *   `classId ∈ character.classIds`. That rule read the
-     *   tombstone, which the v31 migration leaves in place and
-     *   which the class-scoped role toggle does not clear. The
-     *   result was that the People sidebar and the class roster
-     *   disagreed with the character detail panel after a role
-     *   toggle: the panel read the enrolment intervals and showed
-     *   the new role; the sidebar read the tombstone and showed
-     *   the old one.
-     *
-     *   Delegating to getClassInstructorIdsAllTime closes the
-     *   divergence: both views now read the same store.
-     *
-     * Returns an object shaped as a set for O(1) membership tests:
-     *   { [charId: string]: true }
-     */
     function getClassInstructorSetForClass(classId) {
         var set = Object.create(null);
         if (!isNonEmptyString(classId)) {
@@ -752,11 +503,6 @@
         return set;
     }
 
-    /**
-     * Build a set-shaped lookup from an array of character IDs.
-     * Keys are stringified so numeric-string mismatches do not
-     * produce false negatives.
-     */
     function buildIdSet(ids) {
         var set = Object.create(null);
         if (!Array.isArray(ids)) { return set; }
@@ -767,6 +513,100 @@
             set[key] = true;
         }
         return set;
+    }
+
+    /**
+     * Enumerate every week covered by a non-empty list of
+     * { startWeek, endWeek } intervals, deduplicated and sorted
+     * ascending.
+     *
+     * endWeek === null or undefined means "ongoing" and is treated
+     * as CalendarConstants.MAX_WEEK.
+     *
+     * Bounds that are not finite numbers are ignored (the interval
+     * contributes nothing). This mirrors the module-wide policy of
+     * not fabricating plausible values from malformed data. A
+     * caller that needs to distinguish "no valid weeks" from
+     * "corrupt intervals" should inspect the intervals directly.
+     *
+     * The result is capped at (MAX_WEEK - MIN_WEEK + 1) entries.
+     * The interval range is the calendar range; the function cannot
+     * produce more weeks than the calendar contains.
+     */
+    function enumerateWeeksOfIntervals(intervals) {
+        var seen = Object.create(null);
+        var result = [];
+
+        if (!Array.isArray(intervals) || intervals.length === 0) {
+            return result;
+        }
+
+        var minW = CalendarConstants.MIN_WEEK;
+        var maxW = CalendarConstants.MAX_WEEK;
+
+        for (var i = 0; i < intervals.length; i++) {
+            var iv = intervals[i];
+            if (!iv || typeof iv !== 'object') { continue; }
+
+            var start = iv.startWeek;
+            if (typeof start !== 'number' || !isFinite(start)) {
+                continue;
+            }
+            if (start < minW) { start = minW; }
+            if (start > maxW) { continue; }
+
+            var end;
+            if (iv.endWeek === null || iv.endWeek === undefined) {
+                end = maxW;
+            } else if (typeof iv.endWeek === 'number' &&
+                       isFinite(iv.endWeek)) {
+                end = iv.endWeek;
+            } else {
+                continue;
+            }
+
+            if (end < minW) { continue; }
+            if (end > maxW) { end = maxW; }
+            if (end < start) { continue; }
+
+            for (var w = start; w <= end; w++) {
+                var key = String(w);
+                if (seen[key]) { continue; }
+                seen[key] = true;
+                result.push(w);
+            }
+        }
+
+        result.sort(function(a, b) { return a - b; });
+        return result;
+    }
+
+    /**
+     * Collapse a sorted array of weeks into contiguous ranges.
+     * Used to produce weekRanges on shared-group rows for compact
+     * rendering ("Weeks 3–7, 12").
+     */
+    function collapseWeeksToRanges(weeks) {
+        var ranges = [];
+        if (!Array.isArray(weeks) || weeks.length === 0) {
+            return ranges;
+        }
+
+        var start = weeks[0];
+        var prev = weeks[0];
+
+        for (var i = 1; i < weeks.length; i++) {
+            var w = weeks[i];
+            if (w === prev + 1) {
+                prev = w;
+                continue;
+            }
+            ranges.push({ start: start, end: prev });
+            start = w;
+            prev = w;
+        }
+        ranges.push({ start: start, end: prev });
+        return ranges;
     }
 
     // ============================================================
@@ -963,25 +803,6 @@
     // ============================================================
     // REBALANCE INPUT (v32)
     // ============================================================
-    //
-    // Assembles the input object AcademyBalanceSuggestions.suggest
-    // consumes. Does NOT run the algorithm.
-    //
-    // ELIMINATED STUDENTS:
-    //   A student who is eliminated as of the rebalance week is
-    //   excluded. Enrolment is a year-level fact; participation is
-    //   not. An eliminated student cannot take the class, so they
-    //   cannot be placed into a group.
-    //
-    //   The check uses EliminationQueries.isCharacterEliminatedByWeek,
-    //   which applies the same boundary the roster derivation uses:
-    //   eliminated at week E counts for weeks > E, not for week E
-    //   itself.
-    //
-    //   When EliminationQueries is not loaded, the check is skipped.
-    //   That preserves the pre-fix behavior rather than silently
-    //   excluding students on the basis of a module that is not
-    //   present.
 
     function getRebalanceInputViewModel(
         classId,
@@ -1029,12 +850,6 @@
             groupFilter = buildIdSet(options.groupIds);
         }
 
-        // ---- Elimination check availability ----
-        //
-        // Resolved once. If the module is not loaded, the check is
-        // skipped for every student. If it is loaded but throws for
-        // a specific student, that student is conservatively
-        // excluded.
         var EQ = getEliminationQueries();
         var eliminationCheckAvailable = EQ &&
             typeof EQ.isCharacterEliminatedByWeek === 'function';
@@ -1190,18 +1005,6 @@
 
             if (char.mode === 'instructor') { continue; }
 
-            // ---- Eliminated students cannot be rebalanced ----
-            //
-            // Enrolment is a year-level fact. Participation is not.
-            // A student eliminated at or before the rebalance week
-            // cannot take the class, so they cannot be placed into
-            // any group.
-            //
-            // If the elimination check throws for a specific
-            // student, that student is conservatively excluded.
-            // If the module is not loaded at all, the check is
-            // skipped entirely (the outer `eliminationCheckAvailable`
-            // guard).
             if (eliminationCheckAvailable) {
                 var eliminatedNow = false;
                 try {
@@ -1318,34 +1121,6 @@
     // ============================================================
     // FREE SLOT CANDIDATE STUDENTS (v33)
     // ============================================================
-    //
-    // The student list the free-slots filter panel consumes.
-    //
-    // A student is a CANDIDATE for a free slot when ALL of these
-    // hold:
-    //
-    //   - they are enrolled in this discipline for this class at
-    //     this week
-    //   - they are not in instructor mode
-    //   - they are not eliminated as of this week
-    //   - they are not deceased
-    //   - they are not currently an active member of ANY teaching
-    //     group of this (class, discipline) pair at this week
-    //
-    // See the file header for why this projection exists, and why
-    // the last condition is the important one.
-    //
-    // FAILURE POLICY:
-    //   Missing class, discipline, or week → null.
-    //   Missing AcademyTeachingGroups → throws (via require).
-    //   Missing EliminationQueries → conservative exclusion: with
-    //     no way to check elimination, we cannot confirm a student
-    //     is eligible, so the projection returns [] for the
-    //     elimination-dependent portion. In practice this is very
-    //     unlikely (EliminationQueries is loaded early) but the
-    //     failure mode is safe: fewer candidates, never more.
-    //   Missing enrolment data → the student is not in the enrolled
-    //     set, so they do not appear.
 
     function getFreeSlotCandidateStudentsViewModel(
         classId,
@@ -1371,7 +1146,6 @@
             'getFreeSlotCandidateStudentsViewModel'
         );
 
-        // ---- Enrolled students this week ----
         var enrolledStudentIds = [];
         try {
             enrolledStudentIds = AcademyEnrolments.getEnrolledStudents(
@@ -1387,19 +1161,6 @@
         if (!Array.isArray(enrolledStudentIds)) {
             enrolledStudentIds = [];
         }
-
-        // ---- Assigned students: active member of any group ----
-        //
-        // A student who appears in the members[] array of any
-        // teaching group of this (class, discipline) pair AND has
-        // an active interval at this week is already assigned. They
-        // are not a candidate.
-        //
-        // Note: this is NOT the same as `getGroupForStudentInClassDiscipline`.
-        // That function returns the single group a student is in,
-        // which is correct for that question. Here we want "is this
-        // student in any group at all," which needs the union
-        // across all groups. We build it directly.
 
         var assignedSet = Object.create(null);
 
@@ -1442,13 +1203,6 @@
             }
         }
 
-        // ---- Elimination dependency ----
-        //
-        // Conservative: without EliminationQueries we cannot
-        // confirm eligibility. Return [] so the caller does not
-        // present a list we cannot stand behind. This is the
-        // fail-closed rule, matching the weekly-team member manager.
-
         var EQ = getEliminationQueries();
         if (!EQ ||
             typeof EQ.isCharacterEliminatedByWeek !== 'function') {
@@ -1474,8 +1228,6 @@
             };
         }
 
-        // ---- Build the candidate list ----
-
         var result = [];
 
         for (var i = 0; i < enrolledStudentIds.length; i++) {
@@ -1484,28 +1236,21 @@
 
             var studentId = String(studentIdRaw);
 
-            // Already in a group? Not a candidate.
             if (assignedSet[studentId] === true) { continue; }
 
             var char = CharacterQueries.getCharacterById(studentId);
             if (!char) { continue; }
 
-            // Instructors are not students.
             if (char.mode === 'instructor') { continue; }
 
-            // Deceased at any point? Not a candidate.
             if (char.deceased === true) { continue; }
 
-            // Eliminated as of this week? Not a candidate.
             var eliminated = false;
             try {
                 eliminated = EQ.isCharacterEliminatedByWeek(
                     studentId, weekNum
                 ) === true;
             } catch (e) {
-                // If the elimination check throws for this
-                // student, we cannot confirm eligibility.
-                // Conservative: exclude them.
                 eliminated = true;
             }
             if (eliminated) { continue; }
@@ -1538,6 +1283,450 @@
             week: weekNum,
             students: result,
             studentCount: result.length
+        };
+    }
+
+    // ============================================================
+    // SHARED GROUPS (v34)
+    // ============================================================
+    //
+    // See the header for the full contract. Summary:
+    //
+    //   Input:   charIds (>=2 distinct), options { classId?, week? }
+    //   Output:  rows, one per (class, discipline, group) that
+    //            contains at least two of the selected characters,
+    //            with each row carrying the subset of selected
+    //            characters actually in that group and the weeks
+    //            their memberships overlap.
+    //
+    //   Same-group only. Enrolment in the same discipline is NOT
+    //   sufficient. Instructors are excluded from the pool.
+    //
+    //   Failure policy: empty VM for missing/insufficient input;
+    //   throws for missing AcademyTeachingGroups or
+    //   CharacterQueries. No partial rows on domain failure — a
+    //   character whose lookup throws contributes nothing.
+    //
+    //   Complexity: O(selectedChars × classes × disciplines ×
+    //   weeks). Bounded above by 1000s of iterations for realistic
+    //   data. The index is built once and then walked once to
+    //   produce rows.
+
+    function getSharedGroupsViewModel(charIds, options) {
+        options = (options && typeof options === 'object')
+            ? options
+            : {};
+
+        var emptyVM = {
+            charIds: [],
+            characters: [],
+            rows: [],
+            totalRows: 0
+        };
+
+        if (!Array.isArray(charIds)) {
+            return emptyVM;
+        }
+
+        // ---- Deduplicate and normalise the selection ----
+        var selectedIds = [];
+        var seenSelected = Object.create(null);
+        for (var i = 0; i < charIds.length; i++) {
+            if (!isNonEmptyString(charIds[i])) { continue; }
+            var id = String(charIds[i]);
+            if (seenSelected[id]) { continue; }
+            seenSelected[id] = true;
+            selectedIds.push(id);
+        }
+
+        // ---- Resolve character names (used by picker and rows) ----
+        var characterVMs = [];
+        var characterNameById = Object.create(null);
+        for (var c = 0; c < selectedIds.length; c++) {
+            var charLookupId = selectedIds[c];
+            var resolvedChar =
+                CharacterQueries.getCharacterById(charLookupId);
+            if (!resolvedChar) { continue; }
+            var resolvedName =
+                CharacterQueries.getDisplayName(resolvedChar);
+            characterNameById[charLookupId] = resolvedName;
+            characterVMs.push({
+                id: charLookupId,
+                name: resolvedName
+            });
+        }
+
+        if (selectedIds.length < 2) {
+            return {
+                charIds: selectedIds,
+                characters: characterVMs,
+                rows: [],
+                totalRows: 0
+            };
+        }
+
+        // ---- Resolve the domain helper (mandatory) ----
+        var ATG = requireAcademyTeachingGroups(
+            'getSharedGroupsViewModel'
+        );
+
+        var classFilter = isNonEmptyString(options.classId)
+            ? String(options.classId)
+            : null;
+
+        var weekFilter = resolveWeek(options.week);
+
+        // ---- Build the (class, discipline, group) index ----
+        //
+        // Shape:
+        //   index[classId][disciplineId][groupId] = {
+        //     charId -> { weeks: Set-like object of week strings }
+        //   }
+        //
+        // Nested plain objects rather than one composite string key.
+        // Readability of a console dump matters more than a
+        // negligible allocation difference at these sizes.
+
+        var index = Object.create(null);
+
+        for (var pi = 0; pi < selectedIds.length; pi++) {
+            var cid = selectedIds[pi];
+
+            var cChar = CharacterQueries.getCharacterById(cid);
+            if (!cChar) { continue; }
+
+            var classIds = Array.isArray(cChar.classIds)
+                ? cChar.classIds
+                : [];
+
+            for (var cli = 0; cli < classIds.length; cli++) {
+                var classId = String(classIds[cli]);
+                if (classFilter !== null && classId !== classFilter) {
+                    continue;
+                }
+
+                var disciplineIds = [];
+                try {
+                    disciplineIds =
+                        AcademyEnrolments.getStudentDisciplineIds(
+                            cid, classId, { role: 'student' }
+                        ) || [];
+                } catch (e) {
+                    disciplineIds = [];
+                }
+
+                if (!Array.isArray(disciplineIds)) {
+                    disciplineIds = [];
+                }
+
+                // Cache enrolment intervals per class once. The
+                // nested discipline loop would otherwise re-fetch
+                // the same interval list for every discipline.
+                var classIntervals = [];
+                try {
+                    classIntervals =
+                        AcademyEnrolments.getStudentDisciplines(
+                            cid, classId
+                        ) || [];
+                } catch (e) {
+                    classIntervals = [];
+                }
+                if (!Array.isArray(classIntervals)) {
+                    classIntervals = [];
+                }
+
+                for (var di = 0; di < disciplineIds.length; di++) {
+                    var disciplineId = String(disciplineIds[di]);
+
+                    // Filter intervals to this discipline and to
+                    // student-role only.
+                    var disciplineIntervals = [];
+                    for (var ci = 0; ci < classIntervals.length; ci++) {
+                        var iv = classIntervals[ci];
+                        if (!iv) { continue; }
+                        if (String(iv.disciplineId) !== disciplineId) {
+                            continue;
+                        }
+                        if (iv.role === 'instructor') { continue; }
+                        disciplineIntervals.push(iv);
+                    }
+
+                    if (disciplineIntervals.length === 0) { continue; }
+
+                    // Which weeks to inspect?
+                    var weeksToCheck;
+                    if (weekFilter !== null) {
+                        // Confirm the enrolment covers that week
+                        // before calling into the group query. The
+                        // group query would return null for a
+                        // non-enrolled week anyway, but skipping
+                        // here avoids a pointless domain call per
+                        // (char, discipline) when the caller has
+                        // narrowed to a single week.
+                        var covered = false;
+                        for (var cw = 0; cw < disciplineIntervals.length; cw++) {
+                            if (RangeUtils.containsWeek(
+                                weekFilter,
+                                disciplineIntervals[cw].startWeek,
+                                disciplineIntervals[cw].endWeek
+                            )) {
+                                covered = true;
+                                break;
+                            }
+                        }
+                        if (!covered) { continue; }
+                        weeksToCheck = [weekFilter];
+                    } else {
+                        weeksToCheck = enumerateWeeksOfIntervals(
+                            disciplineIntervals
+                        );
+                    }
+
+                    for (var wi = 0; wi < weeksToCheck.length; wi++) {
+                        var weekNum = weeksToCheck[wi];
+
+                        var group = null;
+                        try {
+                            group = ATG.getGroupForStudentInClassDiscipline(
+                                classId, disciplineId, cid, weekNum
+                            );
+                        } catch (e) {
+                            group = null;
+                        }
+                        if (!group || !group.id) { continue; }
+
+                        var groupId = String(group.id);
+
+                        if (!index[classId]) {
+                            index[classId] = Object.create(null);
+                        }
+                        if (!index[classId][disciplineId]) {
+                            index[classId][disciplineId] =
+                                Object.create(null);
+                        }
+                        if (!index[classId][disciplineId][groupId]) {
+                            index[classId][disciplineId][groupId] =
+                                Object.create(null);
+                        }
+                        var groupBucket =
+                            index[classId][disciplineId][groupId];
+
+                        if (!groupBucket[cid]) {
+                            groupBucket[cid] = Object.create(null);
+                        }
+
+                        groupBucket[cid][String(weekNum)] = true;
+                    }
+                }
+            }
+        }
+
+        // ---- Walk the index and build rows ----
+        //
+        // A row is emitted only for group buckets that contain at
+        // least two distinct selected characters.
+
+        var rows = [];
+
+        var classIdKeys = Object.keys(index);
+
+        for (var ki = 0; ki < classIdKeys.length; ki++) {
+            var rowClassId = classIdKeys[ki];
+            var classRecord = null;
+            try {
+                classRecord = AcademyClasses.getClass(rowClassId);
+            } catch (e) {
+                classRecord = null;
+            }
+            var className = classRecord && isNonEmptyString(classRecord.name)
+                ? classRecord.name
+                : 'Unnamed Class';
+
+            var disciplineMap = index[rowClassId];
+            var disciplineKeys = Object.keys(disciplineMap);
+
+            for (var dki = 0; dki < disciplineKeys.length; dki++) {
+                var rowDisciplineId = disciplineKeys[dki];
+                var disciplineRecord = null;
+                try {
+                    disciplineRecord = AcademyDisciplines.getDiscipline(
+                        rowDisciplineId
+                    );
+                } catch (e) {
+                    disciplineRecord = null;
+                }
+                var disciplineName =
+                    disciplineRecord &&
+                    isNonEmptyString(disciplineRecord.name)
+                        ? disciplineRecord.name
+                        : 'Unnamed Discipline';
+
+                var groupMap = disciplineMap[rowDisciplineId];
+                var groupKeys = Object.keys(groupMap);
+
+                for (var gki = 0; gki < groupKeys.length; gki++) {
+                    var rowGroupId = groupKeys[gki];
+                    var charBucket = groupMap[rowGroupId];
+
+                    var sharedCharIds = Object.keys(charBucket);
+                    if (sharedCharIds.length < 2) { continue; }
+
+                    // Merge weeks across every shared character.
+                    // A week counts as "shared" when every shared
+                    // character is in the group that week? No — a
+                    // week counts when AT LEAST TWO of the selected
+                    // characters are in the group that week. That
+                    // matches "these people were together in week
+                    // W." A subset of the selected characters that
+                    // were co-located in week W is what the user
+                    // wants to see, not the intersection of all
+                    // selected characters.
+                    //
+                    // Weekly membership sets are disjoint per
+                    // character within a group, so a week is
+                    // present in charBucket[cid] if that character
+                    // was in the group that week. A week with two
+                    // or more characters present is a shared week.
+                    var weekPresence = Object.create(null);
+                    for (var sci = 0; sci < sharedCharIds.length; sci++) {
+                        var perCharWeeks = charBucket[sharedCharIds[sci]];
+                        var weekKeys = Object.keys(perCharWeeks);
+                        for (var wki = 0; wki < weekKeys.length; wki++) {
+                            var wk = weekKeys[wki];
+                            if (!weekPresence[wk]) {
+                                weekPresence[wk] = 0;
+                            }
+                            weekPresence[wk] += 1;
+                        }
+                    }
+
+                    var sharedWeeks = [];
+                    var allWeekKeys = Object.keys(weekPresence);
+                    for (var wki2 = 0; wki2 < allWeekKeys.length; wki2++) {
+                        var wk2 = allWeekKeys[wki2];
+                        if (weekPresence[wk2] >= 2) {
+                            sharedWeeks.push(parseInt(wk2, 10));
+                        }
+                    }
+
+                    if (sharedWeeks.length === 0) { continue; }
+
+                    sharedWeeks.sort(function(a, b) { return a - b; });
+
+                    // Resolve group display info.
+                    var groupRecord = null;
+                    try {
+                        if (typeof ATG.getGroup === 'function') {
+                            groupRecord = ATG.getGroup(rowGroupId);
+                        }
+                    } catch (e) {
+                        groupRecord = null;
+                    }
+
+                    var groupNumber = groupRecord &&
+                        isFiniteNumber(groupRecord.groupNumber)
+                        ? groupRecord.groupNumber
+                        : 0;
+                    var customName = groupRecord &&
+                        isNonEmptyString(groupRecord.customName)
+                        ? String(groupRecord.customName).trim()
+                        : null;
+
+                    var groupName;
+                    if (customName !== null) {
+                        groupName = customName;
+                    } else if (groupNumber > 0) {
+                        groupName = disciplineName + ' ' + groupNumber;
+                    } else {
+                        groupName = disciplineName;
+                    }
+
+                    var rowInstructorId = groupRecord &&
+                        isNonEmptyString(groupRecord.instructorId)
+                        ? String(groupRecord.instructorId)
+                        : null;
+                    var rowInstructorName = rowInstructorId
+                        ? getCharacterDisplayName(rowInstructorId)
+                        : '';
+
+                    var rowMemberCount = 0;
+                    try {
+                        var activeMembers = ATG.getActiveMembers(
+                            rowGroupId,
+                            sharedWeeks[sharedWeeks.length - 1]
+                        );
+                        if (Array.isArray(activeMembers)) {
+                            rowMemberCount = activeMembers.length;
+                        }
+                    } catch (e) {
+                        rowMemberCount = 0;
+                    }
+
+                    var sharedCharNames = [];
+                    for (var sni = 0; sni < sharedCharIds.length; sni++) {
+                        var scid = sharedCharIds[sni];
+                        var sname = characterNameById[scid];
+                        if (!isNonEmptyString(sname)) {
+                            sname = getCharacterDisplayName(scid);
+                        }
+                        sharedCharNames.push(sname);
+                    }
+
+                    // Sort the shared-character lists by name.
+                    var paired = [];
+                    for (var ppi = 0; ppi < sharedCharIds.length; ppi++) {
+                        paired.push({
+                            id: sharedCharIds[ppi],
+                            name: sharedCharNames[ppi]
+                        });
+                    }
+                    paired.sort(function(a, b) {
+                        if (a.name !== b.name) {
+                            return a.name.localeCompare(b.name);
+                        }
+                        return a.id.localeCompare(b.id);
+                    });
+                    sharedCharIds = paired.map(function(p) {
+                        return p.id;
+                    });
+                    sharedCharNames = paired.map(function(p) {
+                        return p.name;
+                    });
+
+                    rows.push({
+                        classId: rowClassId,
+                        className: className,
+                        disciplineId: rowDisciplineId,
+                        disciplineName: disciplineName,
+                        groupId: rowGroupId,
+                        groupName: groupName,
+                        instructorId: rowInstructorId,
+                        instructorName: rowInstructorName,
+                        memberCount: rowMemberCount,
+                        sharedCharIds: sharedCharIds,
+                        sharedCharNames: sharedCharNames,
+                        weeks: sharedWeeks,
+                        weekRanges: collapseWeeksToRanges(sharedWeeks)
+                    });
+                }
+            }
+        }
+
+        rows.sort(function(a, b) {
+            if (a.className !== b.className) {
+                return a.className.localeCompare(b.className);
+            }
+            if (a.disciplineName !== b.disciplineName) {
+                return a.disciplineName.localeCompare(b.disciplineName);
+            }
+            return a.groupName.localeCompare(b.groupName);
+        });
+
+        return {
+            charIds: selectedIds,
+            characters: characterVMs,
+            rows: rows,
+            totalRows: rows.length
         };
     }
 
@@ -1594,7 +1783,6 @@
 
         var weekNum = resolveWeek(week);
 
-        // YEAR-LEVEL instructor exclusion. Not week-scoped.
         var instructorSet = getClassInstructorSetForClass(classId);
 
         var all = CharacterQueries.getCharacters() || [];
@@ -1740,7 +1928,6 @@
             weekNum
         );
 
-        // YEAR-LEVEL instructors of this class. Not week-scoped.
         var instructorSet = getClassInstructorSetForClass(
             selectedClass.id
         );
@@ -2140,7 +2327,6 @@
             return [];
         }
 
-        // WEEK-SCOPED instructor exclusion.
         var weekNum = resolveWeek(week);
         var instructorIds = getClassInstructorIds(classId, weekNum);
         var instructorSet = buildIdSet(instructorIds);
@@ -2923,6 +3109,9 @@
         getFreeSlotCandidateStudentsViewModel:
             getFreeSlotCandidateStudentsViewModel,
 
+        // Shared groups (v34)
+        getSharedGroupsViewModel: getSharedGroupsViewModel,
+
         // Instructor-of-class (YEAR-LEVEL rule).
         getClassInstructorSetForClass: getClassInstructorSetForClass
     });
@@ -2954,6 +3143,7 @@
             'getUnassignedTeamsViewModel',
             'getRebalanceInputViewModel',
             'getFreeSlotCandidateStudentsViewModel',
+            'getSharedGroupsViewModel',
             'getClassInstructorSetForClass'
         ];
 
