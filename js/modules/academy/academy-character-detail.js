@@ -9,7 +9,7 @@
  *   A character's role — student or instructor — is CLASS-SCOPED.
  *   See the previous revision for the full contract.
  *
- * FILLER FLAG (this revision):
+ * FILLER FLAG:
  *   The header carries a checkbox, #academy-char-is-filler,
  *   directly below the mode toggle. It is a live toggle: clicking
  *   it emits
@@ -33,9 +33,32 @@
  * TEACHING GROUPS CANDIDATE PICKER:
  *   Unchanged.
  *
+ * SHARED GROUPS LAUNCHER (v34):
+ *   The Schedule tab's action row carries a "Find Shared Groups"
+ *   button alongside the existing "Export Schedule" and per-day
+ *   export buttons. It emits
+ *
+ *     data-action="shared-groups-open-for-character"
+ *     data-character-id="<id>"
+ *
+ *   The People controller routes the action to
+ *   AcademySharedGroupsController.openForCharacter(id), which
+ *   switches the shell's active view to 'sharedGroups' with the
+ *   character pre-seeded as the anchor.
+ *
+ *   This renderer does NOT depend on the shared-groups modules.
+ *   It emits the marker; the controller resolves the dependency.
+ *   A partial load that is missing the shared-groups controller
+ *   degrades to a toast: clicking the button reports "Shared
+ *   Groups view is not loaded."
+ *
  * DEPENDENCIES:
  *   - window.DomUtils (MANDATORY)
  *   - window.AcademyUI (for collapse state reads)
+ *
+ *   No other module is referenced from this file. The shared-
+ *   groups launcher is emitted as a data-action marker and has
+ *   no direct dependency.
  */
 
 (function() {
@@ -347,15 +370,9 @@
 
         var charId = String(character.id);
 
-        // The flag is a boolean on the character record. We treat
-        // anything other than true as false.
         var isFiller = character.isFiller === true;
         var isChecked = isFiller ? ' checked' : '';
 
-        // The action value is the value the checkbox will become.
-        // Checking flips the target to true; unchecking to false.
-        // The controller reads data-target-value and calls
-        // setFillerFlag with it.
         var targetValue = isFiller ? 'false' : 'true';
 
         var checkboxId = 'academy-char-is-filler';
@@ -450,7 +467,7 @@
     }
 
     // ============================================================
-    // MAIN TAB (unchanged)
+    // MAIN TAB
     // ============================================================
 
     function renderMainTab(vm, mode) {
@@ -646,7 +663,7 @@
     }
 
     // ============================================================
-    // DISCIPLINES TAB (unchanged)
+    // DISCIPLINES TAB
     // ============================================================
 
     function renderDisciplinesTab(vm, mode) {
@@ -853,7 +870,7 @@
     }
 
     // ============================================================
-    // GRADES TAB (unchanged)
+    // GRADES TAB
     // ============================================================
 
     function renderGradesTab(vm) {
@@ -878,7 +895,7 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB (unchanged)
+    // SCHEDULE TAB
     // ============================================================
 
     var DAY_BUTTONS = [
@@ -921,9 +938,53 @@
         return html;
     }
 
+    /**
+     * The Schedule tab's action row.
+     *
+     * Carries:
+     *   1. The Shared Groups launcher ("Find Shared Groups").
+     *      Emits data-action="shared-groups-open-for-character".
+     *      The People controller routes it to
+     *      AcademySharedGroupsController.openForCharacter(id),
+     *      which switches the shell's active view to 'sharedGroups'
+     *      with the character pre-seeded as the anchor. The view
+     *      shows which teaching groups this character shares with
+     *      other characters — the natural follow-up to "here is
+     *      this character's schedule."
+     *
+     *      The button is not conditioned on the character having
+     *      any groups. A character with none is a legitimate query
+     *      — the shared-groups view simply shows "no shared groups",
+     *      which is the truthful answer.
+     *
+     *   2. The weekly Export Schedule button.
+     *      Emits data-action="character-export-schedule-text".
+     *
+     *   3. The seven per-day export buttons (Mon..Sun).
+     *      Each emits data-action="character-export-schedule-day"
+     *      with data-day.
+     *
+     * This renderer emits data-* markers only. It does not resolve
+     * the shared-groups module, and it does not read its state.
+     * A partial load that is missing the shared-groups controller
+     * degrades to a toast when the button is clicked; the button
+     * itself is always present.
+     */
     function renderScheduleExportControls(charId) {
         var html = '';
         html += '<div class="academy-character-schedule-exports">';
+
+        // ---- Shared-groups launcher (v34) ----
+        html += '<button type="button" ' +
+                    'class="small secondary ' +
+                    'academy-character-schedule-shared-groups-btn" ' +
+                    'data-action="shared-groups-open-for-character" ' +
+                    'data-character-id="' +
+                        escapeAttribute(charId) + '" ' +
+                    'title="Find teaching groups this character shares ' +
+                        'with other characters">' +
+                    'Find Shared Groups' +
+                '</button>';
 
         html += '<button type="button" ' +
                     'class="small secondary ' +
@@ -960,7 +1021,7 @@
     }
 
     // ============================================================
-    // TEAMS TAB (unchanged)
+    // TEAMS TAB
     // ============================================================
 
     function renderTeamsTab(vm) {
@@ -1032,7 +1093,7 @@
     }
 
     // ============================================================
-    // TEACHING GROUPS TAB (unchanged)
+    // TEACHING GROUPS TAB
     // ============================================================
 
     function renderTeachingGroupsTab(vm) {
@@ -1719,7 +1780,7 @@
     }
 
     // ============================================================
-    // CREATE-GROUP MODAL (unchanged)
+    // CREATE-GROUP MODAL
     // ============================================================
 
     function canOpenCreateGroupModal() {
