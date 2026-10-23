@@ -34,8 +34,8 @@
  *
  *   A class selection survives a view change because every view
  *   that reads it (Weekly Teams, Rankings, Discipline Schedule
- *   tab, Locations, Exams) is class-scoped. Only the character
- *   selection is People-specific.
+ *   tab, Locations, Exams, Shared Groups) is class-scoped. Only
+ *   the character selection is People-specific.
  *
  * CHARACTER MODE (v27+, revised in v31):
  *   The character's role — student or instructor — is a
@@ -178,12 +178,30 @@
  *   different defaults for the same state would disagree about what
  *   the state means.
  *
- * INSTRUCTOR REPAIR VIEW (this revision):
+ * INSTRUCTOR REPAIR VIEW:
  *   'instructorRepair' is a valid view id. It is registered by
  *   AcademyRepairController and mounted by the shell's view
  *   dispatcher. The view has no week selector and no class
  *   selector; it reads the class instructor sets directly from
  *   AcademyClasses.
+ *
+ * SHARED GROUPS VIEW (v34):
+ *   'sharedGroups' is a valid view id. It is registered by
+ *   AcademySharedGroupsController and mounted by the shell's view
+ *   dispatcher. The view answers "which teaching groups do these
+ *   two or more characters have in common?"
+ *
+ *   The view's selection state (which characters are picked, the
+ *   class filter, the search term) lives in the CONTROLLER, not
+ *   here. That is deliberate: the selection is per-view state,
+ *   not cross-view state, and persisting it across view switches
+ *   would let a stale multi-character selection survive a session
+ *   in a way the user cannot see. The controller resets its
+ *   state on unmount.
+ *
+ *   AcademyUI is therefore aware of 'sharedGroups' only as a view
+ *   id. `setSelectedView('sharedGroups')` works exactly like any
+ *   other view switch.
  *
  * DEPENDENCIES:
  *   - window.CalendarConstants  (MIN_WEEK, MAX_WEEK) — MANDATORY at
@@ -296,7 +314,8 @@
         'rankings',
         'disciplines',
         'locations',
-        'instructorRepair'
+        'instructorRepair',
+        'sharedGroups'
     ]);
     var DEFAULT_VIEW = 'people';
 
@@ -309,27 +328,11 @@
     var DEFAULT_CHARACTER_MODE = 'student';
     var INSTRUCTOR_CHARACTER_MODE = 'instructor';
 
-    // Round collapse policy. INTERNAL. The storage layer stores
-    // exceptions to this default; callers do not pass it in.
     var DEFAULT_ROUND_EXPANDED = true;
 
     // ============================================================
     // DEFAULT STATE
     // ============================================================
-    //
-    // Single canonical definition. _state is initialised from a
-    // fresh clone of this template; resetState() also returns to it.
-    //
-    // The public DEFAULT_STATE export is a DEEP-frozen clone of the
-    // same template, so a caller cannot corrupt it by mutating a
-    // nested object.
-    //
-    // NOTE (v27): `characterModes` is gone. The mode is a domain
-    // fact and does not belong in session state.
-    //
-    // NOTE (v31): the collapsed-rounds map is named
-    // `collapsedRoundIds`, not `expandedRoundIds`. The map stores
-    // COLLAPSED rounds. The old name inverted the meaning.
 
     function createDefaultState() {
         return {
@@ -345,9 +348,6 @@
                 }
             },
             expandedIds: {},
-            // C4 — tournament round collapse state.
-            // { [compositeKey]: true } for COLLAPSED rounds.
-            // Absence means "expanded" (the default).
             collapsedRoundIds: {}
         };
     }
@@ -386,19 +386,6 @@
         return VALID_STATUS_FILTERS.indexOf(value) !== -1;
     }
 
-    /**
-     * Strict integer parse for weeks.
-     *
-     * Accepts:
-     *   - numbers that are integers in range
-     *   - strings that are pure digit sequences whose numeric value is
-     *     an integer in range
-     *
-     * Rejects everything else. There is no silent coercion of
-     * "12garbage" to 12.
-     *
-     * @returns {number|null}
-     */
     function parseWeekStrict(value) {
         if (value === undefined || value === null) {
             return null;
@@ -432,12 +419,6 @@
         return null;
     }
 
-    /**
-     * Normalise an ID-like value to a string or null.
-     *
-     * Rejects objects and arrays. Accepts strings and numbers.
-     * Empty-string and whitespace-only strings become null.
-     */
     function normaliseId(value) {
         if (value === null || value === undefined || value === '') {
             return null;
@@ -452,11 +433,6 @@
     // ============================================================
     // STORAGE
     // ============================================================
-    //
-    // v5 key: see the MIGRATION NOTE in the file header. The bump
-    // from v4 to v5 abandons the pre-rename `expandedRoundIds` map
-    // explicitly rather than dropping it silently through the
-    // strict merge.
 
     var STORAGE_KEY = 'academy_ui_state_v5';
 
@@ -477,22 +453,6 @@
         }
     }
 
-    /**
-     * Merge persisted state with defaults.
-     *
-     * Only known fields are accepted. Invalid values fall back to the
-     * default. Unknown fields are dropped. This is what makes the
-     * migration from 'trainee' to 'student' clean: session state
-     * carrying role: 'trainee' is rejected and replaced with the
-     * default.
-     *
-     * The same mechanism silently drops the old `characterModes` map
-     * from pre-v27 state. It is not a known field anymore, so it is
-     * not carried forward.
-     *
-     * The storage key was bumped to v5 in an earlier revision, so
-     * pre-rename `expandedRoundIds` state is also abandoned wholesale.
-     */
     function mergeWithDefaults(parsed, defaults) {
         var merged = defaults;
 
@@ -530,9 +490,6 @@
             }
         }
 
-        // Expanded ids: values must be strictly `true`, and keys must
-        // be non-empty strings. Anything else is dropped. A persisted
-        // { "abc": "banana" } is not valid UI state.
         if (parsed.expandedIds &&
             typeof parsed.expandedIds === 'object' &&
             !Array.isArray(parsed.expandedIds)) {
@@ -548,11 +505,6 @@
             }
         }
 
-        // C4 — round collapse state.
-        //
-        // Only keys shaped like `${examId}::${roundId}` are accepted.
-        // Both halves must be non-empty strings, with exactly one
-        // separator. Values must be strictly `true`.
         if (parsed.collapsedRoundIds &&
             typeof parsed.collapsedRoundIds === 'object' &&
             !Array.isArray(parsed.collapsedRoundIds)) {
@@ -588,26 +540,11 @@
     // LIFECYCLE
     // ============================================================
 
-    /**
-     * Reset to defaults.
-     *
-     * The only lifecycle mutator. Public because tests use it and
-     * because callers occasionally want a hard reset (e.g. logout).
-     * Not needed for normal operation; the module initialises on
-     * load.
-     */
     function resetState() {
         _state = createDefaultState();
         saveState();
     }
 
-    /**
-     * Get a deep clone of the entire state.
-     *
-     * Used by academy/index.js's public API. The clone means a caller
-     * cannot mutate the live state by holding onto the returned
-     * object.
-     */
     function getState() {
         return {
             selectedView: _state.selectedView,
@@ -663,17 +600,6 @@
         return _state.selectedClassId;
     }
 
-    /**
-     * Select a class.
-     *
-     * Semantics:
-     *   - Passing null or an empty value clears the selected class.
-     *   - Any change of class clears the selected character. This
-     *     module does not know which characters belong to which
-     *     classes; restoring the character after a class change is
-     *     the caller's responsibility (AcademyView reads the class VM
-     *     and decides).
-     */
     function selectClass(classId) {
         var normalised = normaliseId(classId);
         if (normalised === _state.selectedClassId) {
@@ -709,13 +635,6 @@
         return _state.displayWeek;
     }
 
-    /**
-     * Set the display week.
-     *
-     * @param {number|string} week - Integer in [MIN_WEEK, MAX_WEEK],
-     *   or a pure digit string whose integer value is in range.
-     * @returns {boolean} true if the value was accepted
-     */
     function setDisplayWeek(week) {
         var n = parseWeekStrict(week);
         if (n === null) {
@@ -732,38 +651,7 @@
     // ============================================================
     // CHARACTER MODE — READ ONLY, CLASS-SCOPED (v31)
     // ============================================================
-    //
-    // The mode is a class-scoped domain fact. Alice can teach Class
-    // of 2026 and study in Class of 2027. This module is a
-    // read-only window onto the per-class answer.
-    //
-    // READ SEMANTICS:
-    //   - null / blank charId               → null
-    //   - null / blank classId              → null
-    //   - character does not exist          → null
-    //   - character listed as instructor
-    //     for the class                     → 'instructor'
-    //   - character exists, anything else   → 'student'
-    //   - CharacterQueries unavailable      → throws
-    //   - AcademyClasses unavailable        → throws
-    //
-    // A missing character is not the same as a student. A missing
-    // class is not the same as a student-only class. Callers that
-    // need a mode for a missing reference must decide what that
-    // means.
-    //
-    // WRITE SEMANTICS:
-    //   There are none. Callers that want to change the mode call
-    //   CharacterCRUD.setInstructorForClass (or its replacement)
-    //   and trigger a re-render on success.
 
-    /**
-     * Read the mode of a character within a specific class.
-     *
-     * @param {string} charId
-     * @param {string} classId
-     * @returns {'student'|'instructor'|null}
-     */
     function getCharacterMode(charId, classId) {
         var id = normaliseId(charId);
         if (id === null) {
@@ -788,8 +676,6 @@
         try {
             instructorIds = Classes.getClassInstructorIdsAllTime(cls) || [];
         } catch (e) {
-            // A query that throws is a broken dependency, not
-            // evidence that the character is a student. Rethrow.
             throw new Error(
                 '[AcademyUI] AcademyClasses.getClassInstructorIdsAllTime ' +
                 'threw while reading the mode of character ' + id +
@@ -813,8 +699,6 @@
     // ============================================================
     // PEOPLE FILTER
     // ============================================================
-    //
-    // Typed API. No generic getFilter/setFilter escape hatches.
 
     function getPeopleFilter() {
         return {
@@ -824,16 +708,6 @@
         };
     }
 
-    /**
-     * Set the entire People filter atomically.
-     *
-     * Partial updates are allowed: any field not present in `updates`
-     * keeps its current value. Each present field must be valid, or
-     * the whole call is rejected and no field is updated.
-     *
-     * @param {object} updates - { search?, role?, status? }
-     * @returns {boolean} true if the update was accepted
-     */
     function setPeopleFilter(updates) {
         if (!updates || typeof updates !== 'object') {
             return false;
@@ -896,9 +770,6 @@
     // ============================================================
     // EXPANSION
     // ============================================================
-    //
-    // IDs route through normaliseId() so that setExpanded({}, true)
-    // cannot produce the state key "[object Object]".
 
     function isExpanded(id) {
         var key = normaliseId(id);
@@ -947,40 +818,9 @@
     // ============================================================
     // TOURNAMENT ROUND COLLAPSE (C4)
     // ============================================================
-    //
-    // STATE MODEL:
-    //   The stored map holds ONLY collapsed rounds. A key that is
-    //   absent means "expanded" — the default. This is the
-    //   "non-default only" convention: it keeps the persisted object
-    //   small, and a future change of the default (if we ever flip
-    //   to collapsed-by-default) will not leave behind stale entries
-    //   that silently mean the old default.
-    //
-    // KEY FORMAT:
-    //   `${examId}::${roundId}`. The double-colon separator is chosen
-    //   because neither IDs contain it. IDs are normalised to trimmed
-    //   strings before use. Both halves must be non-empty, and
-    //   exactly one separator must appear.
-    //
-    // DEFAULT POLICY:
-    //   DEFAULT_ROUND_EXPANDED is a module constant. Callers do not
-    //   pass it in. Two callers passing different defaults for the
-    //   same state would disagree about what the state means; the
-    //   storage layer is not a policy-injection point.
-    //
-    // WHY NOT A NESTED MAP (examId -> roundId -> bool):
-    //   The aggregator reads collapse state per round in a loop over
-    //   rounds. A flat map with composite keys is O(1) per lookup and
-    //   serialises to a compact JSON object. A nested map is a
-    //   marginal readability improvement at the cost of a deeper
-    //   merge on load and a deeper clone on getState. Flat wins.
 
     var ROUND_KEY_SEPARATOR = '::';
 
-    /**
-     * Validate a composite round key. Requires exactly two non-empty
-     * parts separated by exactly one separator.
-     */
     function isValidRoundCompositeKey(key) {
         if (typeof key !== 'string') {
             return false;
@@ -1003,28 +843,10 @@
         return e + ROUND_KEY_SEPARATOR + r;
     }
 
-    /**
-     * Get the full set of collapsed round keys.
-     *
-     * Returns a shallow clone of the internal map. Callers cannot
-     * mutate live state by holding onto the returned object.
-     *
-     * @returns {object} { [compositeKey]: true }
-     */
     function getCollapsedRoundIds() {
         return Object.assign({}, _state.collapsedRoundIds);
     }
 
-    /**
-     * Is a specific round expanded?
-     *
-     * Uses the module's internal default policy. A stored entry
-     * means "collapsed"; absence means "expanded" (the default).
-     *
-     * @param {string} examId
-     * @param {string} roundId
-     * @returns {boolean}
-     */
     function isRoundExpanded(examId, roundId) {
         var key = makeRoundKey(examId, roundId);
         if (key === null) {
@@ -1036,23 +858,6 @@
         return DEFAULT_ROUND_EXPANDED;
     }
 
-    /**
-     * Set a specific round's expanded state.
-     *
-     * SEMANTICS:
-     *   expanded === true  → remove the collapse record (default)
-     *   expanded === false → write the collapse record
-     *
-     * This preserves the "non-default only" invariant: a round the
-     * user has never collapsed has no record, exactly as if they had
-     * explicitly expanded it. Removing a record is idempotent.
-     *
-     * No-ops when either ID is missing. Returns true when the call
-     * was accepted (whether or not it changed anything), false when
-     * the input was invalid.
-     *
-     * @returns {boolean}
-     */
     function setRoundExpanded(examId, roundId, expanded) {
         var key = makeRoundKey(examId, roundId);
         if (key === null) {
@@ -1075,15 +880,6 @@
         return true;
     }
 
-    /**
-     * Toggle a round's expanded state.
-     *
-     * Uses the module's internal default policy for a round with no
-     * stored record.
-     *
-     * @returns {boolean} the state AFTER the toggle. When the input
-     *   is invalid, returns DEFAULT_ROUND_EXPANDED.
-     */
     function toggleRoundExpanded(examId, roundId) {
         var key = makeRoundKey(examId, roundId);
         if (key === null) {
@@ -1108,12 +904,6 @@
         return next;
     }
 
-    /**
-     * Forget every round collapse record.
-     *
-     * Not called from anywhere in the current build. Exposed for
-     * symmetry with clearExpanded() and for tests.
-     */
     function clearCollapsedRoundIds() {
         _state.collapsedRoundIds = {};
         saveState();
@@ -1164,10 +954,6 @@
     // EXPOSE
     // ============================================================
 
-    // Public DEFAULT_STATE is a DEEP-frozen clone of the template.
-    // deepFreeze is applied so a caller cannot reach into a nested
-    // object (filters.people, expandedIds, collapsedRoundIds) and
-    // corrupt the published template.
     var DEFAULT_STATE_PUBLIC = deepFreeze(createDefaultState());
 
     window.AcademyUI = Object.freeze({
@@ -1194,10 +980,6 @@
         setDisplayWeek: setDisplayWeek,
 
         // Character mode — READ ONLY, CLASS-SCOPED
-        // The mode is a class-scoped domain fact. Callers that want
-        // to change it go through CharacterCRUD.setInstructorForClass
-        // (or its replacement) and trigger a re-render on success.
-        // Returns 'student' | 'instructor' | null.
         getCharacterMode: getCharacterMode,
 
         // People filter
@@ -1208,7 +990,7 @@
         setPeopleStatus: setPeopleStatus,
         resetPeopleFilter: resetPeopleFilter,
 
-        // Expansion (generic — used by other views)
+        // Expansion (generic)
         isExpanded: isExpanded,
         setExpanded: setExpanded,
         toggleExpanded: toggleExpanded,
