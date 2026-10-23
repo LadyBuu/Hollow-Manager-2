@@ -3,7 +3,7 @@
  *
  * The outer chrome shared by every Academy sub-view:
  *   - View switcher (People / Exams / Weekly Teams / Rankings /
- *     Disciplines / Locations)
+ *     Disciplines / Locations / Shared Groups)
  *   - Top bar (class selector, week input)
  *   - Two-panel layout (sidebar + detail)
  *   - Sidebar (list container + filters)
@@ -189,15 +189,16 @@
 /* ============================================================
    TWO-PANEL LAYOUT
    ============================================================
-   People, Disciplines, and Locations share the same grid:
-   320px sidebar + flexible detail. Sub-views with their own
+   People, Disciplines, Locations, and Shared Groups share the same
+   grid: 320px sidebar + flexible detail. Sub-views with their own
    layout (Exams, Weekly Teams, Rankings) define their own grid
    in their sub-file.
  */
 
 .academy-people-layout,
 .academy-discipline-layout,
-.academy-location-layout {
+.academy-location-layout,
+.academy-shared-groups-panels {
     display: grid;
     grid-template-columns: 320px 1fr;
     gap: 12px;
@@ -207,7 +208,8 @@
 @media (max-width: 768px) {
     .academy-people-layout,
     .academy-discipline-layout,
-    .academy-location-layout {
+    .academy-location-layout,
+    .academy-shared-groups-panels {
         grid-template-columns: 1fr;
         gap: 10px;
     }
@@ -219,7 +221,8 @@
 
 .academy-people-sidebar,
 .academy-discipline-sidebar,
-.academy-location-sidebar {
+.academy-location-sidebar,
+.academy-shared-groups-sidebar {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -231,7 +234,8 @@
 @media (max-width: 768px) {
     .academy-people-sidebar,
     .academy-discipline-sidebar,
-    .academy-location-sidebar {
+    .academy-location-sidebar,
+    .academy-shared-groups-sidebar {
         max-height: 320px;
     }
 }
@@ -251,7 +255,8 @@
 
 .academy-people-search,
 .academy-discipline-search,
-.academy-location-search {
+.academy-location-search,
+.academy-shared-groups-search {
     width: 100%;
     padding: 5px 8px;
     background: var(--bg);
@@ -264,7 +269,8 @@
 
 .academy-people-search:focus,
 .academy-discipline-search:focus,
-.academy-location-search:focus {
+.academy-location-search:focus,
+.academy-shared-groups-search:focus {
     outline: none;
     border-color: var(--accent);
 }
@@ -407,7 +413,8 @@
 
 .academy-people-detail,
 .academy-discipline-detail,
-.academy-location-detail {
+.academy-location-detail,
+.academy-shared-groups-results {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -420,7 +427,8 @@
 @media (max-width: 768px) {
     .academy-people-detail,
     .academy-discipline-detail,
-    .academy-location-detail {
+    .academy-location-detail,
+    .academy-shared-groups-results {
         max-height: none;
     }
 }
@@ -649,7 +657,8 @@
 @media (max-width: 480px) {
     .academy-people-detail,
     .academy-discipline-detail,
-    .academy-location-detail {
+    .academy-location-detail,
+    .academy-shared-groups-results {
         padding: 8px;
     }
 
