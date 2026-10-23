@@ -6,13 +6,13 @@
  *
  * RESPONSIBILITIES:
  *   - Register with TabManager
- *   - Register the seven Academy controllers with AcademyControllers
+ *   - Register the eight Academy controllers with AcademyControllers
  *   - Validate the academy data structure before mount
  *   - Hand the container to AcademyView for rendering
  *   - Handle DataLoader and tabChanged integration
  *   - Expose a small public API on window.Academy
  *
- * SOCIAL PROVIDER EAGER INITIALISATION (this revision):
+ * SOCIAL PROVIDER EAGER INITIALISATION:
  *   The Academy instructor-commitments module creates a mentor
  *   relationship in the Social domain when a tutoring block is
  *   saved with a character. That call goes through SocialCore,
@@ -53,7 +53,7 @@
  *   initialization, its own module handles it.
  *
  * CONTROLLER REGISTRATION:
- *   The seven Academy controllers register themselves with
+ *   The eight Academy controllers register themselves with
  *   window.AcademyControllers here, NOT in their own files. The
  *   controllers capture their domain dependencies at IIFE time,
  *   so by the time this file runs they are fully constructed.
@@ -61,9 +61,9 @@
  *   population, matching the load-order contract documented in
  *   index.html.
  *
- *   Registration order matters: AcademyView iterates the registry
- *   in insertion order when building the view switcher. The order
- *   below matches the pinboard's expected list.
+ *   Registration order matters: AcademyView builds the view
+ *   switcher by iterating the registry in insertion order. The
+ *   order below matches the shell's VIEWS array.
  *
  * SCHEDULE PROVIDER (retired):
  *   The old calendar-provider bridge — AcademySchedule.configure,
@@ -132,11 +132,6 @@
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
-    //
-    // Only checks what THIS module invokes. Sub-modules validate their
-    // own dependencies at their own load time and throw on failure,
-    // so a missing mandatory dependency elsewhere in the Academy
-    // graph has already stopped the page before this check runs.
 
     var _missing = [];
 
@@ -171,18 +166,6 @@
     // ============================================================
     // SOCIAL PROVIDER EAGER INITIALISATION
     // ============================================================
-    //
-    // See the file header for the full rationale.
-    //
-    // The call is:
-    //   - guarded on window.Social being present and exposing
-    //     initProviders()
-    //   - wrapped in try/catch
-    //   - safe to call before window.data is populated
-    //     (initProviders only reads CharacterQueries, which is
-    //      expected to have loaded)
-    //   - safe to call multiple times (Social guards on its own
-    //     _providersInitialized flag)
 
     (function initSocialProvidersIfPresent() {
         var Social = window.Social;
@@ -206,16 +189,17 @@
     // CONTROLLER REGISTRATION
     // ============================================================
     //
-    // The seven controllers are loaded as separate script tags in
+    // The eight controllers are loaded as separate script tags in
     // index.html. They expose themselves on window and capture their
     // domain dependencies at IIFE time. This block is the single
     // owner of the registration step.
     //
     // Registration order is significant: AcademyView builds the view
     // switcher by iterating the registry in insertion order. The
-    // order below matches the pinboard's expected list:
-    //   ['weeklyTeams','disciplines','tournaments','people',
-    //    'locations','rankings','instructorRepair']
+    // order below matches academy-view.js's VIEWS array:
+    //   ['people', 'tournaments', 'weeklyTeams', 'rankings',
+    //    'disciplines', 'locations', 'instructorRepair',
+    //    'sharedGroups']
     //
     // AcademyControllers is treated as an optional dependency. When
     // it is missing (e.g. a test harness that loads index.js without
@@ -237,13 +221,14 @@
         }
 
         var registry = {
-            weeklyTeams:       window.AcademyWeeklyTeamsController,
-            disciplines:       window.AcademyDisciplineController,
-            tournaments:       window.AcademyExamController,
             people:            window.AcademyPeopleController,
-            locations:         window.AcademyLocationController,
+            tournaments:       window.AcademyExamController,
+            weeklyTeams:       window.AcademyWeeklyTeamsController,
             rankings:          window.AcademyRankingController,
-            instructorRepair:  window.AcademyRepairController
+            disciplines:       window.AcademyDisciplineController,
+            locations:         window.AcademyLocationController,
+            instructorRepair:  window.AcademyRepairController,
+            sharedGroups:      window.AcademySharedGroupsController
         };
 
         var registered = [];
@@ -306,21 +291,6 @@
     // ACADEMY DATA STRUCTURE VALIDATION
     // ============================================================
 
-    /**
-     * Validate that window.data.academy has the shape this module
-     * expects. Returns true when valid, false when not.
-     *
-     * Does NOT repair. The database migration is responsible for
-     * producing the correct shape. If it is wrong, the mount path
-     * renders an error state.
-     *
-     * instructorCommitments is a NEW store. It is NOT checked here.
-     * Existing database snapshots predate it. The commitments
-     * module's reads return [] when the bucket is absent, and its
-     * writes create the bucket lazily via ensureStore. Adding the
-     * bucket to the database's empty-data template and to a
-     * migration is a separate change, owned by database.js.
-     */
     function validateAcademyStructure() {
         if (!window.data || typeof window.data !== 'object') {
             console.error('[AcademyModule] window.data is missing.');
