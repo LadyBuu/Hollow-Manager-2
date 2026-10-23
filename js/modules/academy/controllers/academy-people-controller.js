@@ -23,7 +23,7 @@
  *   scope of the view — so every role read and write carries the
  *   class id.
  *
- * FILLER FLAG (this revision):
+ * FILLER FLAG:
  *   The character detail panel carries a "Filler character" checkbox
  *   (#academy-char-is-filler) in its header. Clicking it emits
  *
@@ -76,7 +76,7 @@
  *     class-export-graduates
  *     class-export-characters
  *
- * CHARACTER EXPORT (this revision):
+ * CHARACTER EXPORT:
  *   The character detail panel carries three export actions:
  *
  *     character-export              header report button
@@ -91,11 +91,25 @@
  *   The schedule actions also read the current display week from
  *   AcademyUI; the day action additionally reads data-day.
  *
- *   The two schedule actions were previously absent from
- *   dispatchAction's switch and silently no-op'd. This revision
- *   adds them, along with their handlers, and a default-case
- *   warning so a future missing case is visible during
- *   development.
+ * SHARED GROUPS LAUNCHER:
+ *   The character detail panel's Schedule tab carries a
+ *   "Find Shared Groups" button that emits
+ *
+ *     data-action="shared-groups-open-for-character"
+ *     data-character-id="<id>"
+ *
+ *   This controller routes the action to
+ *   AcademySharedGroupsController.openForCharacter(charId), which
+ *   seeds the shared-groups controller's per-view state, switches
+ *   the shell's active view to 'sharedGroups', and returns a
+ *   boolean indicating whether the switch succeeded. On success
+ *   this controller calls ctx.onChange() so the shell re-renders
+ *   and mounts the shared-groups view.
+ *
+ *   The shared-groups controller is a lazy optional dependency
+ *   here. Missing module → user-facing error toast. The People
+ *   controller does not depend on the shared-groups view; it only
+ *   forwards a launcher click to it.
  */
 
 (function() {
@@ -146,9 +160,6 @@
         _missing.push('AcademyCharacterDetailAggregator API');
     }
 
-    // v31: the class-scoped role mutation. setMode is retired and
-    // is not required here; a caller that reaches for it gets a
-    // failure from the stub. This controller uses the new API only.
     if (!CharacterCRUD ||
         typeof CharacterCRUD.setInstructorForClass !== 'function') {
         _missing.push('CharacterCRUD.setInstructorForClass');
@@ -202,6 +213,7 @@
     function getScheduleExport() { return window.ScheduleExport || null; }
     function getClassRosterExport() { return window.ClassRosterExport || null; }
     function getCharacterExport() { return window.CharacterExport || null; }
+    function getSharedGroupsController() { return window.AcademySharedGroupsController || null; }
 
     // ============================================================
     // SMALL HELPERS
@@ -253,12 +265,6 @@
      * Class-scoped read. Delegates to AcademyClasses.
      * getClassInstructorIdsAllTime, which walks the class's
      * instructor-mode enrolments and returns the set of ids.
-     *
-     * All-time, not week-scoped: a character who taught this class
-     * at any point is an instructor of it.
-     *
-     * Returns false when the class id or character id is missing,
-     * or when the query is unavailable.
      */
     function isInstructorForClass(charId, classId) {
         if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
@@ -646,9 +652,6 @@
         var classId = classVM ? classVM.id : null;
         var week = AcademyUI.getDisplayWeek();
 
-        // v31: the role is class-scoped. Compute it from the class
-        // id and the character id. There is no character-wide mode
-        // to read.
         var mode = isInstructorForClass(charId, classId)
             ? 'instructor'
             : 'student';
@@ -894,11 +897,17 @@
                 handleCharacterExport(el.dataset.characterId);
                 return;
 
+            // Shared Groups launcher from the character Schedule
+            // tab. Routes to AcademySharedGroupsController.
+            case 'shared-groups-open-for-character':
+                handleOpenSharedGroupsForCharacter(
+                    el.dataset.characterId
+                );
+                return;
+
             // Character schedule exports. The character detail
             // panel's Schedule tab carries one weekly export button
-            // and seven day buttons. Both previously fell through
-            // to the default branch and no-op'd because the switch
-            // had no case for them.
+            // and seven day buttons.
             case 'character-export-schedule-text':
                 handleExportCharacterScheduleText(el);
                 return;
@@ -1023,8 +1032,6 @@
             default:
                 // A missing case is silent by default. Warn so a
                 // future omission is visible during development.
-                // The action string is the only thing worth
-                // printing; the element may be huge.
                 console.warn(
                     '[AcademyPeopleController] Unhandled action:',
                     action
@@ -1238,6 +1245,84 @@
     }
 
     // ============================================================
+    // SHARED GROUPS LAUNCHER
+    // ============================================================
+    //
+    // The character detail panel's Schedule tab carries a "Find
+    // Shared Groups" button. Clicking it emits:
+    //
+    //   data-action="shared-groups-open-for-character"
+    //   data-character-id="<id>"
+    //
+    // This handler routes the action to the Shared Groups
+    // controller, which:
+    //
+    //   1. resets its per-view selection state,
+    //   2. seeds it with this character as the anchor,
+    //   3. defaults its class filter to AcademyUI's currently
+    //      selected class (so the search is scoped to what the
+    //      user was just looking at),
+    //   4. calls AcademyUI.setSelectedView('sharedGroups').
+    //
+    // If the switch succeeded, we refresh the shell. The shell's
+    // render path unmounts the People controller, mounts the
+    // Shared Groups controller, and calls its render() — which
+    // picks up the seeded state.
+    //
+    // If the switch failed (e.g. the view id was rejected, which
+    // would be a programming error), we notify so the user is not
+    // left wondering why nothing happened.
+
+    function handleOpenSharedGroupsForCharacter(charId) {
+        if (!isNonEmptyString(charId)) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var Controller = getSharedGroupsController();
+        if (!Controller ||
+            typeof Controller.openForCharacter !== 'function') {
+            notify(
+                'Shared Groups view is not loaded. Check the script ' +
+                'load order in index.html.',
+                'error'
+            );
+            return;
+        }
+
+        var switched = false;
+        try {
+            switched = Controller.openForCharacter(String(charId));
+        } catch (e) {
+            console.warn(
+                '[AcademyPeopleController] ' +
+                'openForCharacter threw:', e
+            );
+            notify(
+                'Failed to open the Shared Groups view.',
+                'error'
+            );
+            return;
+        }
+
+        if (!switched) {
+            notify(
+                'Could not open the Shared Groups view for this ' +
+                'character. The character may no longer exist.',
+                'error'
+            );
+            return;
+        }
+
+        // The shell will unmount this controller and mount the
+        // Shared Groups controller on the next render. The
+        // context's onChange path is the standard way to trigger
+        // that render.
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    // ============================================================
     // CHARACTER SCHEDULE EXPORTS
     // ============================================================
     //
@@ -1382,22 +1467,6 @@
     // ============================================================
     // CHARACTER FILLER FLAG
     // ============================================================
-    //
-    // The character detail panel's header carries a "Filler
-    // character" checkbox. Clicking it emits
-    // data-action="character-toggle-filler" with the character id
-    // and the target value (the value the checkbox is becoming).
-    //
-    // This handler routes the flip to CharacterCRUD.setFillerFlag.
-    // The mutation is a single pipeline transaction.
-    //
-    // Setting the flag strips the record's empty fields on the
-    // next save. Clearing it does NOT restore stripped fields.
-    // On success the panel re-renders (via the context's onChange)
-    // so the checkbox reflects the new state.
-    //
-    // The setFillerFlag call is deferred to the caller; this
-    // controller does not depend on CharacterStrip directly.
 
     function handleCharacterFillerToggle(el) {
         if (!el || !el.dataset) { return; }
@@ -1590,18 +1659,6 @@
     // ============================================================
     // CHARACTER ROLE (v31)
     // ============================================================
-    //
-    // The role is class-scoped. Changing it means flipping the role
-    // on every enrolment interval of this character in this class.
-    //
-    // The old character-wide `mode` toggle is gone. The checkbox in
-    // the character detail panel now means "is this character an
-    // instructor of the currently selected class?", and toggling it
-    // calls setInstructorForClass with the selected class id.
-    //
-    // The People view always has a class selected — the class
-    // selector in the top bar is required for the view to render
-    // at all — so the class id is always available here.
 
     function handleCharacterModeToggle(checked) {
         var charId = AcademyUI.getSelectedCharacterId();
@@ -1620,11 +1677,6 @@
 
         var isInstructor = checked === true;
 
-        // Tab hygiene. The teaching-groups tab is meaningful only
-        // for instructors of the current class; the grades and
-        // teams tabs are meaningful only for students. If the
-        // target role invalidates the currently open tab, fall
-        // back to the main tab.
         if (isInstructor &&
             (_activeCharacterTab === 'grades' ||
                 _activeCharacterTab === 'teams')) {
