@@ -22,6 +22,11 @@
  *   - The relationship form. Delegates to SocialEvents.
  *   - The JSON import/export mechanics. CharacterJSONIO owns
  *     those.
+ *   - The Career Wizard modal. CareerStatusWizard owns its own
+ *     lifecycle; this file only routes the button click to it.
+ *     The "Apply does nothing" bug in that modal is a
+ *     wizard-internal re-render race, fixed in
+ *     career-status-wizard.js, not here.
  *
  * DELEGATE SCOPE:
  *   Every delegated listener installed by this module is scoped
@@ -53,6 +58,14 @@
  *   document when it closes. This module listens for that event,
  *   re-renders the character form, and removes the listener. No
  *   polling or MutationObserver.
+ *
+ * CAREER TRANSITION MODAL:
+ *   The inline "Career Transition" modal (#career-transition-btn)
+ *   is owned by this file. It is a small form with a status radio
+ *   and a year input; Apply calls
+ *   CharacterCRUD.setCareerTransition. That is a DIFFERENT flow
+ *   from the Career Wizard button, which is owned by
+ *   CareerStatusWizard.
  *
  * MOBILE DRAWER:
  *   On mobile the character list is an overlay drawer. The drawer
@@ -870,6 +883,19 @@
     // ============================================================
     // CAREER WIZARD BUTTON
     // ============================================================
+    //
+    // This handler routes the Career Wizard button to
+    // CareerStatusWizard.openModal. The wizard owns its own
+    // modal lifecycle, its own Apply handler, and its own
+    // mutation. Nothing about the wizard's internals is
+    // implemented here.
+    //
+    // The "Apply does nothing" bug in the wizard was a
+    // re-render race inside career-status-wizard.js: the
+    // wizard's own `handleContentChange` called
+    // `renderContent()` on every change event, which destroyed
+    // and recreated the Apply button mid-click. That is fixed
+    // in the wizard, not here.
 
     function handleCareerWizardOpen() {
         var charId = typeof window.getCurrentEditId === 'function'
@@ -907,6 +933,12 @@
     // ============================================================
     // CAREER TRANSITION MODAL
     // ============================================================
+    //
+    // The inline "Career Transition" modal. Separate from the
+    // Career Wizard button above. This one appends a single
+    // terminal entry to the character's careerStatus array.
+    //
+    // See the CAREER TRANSITION MODAL note in the file header.
 
     var TRANSITION_STATUSES = [
         {
