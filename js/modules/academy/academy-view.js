@@ -29,7 +29,7 @@
  *   - Domain mutation. Those are delegated to the owning module.
  *
  * CONTROLLER MODEL:
- *   Seven feature controllers, one per Academy view:
+ *   Eight feature controllers, one per Academy view:
  *
  *     people            AcademyPeopleController
  *     tournaments       AcademyExamController      (rendered as "Exams")
@@ -38,6 +38,7 @@
  *     disciplines       AcademyDisciplineController
  *     locations         AcademyLocationController
  *     instructorRepair  AcademyRepairController
+ *     sharedGroups      AcademySharedGroupsController  (v34)
  *
  *   A controller is a plain object with an optional subset of:
  *     render(host, context)
@@ -96,6 +97,8 @@
  *     - .academy-discipline-sidebar         (discipline list)
  *     - .academy-discipline-detail          (discipline editor
  *                                            and Schedule tab)
+ *     - .academy-shared-groups-sidebar      (v34 picker panel)
+ *     - .academy-shared-groups-results      (v34 result panel)
  *
  *   Rules:
  *     - A selector that is absent before the swap is not captured.
@@ -103,12 +106,24 @@
  *     - No fallback to document scroll.
  *     - Not persisted. Leaving a view and returning resets to 0.
  *
- *   The discipline selectors matter because the Sessions panel
- *   inside the Schedule tab fires ctx.onChange() on every add,
- *   remove, and picker submit. Without them, every such action
- *   jumps the user back to the top of the discipline detail panel.
- *   Same failure mode the character-detail selectors prevent for
- *   the People view's teaching-groups actions.
+ * SHARED GROUPS VIEW (v34):
+ *   The Shared Groups view is mounted exactly like any other
+ *   controller: the shell emits a host placeholder, resolves the
+ *   controller from the registry, and invokes render(host, context).
+ *
+ *   The context is `{ onChange }` only. The controller manages
+ *   its own re-renders (picker scroll, search cursor survive
+ *   checkbox toggles) and does not call onChange for local state
+ *   changes. onChange is passed for symmetry and future use.
+ *
+ *   The launcher button that opens this view (from a character's
+ *   Schedule tab) is routed by AcademyPeopleController, not here.
+ *   The People controller calls
+ *   AcademySharedGroupsController.openForCharacter(charId), which
+ *   seeds the controller's state and calls
+ *   AcademyUI.setSelectedView('sharedGroups'), then calls
+ *   AcademyView.refreshView(). See that controller for the
+ *   routing.
  */
 
 (function() {
@@ -166,12 +181,6 @@
     // ============================================================
     // OPTIONAL DEPENDENCY ACCESSORS
     // ============================================================
-    //
-    // These are the entire optional surface this module may reach.
-    // Each is a lazy lookup because the shell loads before the
-    // controllers directory and before academy-crud-modals.js's
-    // setOnChangeCallback wiring is meaningful. The lookups run at
-    // call time, not at IIFE time.
 
     function getControllers() {
         return window.AcademyControllers || null;
@@ -207,7 +216,8 @@
         { id: 'rankings',         label: 'Rankings' },
         { id: 'disciplines',      label: 'Disciplines' },
         { id: 'locations',        label: 'Locations' },
-        { id: 'instructorRepair', label: 'Instructor Repair' }
+        { id: 'instructorRepair', label: 'Instructor Repair' },
+        { id: 'sharedGroups',     label: 'Shared Groups' }
     ];
 
     var VALID_VIEW_IDS = VIEWS.map(function(v) { return v.id; });
@@ -215,13 +225,6 @@
     // ============================================================
     // SCROLL RESTORATION
     // ============================================================
-    //
-    // See the file header for the rationale behind each selector.
-    //
-    // Every selector is looked up with querySelector, so the first
-    // matching element is the one captured and restored. That is
-    // the intended behaviour: each selector names a container that
-    // is unique per render.
 
     var SCROLL_RESTORE_SELECTORS = [
         '.academy-people-sidebar',
@@ -229,23 +232,16 @@
         '.academy-exams-sidebar',
         '.academy-exams-detail',
 
-        // Character detail panel and its inner scrollable lists.
-        // These preserve scroll across any refresh that replaces
-        // the shell's innerHTML, including refreshes fired from
-        // teaching-groups actions, session edits, and the
-        // discipline picker.
         '#academy-people-detail',
         '.academy-teaching-group-discipline-list',
         '.academy-character-discipline-list',
 
-        // Discipline view panels. The discipline detail panel is
-        // where the Sessions panel lives. Without it, any refresh
-        // fired from the panel (add student, remove student, picker
-        // submit) jumps the user back to the top of the detail
-        // panel. The sidebar selector preserves the list scroll
-        // when the filter changes.
         '.academy-discipline-sidebar',
-        '.academy-discipline-detail'
+        '.academy-discipline-detail',
+
+        // v34 — Shared Groups picker and result panels.
+        '.academy-shared-groups-sidebar',
+        '.academy-shared-groups-results'
     ];
 
     function captureSidebarScroll(container) {
@@ -292,29 +288,10 @@
     // ============================================================
     // MODULE STATE
     // ============================================================
-    //
-    // Module state is coordinator bookkeeping. Two kinds:
-    //
-    //   Delegated listener bookkeeping:
-    //     _boundContainer, _boundHandlers
-    //
-    //   Cross-render view state that is NOT shared across views:
-    //     _lastRenderedControllerView  — for unmount dispatch
-    //     _selectedWeeklyTeamId        — Weekly Teams team selection
-    //
-    // Class selection is NOT held here; it lives in AcademyUI and
-    // is read fresh on every render.
-    //
-    // No feature state. No timers. No sub-editor references.
 
     var _boundContainer = null;
     var _boundHandlers = null;
     var _lastRenderedControllerView = null;
-
-    // Weekly Teams view state. Team selection is scoped to that
-    // view; it is not a cross-view concept, so it lives here rather
-    // than in AcademyUI. Cleared whenever the class changes, because
-    // a team belongs to a class.
     var _selectedWeeklyTeamId = null;
 
     // ============================================================
@@ -329,8 +306,6 @@
             return;
         }
 
-        // Unmount the outgoing controller before rendering the new
-        // view. On a same-view refresh, this is a no-op.
         unmountOutgoingControllerIfPresent(false);
 
         var view = AcademyUI.getSelectedView();
@@ -342,11 +317,6 @@
         html += renderViewNav(view);
         html += renderControllerHostForView(view);
 
-        // Capture scrollable containers before the innerHTML swap.
-        // Restore AFTER the active controller has rendered into its
-        // content host: the containers live inside the host, and the
-        // host is empty until the controller fills it. Restoring any
-        // earlier is a silent no-op.
         var capturedScroll = captureSidebarScroll(container);
 
         container.innerHTML = html;
@@ -410,6 +380,8 @@
                 return renderControllerHost('academy-locations-host');
             case 'instructorRepair':
                 return renderControllerHost('academy-instructor-repair-host');
+            case 'sharedGroups':
+                return renderControllerHost('academy-shared-groups-host');
             default:
                 return renderPlaceholder('Unknown view: ' + view);
         }
@@ -479,9 +451,6 @@
         if (CRUD && typeof CRUD.setOnChangeCallback === 'function') {
             CRUD.setOnChangeCallback(refreshView);
         }
-        // AcademyTournamentEvents.setOnChangeCallback is wired by
-        // AcademyExamController on each render. The shell does not
-        // touch it.
     }
 
     // ============================================================
@@ -523,8 +492,6 @@
                             refreshView();
                         },
                         onSelectClass: function(classId) {
-                            // Changing class invalidates the selected
-                            // team. A team belongs to a class.
                             _selectedWeeklyTeamId = null;
                             AcademyUI.selectClass(classId || null);
                             refreshView();
@@ -572,15 +539,24 @@
                 return;
 
             case 'instructorRepair':
-                // The repair view re-renders itself after each save
-                // and reads its own data directly from
-                // AcademyClasses. It does not need week or class
-                // context, and it does not call onChange. The
-                // controller still accepts the standard context
-                // shape for symmetry with every other controller.
                 mountControllerForView(
                     'instructorRepair',
                     'academy-instructor-repair-host',
+                    {
+                        onChange: function() { refreshView(); }
+                    }
+                );
+                return;
+
+            case 'sharedGroups':
+                // v34 — the Shared Groups view owns its own picker
+                // state and re-renders locally on every change. The
+                // context carries onChange for symmetry and future
+                // use; the controller does not call it today. See
+                // academy-shared-groups-controller.js.
+                mountControllerForView(
+                    'sharedGroups',
+                    'academy-shared-groups-host',
                     {
                         onChange: function() { refreshView(); }
                     }
@@ -592,14 +568,6 @@
         }
     }
 
-    /**
-     * Resolve the controller for a view, find its host element, and
-     * invoke render(host, context).
-     *
-     * The view id is the registry key. The host id is the id of the
-     * controller host placeholder the shell emitted for that view.
-     * The context is supplied by the caller.
-     */
     function mountControllerForView(viewId, hostId, context) {
         var controller = lookupController(viewId);
         if (!controller) { return; }
@@ -612,9 +580,6 @@
             return;
         }
 
-        // Record that this view's controller is the active one.
-        // Used by unmountOutgoingControllerIfPresent on the next
-        // view change.
         _lastRenderedControllerView = viewId;
 
         try {
@@ -639,18 +604,6 @@
         return Registry.get(viewId);
     }
 
-    /**
-     * Unmount the outgoing controller.
-     *
-     * Two call sites:
-     *   - render(), before the new view is written. If the active
-     *     view differs from the last rendered view, the last
-     *     rendered controller is unmounted.
-     *   - unmount(), on shell teardown. The last rendered controller
-     *     is unmounted unconditionally.
-     *
-     * @param {boolean} isShellTeardown
-     */
     function unmountOutgoingControllerIfPresent(isShellTeardown) {
         var outgoingView;
 
@@ -689,15 +642,6 @@
         _lastRenderedControllerView = null;
     }
 
-    /**
-     * Shared helper for the onOpenCharacterInPeople callback. Used
-     * by the Weekly Teams and Ranking mount contexts.
-     *
-     * Navigates to People with the given character selected. The
-     * class is whatever AcademyUI already has selected; if none, the
-     * character selection still happens and People renders its
-     * empty-class state.
-     */
     function openCharacterInPeople(charId) {
         if (!isNonEmptyString(charId)) { return; }
         AcademyUI.selectCharacter(charId);
@@ -708,11 +652,6 @@
     // ============================================================
     // DELEGATED EVENT HANDLERS
     // ============================================================
-    //
-    // Every handler forwards to the active controller. The shell
-    // handles exactly one event itself: clicks on the view switcher,
-    // because the switcher is shell chrome rather than feature
-    // content.
 
     function onDelegatedClick(e) {
         var target = e.target;
