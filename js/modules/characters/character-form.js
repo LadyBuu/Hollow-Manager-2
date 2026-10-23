@@ -75,6 +75,43 @@
  *   Switching to a DIFFERENT character discards the snapshot, as it
  *   should.
  *
+ * RENDER CACHE INVALIDATION (invalidateRenderCache):
+ *   The re-render merge is the right behaviour when the re-render
+ *   is triggered by a DOM change whose only effect on the store is
+ *   "an unrelated edit happened in a sub-editor." It is the WRONG
+ *   behaviour when the re-render is triggered by a DOMAIN MUTATION
+ *   that has just committed — because at that moment the DOM still
+ *   holds the PRE-mutation values, snapshotCurrentForm captures
+ *   them, populateFormFields writes the POST-mutation stored
+ *   values, and restoreSnapshot then writes the pre-mutation
+ *   values back over the top. The user sees their pre-mutation
+ *   state and concludes the mutation did nothing.
+ *
+ *   invalidateRenderCache() clears _lastRenderedEditId. The next
+ *   render(editId) then takes the "fresh character" path: no
+ *   snapshot, no restore, so the form renders whatever the store
+ *   currently holds.
+ *
+ *   Callers that just committed a domain mutation MUST call
+ *   invalidateRenderCache() before their post-mutation render:
+ *
+ *     character-events.js:
+ *       - _careerWizardListener (careerWizardClosed event)
+ *       - closeCareerTransitionModal
+ *       - handleSave (success path)
+ *       - handleAddClassById / handleAddClassByName /
+ *         handleRemoveClass
+ *       - refreshAfterStintMutation
+ *
+ *   The guard
+ *
+ *     if (typeof CharacterForm.invalidateRenderCache === 'function')
+ *
+ *   is used at each site so an older character-form.js (in a
+ *   partial deployment) does not throw. In that case the merge
+ *   behaviour returns and the display-staleness bug returns with
+ *   it, but the rest of the file works.
+ *
  * LABEL / BUTTON SEPARATION:
  *   renderLabelWithRandom emits a <label for="..."> and places the
  *   reroll button OUTSIDE the label. Clicking the label focuses the
@@ -331,6 +368,25 @@
     var _lastRenderedEditId = undefined;
     var _initialized = false;
 
+    /**
+     * Clear the "same character, re-render merge" cache.
+     *
+     * See the RENDER CACHE INVALIDATION note in the file header.
+     * Callers that have just committed a domain mutation must
+     * call this before their post-mutation render so the form
+     * shows the store's state instead of merging the pre-mutation
+     * DOM snapshot back in.
+     *
+     * Setting _lastRenderedEditId to undefined (not null) is
+     * deliberate: the render() code distinguishes "nothing has
+     * rendered yet" (undefined) from "a render happened, and the
+     * edit id was null" (null). Forcing undefined means the next
+     * render treats itself as a fresh render for both branches.
+     */
+    function invalidateRenderCache() {
+        _lastRenderedEditId = undefined;
+    }
+
     var VALID_TABS = [
         'name', 'physical', 'personality',
         'academic', 'professional', 'combat', 'social', 'notes'
@@ -582,6 +638,13 @@
     // unsaved edits survive. Uses FormUtils.getField for scalar
     // inputs, and direct DOM reads for the dynamically-rendered
     // blocks (career entries, weapons, previous names).
+    //
+    // This path is SKIPPED when the caller has invalidated the
+    // render cache (see the RENDER CACHE INVALIDATION note in
+    // the file header). It is the correct behaviour when the
+    // re-render is a user editing an unrelated part of the form;
+    // it is the wrong behaviour when the re-render follows a
+    // committed domain mutation.
 
     function snapshotCurrentForm() {
         var FormUtils = getFormUtils();
@@ -791,6 +854,12 @@
 
         // ---- Snapshot current form values if re-rendering the
         // SAME character so unsaved edits survive. ----
+        //
+        // This branch is skipped when invalidateRenderCache() has
+        // been called since the last render (see the RENDER CACHE
+        // INVALIDATION note in the file header). In that case the
+        // form must show the store's current state, not a merged
+        // snapshot.
         var snapshot = null;
         var isSameCharacter = (
             _lastRenderedEditId !== undefined &&
@@ -2326,6 +2395,13 @@
         getCurrentTab: function() { return state.currentTab; },
         isInitialized: function() { return _initialized; },
 
+        // Clear the same-character re-render merge cache so the
+        // next render treats itself as a fresh render. See the
+        // RENDER CACHE INVALIDATION note in the file header.
+        // Callers that just committed a domain mutation must call
+        // this before their post-mutation render.
+        invalidateRenderCache: invalidateRenderCache,
+
         generateRandomPhysical: generateRandomPhysical,
         generateRandomPersonality: generateRandomPersonality,
 
@@ -2358,7 +2434,8 @@
 
         var required = [
             'render', 'hide', 'collect', 'switchTab',
-            'getCurrentTab', 'isInitialized'
+            'getCurrentTab', 'isInitialized',
+            'invalidateRenderCache'
         ];
 
         for (var i = 0; i < required.length; i++) {
