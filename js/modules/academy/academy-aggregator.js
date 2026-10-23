@@ -45,7 +45,7 @@
  *   Free slots (v33):
  *     getFreeSlotCandidateStudentsViewModel(classId, disciplineId, week)
  *
- *   Shared groups (v34):
+ *   Shared groups (v34, revised):
  *     getSharedGroupsViewModel(charIds, options)
  *
  * IMPORTANT:
@@ -96,22 +96,44 @@
  *   week) answers "which students are eligible to be placed into
  *   a new session for this discipline right now?"
  *
- * SHARED GROUPS (v34):
+ * SHARED GROUPS (v34, revised):
  *   getSharedGroupsViewModel(charIds, options) answers "which
- *   teaching groups contain at least two of these characters, and
- *   during which weeks?" The question is GROUP-CENTRIC: two
- *   characters enrolled in the same discipline but placed in
- *   different groups are NOT reported. That is the strict reading
- *   of "same group" and the one the UI advertises.
+ *   teaching groups contain EVERY ONE of these characters, and
+ *   during which weeks are they all present together?"
+ *
+ *   THE QUESTION IS GROUP-CENTRIC AND ALL-CHARACTER:
+ *     Two characters enrolled in the same discipline but placed in
+ *     different groups are NOT reported. And a group that contains
+ *     only two of three selected characters is NOT reported,
+ *     either.
+ *
+ *     A group is reported only when EVERY selected character is a
+ *     member of it at some week. The `weeks` list on a row is the
+ *     weeks during which ALL selected characters are present in
+ *     that group. A week with only some of the selection is
+ *     excluded.
+ *
+ *     This is the strict reading of "these people share a group."
+ *     The earlier "any two of the selection" semantics are gone.
+ *
+ *   INSTRUCTOR EXCLUSION (this revision):
+ *     A character who is an instructor of a class is excluded from
+ *     that class's shared-groups query, entirely. The exclusion
+ *     is CLASS-SCOPED: a character can be an instructor of Class A
+ *     and a student of Class B, and they participate in B's query
+ *     normally.
+ *
+ *     The exclusion is year-level: it uses
+ *     AcademyClasses.getClassInstructorIdsAllTime. A character who
+ *     taught the class once is excluded from the query for that
+ *     class, regardless of whether they are currently teaching it.
+ *
+ *     The per-interval `role === 'instructor'` check remains as a
+ *     guard against interval-level corruption. It is a
+ *     belt-and-braces check on top of the class-scoped exclusion.
  *
  *   The query is CLASS-SCOPED implicitly: a teaching group belongs
  *   to exactly one class, so a group match implies a class match.
- *
- *   Instructor-role enrolments are excluded from the pool: an
- *   instructor teaching English is not "in the same group" as a
- *   student studying English, even if they appear in the group's
- *   members[] array as an owner. Instructors are addressed by a
- *   different query (getClassInstructorIds).
  *
  *   A character's group can change week-to-week. The projection
  *   walks each character's enrolment weeks and resolves the group
@@ -123,10 +145,7 @@
  *     classId  string|null  When supplied, only that class is
  *                           inspected. When null (default), every
  *                           class either character is enrolled in
- *                           is walked. The launcher from a
- *                           character's schedule passes the
- *                           currently selected class when one is
- *                           selected, and null otherwise.
+ *                           is walked.
  *     week     number|null  When supplied, only that week is
  *                           inspected. When null (default), every
  *                           week either character's enrolment
@@ -138,19 +157,20 @@
  *
  *   FAILURE POLICY:
  *     Non-array charIds, or fewer than two distinct charIds → an
- *     empty VM (not null). Callers render "no shared groups" as a
- *     normal outcome; distinguishing "no selection" from "no
- *     matches" is not the projection's job.
+ *     empty VM (not null).
  *
  *     A character with no classes, no enrolments, or no groups
- *     contributes nothing. That is a legitimate "they share
- *     nothing with anyone" outcome, not a failure.
+ *     contributes nothing.
  *
- *     Missing AcademyTeachingGroups → throws (via require). The
- *     question cannot be answered without group membership.
+ *     Missing AcademyTeachingGroups → throws (via require).
  *
  *     Missing CharacterQueries → throws. Names are part of the
  *     contract.
+ *
+ *     Missing AcademyClasses → throws (via the module-level
+ *     mandatory check). The instructor exclusion uses
+ *     getClassInstructorIdsAllTime, which is a mandatory
+ *     dependency of this module.
  *
  * RANGE PREDICATES:
  *   The "does this range contain this week" question is owned by
@@ -524,14 +544,7 @@
      * as CalendarConstants.MAX_WEEK.
      *
      * Bounds that are not finite numbers are ignored (the interval
-     * contributes nothing). This mirrors the module-wide policy of
-     * not fabricating plausible values from malformed data. A
-     * caller that needs to distinguish "no valid weeks" from
-     * "corrupt intervals" should inspect the intervals directly.
-     *
-     * The result is capped at (MAX_WEEK - MIN_WEEK + 1) entries.
-     * The interval range is the calendar range; the function cannot
-     * produce more weeks than the calendar contains.
+     * contributes nothing).
      */
     function enumerateWeeksOfIntervals(intervals) {
         var seen = Object.create(null);
@@ -583,8 +596,6 @@
 
     /**
      * Collapse a sorted array of weeks into contiguous ranges.
-     * Used to produce weekRanges on shared-group rows for compact
-     * rendering ("Weeks 3–7, 12").
      */
     function collapseWeeksToRanges(weeks) {
         var ranges = [];
@@ -1287,30 +1298,45 @@
     }
 
     // ============================================================
-    // SHARED GROUPS (v34)
+    // SHARED GROUPS (v34, revised)
     // ============================================================
     //
     // See the header for the full contract. Summary:
     //
     //   Input:   charIds (>=2 distinct), options { classId?, week? }
     //   Output:  rows, one per (class, discipline, group) that
-    //            contains at least two of the selected characters,
-    //            with each row carrying the subset of selected
-    //            characters actually in that group and the weeks
-    //            their memberships overlap.
+    //            contains EVERY selected character, with the weeks
+    //            all of them are present in that group together.
     //
-    //   Same-group only. Enrolment in the same discipline is NOT
-    //   sufficient. Instructors are excluded from the pool.
+    //   ALL-CHARACTERS SEMANTICS (this revision):
+    //     A group is reported only when EVERY selected character
+    //     is present in it. The earlier "any two of the selection"
+    //     semantics are gone.
+    //
+    //     The `weeks` list on a row is the weeks during which ALL
+    //     selected characters are present in the group at once. A
+    //     week where only some of the selection is present is
+    //     excluded.
+    //
+    //   INSTRUCTOR EXCLUSION (this revision):
+    //     A character who is an instructor of a class is excluded
+    //     from that class's shared-groups query — entirely. The
+    //     exclusion is CLASS-SCOPED: a character can be an
+    //     instructor of Class A and a student of Class B, and they
+    //     participate in B's query normally.
+    //
+    //     The exclusion is year-level: it uses
+    //     AcademyClasses.getClassInstructorIdsAllTime. A character
+    //     who taught the class once is excluded from the query for
+    //     that class, regardless of whether they are currently
+    //     teaching it.
+    //
+    //     The per-interval `role === 'instructor'` check remains as
+    //     a guard against interval-level corruption.
     //
     //   Failure policy: empty VM for missing/insufficient input;
     //   throws for missing AcademyTeachingGroups or
-    //   CharacterQueries. No partial rows on domain failure — a
-    //   character whose lookup throws contributes nothing.
-    //
-    //   Complexity: O(selectedChars × classes × disciplines ×
-    //   weeks). Bounded above by 1000s of iterations for realistic
-    //   data. The index is built once and then walked once to
-    //   produce rows.
+    //   CharacterQueries.
 
     function getSharedGroupsViewModel(charIds, options) {
         options = (options && typeof options === 'object')
@@ -1376,16 +1402,43 @@
 
         var weekFilter = resolveWeek(options.week);
 
+        // ---- Instructor-of-class lookup, cached per class ----
+        //
+        // Year-level. See the INSTRUCTOR EXCLUSION note above.
+        var instructorSetByClass = Object.create(null);
+
+        function getInstructorSet(classId) {
+            if (instructorSetByClass[classId]) {
+                return instructorSetByClass[classId];
+            }
+            var set = Object.create(null);
+            try {
+                var ids = AcademyClasses.getClassInstructorIdsAllTime(
+                    classId
+                ) || [];
+                if (Array.isArray(ids)) {
+                    for (var k = 0; k < ids.length; k++) {
+                        if (ids[k] === undefined || ids[k] === null) {
+                            continue;
+                        }
+                        var key = String(ids[k]);
+                        if (key === '') { continue; }
+                        set[key] = true;
+                    }
+                }
+            } catch (e) {
+                set = Object.create(null);
+            }
+            instructorSetByClass[classId] = set;
+            return set;
+        }
+
         // ---- Build the (class, discipline, group) index ----
         //
         // Shape:
         //   index[classId][disciplineId][groupId] = {
         //     charId -> { weeks: Set-like object of week strings }
         //   }
-        //
-        // Nested plain objects rather than one composite string key.
-        // Readability of a console dump matters more than a
-        // negligible allocation difference at these sizes.
 
         var index = Object.create(null);
 
@@ -1405,6 +1458,12 @@
                     continue;
                 }
 
+                // ---- Instructor exclusion (CLASS-SCOPED) ----
+                var instructorSet = getInstructorSet(classId);
+                if (instructorSet[cid]) {
+                    continue;
+                }
+
                 var disciplineIds = [];
                 try {
                     disciplineIds =
@@ -1419,9 +1478,7 @@
                     disciplineIds = [];
                 }
 
-                // Cache enrolment intervals per class once. The
-                // nested discipline loop would otherwise re-fetch
-                // the same interval list for every discipline.
+                // Cache enrolment intervals per class once.
                 var classIntervals = [];
                 try {
                     classIntervals =
@@ -1439,7 +1496,7 @@
                     var disciplineId = String(disciplineIds[di]);
 
                     // Filter intervals to this discipline and to
-                    // student-role only.
+                    // student-role only (belt-and-braces).
                     var disciplineIntervals = [];
                     for (var ci = 0; ci < classIntervals.length; ci++) {
                         var iv = classIntervals[ci];
@@ -1456,15 +1513,10 @@
                     // Which weeks to inspect?
                     var weeksToCheck;
                     if (weekFilter !== null) {
-                        // Confirm the enrolment covers that week
-                        // before calling into the group query. The
-                        // group query would return null for a
-                        // non-enrolled week anyway, but skipping
-                        // here avoids a pointless domain call per
-                        // (char, discipline) when the caller has
-                        // narrowed to a single week.
                         var covered = false;
-                        for (var cw = 0; cw < disciplineIntervals.length; cw++) {
+                        for (var cw = 0;
+                             cw < disciplineIntervals.length;
+                             cw++) {
                             if (RangeUtils.containsWeek(
                                 weekFilter,
                                 disciplineIntervals[cw].startWeek,
@@ -1523,8 +1575,10 @@
 
         // ---- Walk the index and build rows ----
         //
-        // A row is emitted only for group buckets that contain at
-        // least two distinct selected characters.
+        // A row is emitted only for group buckets that contain EVERY
+        // selected character. The weeks list on the row is the
+        // weeks during which ALL selected characters are present at
+        // once.
 
         var rows = [];
 
@@ -1568,28 +1622,19 @@
                     var rowGroupId = groupKeys[gki];
                     var charBucket = groupMap[rowGroupId];
 
-                    var sharedCharIds = Object.keys(charBucket);
-                    if (sharedCharIds.length < 2) { continue; }
+                    var presentCharIds = Object.keys(charBucket);
 
-                    // Merge weeks across every shared character.
-                    // A week counts as "shared" when every shared
-                    // character is in the group that week? No — a
-                    // week counts when AT LEAST TWO of the selected
-                    // characters are in the group that week. That
-                    // matches "these people were together in week
-                    // W." A subset of the selected characters that
-                    // were co-located in week W is what the user
-                    // wants to see, not the intersection of all
-                    // selected characters.
-                    //
-                    // Weekly membership sets are disjoint per
-                    // character within a group, so a week is
-                    // present in charBucket[cid] if that character
-                    // was in the group that week. A week with two
-                    // or more characters present is a shared week.
+                    // ---- ALL-character check ----
+                    if (presentCharIds.length < selectedIds.length) {
+                        continue;
+                    }
+
+                    // ---- Week intersection: all present together ----
                     var weekPresence = Object.create(null);
-                    for (var sci = 0; sci < sharedCharIds.length; sci++) {
-                        var perCharWeeks = charBucket[sharedCharIds[sci]];
+                    for (var sci = 0;
+                         sci < presentCharIds.length;
+                         sci++) {
+                        var perCharWeeks = charBucket[presentCharIds[sci]];
                         var weekKeys = Object.keys(perCharWeeks);
                         for (var wki = 0; wki < weekKeys.length; wki++) {
                             var wk = weekKeys[wki];
@@ -1602,9 +1647,11 @@
 
                     var sharedWeeks = [];
                     var allWeekKeys = Object.keys(weekPresence);
-                    for (var wki2 = 0; wki2 < allWeekKeys.length; wki2++) {
+                    for (var wki2 = 0;
+                         wki2 < allWeekKeys.length;
+                         wki2++) {
                         var wk2 = allWeekKeys[wki2];
-                        if (weekPresence[wk2] >= 2) {
+                        if (weekPresence[wk2] >= selectedIds.length) {
                             sharedWeeks.push(parseInt(wk2, 10));
                         }
                     }
@@ -1662,19 +1709,27 @@
                         rowMemberCount = 0;
                     }
 
+                    var sharedCharIds = [];
                     var sharedCharNames = [];
-                    for (var sni = 0; sni < sharedCharIds.length; sni++) {
-                        var scid = sharedCharIds[sni];
+                    for (var sni = 0;
+                         sni < selectedIds.length;
+                         sni++) {
+                        var scid = selectedIds[sni];
+                        if (presentCharIds.indexOf(scid) === -1) {
+                            continue;
+                        }
                         var sname = characterNameById[scid];
                         if (!isNonEmptyString(sname)) {
                             sname = getCharacterDisplayName(scid);
                         }
+                        sharedCharIds.push(scid);
                         sharedCharNames.push(sname);
                     }
 
-                    // Sort the shared-character lists by name.
                     var paired = [];
-                    for (var ppi = 0; ppi < sharedCharIds.length; ppi++) {
+                    for (var ppi = 0;
+                         ppi < sharedCharIds.length;
+                         ppi++) {
                         paired.push({
                             id: sharedCharIds[ppi],
                             name: sharedCharNames[ppi]
