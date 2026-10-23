@@ -2,65 +2,65 @@
  * modules/academy/controllers/academy-shared-groups-controller.js
  * Academy Shared Groups Controller
  *
- * Path: js/modules/academy/academy-shared-groups-controller.js
+ * Path: js/modules/academy/controllers/academy-shared-groups-controller.js
  *
  * Controller for the Shared Groups view and for the launcher
  * button on the character detail Schedule tab.
  *
  * RESPONSIBILITIES:
  *   - Own the picker state (selection, filter, class filter).
- *   - Read the character list and class list, once per render.
- *   - Call AcademyAggregator.getSharedGroupsViewModel to build
- *     the result.
+ *   - Build the character list — class-scoped when a class is
+ *     selected, full character list otherwise.
+ *   - Build the result via AcademyAggregator.getSharedGroupsViewModel.
  *   - Render via AcademySharedGroupsView.renderHTML.
  *   - Route the view's data-* events back to state changes.
  *   - Provide openForCharacter(charId, options) so the character
  *     detail Schedule tab can jump to the Shared Groups view
  *     pre-seeded with that character.
  *
+ * CLASS SCOPING:
+ *   When a class is selected, the picker list is built from that
+ *   class's roster:
+ *     - every student in the class (from
+ *       AcademyAggregator.getClassStudentsViewModel)
+ *     - every instructor of the class, all-time (from
+ *       AcademyClasses.getClassInstructorIdsAllTime)
+ *   The two are unioned and deduplicated.
+ *
+ *   When "All classes" is selected, the picker list is every
+ *   character in the database (from CharacterQueries.getCharacters).
+ *
+ *   Changing the class filter prunes the current selection: any
+ *   selected character who is not in the new class's roster is
+ *   dropped. The user is not left with a selection they cannot
+ *   see.
+ *
+ * CLIENT-SIDE SEARCH:
+ *   Typing in the search box does NOT re-render the picker. The
+ *   controller toggles row visibility on the existing DOM. Focus
+ *   and caret position in the search input survive; the picker
+ *   scroll position survives; the character list is not rebuilt.
+ *
+ *   See AcademySharedGroupsView's PICKER FILTER note. The view
+ *   renders every row with a data-search-key attribute; this
+ *   controller's applyPickerFilterInPlace() shows and hides them.
+ *
  * STATE:
- *   The controller's state is per-view: it is reset when the
- *   view is unmounted. It is NOT persisted in AcademyUI. The
- *   selection is not a cross-view concept.
- *
- *   When the shell routes the user away from Shared Groups and
- *   back, the previous selection is gone. That is deliberate: a
- *   stale multi-character selection that happens to include a
- *   character who was just deleted or reassigned would be
- *   confusing to return to.
- *
- *   openForCharacter seeds the state and switches the shell to
- *   this view. Because the state lives here (not in AcademyUI),
- *   the seeding must happen in the same call before the shell
- *   renders.
+ *   Per-view. Reset on unmount. openForCharacter seeds the state
+ *   and switches the shell view, which triggers a shell-level
+ *   mount that calls render() with the seeded state.
  *
  * ANCHOR CHARACTER:
- *   When the view is opened from a character's Schedule tab,
- *   the launched character is placed into `selectedCharIds`
- *   (if not already there) and recorded as `anchorCharId`. The
- *   anchor is purely informational in the view layer: the
- *   renderer does not distinguish it. It exists so a future
- *   iteration can highlight the anchor's row or its chip
- *   without re-plumbing state.
- *
- *   The anchor is cleared when the user removes that character
- *   from the selection.
+ *   When opened from a character's Schedule tab, the launched
+ *   character is placed into selectedCharIds (if not already
+ *   there) and recorded as anchorCharId. The anchor is purely
+ *   informational; the renderer does not distinguish it.
  *
  * CONTEXT:
- *   The shell passes a context object to render(host, context):
- *     {
- *       onChange: function()   // shell-provided refresh hook
- *     }
- *
- *   This controller does NOT use onChange — the view's state
- *   changes are local and re-render the controller's own host
- *   without round-tripping through the shell's refresh path.
- *   Calling onChange would replace the shell's innerHTML and
- *   lose the picker's scroll position, which is worse than the
- *   local re-render.
- *
- *   The context is captured anyway so a future iteration that
- *   does need onChange can use it without a signature change.
+ *   The shell passes { onChange } to render(host, context). This
+ *   controller does NOT call onChange for local state changes —
+ *   the local re-render is enough. onChange is captured for
+ *   callers that later need it.
  *
  * EVENTS (from the view's data-* markers):
  *   - .academy-shared-groups-class-select   (change)
@@ -69,23 +69,21 @@
  *   - [data-action="shared-groups-clear-selection"]     (click)
  *   - [data-action="shared-groups-remove-character"]    (click)
  *
- *   Anything else is ignored. The controller does not bubble
- *   unknown actions to the shell; the shell's dispatcher already
- *   handles cross-view navigation.
- *
  * RE-RENDER:
- *   Every state change triggers a local re-render of the
- *   controller's own host. The shell is not notified. This is
- *   how the picker's scroll position and search cursor survive
- *   a checkbox toggle.
+ *   State changes that affect the result (character checkbox
+ *   toggle, clear-selection, remove-character chip, class
+ *   filter) re-render the controller's own host. Class filter
+ *   changes also prune the selection first.
+ *
+ *   The search input does NOT re-render; it only applies the
+ *   filter in place.
  *
  * DEPENDENCIES:
  *   - window.AcademyAggregator
  *   - window.AcademySharedGroupsView
  *   - window.CharacterQueries
- *   - window.AcademyUI  (for switching views in openForCharacter)
- *   - window.AcademyView (for triggering the shell's re-render
- *                         after a view switch)
+ *   - window.AcademyClasses
+ *   - window.AcademyUI
  */
 
 (function() {
@@ -102,6 +100,7 @@
     var AcademyAggregator = window.AcademyAggregator;
     var AcademySharedGroupsView = window.AcademySharedGroupsView;
     var CharacterQueries = window.CharacterQueries;
+    var AcademyClasses = window.AcademyClasses;
     var AcademyUI = window.AcademyUI;
 
     var _missing = [];
@@ -114,6 +113,10 @@
         typeof AcademyAggregator.getClassListViewModel !== 'function') {
         _missing.push('AcademyAggregator.getClassListViewModel');
     }
+    if (!AcademyAggregator ||
+        typeof AcademyAggregator.getClassStudentsViewModel !== 'function') {
+        _missing.push('AcademyAggregator.getClassStudentsViewModel');
+    }
     if (!AcademySharedGroupsView ||
         typeof AcademySharedGroupsView.renderHTML !== 'function') {
         _missing.push('AcademySharedGroupsView.renderHTML');
@@ -123,8 +126,16 @@
         _missing.push('CharacterQueries.getCharacters');
     }
     if (!CharacterQueries ||
+        typeof CharacterQueries.getCharacterById !== 'function') {
+        _missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!CharacterQueries ||
         typeof CharacterQueries.getDisplayName !== 'function') {
         _missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!AcademyClasses ||
+        typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
+        _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
     }
     if (!AcademyUI ||
         typeof AcademyUI.setSelectedView !== 'function') {
@@ -148,12 +159,21 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function sortByNameThenId(list) {
+        list.sort(function(a, b) {
+            if (a.name !== b.name) {
+                return a.name.localeCompare(b.name);
+            }
+            return a.id.localeCompare(b.id);
+        });
+    }
+
     // ============================================================
     // MODULE STATE
     // ============================================================
     //
-    // Per-view state. Reset on unmount. See the header for the
-    // rationale.
+    // Per-view state. Reset on unmount. See the STATE note in the
+    // file header.
 
     var _host = null;
     var _context = null;
@@ -199,9 +219,6 @@
         _selectedCharIds = next;
 
         // If the removed character was the anchor, clear the anchor.
-        // The anchor exists to identify "the character this view was
-        // opened for"; once removed, it no longer identifies
-        // anything.
         if (_anchorCharId !== null &&
             String(_anchorCharId) === target) {
             _anchorCharId = null;
@@ -214,18 +231,19 @@
     }
 
     // ============================================================
-    // CHARACTER LIST
+    // CLASS-SCOPED PICKER LIST
     // ============================================================
     //
-    // Read fresh on every render. The list is authoritative from
-    // CharacterQueries; the controller does not cache. A character
-    // created or deleted while this view is open picks up on the
-    // next render, which is the correct behavior for a picker.
-    //
-    // The list is sorted by display name; the picker's renderer
-    // preserves that order and does not re-sort.
+    // See the CLASS SCOPING note in the file header.
 
     function buildCharacterList() {
+        if (isNonEmptyString(_selectedClassId)) {
+            return buildClassScopedCharacterList(_selectedClassId);
+        }
+        return buildAllCharacterList();
+    }
+
+    function buildAllCharacterList() {
         var characters = [];
         try {
             characters = CharacterQueries.getCharacters() || [];
@@ -256,14 +274,118 @@
             });
         }
 
-        result.sort(function(a, b) {
-            if (a.name !== b.name) {
-                return a.name.localeCompare(b.name);
-            }
-            return a.id.localeCompare(b.id);
-        });
-
+        sortByNameThenId(result);
         return result;
+    }
+
+    function buildClassScopedCharacterList(classId) {
+        var targetClass = String(classId);
+        var byId = Object.create(null);
+
+        // ---- Students in the class ----
+        var students = [];
+        try {
+            students = AcademyAggregator.getClassStudentsViewModel(
+                targetClass
+            ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademySharedGroupsController] ' +
+                'getClassStudentsViewModel threw:', e
+            );
+            students = [];
+        }
+        if (Array.isArray(students)) {
+            for (var i = 0; i < students.length; i++) {
+                var s = students[i];
+                if (!s || !s.id) { continue; }
+                byId[String(s.id)] = true;
+            }
+        }
+
+        // ---- Instructors of this class (all-time) ----
+        var instructorIds = [];
+        try {
+            instructorIds =
+                AcademyClasses.getClassInstructorIdsAllTime(
+                    targetClass
+                ) || [];
+        } catch (e) {
+            console.warn(
+                '[AcademySharedGroupsController] ' +
+                'getClassInstructorIdsAllTime threw:', e
+            );
+            instructorIds = [];
+        }
+        if (Array.isArray(instructorIds)) {
+            for (var j = 0; j < instructorIds.length; j++) {
+                if (!isNonEmptyString(instructorIds[j])) { continue; }
+                byId[String(instructorIds[j])] = true;
+            }
+        }
+
+        // ---- Resolve names for everyone in the class ----
+        var result = [];
+        var keys = Object.keys(byId);
+        for (var k = 0; k < keys.length; k++) {
+            var cid = keys[k];
+            var char = null;
+            try {
+                char = CharacterQueries.getCharacterById(cid);
+            } catch (e) {
+                char = null;
+            }
+            if (!char) { continue; }
+
+            var name = '';
+            try {
+                name = CharacterQueries.getDisplayName(char) || '';
+            } catch (e) {
+                name = '';
+            }
+            if (name === '') { name = 'Unknown'; }
+
+            result.push({
+                id: cid,
+                name: name
+            });
+        }
+
+        sortByNameThenId(result);
+        return result;
+    }
+
+    // ============================================================
+    // SELECTION PRUNING
+    // ============================================================
+    //
+    // Called after _selectedClassId changes. Drops any selected
+    // character who is no longer in the current class's roster.
+
+    function pruneSelectionToCurrentPicker() {
+        if (!isNonEmptyString(_selectedClassId)) {
+            // All-classes mode: nothing to prune against.
+            return;
+        }
+
+        var picker = buildClassScopedCharacterList(_selectedClassId);
+        var allowed = Object.create(null);
+        for (var i = 0; i < picker.length; i++) {
+            allowed[picker[i].id] = true;
+        }
+
+        var next = [];
+        for (var j = 0; j < _selectedCharIds.length; j++) {
+            var id = String(_selectedCharIds[j]);
+            if (allowed[id]) {
+                next.push(id);
+            }
+        }
+        _selectedCharIds = next;
+
+        if (_anchorCharId !== null && !allowed[_anchorCharId]) {
+            _anchorCharId = null;
+        }
     }
 
     // ============================================================
@@ -272,12 +394,13 @@
 
     function buildClassList() {
         try {
-            var classes = AcademyAggregator.getClassListViewModel() || [];
+            var classes =
+                AcademyAggregator.getClassListViewModel() || [];
             return Array.isArray(classes) ? classes : [];
         } catch (e) {
             console.warn(
-                '[AcademySharedGroupsController] getClassListViewModel ' +
-                'threw:', e
+                '[AcademySharedGroupsController] ' +
+                'getClassListViewModel threw:', e
             );
             return [];
         }
@@ -286,21 +409,6 @@
     // ============================================================
     // RESULT
     // ============================================================
-    //
-    // The aggregator is asked with the current selection and the
-    // current class filter. If the user has selected fewer than
-    // two characters, the aggregator returns an empty result
-    // itself; the controller could skip the call but the
-    // aggregator's empty VM carries a resolved `characters[]`
-    // array that the view does not need. Skipping the call here
-    // avoids the (small) cost of resolving names twice.
-    //
-    // The controller does not catch the aggregator's throws. A
-    // throw here means AcademyTeachingGroups or CharacterQueries
-    // is unavailable. Letting the shell's controller-invocation
-    // wrapper catch and log it (see AcademyView.mountControllerFor
-    // View) is the right failure mode: the rest of the tab keeps
-    // working, and the error is visible in the console.
 
     function buildResult() {
         if (_selectedCharIds.length < 2) {
@@ -351,17 +459,74 @@
 
         var vm = buildViewModel();
         host.innerHTML = AcademySharedGroupsView.renderHTML(vm);
+
+        applyPickerFilterInPlace();
     }
 
     /**
      * Re-render the controller's own host without going through
-     * the shell. Used on every state change so the picker's scroll
-     * and search cursor survive a checkbox toggle.
+     * the shell. Used on state changes that affect the result
+     * (checkbox toggle, chip removal, clear selection, class
+     * filter change). NOT used for the search box.
      */
     function rerender() {
         if (!_host) { return; }
         var vm = buildViewModel();
         _host.innerHTML = AcademySharedGroupsView.renderHTML(vm);
+        applyPickerFilterInPlace();
+    }
+
+    // ============================================================
+    // CLIENT-SIDE PICKER FILTER
+    // ============================================================
+    //
+    // Shows and hides the picker rows in place, based on the
+    // current filter term. See the CLIENT-SIDE SEARCH note in the
+    // file header.
+    //
+    // A selected row is ALWAYS visible even when the search term
+    // excludes it, so the user cannot accidentally lose sight of
+    // a character they are actively working with.
+
+    function applyPickerFilterInPlace() {
+        if (!_host) { return; }
+
+        var term = _filter.toLowerCase().trim();
+
+        var rows = _host.querySelectorAll(
+            '.academy-shared-groups-char-row'
+        );
+        var anyVisible = false;
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var key = row.dataset
+                ? (row.dataset.searchKey || '')
+                : '';
+            var isRowSelected = row.classList.contains('is-selected');
+            var matches = term === '' ||
+                          key.indexOf(term) !== -1 ||
+                          isRowSelected;
+
+            if (matches) {
+                row.style.display = '';
+                anyVisible = true;
+            } else {
+                row.style.display = 'none';
+            }
+        }
+
+        // Toggle the "no matches" element.
+        var noMatch = _host.querySelector(
+            '.academy-shared-groups-no-matches'
+        );
+        if (noMatch) {
+            if (!anyVisible && rows.length > 0) {
+                noMatch.style.display = '';
+            } else {
+                noMatch.style.display = 'none';
+            }
+        }
     }
 
     // ============================================================
@@ -415,6 +580,7 @@
             'academy-shared-groups-class-select'
         )) {
             _selectedClassId = target.value || '';
+            pruneSelectionToCurrentPicker();
             rerender();
             return;
         }
@@ -447,11 +613,7 @@
             _filter = typeof target.value === 'string'
                 ? target.value
                 : '';
-            // The search filter does not affect the aggregator
-            // result (which is derived from the selection and the
-            // class filter, not the search term), so no rebuild is
-            // needed. A local re-render updates the visible rows.
-            rerender();
+            applyPickerFilterInPlace();
             return;
         }
     }
@@ -465,16 +627,13 @@
     // PUBLIC ENTRY — open from a character's Schedule tab
     // ============================================================
     //
-    // The character detail Schedule tab emits a click on a button
-    // that the People controller routes here.
-    //
-    // This function seeds the selection, switches the shell's
-    // active view, and asks the shell to re-render. The shell's
-    // mount path calls back into this controller's render() with
-    // the new host, which picks up the seeded state.
+    // Seeds the selection, switches the shell's active view, and
+    // returns whether the switch succeeded. The caller (the People
+    // controller) is responsible for triggering the shell's
+    // re-render after a successful switch.
     //
     // If the character is not found, this is a no-op that returns
-    // false. The caller can decide whether to notify the user.
+    // false. The caller decides whether to notify the user.
 
     function openForCharacter(charId, options) {
         if (!isNonEmptyString(charId)) { return false; }
@@ -487,20 +646,16 @@
         }
         if (!char) { return false; }
 
-        // Reset the per-view state so that opening from a
-        // character's schedule does not inherit a previous
-        // multi-character selection. The anchor is the only thing
-        // we want to carry in.
+        // Reset the per-view state so opening from a character's
+        // schedule does not inherit a previous multi-character
+        // selection.
         _selectedCharIds = [];
         _filter = '';
         _anchorCharId = null;
 
-        // The class filter default is the class the AcademyUI has
-        // selected, when one is selected. This narrows the search
-        // to what the user was just looking at (the character's
-        // schedule is class-scoped by the shell) and matches the
-        // user's mental context. When no class is selected, the
-        // filter is "all classes".
+        // The class filter defaults to the class the AcademyUI has
+        // selected, when one is selected. This narrows the picker
+        // and the search to what the user was just looking at.
         options = (options && typeof options === 'object')
             ? options
             : {};
@@ -521,20 +676,6 @@
         addToSelection(charId);
         _anchorCharId = String(charId);
 
-        // Switch the shell to this view. The shell will re-render,
-        // mount this controller, and call render() — at which
-        // point the seeded state is used.
-        //
-        // We deliberately do NOT call AcademyView.refreshView()
-        // directly from here. The launcher's caller (the People
-        // controller, in its handler for the Schedule tab's
-        // button) is the layer that decides whether to refresh
-        // the shell. Doing it here would make this controller
-        // depend on the shell in a way that couples two modules
-        // that otherwise do not know about each other.
-        //
-        // Returning true signals to the caller that the state has
-        // been seeded and the shell should switch.
         var switched = false;
         try {
             switched = AcademyUI.setSelectedView('sharedGroups');
