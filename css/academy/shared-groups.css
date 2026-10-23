@@ -1,0 +1,459 @@
+/**
+ * css/academy/shared-groups.css - Academy Shared Groups view
+ *
+ * Path: css/academy/shared-groups.css
+ *
+ * The Shared Groups view of the Academy tab. Rendered by
+ * academy-shared-groups-view.js.
+ *
+ * The shell (academy.css) provides the view switcher, the generic
+ * top bar shape, and the shared form primitives. This file adds
+ * the two-column layout, the picker chips, the character list,
+ * and the grouped result rows.
+ *
+ * Load order:
+ *   shared.css
+ *   academy.css
+ *   academy/shared-groups.css
+ */
+
+/* ============================================================
+   ROOT
+   ============================================================ */
+
+.academy-shared-groups-root {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* ============================================================
+   TOP BAR
+   ============================================================
+   Inherits the base .academy-top-bar shape from academy.css.
+   The specific classes here are just for layout adjustments
+   and the summary text on the right.
+   ============================================================ */
+
+.academy-shared-groups-top-bar {
+    /* Inherits .academy-top-bar */
+}
+
+.academy-shared-groups-top-left,
+.academy-shared-groups-top-right {
+    /* Inherits .academy-top-left / .academy-top-right */
+}
+
+.academy-shared-groups-class-select {
+    /* Modifier for the class selector if it needs to be wider
+       in this view, though by default it inherits 180px. */
+}
+
+.academy-shared-groups-summary {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+/* ============================================================
+   TWO-PANEL LAYOUT
+   ============================================================ */
+
+.academy-shared-groups-panels {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .academy-shared-groups-panels {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+}
+
+/* ============================================================
+   SIDEBAR (LEFT COLUMN)
+   ============================================================ */
+
+.academy-shared-groups-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+@media (max-width: 768px) {
+    .academy-shared-groups-sidebar {
+        max-height: 400px;
+    }
+}
+
+/* ---------- Selected Chips ---------- */
+
+.academy-shared-groups-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-soft);
+    min-height: 28px;
+}
+
+.academy-shared-groups-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 2px 2px 8px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    font-size: 0.65rem;
+    color: var(--accent);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.academy-shared-groups-chip-name {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.academy-shared-groups-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--danger);
+    font-size: 0.55rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: background 0.15s;
+}
+
+.academy-shared-groups-chip-remove:hover {
+    background: var(--danger-soft);
+    border-color: transparent;
+}
+
+/* ---------- Chip Actions (Clear selection) ---------- */
+
+.academy-shared-groups-chip-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding-bottom: 4px;
+}
+
+.academy-shared-groups-chip-actions button {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+}
+
+/* ---------- Search ---------- */
+
+.academy-shared-groups-search {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-shared-groups-search:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Character Picker List ---------- */
+
+.academy-shared-groups-char-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.academy-shared-groups-char-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-size: 0.72rem;
+    color: var(--text);
+}
+
+.academy-shared-groups-char-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-shared-groups-char-checkbox {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.academy-shared-groups-char-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.academy-shared-groups-no-matches {
+    padding: 12px 8px;
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ============================================================
+   RESULTS (RIGHT COLUMN)
+   ============================================================ */
+
+.academy-shared-groups-results {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-shared-groups-results {
+        max-height: none;
+    }
+}
+
+/* ---------- Empty State ---------- */
+
+.academy-shared-groups-empty {
+    padding: 30px 12px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+
+/* ---------- Results Header ---------- */
+
+.academy-shared-groups-results-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-shared-groups-results-title {
+    font-size: 0.9rem;
+    color: var(--accent);
+    margin: 0;
+    flex: 1;
+}
+
+.academy-shared-groups-results-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Grouped Result List ---------- */
+
+.academy-shared-groups-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Class Heading */
+
+.academy-shared-groups-class-heading {
+    margin-bottom: 4px;
+}
+
+.academy-shared-groups-class-name {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* Discipline Heading */
+
+.academy-shared-groups-discipline-heading {
+    margin-top: 8px;
+    margin-bottom: 4px;
+    padding-left: 8px;
+    border-left: 3px solid var(--info);
+}
+
+.academy-shared-groups-discipline-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--info);
+}
+
+/* ---------- Result Row ---------- */
+
+.academy-shared-groups-row {
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-left: 8px;
+}
+
+.academy-shared-groups-row-main {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.academy-shared-groups-group-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.academy-shared-groups-instructor {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.academy-shared-groups-member-count {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 8px;
+    white-space: nowrap;
+}
+
+/* ---------- Together Info ---------- */
+
+.academy-shared-groups-row-together {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 0.7rem;
+}
+
+.academy-shared-groups-row-together-label {
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.academy-shared-groups-row-together-names {
+    color: var(--text);
+}
+
+/* ---------- Weeks Info ---------- */
+
+.academy-shared-groups-row-weeks {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 0.7rem;
+}
+
+.academy-shared-groups-row-weeks-label {
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.academy-shared-groups-row-weeks-value {
+    color: var(--accent);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+
+@media (max-width: 600px) {
+    .academy-shared-groups-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .academy-shared-groups-top-left,
+    .academy-shared-groups-top-right {
+        justify-content: space-between;
+    }
+
+    .academy-shared-groups-class-select {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .academy-shared-groups-sidebar {
+        max-height: 320px;
+    }
+
+    .academy-shared-groups-results {
+        padding: 8px;
+    }
+
+    .academy-shared-groups-row-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
+
+    .academy-shared-groups-row-together,
+    .academy-shared-groups-row-weeks {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
+}
