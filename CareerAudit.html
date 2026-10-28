@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Career Chain Audit</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ddd; padding: 16px; }
+  h1, h2 { color: #9cf; }
+  textarea { width: 100%; height: 520px; background: #111; color: #9c9; border: 1px solid #444; padding: 8px; font-family: monospace; font-size: 12px; }
+  .file-label { display: inline-block; padding: 8px 16px; background: #246; color: #fff; border-radius: 4px; cursor: pointer; }
+  input[type=file] { display: none; }
+  section { margin-top: 24px; }
+  .count { color: #fc6; font-weight: bold; }
+  .empty { color: #6c6; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #444; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #222; }
+  .warn { color: #fc9; }
+  small { color: #888; }
+</style>
+</head>
+<body>
+<h1>Career Chain Audit</h1>
+<p>Ordered precedence:</p>
+<ol>
+  <li><strong>Class</strong>: year ← name</li>
+  <li><strong>Trainee</strong>: start = end = class name year</li>
+  <li><strong>Rookie</strong>: start = trainee start, end = +2</li>
+  <li><strong>Junior</strong>: start = rookie end, end = +2</li>
+  <li><strong>Retired</strong>: closes senior (senior.endYear = retired.startYear)</li>
+  <li><strong>Senior</strong>: start = junior end</li>
+  <li><strong>Support</strong>: start = senior end (if senior) else junior end (if junior) else rookie end</li>
+  <li><strong>Instructor</strong>: start = senior end (only when senior exists)</li>
+</ol>
+<p>End dates of support, instructor, and retired are never touched.</p>
+
+<label class="file-label">
+  Load JSON file…
+  <input type="file" id="file-input" accept=".json,application/json">
+</label>
+
+<div id="report"></div>
+
+<section>
+  <h2>Injectable Fix Code</h2>
+  <p>Paste into the browser console <em>after</em> <code>window.data</code> is loaded.</p>
+  <textarea id="fix-output" readonly></textarea>
+</section>
+
+<script>
+(function () {
+  'use strict';
+
+  function parseYear(v) {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v === 'number') {
+      return (Number.isSafeInteger(v) && v >= 1) ? v : null;
+    }
+    var s = String(v).trim();
+    if (s === '' || !/^\d+$/.test(s)) return null;
+    var n = parseInt(s, 10);
+    return (isNaN(n) || n < 1) ? null : n;
+  }
+
+  function parseClassYearFromName(name) {
+    if (typeof name !== 'string') return null;
+    var m = name.match(/(?:^|\D)(\d{4})(?!\d)/);
+    if (!m) return null;
+    var n = parseInt(m[1], 10);
+    return (isNaN(n) || n < 1) ? null : n;
+  }
+
+  function statusOf(entry) {
+    return String((entry && entry.status) || '').toLowerCase();
+  }
+
+  function audit(data) {
+    var report = {
+      classes: [],
+      trainees: [],
+      rookies: [],
+      juniors: [],
+      seniors: [],
+      supports: [],
+      instructors: [],
+      retired: [],
+      warnings: []
+    };
+
+    if (!data || typeof data !== 'object') {
+      report.warnings.push('Top-level data is not an object.');
+      return report;
+    }
+
+    var characters = Array.isArray(data.characters) ? data.characters : [];
+    var academy = data.academy || {};
+    var classes = academy.graduatingClasses || {};
+
+    var classYearById = Object.create(null);
+    Object.keys(classes).forEach(function (id) {
+      var cls = classes[id];
+      if (!cls || typeof cls !== 'object') return;
+      var name = typeof cls.name === 'string' ? cls.name : '';
+      var nameYear = parseClassYearFromName(name);
+      if (nameYear === null) {
+        report.warnings.push(
+          'Class "' + id + '" name "' + name +
+          '" has no 4-digit year; skipped for class-year fix.'
+        );
+        return;
+      }
+      classYearById[id] = nameYear;
+      var currentYear = parseYear(cls.year);
+      if (currentYear !== nameYear) {
+        report.classes.push({
+          classId: id,
+          name: name,
+          currentYear: cls.year,
+          expectedYear: nameYear
+        });
+      }
+    });
+
+    characters.forEach(function (char) {
+      if (!char || typeof char !== 'object') return;
+
+      var charId = String(char.id || '');
+      var displayName =
+        [char.firstName, char.lastName].filter(Boolean).join(' ') ||
+        charId;
+
+      var classIds = Array.isArray(char.classIds) ? char.classIds : [];
+      var classId = null;
+      var classYear = null;
+      for (var i = 0; i < classIds.length; i++) {
+        var cid = String(classIds[i]);
+        if (classYearById[cid] !== undefined) {
+          classId = cid;
+          classYear = classYearById[cid];
+          break;
+        }
+      }
+
+      var career = Array.isArray(char.careerStatus)
+        ? char.careerStatus
+        : [];
+
+      var traineeIdx = [], rookieIdx = [], juniorIdx = [];
+      var seniorIdx = [], supportIdx = [], instructorIdx = [], retiredIdx = [];
+      for (var t = 0; t < career.length; t++) {
+        var e = career[t];
+        if (!e || typeof e !== 'object') continue;
+        var s = statusOf(e);
+        if (s === 'trainee') traineeIdx.push(t);
+        else if (s === 'rookie') rookieIdx.push(t);
+        else if (s === 'junior') juniorIdx.push(t);
+        else if (s === 'senior') seniorIdx.push(t);
+        else if (s === 'support') supportIdx.push(t);
+        else if (s === 'instructor') instructorIdx.push(t);
+        else if (s === 'retired') retiredIdx.push(t);
+      }
+
+      var traineeAnchor = null;
+      if (traineeIdx.length > 0) {
+        var tEntry = career[traineeIdx[0]];
+        if (classYear !== null) {
+          traineeAnchor = classYear;
+        } else {
+          traineeAnchor = parseYear(tEntry.startYear);
+        }
+      }
+
+      // ---- Trainee ----
+      if (classYear !== null && traineeIdx.length > 0) {
+        var traineeMismatches = [];
+        traineeIdx.forEach(function (idx) {
+          var entry = career[idx];
+          var curStart = parseYear(entry.startYear);
+          var curEnd = parseYear(entry.endYear);
+          if (curStart !== classYear || curEnd !== classYear) {
+            traineeMismatches.push({
+              index: idx, currentStart: curStart, currentEnd: curEnd
+            });
+          }
+        });
+        if (traineeMismatches.length > 0) {
+          report.trainees.push({
+            characterId: charId, name: displayName,
+            classId: classId, classYear: classYear,
+            expectedStart: classYear, expectedEnd: classYear,
+            mismatches: traineeMismatches
+          });
+        }
+      } else if (classYear !== null && traineeIdx.length === 0) {
+        report.warnings.push(
+          displayName + ' (' + charId + ') in class "' +
+          classId + '" (year ' + classYear +
+          ') has no trainee career entry.'
+        );
+      }
+
+      // ---- Rookie ----
+      if (traineeAnchor !== null && rookieIdx.length > 0) {
+        var expRookieStart = traineeAnchor;
+        var expRookieEnd = traineeAnchor + 2;
+        var rookieMismatches = [];
+        rookieIdx.forEach(function (idx) {
+          var entry = career[idx];
+          var curStart = parseYear(entry.startYear);
+          var curEnd = parseYear(entry.endYear);
+          if (curStart !== expRookieStart || curEnd !== expRookieEnd) {
+            rookieMismatches.push({
+              index: idx, currentStart: curStart, currentEnd: curEnd
+            });
+          }
+        });
+        if (rookieMismatches.length > 0) {
+          report.rookies.push({
+            characterId: charId, name: displayName,
+            traineeYear: traineeAnchor,
+            expectedStart: expRookieStart, expectedEnd: expRookieEnd,
+            mismatches: rookieMismatches
+          });
+        }
+      }
+
+      // ---- Effective chain ----
+      var effRookieEnd = traineeAnchor !== null ? traineeAnchor + 2 : null;
+      var effJuniorStart = effRookieEnd;
+      var effJuniorEnd = effJuniorStart !== null ? effJuniorStart + 2 : null;
+
+      // ---- Junior ----
+      if (effRookieEnd !== null && juniorIdx.length > 0) {
+        var expJuniorStart = effRookieEnd;
+        var expJuniorEnd = expJuniorStart + 2;
+        var juniorMismatches = [];
+        juniorIdx.forEach(function (idx) {
+          var entry = career[idx];
+          var curStart = parseYear(entry.startYear);
+          var curEnd = parseYear(entry.endYear);
+          if (curStart !== expJuniorStart || curEnd !== expJuniorEnd) {
+            juniorMismatches.push({
+              index: idx, currentStart: curStart, currentEnd: curEnd
+            });
+          }
+        });
+        if (juniorMismatches.length > 0) {
+          report.juniors.push({
+            characterId: charId, name: displayName,
+            rookieEndYear: effRookieEnd,
+            expectedStart: expJuniorStart, expectedEnd: expJuniorEnd,
+            mismatches: juniorMismatches
+          });
+        }
+      }
+
+      // ---- Retired: closes senior ----
+      // Retired.startYear is treated as the year the character
+      // retired. Senior's endYear becomes that year.
+      if (retiredIdx.length > 0 && seniorIdx.length > 0) {
+        var retiredYear = parseYear(career[retiredIdx[0]].startYear);
+        if (retiredYear !== null) {
+          var seniorCloseMismatches = [];
+          seniorIdx.forEach(function (idx) {
+            var entry = career[idx];
+            var curEnd = parseYear(entry.endYear);
+            if (curEnd !== retiredYear) {
+              seniorCloseMismatches.push({
+                index: idx,
+                currentStart: parseYear(entry.startYear),
+                currentEnd: curEnd
+              });
+            }
+          });
+          if (seniorCloseMismatches.length > 0) {
+            report.retired.push({
+              characterId: charId, name: displayName,
+              retiredYear: retiredYear,
+              mismatches: seniorCloseMismatches
+            });
+          }
+        }
+      }
+
+      // ---- Senior: start = junior end ----
+      // Senior.endYear is only touched by the retired phase.
+      // Effective senior.endYear for downstream phases:
+      //   - retired.startYear, when the character is retired
+      //   - the stored senior.endYear, otherwise (may be '')
+      var retiredYearForDownstream = retiredIdx.length > 0
+        ? parseYear(career[retiredIdx[0]].startYear) : null;
+
+      var effectiveSeniorEnd = null;
+      if (seniorIdx.length > 0) {
+        if (retiredYearForDownstream !== null) {
+          effectiveSeniorEnd = retiredYearForDownstream;
+        } else {
+          effectiveSeniorEnd = parseYear(career[seniorIdx[0]].endYear);
+        }
+      }
+
+      if (effJuniorEnd !== null && seniorIdx.length > 0) {
+        var expSeniorStart = effJuniorEnd;
+        var seniorMismatches = [];
+        seniorIdx.forEach(function (idx) {
+          var entry = career[idx];
+          var curStart = parseYear(entry.startYear);
+          if (curStart !== expSeniorStart) {
+            seniorMismatches.push({
+              index: idx,
+              currentStart: curStart,
+              currentEnd: parseYear(entry.endYear)
+            });
+          }
+        });
+        if (seniorMismatches.length > 0) {
+          report.seniors.push({
+            characterId: charId, name: displayName,
+            juniorEndYear: effJuniorEnd,
+            expectedStart: expSeniorStart,
+            mismatches: seniorMismatches
+          });
+        }
+      }
+
+      // ---- Support ----
+      // Priority:
+      //   1. senior exists and effectiveSeniorEnd is known -> senior end
+      //   2. no senior, junior exists -> junior end
+      //   3. no senior, no junior -> rookie end
+      if (supportIdx.length > 0) {
+        var supportBasis = null;
+        var supportBasisYear = null;
+
+        if (seniorIdx.length > 0 && effectiveSeniorEnd !== null) {
+          supportBasis = 'senior';
+          supportBasisYear = effectiveSeniorEnd;
+        } else if (seniorIdx.length === 0 && juniorIdx.length > 0 &&
+                   effJuniorEnd !== null) {
+          supportBasis = 'junior';
+          supportBasisYear = effJuniorEnd;
+        } else if (seniorIdx.length === 0 && juniorIdx.length === 0 &&
+                   effRookieEnd !== null) {
+          supportBasis = 'rookie';
+          supportBasisYear = effRookieEnd;
+        }
+
+        if (supportBasis !== null) {
+          var supportMismatches = [];
+          supportIdx.forEach(function (idx) {
+            var entry = career[idx];
+            var curStart = parseYear(entry.startYear);
+            if (curStart !== supportBasisYear) {
+              supportMismatches.push({
+                index: idx,
+                currentStart: curStart,
+                currentEnd: parseYear(entry.endYear)
+              });
+            }
+          });
+          if (supportMismatches.length > 0) {
+            report.supports.push({
+              characterId: charId, name: displayName,
+              basis: supportBasis, basisYear: supportBasisYear,
+              expectedStart: supportBasisYear,
+              mismatches: supportMismatches
+            });
+          }
+        }
+      }
+
+      // ---- Instructor ----
+      // Same priority as support, but only when senior exists
+      // (per the brief: "first year instructor = last year senior").
+      if (instructorIdx.length > 0 &&
+          seniorIdx.length > 0 && effectiveSeniorEnd !== null) {
+        var instructorMismatches = [];
+        instructorIdx.forEach(function (idx) {
+          var entry = career[idx];
+          var curStart = parseYear(entry.startYear);
+          if (curStart !== effectiveSeniorEnd) {
+            instructorMismatches.push({
+              index: idx,
+              currentStart: curStart,
+              currentEnd: parseYear(entry.endYear)
+            });
+          }
+        });
+        if (instructorMismatches.length > 0) {
+          report.instructors.push({
+            characterId: charId, name: displayName,
+            basisYear: effectiveSeniorEnd,
+            expectedStart: effectiveSeniorEnd,
+            mismatches: instructorMismatches
+          });
+        }
+      }
+    });
+
+    return report;
+  }
+
+  function generateFixCode(report) {
+    var lines = [];
+    var now = new Date().toISOString();
+
+    lines.push('/*');
+    lines.push(' * Career chain fix block.  Generated ' + now);
+    lines.push(' *');
+    lines.push(' * Phase order:');
+    lines.push(' *   1. class.year   <- name year');
+    lines.push(' *   2. trainee      <- class name year (start = end)');
+    lines.push(' *   3. rookie       <- trainee start, end +2');
+    lines.push(' *   4. junior       <- rookie end, end +2');
+    lines.push(' *   5. retired      <- closes senior (senior.endYear = retired.startYear)');
+    lines.push(' *   6. senior       <- junior end (start); end already closed by (5)');
+    lines.push(' *   7. support      <- senior end (else junior end, else rookie end)');
+    lines.push(' *   8. instructor   <- senior end');
+    lines.push(' *');
+    lines.push(' * Support/instructor/retired endYear are never touched.');
+    lines.push(' */');
+    lines.push('');
+    lines.push('(function () {');
+    lines.push('  "use strict";');
+    lines.push('');
+    lines.push('  if (!window.data || typeof window.data !== "object") {');
+    lines.push('    console.error("window.data is not loaded.");');
+    lines.push('    return;');
+    lines.push('  }');
+    lines.push('');
+    lines.push('  var data = window.data;');
+    lines.push('');
+    lines.push('  function findChar(id) {');
+    lines.push('    if (!Array.isArray(data.characters)) return null;');
+    lines.push('    for (var i = 0; i < data.characters.length; i++) {');
+    lines.push('      if (String(data.characters[i].id) === id) return data.characters[i];');
+    lines.push('    }');
+    lines.push('    return null;');
+    lines.push('  }');
+    lines.push('  function statusOf(e) {');
+    lines.push('    return String((e && e.status) || "").toLowerCase();');
+    lines.push('  }');
+    lines.push('  function parseYear(v) {');
+    lines.push('    if (v === undefined || v === null || v === "") return null;');
+    lines.push('    if (typeof v === "number") {');
+    lines.push('      return (Number.isSafeInteger(v) && v >= 1) ? v : null;');
+    lines.push('    }');
+    lines.push('    var s = String(v).trim();');
+    lines.push('    if (s === "" || !/^\\d+$/.test(s)) return null;');
+    lines.push('    var n = parseInt(s, 10);');
+    lines.push('    return (isNaN(n) || n < 1) ? null : n;');
+    lines.push('  }');
+    lines.push('  function findEntry(c, status) {');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return null;');
+    lines.push('    for (var i = 0; i < c.careerStatus.length; i++) {');
+    lines.push('      if (statusOf(c.careerStatus[i]) === status) return c.careerStatus[i];');
+    lines.push('    }');
+    lines.push('    return null;');
+    lines.push('  }');
+    lines.push('  function setEntry(c, status, startYear, endYear /* null = leave alone */) {');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return 0;');
+    lines.push('    var touched = 0;');
+    lines.push('    for (var i = 0; i < c.careerStatus.length; i++) {');
+    lines.push('      var e = c.careerStatus[i];');
+    lines.push('      if (statusOf(e) !== status) continue;');
+    lines.push('      e.startYear = String(startYear);');
+    lines.push('      if (endYear !== null) {');
+    lines.push('        e.endYear = String(endYear);');
+    lines.push('      }');
+    lines.push('      touched++;');
+    lines.push('    }');
+    lines.push('    if (touched > 0) {');
+    lines.push('      c.updatedAt = new Date().toISOString();');
+    lines.push('    }');
+    lines.push('    return touched;');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 1
+    lines.push('  // ---- Phase 1: class year <- name year ----');
+    lines.push('  var classFixes = ' + JSON.stringify(report.classes) + ';');
+    lines.push('  var classApplied = 0;');
+    lines.push('  if (data.academy && data.academy.graduatingClasses) {');
+    lines.push('    classFixes.forEach(function (fix) {');
+    lines.push('      var cls = data.academy.graduatingClasses[fix.classId];');
+    lines.push('      if (!cls) return;');
+    lines.push('      cls.year = fix.expectedYear;');
+    lines.push('      cls.updatedAt = new Date().toISOString();');
+    lines.push('      classApplied++;');
+    lines.push('    });');
+    lines.push('  }');
+    lines.push('  console.log("[fix] Class years fixed: " + classApplied);');
+    lines.push('');
+
+    // Phase 2
+    lines.push('  // ---- Phase 2: trainee start = end = class name year ----');
+    lines.push('  var traineeFixes = ' + JSON.stringify(report.trainees) + ';');
+    lines.push('  var traineeApplied = 0;');
+    lines.push('  traineeFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    for (var m = 0; m < fix.mismatches.length; m++) {');
+    lines.push('      var idx = fix.mismatches[m].index;');
+    lines.push('      var entry = c.careerStatus[idx];');
+    lines.push('      if (!entry || statusOf(entry) !== "trainee") continue;');
+    lines.push('      entry.startYear = String(fix.expectedStart);');
+    lines.push('      entry.endYear = String(fix.expectedEnd);');
+    lines.push('    }');
+    lines.push('    c.updatedAt = new Date().toISOString();');
+    lines.push('    traineeApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Trainee years fixed: " + traineeApplied);');
+    lines.push('');
+
+    // Phase 3
+    lines.push('  // ---- Phase 3: rookie start = trainee start, end +2 ----');
+    lines.push('  var rookieFixes = ' + JSON.stringify(report.rookies) + ';');
+    lines.push('  var rookieApplied = 0;');
+    lines.push('  var rookieSkipped = [];');
+    lines.push('  rookieFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var te = findEntry(c, "trainee");');
+    lines.push('    var traineeStart = te ? parseYear(te.startYear) : null;');
+    lines.push('    if (traineeStart === null) { rookieSkipped.push(fix.characterId); return; }');
+    lines.push('    setEntry(c, "rookie", traineeStart, traineeStart + 2);');
+    lines.push('    rookieApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Rookie years fixed: " + rookieApplied);');
+    lines.push('  if (rookieSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Rookie fix skipped:", rookieSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 4
+    lines.push('  // ---- Phase 4: junior start = rookie end, end +2 ----');
+    lines.push('  var juniorFixes = ' + JSON.stringify(report.juniors) + ';');
+    lines.push('  var juniorApplied = 0;');
+    lines.push('  var juniorSkipped = [];');
+    lines.push('  juniorFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var re = findEntry(c, "rookie");');
+    lines.push('    var rookieEnd = re ? parseYear(re.endYear) : null;');
+    lines.push('    if (rookieEnd === null) { juniorSkipped.push(fix.characterId); return; }');
+    lines.push('    setEntry(c, "junior", rookieEnd, rookieEnd + 2);');
+    lines.push('    juniorApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Junior years fixed: " + juniorApplied);');
+    lines.push('  if (juniorSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Junior fix skipped:", juniorSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 5 — retired closes senior
+    lines.push('  // ---- Phase 5: retired closes senior (senior.endYear = retired.startYear) ----');
+    lines.push('  var retiredFixes = ' + JSON.stringify(report.retired) + ';');
+    lines.push('  var retiredApplied = 0;');
+    lines.push('  var retiredSkipped = [];');
+    lines.push('  retiredFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var re = findEntry(c, "retired");');
+    lines.push('    var retiredYear = re ? parseYear(re.startYear) : null;');
+    lines.push('    if (retiredYear === null) { retiredSkipped.push(fix.characterId); return; }');
+    lines.push('    for (var i = 0; i < c.careerStatus.length; i++) {');
+    lines.push('      var e = c.careerStatus[i];');
+    lines.push('      if (statusOf(e) !== "senior") continue;');
+    lines.push('      e.endYear = String(retiredYear);');
+    lines.push('    }');
+    lines.push('    c.updatedAt = new Date().toISOString();');
+    lines.push('    retiredApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Senior closes fixed (retired): " + retiredApplied);');
+    lines.push('  if (retiredSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Retired-close fix skipped:", retiredSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 6 — senior start
+    lines.push('  // ---- Phase 6: senior start = junior end ----');
+    lines.push('  var seniorFixes = ' + JSON.stringify(report.seniors) + ';');
+    lines.push('  var seniorApplied = 0;');
+    lines.push('  var seniorSkipped = [];');
+    lines.push('  seniorFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var je = findEntry(c, "junior");');
+    lines.push('    var juniorEnd = je ? parseYear(je.endYear) : null;');
+    lines.push('    if (juniorEnd === null) { seniorSkipped.push(fix.characterId); return; }');
+    lines.push('    setEntry(c, "senior", juniorEnd, null);');
+    lines.push('    seniorApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Senior start fixed: " + seniorApplied);');
+    lines.push('  if (seniorSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Senior fix skipped:", seniorSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 7 — support
+    lines.push('  // ---- Phase 7: support start = senior end (else junior end, else rookie end) ----');
+    lines.push('  var supportFixes = ' + JSON.stringify(report.supports) + ';');
+    lines.push('  var supportApplied = 0;');
+    lines.push('  var supportSkipped = [];');
+    lines.push('  supportFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var se = findEntry(c, "senior");');
+    lines.push('    var je = findEntry(c, "junior");');
+    lines.push('    var re = findEntry(c, "rookie");');
+    lines.push('    var basisEnd = null;');
+    lines.push('    if (se) {');
+    lines.push('      // If the character is retired, senior end was just closed');
+    lines.push('      // to retired.startYear by phase 5; use that value.');
+    lines.push('      var ret = findEntry(c, "retired");');
+    lines.push('      if (ret) {');
+    lines.push('        basisEnd = parseYear(ret.startYear);');
+    lines.push('      } else {');
+    lines.push('        basisEnd = parseYear(se.endYear);');
+    lines.push('      }');
+    lines.push('    } else if (je) {');
+    lines.push('      basisEnd = parseYear(je.endYear);');
+    lines.push('    } else if (re) {');
+    lines.push('      basisEnd = parseYear(re.endYear);');
+    lines.push('    }');
+    lines.push('    if (basisEnd === null) { supportSkipped.push(fix.characterId); return; }');
+    lines.push('    setEntry(c, "support", basisEnd, null);');
+    lines.push('    supportApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Support start fixed: " + supportApplied);');
+    lines.push('  if (supportSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Support fix skipped:", supportSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    // Phase 8 — instructor
+    lines.push('  // ---- Phase 8: instructor start = senior end ----');
+    lines.push('  var instructorFixes = ' + JSON.stringify(report.instructors) + ';');
+    lines.push('  var instructorApplied = 0;');
+    lines.push('  var instructorSkipped = [];');
+    lines.push('  instructorFixes.forEach(function (fix) {');
+    lines.push('    var c = findChar(fix.characterId);');
+    lines.push('    if (!c || !Array.isArray(c.careerStatus)) return;');
+    lines.push('    var se = findEntry(c, "senior");');
+    lines.push('    if (!se) { instructorSkipped.push(fix.characterId); return; }');
+    lines.push('    var ret = findEntry(c, "retired");');
+    lines.push('    var basisEnd = ret ? parseYear(ret.startYear) : parseYear(se.endYear);');
+    lines.push('    if (basisEnd === null) { instructorSkipped.push(fix.characterId); return; }');
+    lines.push('    setEntry(c, "instructor", basisEnd, null);');
+    lines.push('    instructorApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Instructor start fixed: " + instructorApplied);');
+    lines.push('  if (instructorSkipped.length > 0) {');
+    lines.push('    console.warn("[fix] Instructor fix skipped:", instructorSkipped);');
+    lines.push('  }');
+    lines.push('');
+
+    lines.push('  if (typeof window.saveData === "function") {');
+    lines.push('    window.saveData().then(function () {');
+    lines.push('      console.log("[fix] Persisted.");');
+    lines.push('    }).catch(function (err) {');
+    lines.push('      console.error("[fix] Persist failed:", err);');
+    lines.push('    });');
+    lines.push('  } else {');
+    lines.push('    console.warn("[fix] window.saveData not available; in-memory only.");');
+    lines.push('  }');
+    lines.push('');
+    lines.push('})();');
+
+    return lines.join('\n');
+  }
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderOld(f) {
+    return f.mismatches.map(function (m) {
+      return (m.currentStart === null ? '?' : m.currentStart) +
+        (m.currentEnd === null || m.currentEnd === undefined
+          ? ''
+          : '–' + m.currentEnd);
+    }).join('<br>');
+  }
+
+  function renderReport(report) {
+    var html = '';
+
+    function section(title, rows, emptyText, columns, rowFn) {
+      html += '<section>';
+      html += '<h2>' + title + '</h2>';
+      if (rows.length === 0) {
+        html += '<p class="empty">' + emptyText + '</p>';
+      } else {
+        html += '<p class="count">' + rows.length + ' record(s) to fix.</p>';
+        html += '<table><tr>';
+        columns.forEach(function (c) {
+          html += '<th>' + esc(c) + '</th>';
+        });
+        html += '</tr>';
+        rows.forEach(function (r) {
+          html += '<tr>';
+          rowFn(r);
+          html += '</tr>';
+        });
+        html += '</table>';
+      }
+      html += '</section>';
+    }
+
+    html += '<section>';
+    html += '<h2>Class year fixes</h2>';
+    if (report.classes.length === 0) {
+      html += '<p class="empty">All class years match their name.</p>';
+    } else {
+      html += '<p class="count">' + report.classes.length + ' class(es).</p>';
+      html += '<table><tr><th>ID</th><th>Name</th><th>Current</th><th>New</th></tr>';
+      report.classes.forEach(function (c) {
+        html += '<tr>';
+        html += '<td>' + esc(c.classId) + '</td>';
+        html += '<td>' + esc(c.name) + '</td>';
+        html += '<td>' + esc(c.currentYear) + '</td>';
+        html += '<td><strong>' + esc(c.expectedYear) + '</strong></td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</section>';
+
+    section('Trainee year fixes', report.trainees,
+      'All trainee entries already match their class name year.',
+      ['Character', 'Class', 'Old', 'New'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.classId) + ' → ' + esc(r.classYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '–' + esc(r.expectedEnd) + '</strong></td>';
+      });
+
+    section('Rookie year fixes', report.rookies,
+      'All rookie entries already match trainee + 2.',
+      ['Character', 'Trainee', 'Old', 'New'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.traineeYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '–' + esc(r.expectedEnd) + '</strong></td>';
+      });
+
+    section('Junior year fixes', report.juniors,
+      'All junior entries already match rookie end.',
+      ['Character', 'Rookie end', 'Old', 'New'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.rookieEndYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '–' + esc(r.expectedEnd) + '</strong></td>';
+      });
+
+    section('Retired closes senior', report.retired,
+      'No senior entries need closing from a retired entry.',
+      ['Character', 'Retired year', 'Old senior'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.retiredYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+      });
+
+    section('Senior start fixes', report.seniors,
+      'All senior starts already match junior end.',
+      ['Character', 'Junior end', 'Old start', 'New start'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.juniorEndYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '</strong> (end untouched)</td>';
+      });
+
+    section('Support start fixes', report.supports,
+      'All support entries already match their basis.',
+      ['Character', 'Basis', 'Old start', 'New start'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.basis) + ' end ' + esc(r.basisYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '</strong> (end untouched)</td>';
+      });
+
+    section('Instructor start fixes', report.instructors,
+      'All instructor starts already match senior end.',
+      ['Character', 'Senior end', 'Old start', 'New start'],
+      function (r) {
+        html += '<td>' + esc(r.name) + ' <small>(' + esc(r.characterId) + ')</small></td>';
+        html += '<td>' + esc(r.basisYear) + '</td>';
+        html += '<td>' + renderOld(r) + '</td>';
+        html += '<td><strong>' + esc(r.expectedStart) + '</strong> (end untouched)</td>';
+      });
+
+    if (report.warnings.length > 0) {
+      html += '<section>';
+      html += '<h2>Warnings</h2>';
+      html += '<ul class="warn">';
+      report.warnings.forEach(function (w) {
+        html += '<li>' + esc(w) + '</li>';
+      });
+      html += '</ul>';
+      html += '</section>';
+    }
+
+    return html;
+  }
+
+  document.getElementById('file-input').addEventListener('change', function (e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || '').replace(/^\uFEFF/, '');
+      var data;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        document.getElementById('report').innerHTML =
+          '<p class="warn">Invalid JSON: ' + esc(err.message) + '</p>';
+        document.getElementById('fix-output').value = '';
+        return;
+      }
+      if (data && data.format === 'hollow-blades' && data.data) {
+        data = data.data;
+      }
+      var report = audit(data);
+      document.getElementById('report').innerHTML = renderReport(report);
+      document.getElementById('fix-output').value = generateFixCode(report);
+    };
+    reader.readAsText(file);
+  });
+
+})();
+</script>
+</body>
+</html>
