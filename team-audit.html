@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Team Audit — Stints vs Career</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ddd; padding: 16px; }
+  h1, h2 { color: #9cf; }
+  textarea { width: 100%; height: 540px; background: #111; color: #9c9; border: 1px solid #444; padding: 8px; font-family: monospace; font-size: 12px; }
+  .file-label { display: inline-block; padding: 8px 16px; background: #246; color: #fff; border-radius: 4px; cursor: pointer; }
+  input[type=file] { display: none; }
+  section { margin-top: 24px; }
+  .count { color: #fc6; font-weight: bold; }
+  .empty { color: #6c6; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #444; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #222; }
+  .warn { color: #fc9; }
+  small { color: #888; }
+</style>
+</head>
+<body>
+<h1>Team Audit — Stints vs Career</h1>
+
+<label class="file-label">
+  Load JSON file…
+  <input type="file" id="file-input" accept=".json,application/json">
+</label>
+
+<div id="report"></div>
+
+<section>
+  <h2>Injectable Fix Code</h2>
+  <p>Paste into the browser console <em>after</em> <code>window.data</code> is loaded.</p>
+  <textarea id="fix-output" readonly></textarea>
+</section>
+
+<script>
+(function () {
+  'use strict';
+
+  function parseYear(v) {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v === 'number') {
+      return (Number.isSafeInteger(v) && v >= 1) ? v : null;
+    }
+    var s = String(v).trim();
+    if (s === '' || !/^\d+$/.test(s)) return null;
+    var n = parseInt(s, 10);
+    return (isNaN(n) || n < 1) ? null : n;
+  }
+
+  function statusOf(entry) {
+    return String((entry && entry.status) || '').toLowerCase();
+  }
+
+  function normalizeTeamType(t) {
+    var s = String(t || '').toLowerCase();
+    if (s === 'temporary' || s === 'internship') return 'professional';
+    return s;
+  }
+
+  function isNonEmptyString(v) {
+    return typeof v === 'string' && v.trim() !== '';
+  }
+
+  // ------------------------------------------------------------------
+  // Per-character junior window and career-end markers
+  // ------------------------------------------------------------------
+  function buildJuniorStartMap(data) {
+    var map = Object.create(null);
+    var characters = Array.isArray(data.characters) ? data.characters : [];
+    characters.forEach(function (char) {
+      if (!char || typeof char !== 'object') return;
+      var charId = String(char.id || '');
+      if (charId === '') return;
+      var career = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+      for (var i = 0; i < career.length; i++) {
+        var entry = career[i];
+        if (!entry || typeof entry !== 'object') continue;
+        if (statusOf(entry) !== 'junior') continue;
+        var y = parseYear(entry.startYear);
+        if (y !== null) { map[charId] = y; return; }
+      }
+    });
+    return map;
+  }
+
+  // "Career end year" — the year the character stopped being on teams:
+  //   - deathYear
+  //   - support.startYear
+  //   - instructor.startYear
+  //   - retired.startYear
+  //
+  // Returns { year: number|null, sources: string[], ambiguous: boolean }
+  //
+  // If exactly one valid marker exists -> that year.
+  // If multiple markers exist and they agree -> that year.
+  // If multiple markers disagree -> { year: null, ambiguous: true }.
+  // If no markers exist -> { year: null, sources: [] }.
+  function getCareerEndInfo(char) {
+    var years = [];
+    var sources = [];
+
+    if (!char || typeof char !== 'object') {
+      return { year: null, sources: sources, ambiguous: false };
+    }
+
+    var death = parseYear(char.deathYear);
+    if (death !== null) { years.push(death); sources.push('deathYear'); }
+
+    var career = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+    ['support', 'instructor', 'retired'].forEach(function (status) {
+      for (var i = 0; i < career.length; i++) {
+        var entry = career[i];
+        if (!entry || typeof entry !== 'object') continue;
+        if (statusOf(entry) !== status) continue;
+        var y = parseYear(entry.startYear);
+        if (y !== null) { years.push(y); sources.push(status + '.startYear'); }
+        // Only the first entry per status counts; duplicates are a
+        // data problem the career tool handles.
+        return;
+      }
+    });
+
+    if (years.length === 0) {
+      return { year: null, sources: sources, ambiguous: false };
+    }
+
+    var first = years[0];
+    var allSame = years.every(function (y) { return y === first; });
+    if (allSame) {
+      return { year: first, sources: sources, ambiguous: false };
+    }
+    return { year: null, sources: sources, ambiguous: true };
+  }
+
+  // ------------------------------------------------------------------
+  // Shared class resolver (unchanged from previous tool)
+  // ------------------------------------------------------------------
+  function resolveSharedClass(charIds, charById) {
+    if (!Array.isArray(charIds) || charIds.length === 0) return null;
+    var shared = null;
+    for (var i = 0; i < charIds.length; i++) {
+      var char = charById[charIds[i]];
+      if (!char) return null;
+      var classIds = Array.isArray(char.classIds) ? char.classIds : [];
+      var cleaned = classIds.filter(function (cid) {
+        return cid !== undefined && cid !== null &&
+               String(cid).trim() !== '';
+      });
+      if (cleaned.length !== 1) return null;
+      var cid = String(cleaned[0]);
+      if (shared === null) shared = cid;
+      else if (shared !== cid) return null;
+    }
+    return shared;
+  }
+
+  // ------------------------------------------------------------------
+  // Audit
+  // ------------------------------------------------------------------
+  function audit(data) {
+    var report = {
+      teams: [],           // per-team row (founding / class / stint-level adjustments)
+      stintStartFixes: [], // standalone: every stint joinPeriod < junior
+      stintEndFixes: [],   // standalone: every stint leavePeriod != career end
+      warnings: []
+    };
+
+    if (!data || typeof data !== 'object') {
+      report.warnings.push('Top-level data is not an object.');
+      return report;
+    }
+
+    var teams = Array.isArray(data.teams) ? data.teams : [];
+    var characters = Array.isArray(data.characters) ? data.characters : [];
+    var charById = Object.create(null);
+    characters.forEach(function (c) {
+      if (c && c.id) charById[String(c.id)] = c;
+    });
+
+    var juniorStartMap = buildJuniorStartMap(data);
+
+    // Career-end info per character, computed once.
+    var careerEndByChar = Object.create(null);
+    characters.forEach(function (c) {
+      if (!c || !c.id) return;
+      careerEndByChar[String(c.id)] = getCareerEndInfo(c);
+    });
+
+    teams.forEach(function (team) {
+      if (!team || typeof team !== 'object') return;
+
+      var nType = normalizeTeamType(team.type);
+      if (nType !== 'professional' && nType !== 'civilian') {
+        return; // academic or unrecognised
+      }
+
+      var teamId = String(team.id || '');
+      var teamName = String(team.name || 'Unnamed Team');
+      var members = Array.isArray(team.members) ? team.members : [];
+
+      // Founding members.
+      var earliestByChar = Object.create(null);
+      for (var m = 0; m < members.length; m++) {
+        var member = members[m];
+        if (!member || !member.characterId) continue;
+        var cid = String(member.characterId);
+        var intervals = Array.isArray(member.intervals) ? member.intervals : [];
+        for (var iv = 0; iv < intervals.length; iv++) {
+          var joinNum = parseYear(intervals[iv].joinPeriod);
+          if (joinNum === null) continue;
+          var prev = earliestByChar[cid];
+          if (!prev || joinNum < prev.joinYear) {
+            earliestByChar[cid] = {
+              characterId: cid,
+              joinYear: joinNum
+            };
+          }
+        }
+      }
+
+      var joins = Object.keys(earliestByChar).map(function (cid) {
+        return earliestByChar[cid];
+      });
+      joins.sort(function (a, b) {
+        if (a.joinYear !== b.joinYear) return a.joinYear - b.joinYear;
+        return a.characterId.localeCompare(b.characterId);
+      });
+
+      var founding = joins.length >= 3 ? joins.slice(0, 3) : null;
+
+      // ---- Per-team founding-junior / founding-year / class ----
+      var stintAdjustments = [];
+      var foundingJoins = null;
+      var needsFoundingYearFix = false;
+      var currentStart = null;
+      var expectedStart = null;
+      var needsClassFix = false;
+      var currentClassId = isNonEmptyString(team.classId)
+        ? String(team.classId) : null;
+      var expectedClassId = null;
+      var classSkippedReason = null;
+
+      if (founding) {
+        // Founding-junior stints.
+        founding.forEach(function (f) {
+          var js = juniorStartMap[f.characterId];
+          if (js === undefined) return;
+          if (js === f.joinYear) return;
+          stintAdjustments.push({
+            characterId: f.characterId,
+            oldJoinYear: f.joinYear,
+            newJoinYear: js
+          });
+          f.joinYear = js;
+        });
+
+        // Founding year.
+        var yrs = founding.map(function (f) { return f.joinYear; });
+        yrs.sort(function (a, b) { return a - b; });
+        expectedStart = yrs[0];
+
+        if (Array.isArray(team.periods) && team.periods.length > 0) {
+          currentStart = parseYear(team.periods[0].startPeriod);
+        }
+        if (currentStart === null) currentStart = parseYear(team.startPeriod);
+        needsFoundingYearFix = (currentStart !== expectedStart);
+
+        // Class.
+        expectedClassId = resolveSharedClass(
+          founding.map(function (f) { return f.characterId; }),
+          charById
+        );
+        if (expectedClassId === null) {
+          classSkippedReason = 'no shared academic class among the 3 founding members';
+        } else {
+          needsClassFix = (currentClassId !== expectedClassId);
+        }
+
+        foundingJoins = founding.map(function (f) {
+          return { characterId: f.characterId, joinYear: f.joinYear };
+        });
+      }
+
+      var teamNeedsFix =
+        (founding && (needsFoundingYearFix || needsClassFix ||
+                       stintAdjustments.length > 0));
+
+      if (teamNeedsFix) {
+        report.teams.push({
+          teamId: teamId,
+          teamName: teamName,
+          currentStart: currentStart,
+          expectedStart: expectedStart,
+          needsFoundingYearFix: needsFoundingYearFix,
+          foundingJoins: foundingJoins || [],
+          stintAdjustments: stintAdjustments,
+          currentClassId: currentClassId,
+          expectedClassId: expectedClassId,
+          needsClassFix: needsClassFix,
+          classSkippedReason: classSkippedReason
+        });
+        if (classSkippedReason && !needsClassFix) {
+          report.warnings.push(
+            'Team "' + teamName + '" (' + teamId + ') class not ' +
+            'changed: ' + classSkippedReason + '.'
+          );
+        }
+      }
+
+      // ---- New: per-stint start and end checks for EVERY member ----
+      for (var mi = 0; mi < members.length; mi++) {
+        var mem = members[mi];
+        if (!mem || !mem.characterId) continue;
+        var charId = String(mem.characterId);
+        var char = charById[charId] || null;
+        var charName = char
+          ? ([char.firstName, char.lastName].filter(Boolean).join(' ') || charId)
+          : charId;
+
+        var memberIntervals = Array.isArray(mem.intervals)
+          ? mem.intervals : [];
+        var juniorStart = juniorStartMap[charId];
+        var endInfo = careerEndByChar[charId] || { year: null, sources: [], ambiguous: false };
+
+        for (var ii = 0; ii < memberIntervals.length; ii++) {
+          var raw = memberIntervals[ii];
+          if (!raw || typeof raw !== 'object') continue;
+          var jy = parseYear(raw.joinPeriod);
+          var ly = parseYear(raw.leavePeriod);
+
+          // ---- Start-of-stint vs junior ----
+          if (juniorStart === undefined) {
+            if (jy !== null) {
+              report.warnings.push(
+                'Team "' + teamName + '": ' + charName + ' (' + charId +
+                ') has no junior career entry; start-of-stint check skipped for this stint.'
+              );
+            }
+          } else if (jy !== null && jy < juniorStart) {
+            report.stintStartFixes.push({
+              teamId: teamId,
+              teamName: teamName,
+              characterId: charId,
+              characterName: charName,
+              intervalIndex: ii,
+              oldJoinYear: jy,
+              newJoinYear: juniorStart,
+              reason: 'joined before junior start year (' + juniorStart + ')'
+            });
+          }
+
+          // ---- End-of-stint vs career-end marker ----
+          if (endInfo.ambiguous) {
+            report.warnings.push(
+              'Team "' + teamName + '": ' + charName + ' (' + charId +
+              ') has conflicting career-end markers (' +
+              endInfo.sources.join(', ') +
+              '); end-of-stint check skipped for this stint.'
+            );
+          } else if (endInfo.year === null) {
+            // No career-end marker. Leave ongoing stints alone.
+            // (No warning; this is normal.)
+          } else {
+            // The stint must end at endInfo.year.
+            // A stint with leavePeriod === '' is ongoing — that's
+            // wrong when the character's career has ended.
+            if (ly !== endInfo.year) {
+              report.stintEndFixes.push({
+                teamId: teamId,
+                teamName: teamName,
+                characterId: charId,
+                characterName: charName,
+                intervalIndex: ii,
+                oldLeaveYear: ly,
+                newLeaveYear: endInfo.year,
+                reason: 'career ends at ' + endInfo.year +
+                        ' (' + endInfo.sources.join(' + ') + ')'
+              });
+            }
+          }
+        }
+      }
+    });
+
+    return report;
+  }
+
+  // ------------------------------------------------------------------
+  // Fix-code generator
+  // ------------------------------------------------------------------
+  function generateFixCode(report) {
+    var lines = [];
+
+    lines.push('// Team fix block.');
+    lines.push('// Generated ' + new Date().toISOString());
+    lines.push('//');
+    lines.push('// Phase 1: founding-junior stints');
+    lines.push('// Phase 2: founding year');
+    lines.push('// Phase 3: team classId');
+    lines.push('// Phase 4: stint joinPeriod >= junior.startYear (all members)');
+    lines.push('// Phase 5: stint leavePeriod == career-end year (all members)');
+    lines.push('//');
+    lines.push('// Nothing outside the fields listed above is touched.');
+    lines.push('');
+    lines.push('(function () {');
+    lines.push('  "use strict";');
+    lines.push('');
+    lines.push('  if (!window.data || typeof window.data !== "object") {');
+    lines.push('    console.error("window.data is not loaded.");');
+    lines.push('    return;');
+    lines.push('  }');
+    lines.push('');
+    lines.push('  var data = window.data;');
+    lines.push('  if (!Array.isArray(data.teams)) {');
+    lines.push('    console.error("data.teams is not an array.");');
+    lines.push('    return;');
+    lines.push('  }');
+    lines.push('');
+    lines.push('  function findTeam(id) {');
+    lines.push('    for (var i = 0; i < data.teams.length; i++) {');
+    lines.push('      if (String(data.teams[i].id) === id) return data.teams[i];');
+    lines.push('    }');
+    lines.push('    return null;');
+    lines.push('  }');
+    lines.push('  function parseYear(v) {');
+    lines.push('    if (v === undefined || v === null || v === "") return null;');
+    lines.push('    if (typeof v === "number") {');
+    lines.push('      return (Number.isSafeInteger(v) && v >= 1) ? v : null;');
+    lines.push('    }');
+    lines.push('    var s = String(v).trim();');
+    lines.push('    if (s === "" || !/^\\d+$/.test(s)) return null;');
+    lines.push('    var n = parseInt(s, 10);');
+    lines.push('    return (isNaN(n) || n < 1) ? null : n;');
+    lines.push('  }');
+    lines.push('');
+
+    // ---- Phase 1-3: teams ----
+    lines.push('  var teamFixes = ' + JSON.stringify(report.teams || []) + ';');
+    lines.push('  if (!Array.isArray(teamFixes)) teamFixes = [];');
+    lines.push('');
+
+    lines.push('  // ---- Phase 1: founding-junior stints ----');
+    lines.push('  var stintApplied = 0;');
+    lines.push('  var stintSkipped = [];');
+    lines.push('  teamFixes.forEach(function (fix) {');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team || !Array.isArray(team.members)) return;');
+    lines.push('    var adjustments = Array.isArray(fix.stintAdjustments) ? fix.stintAdjustments : [];');
+    lines.push('    var touched = false;');
+    lines.push('    adjustments.forEach(function (adj) {');
+    lines.push('      var m = null;');
+    lines.push('      for (var i = 0; i < team.members.length; i++) {');
+    lines.push('        if (String(team.members[i].characterId) === adj.characterId) { m = team.members[i]; break; }');
+    lines.push('      }');
+    lines.push('      if (!m || !Array.isArray(m.intervals)) { stintSkipped.push(adj.characterId); return; }');
+    lines.push('      var iv = null;');
+    lines.push('      for (var j = 0; j < m.intervals.length; j++) {');
+    lines.push('        if (parseYear(m.intervals[j].joinPeriod) === adj.oldJoinYear) { iv = m.intervals[j]; break; }');
+    lines.push('      }');
+    lines.push('      if (!iv) { stintSkipped.push(adj.characterId); return; }');
+    lines.push('      iv.joinPeriod = String(adj.newJoinYear);');
+    lines.push('      stintApplied++;');
+    lines.push('      touched = true;');
+    lines.push('    });');
+    lines.push('    if (touched) team.updatedAt = new Date().toISOString();');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Founding-junior stints: " + stintApplied);');
+    lines.push('  if (stintSkipped.length > 0) console.warn("[fix] Founding-stint skips:", stintSkipped);');
+    lines.push('');
+
+    lines.push('  // ---- Phase 2: founding year ----');
+    lines.push('  var foundingApplied = 0;');
+    lines.push('  teamFixes.forEach(function (fix) {');
+    lines.push('    if (!fix.needsFoundingYearFix) return;');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team || !Array.isArray(team.members)) return;');
+    lines.push('    var earliest = Object.create(null);');
+    lines.push('    for (var i = 0; i < team.members.length; i++) {');
+    lines.push('      var m = team.members[i];');
+    lines.push('      if (!m || !m.characterId) continue;');
+    lines.push('      var cid = String(m.characterId);');
+    lines.push('      var ivs = Array.isArray(m.intervals) ? m.intervals : [];');
+    lines.push('      for (var j = 0; j < ivs.length; j++) {');
+    lines.push('        var jn = parseYear(ivs[j].joinPeriod);');
+    lines.push('        if (jn === null) continue;');
+    lines.push('        if (earliest[cid] === undefined || jn < earliest[cid]) earliest[cid] = jn;');
+    lines.push('      }');
+    lines.push('    }');
+    lines.push('    var list = Object.keys(earliest).map(function (c) {');
+    lines.push('      return { characterId: c, joinYear: earliest[c] };');
+    lines.push('    });');
+    lines.push('    list.sort(function (a, b) {');
+    lines.push('      if (a.joinYear !== b.joinYear) return a.joinYear - b.joinYear;');
+    lines.push('      return a.characterId.localeCompare(b.characterId);');
+    lines.push('    });');
+    lines.push('    if (list.length < 3) return;');
+    lines.push('    var earliestFounding = list[0].joinYear;');
+    lines.push('    if (Array.isArray(team.periods) && team.periods.length > 0) {');
+    lines.push('      team.periods[0].startPeriod = String(earliestFounding);');
+    lines.push('    }');
+    lines.push('    team.startPeriod = String(earliestFounding);');
+    lines.push('    team.updatedAt = new Date().toISOString();');
+    lines.push('    foundingApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Founding years: " + foundingApplied);');
+    lines.push('');
+
+    lines.push('  // ---- Phase 3: team classId ----');
+    lines.push('  var classApplied = 0;');
+    lines.push('  teamFixes.forEach(function (fix) {');
+    lines.push('    if (!fix.needsClassFix) return;');
+    lines.push('    if (!fix.expectedClassId) return;');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team) return;');
+    lines.push('    team.classId = fix.expectedClassId;');
+    lines.push('    team.updatedAt = new Date().toISOString();');
+    lines.push('    classApplied++;');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Team classIds: " + classApplied);');
+    lines.push('');
+
+    // ---- Phase 4: stint starts vs junior ----
+    lines.push('  // ---- Phase 4: stint joinPeriod >= junior.startYear ----');
+    lines.push('  var startFixes = ' + JSON.stringify(report.stintStartFixes || []) + ';');
+    lines.push('  if (!Array.isArray(startFixes)) startFixes = [];');
+    lines.push('  var startApplied = 0;');
+    lines.push('  var startSkipped = [];');
+    lines.push('  startFixes.forEach(function (fix) {');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team || !Array.isArray(team.members)) return;');
+    lines.push('    var m = null;');
+    lines.push('    for (var i = 0; i < team.members.length; i++) {');
+    lines.push('      if (String(team.members[i].characterId) === fix.characterId) { m = team.members[i]; break; }');
+    lines.push('    }');
+    lines.push('    if (!m || !Array.isArray(m.intervals)) { startSkipped.push(fix.characterId); return; }');
+    lines.push('    var iv = m.intervals[fix.intervalIndex];');
+    lines.push('    if (!iv || parseYear(iv.joinPeriod) !== fix.oldJoinYear) {');
+    lines.push('      // Fallback: locate by oldJoinYear');
+    lines.push('      var found = null;');
+    lines.push('      for (var j = 0; j < m.intervals.length; j++) {');
+    lines.push('        if (parseYear(m.intervals[j].joinPeriod) === fix.oldJoinYear) { found = m.intervals[j]; break; }');
+    lines.push('      }');
+    lines.push('      if (!found) { startSkipped.push(fix.characterId); return; }');
+    lines.push('      iv = found;');
+    lines.push('    }');
+    lines.push('    iv.joinPeriod = String(fix.newJoinYear);');
+    lines.push('    startApplied++;');
+    lines.push('    team.updatedAt = new Date().toISOString();');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Stint starts aligned to junior: " + startApplied);');
+    lines.push('  if (startSkipped.length > 0) console.warn("[fix] Stint-start skips:", startSkipped);');
+    lines.push('');
+
+    // ---- Phase 5: stint ends vs career-end ----
+    lines.push('  // ---- Phase 5: stint leavePeriod == career-end year ----');
+    lines.push('  var endFixes = ' + JSON.stringify(report.stintEndFixes || []) + ';');
+    lines.push('  if (!Array.isArray(endFixes)) endFixes = [];');
+    lines.push('  var endApplied = 0;');
+    lines.push('  var endSkipped = [];');
+    lines.push('  endFixes.forEach(function (fix) {');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team || !Array.isArray(team.members)) return;');
+    lines.push('    var m = null;');
+    lines.push('    for (var i = 0; i < team.members.length; i++) {');
+    lines.push('      if (String(team.members[i].characterId) === fix.characterId) { m = team.members[i]; break; }');
+    lines.push('    }');
+    lines.push('    if (!m || !Array.isArray(m.intervals)) { endSkipped.push(fix.characterId); return; }');
+    lines.push('    var iv = m.intervals[fix.intervalIndex];');
+    lines.push('    if (!iv) { endSkipped.push(fix.characterId); return; }');
+    lines.push('    iv.leavePeriod = String(fix.newLeaveYear);');
+    lines.push('    endApplied++;');
+    lines.push('    team.updatedAt = new Date().toISOString();');
+    lines.push('  });');
+    lines.push('  console.log("[fix] Stint ends aligned to career-end: " + endApplied);');
+    lines.push('  if (endSkipped.length > 0) console.warn("[fix] Stint-end skips:", endSkipped);');
+    lines.push('');
+
+    lines.push('  if (typeof window.saveData === "function") {');
+    lines.push('    window.saveData().then(function () {');
+    lines.push('      console.log("[fix] Persisted.");');
+    lines.push('    }).catch(function (err) {');
+    lines.push('      console.error("[fix] Persist failed:", err);');
+    lines.push('    });');
+    lines.push('  } else {');
+    lines.push('    console.warn("[fix] window.saveData not available; in-memory only.");');
+    lines.push('  }');
+    lines.push('');
+    lines.push('})();');
+
+    return lines.join('\n');
+  }
+
+  // ------------------------------------------------------------------
+  // Rendering
+  // ------------------------------------------------------------------
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderReport(report) {
+    var html = '';
+
+    // ---- Existing: per-team fixes ----
+    html += '<section>';
+    html += '<h2>Team-level fixes (founding / class)</h2>';
+    if (report.teams.length === 0) {
+      html += '<p class="empty">No team stint, founding year, or class corrections needed.</p>';
+    } else {
+      html += '<p class="count">' + report.teams.length + ' team(s).</p>';
+      html += '<table>';
+      html += '<tr>' +
+        '<th>Team</th>' +
+        '<th>Founding members</th>' +
+        '<th>Stint adjustments (founding juniors)</th>' +
+        '<th>Founding year</th>' +
+        '<th>Class</th>' +
+        '</tr>';
+      report.teams.forEach(function (t) {
+        html += '<tr>';
+        html += '<td>' + esc(t.teamName) +
+          ' <small>(' + esc(t.teamId) + ')</small></td>';
+        html += '<td>' + t.foundingJoins.map(function (fj) {
+          return esc(fj.characterId) + '@' + esc(fj.joinYear);
+        }).join('<br>') + '</td>';
+        html += '<td>' +
+          (t.stintAdjustments.length === 0
+            ? '<em>none</em>'
+            : t.stintAdjustments.map(function (a) {
+                return esc(a.characterId) + ': ' +
+                  esc(a.oldJoinYear) + ' → <strong>' +
+                  esc(a.newJoinYear) + '</strong>';
+              }).join('<br>')) +
+          '</td>';
+        html += '<td>' +
+          (t.needsFoundingYearFix
+            ? esc(t.currentStart === null ? '?' : t.currentStart) +
+              ' → <strong>' + esc(t.expectedStart) + '</strong>'
+            : '<em>unchanged</em>') +
+          '</td>';
+        html += '<td>' +
+          (t.needsClassFix
+            ? esc(t.currentClassId === null ? '?' : t.currentClassId) +
+              ' → <strong>' + esc(t.expectedClassId) + '</strong>'
+            : (t.classSkippedReason
+                ? '<em>skipped (' + esc(t.classSkippedReason) + ')</em>'
+                : '<em>unchanged</em>')) +
+          '</td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</section>';
+
+    // ---- Stint start fixes ----
+    html += '<section>';
+    html += '<h2>Stint-start fixes (joinPeriod &lt; junior.startYear)</h2>';
+    if (report.stintStartFixes.length === 0) {
+      html += '<p class="empty">Every stint starts at or after the character\'s junior year.</p>';
+    } else {
+      html += '<p class="count">' + report.stintStartFixes.length + ' stint(s).</p>';
+      html += '<table>';
+      html += '<tr>' +
+        '<th>Team</th>' +
+        '<th>Character</th>' +
+        '<th>Stint #</th>' +
+        '<th>Old join</th>' +
+        '<th>New join</th>' +
+        '</tr>';
+      report.stintStartFixes.forEach(function (f) {
+        html += '<tr>';
+        html += '<td>' + esc(f.teamName) + ' <small>(' + esc(f.teamId) + ')</small></td>';
+        html += '<td>' + esc(f.characterName) + ' <small>(' + esc(f.characterId) + ')</small></td>';
+        html += '<td>' + (f.intervalIndex + 1) + '</td>';
+        html += '<td>' + esc(f.oldJoinYear) + '</td>';
+        html += '<td><strong>' + esc(f.newJoinYear) + '</strong></td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</section>';
+
+    // ---- Stint end fixes ----
+    html += '<section>';
+    html += '<h2>Stint-end fixes (leavePeriod ≠ career-end year)</h2>';
+    if (report.stintEndFixes.length === 0) {
+      html += '<p class="empty">Every stint whose character has a career-end marker already ends at that year.</p>';
+    } else {
+      html += '<p class="count">' + report.stintEndFixes.length + ' stint(s).</p>';
+      html += '<table>';
+      html += '<tr>' +
+        '<th>Team</th>' +
+        '<th>Character</th>' +
+        '<th>Stint #</th>' +
+        '<th>Old leave</th>' +
+        '<th>New leave</th>' +
+        '<th>Reason</th>' +
+        '</tr>';
+      report.stintEndFixes.forEach(function (f) {
+        html += '<tr>';
+        html += '<td>' + esc(f.teamName) + ' <small>(' + esc(f.teamId) + ')</small></td>';
+        html += '<td>' + esc(f.characterName) + ' <small>(' + esc(f.characterId) + ')</small></td>';
+        html += '<td>' + (f.intervalIndex + 1) + '</td>';
+        html += '<td>' + esc(f.oldLeaveYear === null ? 'ongoing' : f.oldLeaveYear) + '</td>';
+        html += '<td><strong>' + esc(f.newLeaveYear) + '</strong></td>';
+        html += '<td>' + esc(f.reason) + '</td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</section>';
+
+    if (report.warnings.length > 0) {
+      html += '<section>';
+      html += '<h2>Warnings</h2>';
+      html += '<ul class="warn">';
+      report.warnings.forEach(function (w) {
+        html += '<li>' + esc(w) + '</li>';
+      });
+      html += '</ul>';
+      html += '</section>';
+    }
+
+    return html;
+  }
+
+  document.getElementById('file-input').addEventListener('change', function (e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || '').replace(/^\uFEFF/, '');
+      var data;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        document.getElementById('report').innerHTML =
+          '<p class="warn">Invalid JSON: ' + esc(err.message) + '</p>';
+        document.getElementById('fix-output').value = '';
+        return;
+      }
+      if (data && data.format === 'hollow-blades' && data.data) {
+        data = data.data;
+      }
+      var report = audit(data);
+      document.getElementById('report').innerHTML = renderReport(report);
+      document.getElementById('fix-output').value = generateFixCode(report);
+    };
+    reader.readAsText(file);
+  });
+
+})();
+</script>
+</body>
+</html>

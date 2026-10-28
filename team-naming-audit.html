@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Team Naming Audit</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ddd; padding: 16px; }
+  h1, h2 { color: #9cf; }
+  textarea { width: 100%; height: 520px; background: #111; color: #9c9; border: 1px solid #444; padding: 8px; font-family: monospace; font-size: 12px; }
+  .file-label { display: inline-block; padding: 8px 16px; background: #246; color: #fff; border-radius: 4px; cursor: pointer; }
+  input[type=file] { display: none; }
+  section { margin-top: 24px; }
+  .count { color: #fc6; font-weight: bold; }
+  .empty { color: #6c6; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #444; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { background: #222; }
+  .warn { color: #fc9; }
+  small { color: #888; }
+</style>
+</head>
+<body>
+<h1>Team Naming Audit</h1>
+<p>Rebuilds a team's periods so boundaries land on the years a distinct member crossed a naming threshold (3→4, 4→5, …), and the suffixed name matches the distinct count.</p>
+
+<label class="file-label">
+  Load JSON file…
+  <input type="file" id="file-input" accept=".json,application/json">
+</label>
+
+<div id="report"></div>
+
+<section>
+  <h2>Injectable Fix Code</h2>
+  <p>Paste into the browser console <em>after</em> <code>window.data</code> is loaded.</p>
+  <textarea id="fix-output" readonly></textarea>
+</section>
+
+<script>
+(function () {
+  'use strict';
+
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+  function parseYear(v) {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v === 'number') {
+      return (Number.isSafeInteger(v) && v >= 1) ? v : null;
+    }
+    var s = String(v).trim();
+    if (s === '' || !/^\d+$/.test(s)) return null;
+    var n = parseInt(s, 10);
+    return (isNaN(n) || n < 1) ? null : n;
+  }
+
+  function statusOf(entry) {
+    return String((entry && entry.status) || '').toLowerCase();
+  }
+
+  function normalizeTeamType(t) {
+    var s = String(t || '').toLowerCase();
+    if (s === 'temporary' || s === 'internship') return 'professional';
+    return s;
+  }
+
+  function isNonEmptyString(v) {
+    return typeof v === 'string' && v.trim() !== '';
+  }
+
+  // ------------------------------------------------------------------
+  // Roman numerals
+  // ------------------------------------------------------------------
+  var ROMAN_VALUES = [
+    [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'],
+    [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'],
+    [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']
+  ];
+
+  function toRoman(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n < 1) return '';
+    n = Math.floor(n);
+    var result = '';
+    for (var i = 0; i < ROMAN_VALUES.length; i++) {
+      var value = ROMAN_VALUES[i][0];
+      var symbol = ROMAN_VALUES[i][1];
+      while (n >= value) {
+        result += symbol;
+        n -= value;
+      }
+    }
+    return result;
+  }
+
+  function romanToNumber(roman) {
+    if (!roman || typeof roman !== 'string') return null;
+    var map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+    var total = 0;
+    var prev = 0;
+    for (var i = roman.length - 1; i >= 0; i--) {
+      var c = roman.charAt(i);
+      var v = map[c];
+      if (v === undefined) return null;
+      if (v < prev) total -= v;
+      else { total += v; prev = v; }
+    }
+    return total;
+  }
+
+  /**
+   * Split "Rapid II" -> { base: "Rapid", suffix: 2 }.
+   * "Rapid" -> { base: "Rapid", suffix: null }.
+   * "Rapid I" (single I) is treated as a base name.
+   */
+  function splitTeamName(name) {
+    var raw = String(name || '');
+    if (raw === '') return { base: '', suffix: null };
+    var trimmed = raw.trim();
+
+    var match = trimmed.match(
+      /\s+(M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))$/
+    );
+    if (!match) return { base: trimmed, suffix: null };
+    var roman = match[1];
+    if (roman === '') return { base: trimmed, suffix: null };
+    if (roman === 'I') return { base: trimmed, suffix: null };
+    var value = romanToNumber(roman);
+    if (value === null || value < 2) {
+      return { base: trimmed, suffix: null };
+    }
+    var base = trimmed.substring(0, trimmed.length - match[0].length).trim();
+    if (base === '') return { base: trimmed, suffix: null };
+    return { base: base, suffix: value };
+  }
+
+  function computeSuffix(distinctCount) {
+    if (typeof distinctCount !== 'number' || distinctCount < 1) {
+      return { suffixNumber: 0, roman: '' };
+    }
+    if (distinctCount <= 3) {
+      return { suffixNumber: 0, roman: '' };
+    }
+    var n = distinctCount - 2;
+    return { suffixNumber: n, roman: toRoman(n) };
+  }
+
+  function makeSuffixedName(baseName, suffix) {
+    if (!suffix || suffix.roman === '') return baseName;
+    return baseName + ' ' + suffix.roman;
+  }
+
+  // ------------------------------------------------------------------
+  // Distinct members with earliest join year
+  // ------------------------------------------------------------------
+  function getDistinctMembers(team) {
+    var seen = Object.create(null);
+    var members = Array.isArray(team && team.members) ? team.members : [];
+    for (var m = 0; m < members.length; m++) {
+      var member = members[m];
+      if (!member || !member.characterId) continue;
+      var cid = String(member.characterId);
+      var intervals = Array.isArray(member.intervals) ? member.intervals : [];
+      var earliest = null;
+      for (var i = 0; i < intervals.length; i++) {
+        var join = parseYear(intervals[i].joinPeriod);
+        if (join === null) continue;
+        if (earliest === null || join < earliest) earliest = join;
+      }
+      if (!seen[cid]) {
+        seen[cid] = { characterId: cid, earliestJoin: earliest };
+      } else if (earliest !== null) {
+        var prev = seen[cid].earliestJoin;
+        if (prev === null || earliest < prev) seen[cid].earliestJoin = earliest;
+      }
+    }
+    var result = Object.keys(seen).map(function (k) { return seen[k]; });
+    result.sort(function (a, b) {
+      if (a.earliestJoin === null && b.earliestJoin === null) {
+        return a.characterId.localeCompare(b.characterId);
+      }
+      if (a.earliestJoin === null) return 1;
+      if (b.earliestJoin === null) return -1;
+      if (a.earliestJoin !== b.earliestJoin) {
+        return a.earliestJoin - b.earliestJoin;
+      }
+      return a.characterId.localeCompare(b.characterId);
+    });
+    return result;
+  }
+
+  // ------------------------------------------------------------------
+  // Build the periods array the team SHOULD have, per the naming rule
+  // ------------------------------------------------------------------
+  //
+  // - Base name = first period's name with any suffix stripped.
+  // - Founding year = current periods[0].startPeriod if set,
+  //   else team.startPeriod, else earliest member join.
+  // - Boundaries at each trigger year (crossing k→k+1).
+  // - tacticalStyle and specialisations inherited from the
+  //   FIRST period (founding period).
+  //
+  // If the current periods array is empty, we can't infer style,
+  // so we use ''. That's a degradation, and it's warned about.
+  function buildExpectedPeriods(team, distinctMembers) {
+    var warnings = [];
+
+    var currentPeriods = Array.isArray(team.periods) ? team.periods : [];
+
+    // Base name — from the first current period, else team.name.
+    var baseName = '';
+    if (currentPeriods.length > 0 &&
+        isNonEmptyString(currentPeriods[0].name)) {
+      baseName = splitTeamName(currentPeriods[0].name).base;
+    }
+    if (baseName === '') {
+      baseName = splitTeamName(team.name || '').base ||
+                 String(team.name || 'Unnamed Team');
+    }
+
+    // Founding year.
+    var foundingYear = null;
+    if (currentPeriods.length > 0) {
+      foundingYear = parseYear(currentPeriods[0].startPeriod);
+    }
+    if (foundingYear === null) {
+      foundingYear = parseYear(team.startPeriod);
+    }
+    if (foundingYear === null) {
+      // Earliest member join.
+      for (var i = 0; i < distinctMembers.length; i++) {
+        if (distinctMembers[i].earliestJoin !== null) {
+          foundingYear = distinctMembers[i].earliestJoin;
+          warnings.push(
+            'Team "' + (team.name || team.id) +
+            '" has no founding year; using earliest member join (' +
+            foundingYear + ').'
+          );
+          break;
+        }
+      }
+    }
+    if (foundingYear === null) {
+      return { periods: null, baseName: baseName, warnings: warnings };
+    }
+
+    // Inherited style / specialisations from the FIRST period.
+    var inheritedStyle = '';
+    var inheritedSpecs = [];
+    if (currentPeriods.length > 0) {
+      if (isNonEmptyString(currentPeriods[0].tacticalStyle)) {
+        inheritedStyle = String(currentPeriods[0].tacticalStyle);
+      }
+      if (Array.isArray(currentPeriods[0].specialisations)) {
+        inheritedSpecs = currentPeriods[0].specialisations.slice();
+      }
+    }
+
+    // Trigger years: the (k+1)-th distinct member's join, for
+    // k = 3, 4, 5, …, while distinctMembers has that index.
+    //
+    // distinctMembers[3] (index 3) is the 4th distinct member — its
+    // join year is the trigger to become "II".
+    // distinctMembers[4] is the 5th — trigger for "III".
+    var triggers = [];
+    for (var t = 3; t < distinctMembers.length; t++) {
+      if (distinctMembers[t].earliestJoin !== null) {
+        triggers.push(distinctMembers[t].earliestJoin);
+      } else {
+        warnings.push(
+          'Team "' + (team.name || team.id) + '": distinct member ' +
+          distinctMembers[t].characterId +
+          ' has no parseable join; suffix ' +
+          (t - 2) + ' cannot be dated and will be skipped.'
+        );
+      }
+    }
+
+    // Build periods.
+    var periods = [];
+    var startYear = foundingYear;
+    var level = 0; // 0 → base name, 1 → II, 2 → III, …
+
+    // Level 0 period ends at triggers[0] (exclusive on the later
+    // side — the boundary year belongs to the NEW period, so the
+    // old period's endYear is trigger - 1 in calendar terms, but
+    // in this app's periods model the endYear is inclusive and the
+    // new period's startYear is the SAME year, meaning the boundary
+    // year belongs to the later period via the half-open rule).
+    //
+    // The team-periods model uses half-open ranges:
+    //   old [start, trigger), new [trigger, ...)
+    // In storage:
+    //   old.endPeriod = String(trigger - 1)      (or trigger - 1 == start if start == trigger - 1)
+    //   new.startPeriod = String(trigger)
+    //
+    // But the TeamCore canonicaliser also accepts endPeriod ==
+    // startPeriod as a same-year rename:
+    //   Rapid     1900–1900
+    //   Rapid II  1900–present
+    // This is what team-naming.js emits for a same-year rollover.
+    //
+    // To match what team-naming.js does for the "same year rename"
+    // case, we set old.endPeriod = String(trigger) and
+    // new.startPeriod = String(trigger). The half-open rule then
+    // resolves the boundary year to the NEW period.
+
+    for (var ti = 0; ti < triggers.length; ti++) {
+      var trigger = triggers[ti];
+
+      // Guard against non-monotonic triggers (shouldn't happen
+      // with sorted distinct members, but defensive).
+      if (trigger < startYear) {
+        warnings.push(
+          'Team "' + (team.name || team.id) +
+          '": trigger year ' + trigger + ' is before the current period start ' +
+          startYear + '; skipping this trigger.'
+        );
+        continue;
+      }
+
+      level++;
+      var suffix = computeSuffix(3 + level); // 3 base members + level increments
+
+      // Previous period ends at `trigger`.
+      periods.push({
+        startPeriod: String(startYear),
+        endPeriod: String(trigger),
+        name: makeSuffixedName(
+          baseName,
+          computeSuffix(3 + (level - 1))
+        ),
+        tacticalStyle: inheritedStyle,
+        specialisations: inheritedSpecs.slice()
+      });
+
+      startYear = trigger;
+    }
+
+    // Final period.
+    level++;
+    var finalSuffix = computeSuffix(3 + (level - 1));
+    periods.push({
+      startPeriod: String(startYear),
+      endPeriod: '',
+      name: makeSuffixedName(baseName, finalSuffix),
+      tacticalStyle: inheritedStyle,
+      specialisations: inheritedSpecs.slice()
+    });
+
+    return { periods: periods, baseName: baseName, warnings: warnings };
+  }
+
+  // ------------------------------------------------------------------
+  // Audit
+  // ------------------------------------------------------------------
+  function audit(data) {
+    var report = { teams: [], warnings: [] };
+    if (!data || typeof data !== 'object') {
+      report.warnings.push('Top-level data is not an object.');
+      return report;
+    }
+
+    var teams = Array.isArray(data.teams) ? data.teams : [];
+
+    teams.forEach(function (team) {
+      if (!team || typeof team !== 'object') return;
+
+      var nType = normalizeTeamType(team.type);
+      if (nType !== 'professional' && nType !== 'civilian') return;
+
+      var teamId = String(team.id || '');
+      var teamName = String(team.name || 'Unnamed Team');
+
+      var distinct = getDistinctMembers(team);
+      var expected = buildExpectedPeriods(team, distinct);
+
+      expected.warnings.forEach(function (w) {
+        report.warnings.push(w);
+      });
+
+      if (!expected.periods) {
+        report.warnings.push(
+          'Team "' + teamName + '" (' + teamId +
+          ') has no founding year; skipped.'
+        );
+        return;
+      }
+
+      var currentPeriods = Array.isArray(team.periods)
+        ? team.periods : [];
+
+      // Are the current periods already exactly what we'd build?
+      var currentNormalised = currentPeriods.map(function (p) {
+        return {
+          startPeriod: String(p.startPeriod || ''),
+          endPeriod: p.endPeriod === undefined || p.endPeriod === null
+            ? '' : String(p.endPeriod),
+          name: String(p.name || '')
+        };
+      });
+      var expectedNormalised = expected.periods.map(function (p) {
+        return {
+          startPeriod: p.startPeriod,
+          endPeriod: p.endPeriod,
+          name: p.name
+        };
+      });
+
+      var same =
+        JSON.stringify(currentNormalised) ===
+        JSON.stringify(expectedNormalised);
+
+      if (same) return;
+
+      report.teams.push({
+        teamId: teamId,
+        teamName: teamName,
+        distinctCount: distinct.length,
+        currentPeriods: currentPeriods.map(function (p) {
+          return {
+            name: String(p.name || ''),
+            start: String(p.startPeriod || ''),
+            end: p.endPeriod === undefined || p.endPeriod === null
+              ? '' : String(p.endPeriod)
+          };
+        }),
+        expectedPeriods: expected.periods.map(function (p) {
+          return {
+            name: p.name,
+            start: p.startPeriod,
+            end: p.endPeriod
+          };
+        }),
+        finalName: expected.periods.length > 0
+          ? expected.periods[expected.periods.length - 1].name
+          : teamName
+      });
+    });
+
+    return report;
+  }
+
+  // ------------------------------------------------------------------
+  // Fix-code generator
+  // ------------------------------------------------------------------
+  function generateFixCode(report) {
+    var lines = [];
+
+    lines.push('// Team naming fix block.');
+    lines.push('// Generated ' + new Date().toISOString());
+    lines.push('//');
+    lines.push('// Only team.periods and team.name are replaced.');
+    lines.push('// Nothing else is touched.');
+    lines.push('');
+    lines.push('(function () {');
+    lines.push('  "use strict";');
+    lines.push('');
+    lines.push('  if (!window.data || typeof window.data !== "object") {');
+    lines.push('    console.error("window.data is not loaded.");');
+    lines.push('    return;');
+    lines.push('  }');
+    lines.push('  var data = window.data;');
+    lines.push('  if (!Array.isArray(data.teams)) {');
+    lines.push('    console.error("data.teams is not an array.");');
+    lines.push('    return;');
+    lines.push('  }');
+    lines.push('');
+    lines.push('  function findTeam(id) {');
+    lines.push('    for (var i = 0; i < data.teams.length; i++) {');
+    lines.push('      if (String(data.teams[i].id) === id) return data.teams[i];');
+    lines.push('    }');
+    lines.push('    return null;');
+    lines.push('  }');
+    lines.push('');
+
+    lines.push('  var teamFixes = ' + JSON.stringify(report.teams || []) + ';');
+    lines.push('  if (!Array.isArray(teamFixes)) teamFixes = [];');
+    lines.push('');
+    lines.push('  var applied = 0;');
+    lines.push('  var skipped = [];');
+    lines.push('');
+    lines.push('  teamFixes.forEach(function (fix) {');
+    lines.push('    var team = findTeam(fix.teamId);');
+    lines.push('    if (!team) { skipped.push(fix.teamId); return; }');
+    lines.push('    // Rebuild the periods array from the fix payload.');
+    lines.push('    var built = [];');
+    lines.push('    for (var i = 0; i < fix.expectedPeriods.length; i++) {');
+    lines.push('      var p = fix.expectedPeriods[i];');
+    lines.push('      built.push({');
+    lines.push('        startPeriod: String(p.start),');
+    lines.push('        endPeriod: p.end === null || p.end === undefined ? "" : String(p.end),');
+    lines.push('        name: String(p.name),');
+    lines.push('        tacticalStyle: p.tacticalStyle !== undefined ? p.tacticalStyle : "",');
+    lines.push('        specialisations: Array.isArray(p.specialisations) ? p.specialisations.slice() : []');
+    lines.push('      });');
+    lines.push('    }');
+    lines.push('    team.periods = built;');
+    lines.push('    if (built.length > 0) {');
+    lines.push('      team.name = built[built.length - 1].name;');
+    lines.push('      team.startPeriod = built[0].startPeriod;');
+    lines.push('      team.endPeriod = built[built.length - 1].endPeriod;');
+    lines.push('    }');
+    lines.push('    team.updatedAt = new Date().toISOString();');
+    lines.push('    applied++;');
+    lines.push('  });');
+    lines.push('');
+    lines.push('  console.log("[fix] Team periods rebuilt: " + applied);');
+    lines.push('  if (skipped.length > 0) console.warn("[fix] Skipped teams:", skipped);');
+    lines.push('');
+    lines.push('  if (typeof window.saveData === "function") {');
+    lines.push('    window.saveData().then(function () {');
+    lines.push('      console.log("[fix] Persisted.");');
+    lines.push('    }).catch(function (err) {');
+    lines.push('      console.error("[fix] Persist failed:", err);');
+    lines.push('    });');
+    lines.push('  } else {');
+    lines.push('    console.warn("[fix] window.saveData not available; in-memory only.");');
+    lines.push('  }');
+    lines.push('');
+    lines.push('})();');
+
+    return lines.join('\n');
+  }
+
+  // ------------------------------------------------------------------
+  // Rendering
+  // ------------------------------------------------------------------
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderPeriods(periods) {
+    return periods.map(function (p) {
+      return esc(p.name) + ' (' +
+        esc(p.start) + '–' +
+        (p.end === '' ? 'present' : esc(p.end)) + ')';
+    }).join('<br>');
+  }
+
+  function renderReport(report) {
+    var html = '';
+
+    html += '<section>';
+    html += '<h2>Teams whose periods need rebuilding</h2>';
+    if (report.teams.length === 0) {
+      html += '<p class="empty">All team periods already match the naming rule.</p>';
+    } else {
+      html += '<p class="count">' + report.teams.length + ' team(s).</p>';
+      html += '<table>';
+      html += '<tr>' +
+        '<th>Team</th>' +
+        '<th>Distinct members</th>' +
+        '<th>Current periods</th>' +
+        '<th>New periods</th>' +
+        '</tr>';
+      report.teams.forEach(function (t) {
+        html += '<tr>';
+        html += '<td>' + esc(t.teamName) +
+          ' <small>(' + esc(t.teamId) + ')</small></td>';
+        html += '<td>' + t.distinctCount + '</td>';
+        html += '<td>' +
+          (t.currentPeriods.length === 0
+            ? '<em>(none)</em>'
+            : renderPeriods(t.currentPeriods)) +
+          '</td>';
+        html += '<td>' +
+          renderPeriods(t.expectedPeriods) +
+          '</td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+    }
+    html += '</section>';
+
+    if (report.warnings.length > 0) {
+      html += '<section>';
+      html += '<h2>Warnings</h2>';
+      html += '<ul class="warn">';
+      report.warnings.forEach(function (w) {
+        html += '<li>' + esc(w) + '</li>';
+      });
+      html += '</ul>';
+      html += '</section>';
+    }
+
+    return html;
+  }
+
+  document.getElementById('file-input').addEventListener('change', function (e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || '').replace(/^\uFEFF/, '');
+      var data;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        document.getElementById('report').innerHTML =
+          '<p class="warn">Invalid JSON: ' + esc(err.message) + '</p>';
+        document.getElementById('fix-output').value = '';
+        return;
+      }
+      if (data && data.format === 'hollow-blades' && data.data) {
+        data = data.data;
+      }
+      var report = audit(data);
+      document.getElementById('report').innerHTML = renderReport(report);
+      document.getElementById('fix-output').value = generateFixCode(report);
+    };
+    reader.readAsText(file);
+  });
+
+})();
+</script>
+</body>
+</html>
