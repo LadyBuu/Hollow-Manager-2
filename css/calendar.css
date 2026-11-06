@@ -71,10 +71,20 @@
  *   Do not move them back to :root or to an unscoped
  *   .schedule-grid rule.
  *
+ *   For the light-family themes (illuminated, discowing, dada,
+ *   brutalist, nautical-tile) the gap and empty-cell are too
+ *   close in value, so the 1px grid lines disappear. The
+ *   LIGHT-THEME GRID SURFACE block below nudges the gap one
+ *   step darker for those themes only.
+ *
  * THEME OVERRIDES:
  *   Group colors and highlight tints use hardcoded rgba() values
  *   rather than tokens, so they carry explicit per-theme override
  *   blocks at the bottom of this file.
+ *
+ *   Light-family themes use higher opacity (roughly 0.28–0.45)
+ *   than dark-family themes (roughly 0.14–0.24) because a wash
+ *   that reads on a dark panel disappears on a cream/white one.
  */
 
 /* ============================================================
@@ -128,6 +138,40 @@
 html:not([data-theme]) {
     --schedule-grid-gap: #17280b;
     --schedule-grid-cell: #132509;
+}
+
+/* ============================================================
+   LIGHT-THEME GRID SURFACE
+   ============================================================
+   In the light-family themes the --panel empty cell and the
+   --border-soft grid gap are close in value, so the 1px grid
+   lines vanish and occupied cells visually merge into their
+   neighbours. These overrides nudge the gap one step darker
+   than border-soft so the grid structure reads.
+
+   These selectors are attribute-scoped, so they only apply when
+   the matching data-theme is set on <html>. Dark mode is
+   unaffected (it sets the tokens under html:not([data-theme])).
+ */
+
+[data-theme="illuminated"] {
+    --schedule-grid-gap: #c9bda0;
+}
+
+[data-theme="discowing"] {
+    --schedule-grid-gap: #d98b2e;
+}
+
+[data-theme="dada"] {
+    --schedule-grid-gap: #b8b3a8;
+}
+
+[data-theme="brutalist"] {
+    --schedule-grid-gap: #999999;
+}
+
+[data-theme="nautical-tile"] {
+    --schedule-grid-gap: #b8c6d4;
 }
 
 /* ============================================================
@@ -2037,49 +2081,59 @@ button[disabled] {
 
 /* ============================================================
    ILLUMINATED OVERRIDES
-   ============================================================ */
+   ============================================================
+   Illuminated is a light cream theme (--panel near #FBF7EA).
+   The washes below use opacity in the 0.22–0.42 range so the
+   group color reads against the pale panel; lower values were
+   nearly invisible on cream.
+ */
 
-[data-theme="illuminated"] .acad-group-color-0 { background: rgba(46, 77, 123, 0.12); border-left-color: #2E4D7B; }
-[data-theme="illuminated"] .acad-group-color-1 { background: rgba(196, 154, 69, 0.15); border-left-color: #C49A45; }
-[data-theme="illuminated"] .acad-group-color-2 { background: rgba(122, 155, 110, 0.15); border-left-color: #7A9B6E; }
-[data-theme="illuminated"] .acad-group-color-3 { background: rgba(166, 60, 48, 0.15); border-left-color: #A63C30; }
-[data-theme="illuminated"] .acad-group-color-4 { background: rgba(75, 107, 80, 0.15); border-left-color: #4B6B50; }
-[data-theme="illuminated"] .acad-group-color-5 { background: rgba(90, 75, 60, 0.15); border-left-color: #5A4B3C; }
-[data-theme="illuminated"] .acad-group-color-6 { background: rgba(43, 33, 24, 0.10); border-left-color: #2B2118; }
-[data-theme="illuminated"] .acad-group-color-7 { background: rgba(138, 123, 106, 0.12); border-left-color: #8A7B6A; }
+[data-theme="illuminated"] .acad-group-color-0 { background: rgba(46, 77, 123, 0.32); border-left-color: #2E4D7B; }
+[data-theme="illuminated"] .acad-group-color-1 { background: rgba(196, 154, 69, 0.38); border-left-color: #C49A45; }
+[data-theme="illuminated"] .acad-group-color-2 { background: rgba(122, 155, 110, 0.35); border-left-color: #7A9B6E; }
+[data-theme="illuminated"] .acad-group-color-3 { background: rgba(166, 60, 48, 0.32); border-left-color: #A63C30; }
+[data-theme="illuminated"] .acad-group-color-4 { background: rgba(75, 107, 80, 0.35); border-left-color: #4B6B50; }
+[data-theme="illuminated"] .acad-group-color-5 { background: rgba(90, 75, 60, 0.32); border-left-color: #5A4B3C; }
+[data-theme="illuminated"] .acad-group-color-6 { background: rgba(43, 33, 24, 0.22); border-left-color: #2B2118; }
+[data-theme="illuminated"] .acad-group-color-7 { background: rgba(138, 123, 106, 0.30); border-left-color: #8A7B6A; }
 
-[data-theme="illuminated"] .schedule-cell.schedule-highlight-all-free { background: rgba(122, 155, 110, 0.20); box-shadow: inset 0 0 0 1px #7A9B6E; }
-[data-theme="illuminated"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.20); box-shadow: inset 0 0 0 1px #C49A45; }
+[data-theme="illuminated"] .schedule-cell.schedule-highlight-all-free { background: rgba(122, 155, 110, 0.40); box-shadow: inset 0 0 0 1px #7A9B6E; }
+[data-theme="illuminated"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.38); box-shadow: inset 0 0 0 1px #C49A45; }
 [data-theme="illuminated"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="illuminated"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="illuminated"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="illuminated"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(122, 155, 110, 0.20); }
+[data-theme="illuminated"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(122, 155, 110, 0.40); }
 [data-theme="illuminated"] .schedule-highlight-badge { background: #7A9B6E; color: #F4EBD5; }
-[data-theme="illuminated"] .legend-color.schedule-highlight-all-free { background: rgba(122, 155, 110, 0.20); border-color: #7A9B6E; }
-[data-theme="illuminated"] .legend-color.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.20); border-color: #C49A45; }
+[data-theme="illuminated"] .legend-color.schedule-highlight-all-free { background: rgba(122, 155, 110, 0.40); border-color: #7A9B6E; }
+[data-theme="illuminated"] .legend-color.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.38); border-color: #C49A45; }
 
 /* ============================================================
    DISCOWING OVERRIDES
-   ============================================================ */
+   ============================================================
+   Discowing's page background is orange (#F8A342) and the
+   panel is white. Washes need to be strong enough to read on
+   white, and the highlight badge carries a black border to
+   match the theme's existing comic-book button language.
+ */
 
-[data-theme="discowing"] .acad-group-color-0 { background: rgba(0, 128, 255, 0.15); border-left-color: #0080FF; }
-[data-theme="discowing"] .acad-group-color-1 { background: rgba(255, 215, 0, 0.20); border-left-color: #FFD700; }
-[data-theme="discowing"] .acad-group-color-2 { background: rgba(0, 168, 107, 0.15); border-left-color: #00A86B; }
-[data-theme="discowing"] .acad-group-color-3 { background: rgba(255, 0, 0, 0.15); border-left-color: #FF0000; }
-[data-theme="discowing"] .acad-group-color-4 { background: rgba(26, 42, 64, 0.15); border-left-color: #1A2A40; }
-[data-theme="discowing"] .acad-group-color-5 { background: rgba(74, 90, 112, 0.15); border-left-color: #4A5A70; }
-[data-theme="discowing"] .acad-group-color-6 { background: rgba(0, 0, 0, 0.10); border-left-color: #000000; }
-[data-theme="discowing"] .acad-group-color-7 { background: rgba(255, 255, 255, 0.20); border-left-color: #FFFFFF; }
+[data-theme="discowing"] .acad-group-color-0 { background: rgba(0, 128, 255, 0.35); border-left-color: #0080FF; }
+[data-theme="discowing"] .acad-group-color-1 { background: rgba(255, 215, 0, 0.45); border-left-color: #FFD700; }
+[data-theme="discowing"] .acad-group-color-2 { background: rgba(0, 168, 107, 0.35); border-left-color: #00A86B; }
+[data-theme="discowing"] .acad-group-color-3 { background: rgba(255, 0, 0, 0.30); border-left-color: #FF0000; }
+[data-theme="discowing"] .acad-group-color-4 { background: rgba(26, 42, 64, 0.32); border-left-color: #1A2A40; }
+[data-theme="discowing"] .acad-group-color-5 { background: rgba(74, 90, 112, 0.32); border-left-color: #4A5A70; }
+[data-theme="discowing"] .acad-group-color-6 { background: rgba(0, 0, 0, 0.22); border-left-color: #000000; }
+[data-theme="discowing"] .acad-group-color-7 { background: rgba(255, 255, 255, 0.35); border-left-color: #FFFFFF; }
 
-[data-theme="discowing"] .schedule-cell.schedule-highlight-all-free { background: rgba(0, 168, 107, 0.20); box-shadow: inset 0 0 0 1px #00A86B; }
-[data-theme="discowing"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(255, 215, 0, 0.20); box-shadow: inset 0 0 0 1px #FFD700; }
+[data-theme="discowing"] .schedule-cell.schedule-highlight-all-free { background: rgba(0, 168, 107, 0.40); box-shadow: inset 0 0 0 2px #00A86B; }
+[data-theme="discowing"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(255, 215, 0, 0.45); box-shadow: inset 0 0 0 2px #FFD700; }
 [data-theme="discowing"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="discowing"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="discowing"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="discowing"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(0, 168, 107, 0.20); }
-[data-theme="discowing"] .schedule-highlight-badge { background: #00A86B; color: #FFFFFF; }
-[data-theme="discowing"] .legend-color.schedule-highlight-all-free { background: rgba(0, 168, 107, 0.20); border-color: #00A86B; }
-[data-theme="discowing"] .legend-color.schedule-highlight-instructor-free { background: rgba(255, 215, 0, 0.20); border-color: #FFD700; }
+[data-theme="discowing"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(0, 168, 107, 0.40); }
+[data-theme="discowing"] .schedule-highlight-badge { background: #00A86B; color: #FFFFFF; border: 2px solid #000; }
+[data-theme="discowing"] .legend-color.schedule-highlight-all-free { background: rgba(0, 168, 107, 0.40); border-color: #00A86B; }
+[data-theme="discowing"] .legend-color.schedule-highlight-instructor-free { background: rgba(255, 215, 0, 0.45); border-color: #FFD700; }
 
 /* ============================================================
    CHOC CAKE OVERRIDES
@@ -2106,26 +2160,32 @@ button[disabled] {
 
 /* ============================================================
    DADA OVERRIDES
-   ============================================================ */
+   ============================================================
+   Dada is a light collage theme (--panel #F4F2EC). The base
+   theme's low-opacity values vanished on the paper-white
+   panel. The washes below use higher opacity and the highlight
+   badge carries a black border to match the cut-paste outline
+   language used by the theme's buttons.
+ */
 
-[data-theme="dada"] .acad-group-color-0 { background: rgba(212, 163, 42, 0.25); border-left-color: #D4A32A; }
-[data-theme="dada"] .acad-group-color-1 { background: rgba(217, 165, 165, 0.25); border-left-color: #D9A5A5; }
-[data-theme="dada"] .acad-group-color-2 { background: rgba(201, 58, 58, 0.20); border-left-color: #C93A3A; }
-[data-theme="dada"] .acad-group-color-3 { background: rgba(230, 164, 58, 0.20); border-left-color: #E6A43A; }
-[data-theme="dada"] .acad-group-color-4 { background: rgba(90, 140, 90, 0.20); border-left-color: #5A8C5A; }
-[data-theme="dada"] .acad-group-color-5 { background: rgba(74, 74, 74, 0.15); border-left-color: #4A4A4A; }
-[data-theme="dada"] .acad-group-color-6 { background: rgba(17, 17, 17, 0.10); border-left-color: #111111; }
-[data-theme="dada"] .acad-group-color-7 { background: rgba(115, 115, 115, 0.15); border-left-color: #737373; }
+[data-theme="dada"] .acad-group-color-0 { background: rgba(212, 163, 42, 0.42); border-left-color: #D4A32A; }
+[data-theme="dada"] .acad-group-color-1 { background: rgba(217, 165, 165, 0.45); border-left-color: #D9A5A5; }
+[data-theme="dada"] .acad-group-color-2 { background: rgba(201, 58, 58, 0.35); border-left-color: #C93A3A; }
+[data-theme="dada"] .acad-group-color-3 { background: rgba(230, 164, 58, 0.38); border-left-color: #E6A43A; }
+[data-theme="dada"] .acad-group-color-4 { background: rgba(90, 140, 90, 0.38); border-left-color: #5A8C5A; }
+[data-theme="dada"] .acad-group-color-5 { background: rgba(74, 74, 74, 0.30); border-left-color: #4A4A4A; }
+[data-theme="dada"] .acad-group-color-6 { background: rgba(17, 17, 17, 0.22); border-left-color: #111111; }
+[data-theme="dada"] .acad-group-color-7 { background: rgba(115, 115, 115, 0.30); border-left-color: #737373; }
 
-[data-theme="dada"] .schedule-cell.schedule-highlight-all-free { background: rgba(90, 140, 90, 0.20); box-shadow: inset 0 0 0 1px #5A8C5A; }
-[data-theme="dada"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(230, 164, 58, 0.20); box-shadow: inset 0 0 0 1px #E6A43A; }
+[data-theme="dada"] .schedule-cell.schedule-highlight-all-free { background: rgba(90, 140, 90, 0.40); box-shadow: inset 0 0 0 2px #5A8C5A; }
+[data-theme="dada"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(230, 164, 58, 0.40); box-shadow: inset 0 0 0 2px #E6A43A; }
 [data-theme="dada"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="dada"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="dada"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="dada"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(90, 140, 90, 0.20); }
-[data-theme="dada"] .schedule-highlight-badge { background: #5A8C5A; color: #F4F2EC; }
-[data-theme="dada"] .legend-color.schedule-highlight-all-free { background: rgba(90, 140, 90, 0.20); border-color: #5A8C5A; }
-[data-theme="dada"] .legend-color.schedule-highlight-instructor-free { background: rgba(230, 164, 58, 0.20); border-color: #E6A43A; }
+[data-theme="dada"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(90, 140, 90, 0.40); }
+[data-theme="dada"] .schedule-highlight-badge { background: #5A8C5A; color: #F4F2EC; border: 2px solid #111; }
+[data-theme="dada"] .legend-color.schedule-highlight-all-free { background: rgba(90, 140, 90, 0.40); border-color: #5A8C5A; }
+[data-theme="dada"] .legend-color.schedule-highlight-instructor-free { background: rgba(230, 164, 58, 0.40); border-color: #E6A43A; }
 
 /* ============================================================
    UKIYO-E OVERRIDES
@@ -2152,26 +2212,30 @@ button[disabled] {
 
 /* ============================================================
    BRUTALIST OVERRIDES
-   ============================================================ */
+   ============================================================
+   Brutalist is a light grey theme (--panel #FFFFFF, page #E6E6E6).
+   Washes need to read on white, and the highlight badge carries a
+   black border to match the theme's blocky outlined treatment.
+ */
 
-[data-theme="brutalist"] .acad-group-color-0 { background: rgba(255, 51, 0, 0.15); border-left-color: #FF3300; }
-[data-theme="brutalist"] .acad-group-color-1 { background: rgba(0, 0, 0, 0.08); border-left-color: #000000; }
-[data-theme="brutalist"] .acad-group-color-2 { background: rgba(204, 0, 0, 0.15); border-left-color: #CC0000; }
-[data-theme="brutalist"] .acad-group-color-3 { background: rgba(0, 102, 0, 0.15); border-left-color: #006600; }
-[data-theme="brutalist"] .acad-group-color-4 { background: rgba(51, 51, 51, 0.15); border-left-color: #333333; }
-[data-theme="brutalist"] .acad-group-color-5 { background: rgba(102, 102, 102, 0.15); border-left-color: #666666; }
-[data-theme="brutalist"] .acad-group-color-6 { background: rgba(255, 255, 255, 0.10); border-left-color: #FFFFFF; }
-[data-theme="brutalist"] .acad-group-color-7 { background: rgba(0, 0, 0, 0.15); border-left-color: #000000; }
+[data-theme="brutalist"] .acad-group-color-0 { background: rgba(255, 51, 0, 0.30); border-left-color: #FF3300; }
+[data-theme="brutalist"] .acad-group-color-1 { background: rgba(0, 0, 0, 0.18); border-left-color: #000000; }
+[data-theme="brutalist"] .acad-group-color-2 { background: rgba(204, 0, 0, 0.28); border-left-color: #CC0000; }
+[data-theme="brutalist"] .acad-group-color-3 { background: rgba(0, 102, 0, 0.28); border-left-color: #006600; }
+[data-theme="brutalist"] .acad-group-color-4 { background: rgba(51, 51, 51, 0.28); border-left-color: #333333; }
+[data-theme="brutalist"] .acad-group-color-5 { background: rgba(102, 102, 102, 0.28); border-left-color: #666666; }
+[data-theme="brutalist"] .acad-group-color-6 { background: rgba(255, 255, 255, 0.20); border-left-color: #FFFFFF; }
+[data-theme="brutalist"] .acad-group-color-7 { background: rgba(0, 0, 0, 0.28); border-left-color: #000000; }
 
-[data-theme="brutalist"] .schedule-cell.schedule-highlight-all-free { background: rgba(0, 102, 0, 0.15); box-shadow: inset 0 0 0 2px #006600; }
-[data-theme="brutalist"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(255, 51, 0, 0.15); box-shadow: inset 0 0 0 2px #FF3300; }
+[data-theme="brutalist"] .schedule-cell.schedule-highlight-all-free { background: rgba(0, 102, 0, 0.28); box-shadow: inset 0 0 0 2px #006600; }
+[data-theme="brutalist"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(255, 51, 0, 0.28); box-shadow: inset 0 0 0 2px #FF3300; }
 [data-theme="brutalist"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="brutalist"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="brutalist"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="brutalist"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(0, 102, 0, 0.15); }
-[data-theme="brutalist"] .schedule-highlight-badge { background: #006600; color: #FFFFFF; }
-[data-theme="brutalist"] .legend-color.schedule-highlight-all-free { background: rgba(0, 102, 0, 0.15); border-color: #006600; }
-[data-theme="brutalist"] .legend-color.schedule-highlight-instructor-free { background: rgba(255, 51, 0, 0.15); border-color: #FF3300; }
+[data-theme="brutalist"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(0, 102, 0, 0.28); }
+[data-theme="brutalist"] .schedule-highlight-badge { background: #006600; color: #FFFFFF; border: 2px solid #000; }
+[data-theme="brutalist"] .legend-color.schedule-highlight-all-free { background: rgba(0, 102, 0, 0.28); border-color: #006600; }
+[data-theme="brutalist"] .legend-color.schedule-highlight-instructor-free { background: rgba(255, 51, 0, 0.28); border-color: #FF3300; }
 
 /* ============================================================
    ORCHESTRION OVERRIDES
@@ -2221,23 +2285,29 @@ button[disabled] {
 
 /* ============================================================
    NAUTICAL TILE OVERRIDES
-   ============================================================ */
+   ============================================================
+   Nautical Tile is a light porcelain theme (--panel #FFFFFF,
+   page #E4EAF0). The azulejo palette needs enough opacity to
+   read against white; the highlight badge uses a dark navy
+   foreground consistent with the theme's dark-on-porcelain
+   text convention.
+ */
 
-[data-theme="nautical-tile"] .acad-group-color-0 { background: rgba(31, 74, 138, 0.15); border-left-color: #1F4A8A; }
-[data-theme="nautical-tile"] .acad-group-color-1 { background: rgba(122, 166, 208, 0.20); border-left-color: #7AA6D0; }
-[data-theme="nautical-tile"] .acad-group-color-2 { background: rgba(44, 107, 74, 0.15); border-left-color: #2C6B4A; }
-[data-theme="nautical-tile"] .acad-group-color-3 { background: rgba(166, 44, 44, 0.15); border-left-color: #A62C2C; }
-[data-theme="nautical-tile"] .acad-group-color-4 { background: rgba(59, 91, 130, 0.15); border-left-color: #3B5B82; }
-[data-theme="nautical-tile"] .acad-group-color-5 { background: rgba(196, 154, 69, 0.15); border-left-color: #C49A45; }
-[data-theme="nautical-tile"] .acad-group-color-6 { background: rgba(90, 122, 158, 0.15); border-left-color: #5A7A9E; }
-[data-theme="nautical-tile"] .acad-group-color-7 { background: rgba(13, 35, 66, 0.10); border-left-color: #0D2342; }
+[data-theme="nautical-tile"] .acad-group-color-0 { background: rgba(31, 74, 138, 0.32); border-left-color: #1F4A8A; }
+[data-theme="nautical-tile"] .acad-group-color-1 { background: rgba(122, 166, 208, 0.40); border-left-color: #7AA6D0; }
+[data-theme="nautical-tile"] .acad-group-color-2 { background: rgba(44, 107, 74, 0.32); border-left-color: #2C6B4A; }
+[data-theme="nautical-tile"] .acad-group-color-3 { background: rgba(166, 44, 44, 0.32); border-left-color: #A62C2C; }
+[data-theme="nautical-tile"] .acad-group-color-4 { background: rgba(59, 91, 130, 0.32); border-left-color: #3B5B82; }
+[data-theme="nautical-tile"] .acad-group-color-5 { background: rgba(196, 154, 69, 0.35); border-left-color: #C49A45; }
+[data-theme="nautical-tile"] .acad-group-color-6 { background: rgba(90, 122, 158, 0.30); border-left-color: #5A7A9E; }
+[data-theme="nautical-tile"] .acad-group-color-7 { background: rgba(13, 35, 66, 0.22); border-left-color: #0D2342; }
 
-[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-all-free { background: rgba(44, 107, 74, 0.15); box-shadow: inset 0 0 0 1px #2C6B4A; }
-[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.15); box-shadow: inset 0 0 0 1px #C49A45; }
+[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-all-free { background: rgba(44, 107, 74, 0.30); box-shadow: inset 0 0 0 1px #2C6B4A; }
+[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.32); box-shadow: inset 0 0 0 1px #C49A45; }
 [data-theme="nautical-tile"] .schedule-cell.schedule-highlight-weeks-1,
 [data-theme="nautical-tile"] .schedule-cell.schedule-highlight-weeks-2,
 [data-theme="nautical-tile"] .schedule-cell.schedule-highlight-weeks-3,
-[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(44, 107, 74, 0.15); }
+[data-theme="nautical-tile"] .schedule-cell.schedule-highlight-weeks-4 { background: rgba(44, 107, 74, 0.30); }
 [data-theme="nautical-tile"] .schedule-highlight-badge { background: #2C6B4A; color: #FFFFFF; }
-[data-theme="nautical-tile"] .legend-color.schedule-highlight-all-free { background: rgba(44, 107, 74, 0.15); border-color: #2C6B4A; }
-[data-theme="nautical-tile"] .legend-color.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.15); border-color: #C49A45; }
+[data-theme="nautical-tile"] .legend-color.schedule-highlight-all-free { background: rgba(44, 107, 74, 0.30); border-color: #2C6B4A; }
+[data-theme="nautical-tile"] .legend-color.schedule-highlight-instructor-free { background: rgba(196, 154, 69, 0.32); border-color: #C49A45; }
