@@ -6,6 +6,49 @@
     <title>Hollow Manager 2</title>
     <link rel="icon" href="data:," />
 
+    <!-- ============================================================
+         DEV TOOLS — Eruda in-page console.
+         Loads before everything else so it captures all errors,
+         console output, and network activity from first paint.
+         REMOVE BEFORE SHIPPING.
+         ============================================================ -->
+    <script src="https://cdn.jsdelivr.net/npm/eruda@3"></script>
+    <script>
+        (function() {
+            if (window.eruda) {
+                try { window.eruda.init(); } catch (e) {}
+            } else {
+                // CDN blocked — fall back to a visible banner so we
+                // still see errors instead of silently losing them.
+                window.addEventListener('error', function(ev) {
+                    var el = document.getElementById('__dev_err');
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = '__dev_err';
+                        el.style.cssText = 'position:fixed;bottom:0;left:0;' +
+                            'right:0;max-height:40vh;overflow:auto;' +
+                            'z-index:99999;background:#300;color:#fdd;' +
+                            'font:12px monospace;padding:8px;' +
+                            'white-space:pre-wrap;border-top:2px solid #f55;';
+                        el.addEventListener('click', function() { el.remove(); });
+                        document.body.appendChild(el);
+                    }
+                    el.textContent += '[error] ' + (ev.message || ev.error) +
+                        (ev.filename ? '\n  @ ' + ev.filename + ':' + ev.lineno : '') +
+                        '\n';
+                });
+                window.addEventListener('unhandledrejection', function(ev) {
+                    var el = document.getElementById('__dev_err');
+                    if (el) {
+                        el.textContent += '[promise] ' +
+                            ((ev.reason && ev.reason.message) || ev.reason) + '\n';
+                    }
+                });
+                console.warn('[dev] Eruda failed to load; using error banner fallback.');
+            }
+        })();
+    </script>
+
     <link rel="stylesheet" href="css/shared.css" />
     <link rel="stylesheet" href="css/dashboard.css" />
     <link rel="stylesheet" href="css/characters.css" />
