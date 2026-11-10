@@ -16,6 +16,31 @@
  *   Option 2 (chosen) collapses them into one implementation plus
  *   two thin adapters.
  *
+ * MULTIPLE STINTS PER MEMBER:
+ *   A character may hold SEVERAL SEPARATE STINTS on the same team
+ *   (e.g. 1901-1905, then returning 1910-present). The data model
+ *   supports this: a member entry's `intervals` is an array, and
+ *   TeamCore.addMember appends a new interval onto an existing
+ *   entry when the characterId matches.
+ *
+ *   To make the second stint reachable through the UI, the
+ *   aggregator no longer excludes current members from the
+ *   candidate list. They arrive tagged `alreadyOnTeam: true`, are
+ *   sorted to the top, and are labelled here as
+ *   "— already on team (add stint)". Selecting one and pressing
+ *   Add calls adapter.addMember, which calls
+ *   TeamCore.addMemberInterval, which APPENDS the new interval to
+ *   the existing member entry.
+ *
+ *   Overlap with the member's existing intervals is rejected by
+ *   TeamCore's validation and surfaced as a notification. The
+ *   1901-1905 / 1910-present case does not overlap, so it is
+ *   accepted.
+ *
+ *   The Rejoin button remains for the DIFFERENT operation of
+ *   clearing an existing stint's leave (reopening it). That is not
+ *   how you create a second stint — Add is.
+ *
  * CONFIG SHAPE:
  *   MemberManager.open(container, config)
  *
@@ -38,7 +63,8 @@
  *           period,
  *           members:       [ MemberVM ],
  *           formerMembers: [ MemberVM ],
- *           candidates:    [ { id, name, status, deceased } ]
+ *           candidates:    [ { id, name, status, deceased,
+ *                              alreadyOnTeam? } ]
  *         }
  *
  *     addMember(teamId, period, { charId, role, join, leave })
@@ -77,8 +103,11 @@
  *   The manager renders ONE ROW PER INTERVAL.
  *
  * INTERACTION MODEL:
- *   - Add Member row at the top: select, role, join, leave, Add.
- *     Add commits immediately.
+ *   - Add row at the top: select, role, join, leave, Add.
+ *     Add commits immediately. When the selected candidate is
+ *     already on the team (alreadyOnTeam), Add appends a NEW
+ *     STINT to that member rather than creating a second member
+ *     entry.
  *   - Each stint row: [Name (role)] [Join: X] [Leave: Y] [Rejoin?] [✕]
  *   - Join and Leave are click-to-edit. Span → input on click.
  *     Enter or blur commits to the dirty set. Escape cancels.
@@ -86,7 +115,8 @@
  *     role. Editing any row's role input updates all rows for that
  *     member. Committed to the dirty set on Save.
  *   - Rejoin (former rows only): clears the leave. Commits
- *     immediately. No confirm.
+ *     immediately. No confirm. This REOPENS an existing stint; it
+ *     does NOT create a second stint.
  *   - ✕: removes the stint. If it is the member's last stint, the
  *     member entry is pruned. Commits immediately. Confirms first
  *     when it will prune the whole member.
@@ -334,8 +364,20 @@
         }
 
         // --------------------------------------------------------
-        // Add member row
+        // Add row
         // --------------------------------------------------------
+        //
+        // The Add row serves two purposes:
+        //
+        //   1. Add a NEW member (candidate is not on the team).
+        //   2. Add a NEW STINT to an EXISTING member (candidate is
+        //      already on the team). The aggregator tags these
+        //      candidates alreadyOnTeam and sorts them first.
+        //
+        // The label on already-on-team options makes the intent
+        // explicit so the user does not think they are creating a
+        // duplicate member. The button reads "Add" rather than
+        // "Add Member" so it fits both cases.
 
         function renderAddRow(vm) {
             var candidates = Array.isArray(vm.candidates)
@@ -356,6 +398,9 @@
                 if (c.deceased === true) {
                     label += ' \u2020';
                 }
+                if (c.alreadyOnTeam === true) {
+                    label += ' \u2014 already on team (add stint)';
+                }
                 html += '<option value="' + escapeAttr(c.id) + '">' +
                             escapeHtml(label) +
                         '</option>';
@@ -370,7 +415,7 @@
                         'placeholder="Leave" min="' + MIN_PERIOD + '">';
             html += '<button type="button" ' +
                         'class="small primary member-form-add" ' +
-                        'data-action="mm-add">Add Member</button>';
+                        'data-action="mm-add">Add</button>';
 
             html += '</div>';
             return html;
@@ -949,6 +994,14 @@
                 return;
             }
 
+            // The adapter routes both cases:
+            //   - candidate not on team  → create new member entry
+            //   - candidate already on team → append interval to
+            //     the existing entry (a SECOND, SEPARATE STINT)
+            //
+            // TeamCore.addMember performs the append when the
+            // characterId matches; it rejects an overlapping
+            // interval. The message surfaces to the user.
             adapter.addMember(teamId, period, {
                 charId: charId,
                 role: role,
