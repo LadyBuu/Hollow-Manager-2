@@ -25,6 +25,30 @@
  *   which reads member.statusLabel for display; the aggregator is
  *   the single source of that label.
  *
+ * MEMBER MODAL — CANDIDATE LIST (multiple stints):
+ *   A character may hold SEVERAL SEPARATE STINTS on the same team
+ *   (e.g. 1901-1905, then returning 1910-present). The data model
+ *   supports this: a member entry's `intervals` is an array, and
+ *   TeamCore.addMember appends to an existing entry's intervals
+ *   when the characterId matches.
+ *
+ *   Before this ship, getMemberModalViewModel EXCLUDED current
+ *   members from the candidate list. That made the second stint
+ *   impossible to create through the manager: a current member
+ *   could not be selected from the Add row, and the only remaining
+ *   action (Rejoin) reopens the existing stint rather than
+ *   creating a new one.
+ *
+ *   Current members are now INCLUDED as candidates, tagged with
+ *   `alreadyOnTeam: true`, and sorted to a new top tier so a user
+ *   who wants to add a stint finds the member immediately. The
+ *   manager labels them ("— already on team (add stint)") and the
+ *   adapter's addMember routes them through
+ *   TeamCore.addMemberInterval, which appends a new interval to
+ *   the existing member entry. Overlap with the member's existing
+ *   intervals is rejected by TeamCore's validation, which is the
+ *   correct constraint.
+ *
  * (rest of header unchanged from the Pass 2 / Show Inactive ship;
  * dependencies, helpers, and every other VM builder preserved.)
  *
@@ -680,6 +704,14 @@
     // read a field the aggregator never set, so the label was
     // always empty. Same data as .status, exposed under the name
     // the adapter contracts for.
+    //
+    // ALL intervals are emitted, not just the active one. A member
+    // with several separate stints (1901-1905, 1910-present) gets
+    // every stint in the intervals array, each tagged with its own
+    // activeAtPeriod. The aggregate activeAtPeriod on the member
+    // is true when ANY stint is active. team-render.js's expanded
+    // view renders every interval so a re-joined member's earlier
+    // stints remain visible.
 
     function buildMemberVM(member, periodNum) {
         if (!member || typeof member !== 'object') { return null; }
@@ -1240,6 +1272,21 @@
     // ============================================================
     // MEMBER MODAL VM
     // ============================================================
+    //
+    // CHANGED: current members are no longer excluded from the
+    // candidate list. They are included with `alreadyOnTeam: true`
+    // so the member manager can route them into
+    // TeamCore.addMemberInterval, which APPENDS a new interval to
+    // the existing member entry. This is how a character gets a
+    // SECOND, SEPARATE STINT (e.g. 1901-1905, then 1910-present).
+    //
+    // TeamCore.addMember rejects a new interval that overlaps any
+    // of the member's existing intervals; that constraint is
+    // correct and is relied on here. The manager catches the
+    // rejection and shows it.
+    //
+    // Candidates are sorted so already-members come FIRST. A user
+    // adding a stint finds the character immediately.
 
     function getMemberModalViewModel(teamId, period) {
         if (!isNonEmptyString(teamId)) { return null; }
@@ -1334,7 +1381,10 @@
 
             var charId = String(char.id);
 
-            if (currentIds[charId]) { continue; }
+            // NOTE: current members are NOT skipped. They are
+            // tagged alreadyOnTeam so the manager can add a NEW
+            // STINT to them. See the block comment above.
+            var alreadyOnTeam = currentIds[charId] === true;
 
             if (CharacterQueries.isInstructor(char) !== true) {
                 var isCivilian = false;
@@ -1371,12 +1421,20 @@
                 status: CharacterQueries.getCurrentStatus(char),
                 deceased: char.deceased === true,
                 inClass: inClassSet[charId] === true,
-                onAnotherTeam:
-                    onAnotherTeamSet[charId] === true
+                alreadyOnTeam: alreadyOnTeam,
+                onAnotherTeam: alreadyOnTeam
+                    ? false
+                    : onAnotherTeamSet[charId] === true
             });
         }
 
         candidates.sort(function(a, b) {
+            // Already-on-team members sort FIRST so a user
+            // adding a stint finds the character immediately.
+            // The remaining tiers keep their previous ordering.
+            if (a.alreadyOnTeam !== b.alreadyOnTeam) {
+                return a.alreadyOnTeam ? -1 : 1;
+            }
             var tierA = candidateTier(a);
             var tierB = candidateTier(b);
             if (tierA !== tierB) { return tierA - tierB; }
@@ -1394,10 +1452,14 @@
     }
 
     function candidateTier(candidate) {
+        // alreadyOnTeam is handled separately in the sort (it
+        // sorts ahead of every tier), so this function only
+        // ranks NON-members. inClass members come first, then
+        // others; onAnotherTeam nudges a candidate down.
         if (candidate.inClass) {
-            return candidate.onAnotherTeam ? 1 : 0;
+            return candidate.onAnotherTeam ? 2 : 1;
         }
-        return candidate.onAnotherTeam ? 3 : 2;
+        return candidate.onAnotherTeam ? 4 : 3;
     }
 
     function getRankingModalViewModel(teamId) {
