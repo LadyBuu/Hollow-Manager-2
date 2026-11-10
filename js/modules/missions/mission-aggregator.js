@@ -82,11 +82,24 @@
  *             {
  *               characterId,
  *               displayName,
+ *               role,
  *               deceased,
  *               isParticipant   // true when this (char, team)
  *                               // is already a participant
  *             }
- *           ]
+ *           ],
+ *           missing,          // true when the team id does not
+ *                             // resolve to a team record
+ *           fallback,         // true when the members shown are
+ *                             // the team's CURRENT members
+ *                             // because none were active at the
+ *                             // mission's year
+ *           lookupYear,       // the year members were read at.
+ *                             // Equals missionYear normally,
+ *                             // equals the application year when
+ *                             // fallback fired
+ *           diagnostic        // plain-English explanation when
+ *                             // the member list is empty
  *         }
  *       ],
  *       currentParticipants: [ // all current participant entries
@@ -99,13 +112,43 @@
  *           sourceLabel,        // human label
  *           deceased
  *         }
+ *       ],
+ *       diagnostics: [        // one entry per team that produced
+ *         {                   // zero members; useful for
+ *           teamId,           // debugging empty panels
+ *           teamName,
+ *           reason,           // 'missing-team' | 'empty-members'
+ *           diagnostic
+ *         }
  *       ]
  *     }
  *
- *   The panel renders `assignedTeams` as one section per team, with
- *   a checkbox per member. The checkbox is checked when
- *   isParticipant is true. Below that, the rookie section is
- *   rendered from getRookieCandidatesViewModel.
+ *   WHY THE FALLBACK EXISTS:
+ *   A mission's `year` is a fact about the mission (e.g. 1926).
+ *   A team's active window is a fact about the team (e.g. 1930-
+ *   present). When the mission year falls OUTSIDE the team's
+ *   window, the team had no members active then by definition.
+ *   The strict read (getActiveTeamMembers at missionYear) returns
+ *   [], which produces an empty participant panel with no visible
+ *   explanation — the user sees an empty section and cannot pick
+ *   anyone.
+ *
+ *   The fallback does two things:
+ *
+ *     1. It produces a `diagnostic` string explaining the empty
+ *        state (window mismatch, no member records, no members
+ *        active that year).
+ *
+ *     2. When the mission year is not the application year AND
+ *        the team has member records, it reads the team's
+ *        CURRENT membership and shows that instead, marking the
+ *        row with fallback: true and lookupYear: <currentYear>
+ *        so the renderer can add a hint.
+ *
+ *   The fallback is a UX concession, not a domain rule: the
+ *   participant records produced still go through the same
+ *   MissionCore.addParticipant path, and the schema-level
+ *   coherence rules are unchanged.
  *
  * ROOKIE CANDIDATES VM:
  *   getRookieCandidatesViewModel(missionId) builds the list for
@@ -113,6 +156,8 @@
  *
  *     {
  *       missionId,
+ *       missionTitle,
+ *       missionYear,
  *       candidates: [         // sorted alphabetically by name
  *         {
  *           characterId,
@@ -1342,6 +1387,29 @@
     // else the application year. Using the mission's year (not the
     // application year) is deliberate: a mission in 1930 should
     // list the team's 1930 membership, not the 2026 membership.
+    //
+    // FALLBACK AND DIAGNOSTICS:
+    //   When a team's members at the mission year come back empty,
+    //   we distinguish three cases:
+    //
+    //     - the mission year is outside the team's active window,
+    //     - the team has no member records,
+    //     - the team has records but nobody active that year.
+    //
+    //   Each case produces a `diagnostic` string on the team row,
+    //   and the first two trigger a FALLBACK: when the mission year
+    //   is not the application year AND the team has records, we
+    //   read the team's current membership instead and mark the
+    //   row with fallback: true and lookupYear: <applicationYear>.
+    //   This makes the panel usable when the mission is set to a
+    //   year the team did not yet exist in; the user can still
+    //   pick from a populated list, and the renderer can show a
+    //   hint that the roster shown is current, not the mission-
+    //   year roster.
+    //
+    //   The full diagnostics array is also returned so any caller
+    //   that wants to inspect (or log) why a panel came up empty
+    //   has the data without re-deriving it.
 
     function getParticipantsViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -1354,10 +1422,12 @@
         }
 
         var missionYear = resolveMissionYear(mission);
+        var applicationYear = getApplicationYearOrNull();
         var assignedTeamIds =
             MissionQueries.getTeamIdsForMission(mission);
 
         var assignedTeamsVM = [];
+        var diagnostics = [];
 
         for (var t = 0; t < assignedTeamIds.length; t++) {
             var teamId = assignedTeamIds[t];
@@ -1368,50 +1438,143 @@
                 team = null;
             }
 
-            var teamName = team && isNonEmptyString(team.name)
+            if (!team) {
+                assignedTeamsVM.push({
+                    teamId: teamId,
+                    teamName: 'Unknown Team',
+                    members: [],
+                    missing: true,
+                    fallback: false,
+                    lookupYear: missionYear,
+                    diagnostic:
+                        'Team id "' + teamId +
+                        '" does not resolve to a team record.'
+                });
+                diagnostics.push({
+                    teamId: teamId,
+                    teamName: 'Unknown Team',
+                    reason: 'missing-team',
+                    diagnostic:
+                        'Team id "' + teamId +
+                        '" does not resolve to a team record.'
+                });
+                continue;
+            }
+
+            var teamName = isNonEmptyString(team.name)
                 ? team.name
                 : 'Unknown Team';
 
-            var members = [];
-            if (team) {
-                var activeMembers = [];
+            // ---- Read the team's members at the mission year ----
+            var activeMembers = [];
+            try {
+                activeMembers = TeamQueries.getActiveTeamMembers(
+                    team, missionYear
+                ) || [];
+            } catch (e) {
+                activeMembers = [];
+            }
+
+            var lookupYear = missionYear;
+            var fallback = false;
+            var diagnostic = '';
+
+            if (activeMembers.length === 0) {
+                var teamWindowOK = false;
                 try {
-                    activeMembers = TeamQueries.getActiveTeamMembers(
+                    teamWindowOK = TeamQueries.teamWindowContains(
                         team, missionYear
-                    ) || [];
+                    );
                 } catch (e) {
-                    activeMembers = [];
+                    teamWindowOK = false;
                 }
 
-                for (var m = 0; m < activeMembers.length; m++) {
-                    var member = activeMembers[m];
-                    if (!member || !member.characterId) { continue; }
+                var hasAnyMembers =
+                    Array.isArray(team.members) &&
+                    team.members.length > 0;
 
-                    var charId = String(member.characterId);
-                    var charRef = resolveCharacterRef(charId);
+                if (!teamWindowOK) {
+                    diagnostic =
+                        'Mission year ' + missionYear +
+                        ' is outside team "' + teamName +
+                        '" active window (' +
+                        (team.startPeriod || '?') + '\u2013' +
+                        (team.endPeriod || 'present') + ').';
+                } else if (!hasAnyMembers) {
+                    diagnostic =
+                        'Team "' + teamName +
+                        '" has no member records.';
+                } else {
+                    diagnostic =
+                        'Team "' + teamName +
+                        '" has no members active in ' +
+                        missionYear + '.';
+                }
 
-                    var deceased = false;
-                    if (charRef && charRef.id) {
-                        var charRecord =
-                            CharacterQueries.getCharacterById(charId);
-                        deceased = charRecord &&
-                            charRecord.deceased === true;
+                // ---- Fallback to current membership ----
+                //
+                // Only applies when the mission year is not the
+                // application year AND the team has at least one
+                // member record. Reading the current roster gives
+                // the user something to pick from; the renderer
+                // marks the row so it is clear this is not the
+                // mission-year roster.
+                if (applicationYear !== null &&
+                    applicationYear !== missionYear &&
+                    hasAnyMembers) {
+
+                    var fallbackMembers = [];
+                    try {
+                        fallbackMembers =
+                            TeamQueries.getActiveTeamMembers(
+                                team, applicationYear
+                            ) || [];
+                    } catch (e) {
+                        fallbackMembers = [];
                     }
 
-                    var isParticipant =
-                        MissionQueries.isParticipantInMission(
-                            mission, charId, teamId
-                        );
-
-                    members.push({
-                        characterId: charId,
-                        displayName: charRef ? charRef.name : 'Unknown',
-                        role: isNonEmptyString(member.role)
-                            ? member.role : 'Member',
-                        deceased: deceased,
-                        isParticipant: isParticipant
-                    });
+                    if (fallbackMembers.length > 0) {
+                        activeMembers = fallbackMembers;
+                        lookupYear = applicationYear;
+                        fallback = true;
+                        diagnostic +=
+                            ' Showing current members (' +
+                            applicationYear + ') instead.';
+                    }
                 }
+            }
+
+            // ---- Build member rows ----
+            var members = [];
+            for (var m = 0; m < activeMembers.length; m++) {
+                var member = activeMembers[m];
+                if (!member || !member.characterId) { continue; }
+
+                var charId = String(member.characterId);
+                var charRef = resolveCharacterRef(charId);
+
+                var deceased = false;
+                if (charRef && charRef.id) {
+                    var charRecord =
+                        CharacterQueries.getCharacterById(charId);
+                    deceased = charRecord &&
+                        charRecord.deceased === true;
+                }
+
+                var isParticipant =
+                    MissionQueries.isParticipantInMission(
+                        mission, charId, teamId
+                    );
+
+                members.push({
+                    characterId: charId,
+                    displayName: charRef ? charRef.name : 'Unknown',
+                    role: isNonEmptyString(member.role)
+                        ? member.role
+                        : 'Member',
+                    deceased: deceased,
+                    isParticipant: isParticipant
+                });
             }
 
             members.sort(function(a, b) {
@@ -1422,8 +1585,21 @@
             assignedTeamsVM.push({
                 teamId: teamId,
                 teamName: teamName,
-                members: members
+                members: members,
+                missing: false,
+                fallback: fallback,
+                lookupYear: lookupYear,
+                diagnostic: diagnostic
             });
+
+            if (members.length === 0) {
+                diagnostics.push({
+                    teamId: teamId,
+                    teamName: teamName,
+                    reason: 'empty-members',
+                    diagnostic: diagnostic
+                });
+            }
         }
 
         // Current participant entries, resolved to display shape.
@@ -1458,7 +1634,8 @@
                 : 'Mission',
             missionYear: missionYear,
             assignedTeams: assignedTeamsVM,
-            currentParticipants: filteredParticipants
+            currentParticipants: filteredParticipants,
+            diagnostics: diagnostics
         };
     }
 
@@ -1483,6 +1660,14 @@
     // The UI decides how to render each combination. The aggregator
     // does not filter candidates out; filtering is a presentation
     // choice and belongs to the renderer.
+    //
+    // The "already on assigned team" test uses the same
+    // team-membership read the participant panel uses, so a
+    // candidate who was active at the mission year is marked
+    // correctly. It does NOT use the participant panel's current-
+    // membership fallback: whether a rookie is already on an
+    // assigned team is a fact about the mission year, not about
+    // the present day.
 
     function getRookieCandidatesViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
