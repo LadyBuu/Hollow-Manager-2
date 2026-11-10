@@ -151,6 +151,32 @@
  *   checks are no-ops and the existing 'inactive' treatment
  *   remains the only status signal.
  *
+ * EXPANDED MEMBERS — MULTI-STINT DISPLAY:
+ *   A member may have multiple stints on the same team (e.g.
+ *   1901-1905, then returning 1910-present). The aggregator's
+ *   buildMemberVM emits EVERY interval on the member, tagged with
+ *   a per-interval `activeAtPeriod` boolean, plus an aggregate
+ *   `activeAtPeriod` on the member as a whole.
+ *
+ *   The expanded-member view must not filter to the interval that
+ *   contains the current period — that hides a re-joined member's
+ *   earlier stints, which is exactly the bug this revision fixes.
+ *   Instead:
+ *
+ *     - A member is SHOWN when they have at least one active
+ *       stint (the aggregate flag or any per-interval flag).
+ *       Members with no active stint belong in the "Former
+ *       Members" section, which is the member manager's job,
+ *       not this view's.
+ *
+ *     - A shown member renders ALL of their intervals, with the
+ *       active interval(s) marked. The earlier, closed stints
+ *       remain visible so the user can see the full history.
+ *
+ *   This makes a 1901-1905 / 1910-present member render as two
+ *   rows under the same member header, with the 1910-present row
+ *   marked active.
+ *
  * DEPENDENCIES:
  *   - window.DomUtils
  *   - window.TeamConstants
@@ -1066,6 +1092,40 @@
     // ============================================================
     // EXPANDED MEMBERS
     // ============================================================
+    //
+    // A member may carry MULTIPLE stints. The aggregator emits
+    // every interval on each member, with a per-interval
+    // `activeAtPeriod` boolean and an aggregate one on the
+    // member as a whole.
+    //
+    // A member is shown here when ANY of their stints is active
+    // at the viewed period. Members whose stints are ALL closed
+    // are "former" members and belong in the member manager's
+    // Former section, not here — that split is the manager's
+    // job, not this view's.
+    //
+    // A shown member renders EVERY stint, not just the active
+    // one. That is the fix for the reported bug: a member with
+    // 1901-1905 then 1910-present must render BOTH rows so the
+    // earlier stint does not silently disappear once they
+    // rejoin. The 1910-present row is marked active; the
+    // 1901-1905 row is shown as historical context.
+    //
+    // If a member has active stints at the viewed period we
+    // render them; the active stint(s) carry the `active` class.
+
+    function memberHasActiveStint(member) {
+        if (!member || typeof member !== 'object') { return false; }
+        if (member.activeAtPeriod === true) { return true; }
+        if (!Array.isArray(member.intervals)) { return false; }
+        for (var i = 0; i < member.intervals.length; i++) {
+            var iv = member.intervals[i];
+            if (iv && iv.activeAtPeriod === true) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     function renderExpandedMembers(membersVM) {
         if (!membersVM) { return ''; }
@@ -1076,11 +1136,16 @@
             ? membersVM.members
             : [];
 
-        var activeMembers = [];
+        // Members with any active stint at the viewed period.
+        // Former members (no active stint) are intentionally not
+        // rendered here; they belong in the member manager's
+        // Former section.
+        var shownMembers = [];
         for (var i = 0; i < allMembers.length; i++) {
             var m = allMembers[i];
-            if (m && m.activeAtPeriod === true) {
-                activeMembers.push(m);
+            if (!m) { continue; }
+            if (memberHasActiveStint(m)) {
+                shownMembers.push(m);
             }
         }
 
@@ -1093,7 +1158,7 @@
             html += renderDescriptiveFields(membersVM.team);
         }
 
-        if (activeMembers.length === 0) {
+        if (shownMembers.length === 0) {
             html += '<div class="member-entry empty">' +
                         'No active members this ' +
                         escapeHtml(periodLabel.toLowerCase()) +
@@ -1108,8 +1173,8 @@
                     ' ' + safeString(period) +
                 ':</div>';
 
-        for (var j = 0; j < activeMembers.length; j++) {
-            html += renderExpandedMember(activeMembers[j]);
+        for (var j = 0; j < shownMembers.length; j++) {
+            html += renderExpandedMember(shownMembers[j]);
         }
 
         html += '</div>';
@@ -1145,6 +1210,12 @@
         }
         html += '</div>';
 
+        // ---- Every stint, not just the active one. ----
+        //
+        // This is what makes a re-joined member's earlier stints
+        // visible. Each row carries its own `active` class when
+        // the stint contains the viewed period, so the user sees
+        // the full history with the current stint highlighted.
         var intervals = Array.isArray(member.intervals)
             ? member.intervals
             : [];
@@ -1163,6 +1234,8 @@
                 var rowClass = 'member-entry-interval';
                 if (iv.activeAtPeriod === true) {
                     rowClass += ' active';
+                } else {
+                    rowClass += ' historical';
                 }
 
                 html += '<div class="' + rowClass + '" ' +
@@ -1176,6 +1249,16 @@
                                 formatFallbackInterval(iv)
                             ) +
                         '</span>';
+                if (iv.activeAtPeriod === true) {
+                    html += '<span class="member-entry-interval-badge">' +
+                                'Current' +
+                            '</span>';
+                } else {
+                    html += '<span class="member-entry-interval-badge ' +
+                                'member-entry-interval-badge-historical">' +
+                                'Previous' +
+                            '</span>';
+                }
                 html += '</div>';
             }
         }
