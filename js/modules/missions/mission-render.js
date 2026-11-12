@@ -64,6 +64,20 @@
  *   form), so changing the year refreshes the hint on the next
  *   in-place rebuild.
  *
+ * TEAM MEMBER CHECKBOX LAYOUT (this revision):
+ *   The old markup rendered the checkbox and its sibling name/role
+ *   spans as inline elements inside a block-level <li>. Browsers
+ *   rendered the checkbox at the left edge of the row and the text
+ *   collapsed to zero width because the <label> was not a flex
+ *   container. The user saw a floating radio button with no text.
+ *
+ *   The markup now emits inline flex styles on the <li>, the
+ *   <label>, and the name <span>, so the checkbox sits at the
+ *   left, the name takes the remaining width, and the role and
+ *   deceased markers trail after. The styles are inline because
+ *   missions.css is not the contract this module relies on; the
+ *   panel must render correctly even if the stylesheet is stale.
+ *
  * TEAM EDITOR — SPECIALISATION-AWARE PICKER:
  *   The team <select> on the mission form carries richer labels
  *   and a smarter sort order:
@@ -92,6 +106,14 @@
  *   Already-assigned teams are still filtered out of the
  *   pickable list. The sort applies only to the pickable
  *   remainder.
+ *
+ * FORM ACTION BAR (this revision):
+ *   The form's abandon-edit button is labelled "Discard Changes"
+ *   rather than "Cancel" so it cannot be confused with the detail
+ *   panel's "Cancel Mission" (which transitions the mission's
+ *   status to cancelled). The data-action is unchanged
+ *   (mission-close-form); the confirm-on-discard behaviour lives
+ *   in mission-ui.js.
  *
  * ACTIVITY LOG HAS BEEN REMOVED:
  *   The mission detail panel used to render an ACTIVITY LOG
@@ -1513,10 +1535,17 @@
         html += '</div>'; // form-grid
 
         // ---- Actions ----
+        //
+        // "Discard Changes" is the abandon-edit button. It closes
+        // the form without writing. It is deliberately NOT labelled
+        // "Cancel" because the detail panel already has a
+        // "Cancel Mission" button (which transitions the mission's
+        // status to cancelled). The controller owns the confirm
+        // prompt when the form is dirty.
         html += '<div class="form-actions">';
         html += '<button type="button" class="secondary" ' +
                     'data-action="mission-close-form">' +
-                    'Cancel' +
+                    'Discard Changes' +
                 '</button>';
         html += '<button type="submit" class="primary">' +
                     (isEdit ? 'Update Mission' : 'Create Mission') +
@@ -1880,7 +1909,9 @@
             return html;
         }
 
-        html += '<ul class="participant-member-list">';
+        html += '<ul class="participant-member-list" ' +
+                    'style="list-style:none;margin:0;padding:0;' +
+                    'display:flex;flex-direction:column;gap:4px;">';
 
         for (var i = 0; i < members.length; i++) {
             html += renderTeamMemberCheckbox(
@@ -1893,6 +1924,23 @@
         return html;
     }
 
+    /**
+     * Render a single team-member row.
+     *
+     * LAYOUT:
+     *   The <li> is a flex row. The <label> inside it is also a
+     *   flex row that fills the whole width. The checkbox sits at
+     *   the left; the name takes the remaining width; the role
+     *   and deceased markers trail after. Without this, the
+     *   browser renders the checkbox at the left edge and the
+     *   name collapses to zero width on a block-level <li> — the
+     *   user sees a floating radio button with no text.
+     *
+     *   The flex styles are inline rather than class-based
+     *   because missions.css is not the contract this module
+     *   relies on; the panel must render correctly even if the
+     *   stylesheet is stale.
+     */
     function renderTeamMemberCheckbox(vm, teamId, member) {
         if (!member || !member.characterId) { return ''; }
 
@@ -1907,9 +1955,15 @@
             : '';
 
         var html = '';
-        html += '<li class="participant-member-row">';
+        html += '<li class="participant-member-row" ' +
+                    'style="display:flex;align-items:center;' +
+                    'margin:0;padding:0;">';
 
-        html += '<label class="participant-member-label">';
+        html += '<label class="participant-member-label" ' +
+                    'style="display:flex;align-items:center;' +
+                    'gap:8px;width:100%;cursor:pointer;' +
+                    'padding:4px 6px;border-radius:4px;">';
+
         html += '<input type="checkbox" ' +
                     'class="participant-member-checkbox" ' +
                     'data-action="mission-toggle-participant" ' +
@@ -1922,19 +1976,27 @@
                     'data-source="team"' +
                     (checked ? ' checked' : '') + '>';
 
-        html += '<span class="participant-member-name">' +
+        html += '<span class="participant-member-name" ' +
+                    'style="flex:1 1 auto;min-width:0;' +
+                    'overflow:hidden;text-overflow:ellipsis;' +
+                    'white-space:nowrap;">' +
                     escapeHtml(member.displayName || 'Unknown') +
                 '</span>';
 
         if (isNonEmptyString(member.role)) {
-            html += '<span class="participant-member-role">(' +
+            html += '<span class="participant-member-role" ' +
+                        'style="flex:0 0 auto;color:var(--text-dim);' +
+                        'font-size:0.75rem;">(' +
                         escapeHtml(member.role) +
                     ')</span>';
         }
 
         if (member.deceased === true) {
             html += '<span class="participant-member-deceased" ' +
-                        'title="Deceased">\u2020</span>';
+                        'title="Deceased" ' +
+                        'style="flex:0 0 auto;color:var(--text-dim);">' +
+                        '\u2020' +
+                    '</span>';
         }
 
         html += '</label>';
