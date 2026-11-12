@@ -21,6 +21,13 @@
  *   - Building the participant VM (getParticipantsViewModel) and
  *     the rookie-candidate VM (getRookieCandidatesViewModel) used
  *     by the mission form's participant panel.
+ *   - Building a FORM-SCOPED participant VM
+ *     (getParticipantsViewModelFromFormState) that reads team ids,
+ *     mission year, and staged participants from the CALLER's
+ *     live form state rather than from the stored mission record.
+ *     This is what the form uses on CREATE (where there is no
+ *     stored mission yet) and after every team-chip or year-field
+ *     edit on EDIT (where the stored record is stale until save).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Reads, mutations, structural validation, domain rules, or
@@ -66,9 +73,10 @@
  *   teams at the current application year. Filler characters are
  *   excluded from both lists. Deceased characters are marked.
  *
- * PARTICIPANTS VM:
+ * PARTICIPANTS VM (stored-record source):
  *   getParticipantsViewModel(missionId) builds the data the
- *   mission form's participant panel needs. Shape:
+ *   mission form's participant panel needs, reading team ids and
+ *   the mission year from the STORED mission record. Shape:
  *
  *     {
  *       missionId,
@@ -82,24 +90,11 @@
  *             {
  *               characterId,
  *               displayName,
- *               role,
  *               deceased,
  *               isParticipant   // true when this (char, team)
  *                               // is already a participant
  *             }
- *           ],
- *           missing,          // true when the team id does not
- *                             // resolve to a team record
- *           fallback,         // true when the members shown are
- *                             // the team's CURRENT members
- *                             // because none were active at the
- *                             // mission's year
- *           lookupYear,       // the year members were read at.
- *                             // Equals missionYear normally,
- *                             // equals the application year when
- *                             // fallback fired
- *           diagnostic        // plain-English explanation when
- *                             // the member list is empty
+ *           ]
  *         }
  *       ],
  *       currentParticipants: [ // all current participant entries
@@ -112,43 +107,33 @@
  *           sourceLabel,        // human label
  *           deceased
  *         }
- *       ],
- *       diagnostics: [        // one entry per team that produced
- *         {                   // zero members; useful for
- *           teamId,           // debugging empty panels
- *           teamName,
- *           reason,           // 'missing-team' | 'empty-members'
- *           diagnostic
- *         }
  *       ]
  *     }
  *
- *   WHY THE FALLBACK EXISTS:
- *   A mission's `year` is a fact about the mission (e.g. 1926).
- *   A team's active window is a fact about the team (e.g. 1930-
- *   present). When the mission year falls OUTSIDE the team's
- *   window, the team had no members active then by definition.
- *   The strict read (getActiveTeamMembers at missionYear) returns
- *   [], which produces an empty participant panel with no visible
- *   explanation — the user sees an empty section and cannot pick
- *   anyone.
+ * PARTICIPANTS VM (form-state source):
+ *   getParticipantsViewModelFromFormState(options) builds the
+ *   SAME shape, but every input comes from `options`:
  *
- *   The fallback does two things:
+ *     options = {
+ *       missionId:        string | null,   // null on create
+ *       missionTitle:     string,
+ *       year:             number | string | null,
+ *       month:            number | string | null,   // reserved
+ *       day:              number | string | null,   // reserved
+ *       assignedTeamIds:  [ string ],
+ *       participants:     [ { characterId, teamId, source } ]
+ *     }
  *
- *     1. It produces a `diagnostic` string explaining the empty
- *        state (window mismatch, no member records, no members
- *        active that year).
+ *   Use this:
+ *     - on the CREATE form, where no mission exists yet and the
+ *       participant panel must still populate as soon as a team
+ *       chip is added;
+ *     - on the EDIT form, whenever the team chips or the year
+ *       field change, so the panel reflects the CURRENT form
+ *       state instead of the stale stored record.
  *
- *     2. When the mission year is not the application year AND
- *        the team has member records, it reads the team's
- *        CURRENT membership and shows that instead, marking the
- *        row with fallback: true and lookupYear: <currentYear>
- *        so the renderer can add a hint.
- *
- *   The fallback is a UX concession, not a domain rule: the
- *   participant records produced still go through the same
- *   MissionCore.addParticipant path, and the schema-level
- *   coherence rules are unchanged.
+ *   The two builders share the same assembly code
+ *   (assembleParticipantsVM). Only the input resolution differs.
  *
  * ROOKIE CANDIDATES VM:
  *   getRookieCandidatesViewModel(missionId) builds the list for
@@ -156,8 +141,6 @@
  *
  *     {
  *       missionId,
- *       missionTitle,
- *       missionYear,
  *       candidates: [         // sorted alphabetically by name
  *         {
  *           characterId,
@@ -372,6 +355,33 @@
             var y = parseInt(mission.year, 10);
             if (!isNaN(y) && y > 0) {
                 return y;
+            }
+        }
+        return getApplicationYear();
+    }
+
+    /**
+     * Resolve the year from a raw form value (number, digit string,
+     * or null/undefined). Falls back to the application year when
+     * the value is absent or invalid. Never returns null.
+     *
+     * This is the form-state counterpart to resolveMissionYear:
+     * the form's year input is a string, not a stored number, and
+     * the caller may legitimately have cleared it.
+     */
+    function resolveFormYear(rawYear) {
+        if (typeof rawYear === 'number' &&
+            isFinite(rawYear) &&
+            Math.floor(rawYear) > 0) {
+            return Math.floor(rawYear);
+        }
+        if (typeof rawYear === 'string') {
+            var trimmed = rawYear.trim();
+            if (/^\d+$/.test(trimmed)) {
+                var n = parseInt(trimmed, 10);
+                if (!isNaN(n) && n > 0) {
+                    return n;
+                }
             }
         }
         return getApplicationYear();
@@ -648,6 +658,262 @@
         });
 
         return result;
+    }
+
+    // ============================================================
+    // PARTICIPANTS VM — shared assembler
+    // ============================================================
+    //
+    // Both public builders (stored-record and form-state) funnel
+    // through here. The inputs have already been normalised to:
+    //
+    //   teamIds       [ string ]          assigned team ids
+    //   year          number              mission year
+    //   participants  [ { characterId, teamId, source } ]
+    //                                     staged or stored records
+    //   missionId     string | null
+    //   missionTitle  string
+    //
+    // This keeps the two public entry points mechanical: each one
+    // only resolves its own inputs and delegates the assembly.
+
+    function assembleParticipantsVM(inputs) {
+        var teamIds = inputs.teamIds || [];
+        var year = inputs.year;
+        var rawParticipants = inputs.participants || [];
+
+        // Normalise staged participants into the same shape the
+        // query layer produces, then build the flat display list.
+        var participants = normaliseParticipantRecords(rawParticipants);
+        var currentParticipants = buildParticipantDisplayList(
+            participants
+        );
+
+        // Build one section per assigned team.
+        var assignedTeamsVM = [];
+        for (var t = 0; t < teamIds.length; t++) {
+            var teamId = teamIds[t];
+            var team = null;
+            try {
+                team = TeamQueries.getTeamById(teamId);
+            } catch (e) {
+                team = null;
+            }
+
+            var teamName = team && isNonEmptyString(team.name)
+                ? team.name
+                : 'Unknown Team';
+
+            var members = [];
+            if (team) {
+                var activeMembers = [];
+                try {
+                    activeMembers = TeamQueries.getActiveTeamMembers(
+                        team, year
+                    ) || [];
+                } catch (e) {
+                    activeMembers = [];
+                }
+
+                for (var m = 0; m < activeMembers.length; m++) {
+                    var member = activeMembers[m];
+                    if (!member || !member.characterId) { continue; }
+
+                    var charId = String(member.characterId);
+                    var charRef = resolveCharacterRef(charId);
+
+                    var deceased = false;
+                    if (charRef && charRef.id) {
+                        var charRecord =
+                            CharacterQueries.getCharacterById(charId);
+                        deceased = charRecord &&
+                            charRecord.deceased === true;
+                    }
+
+                    var isParticipant = hasParticipantEntry(
+                        participants, charId, teamId
+                    );
+
+                    members.push({
+                        characterId: charId,
+                        displayName: charRef ? charRef.name : 'Unknown',
+                        role: isNonEmptyString(member.role)
+                            ? member.role : 'Member',
+                        deceased: deceased,
+                        isParticipant: isParticipant
+                    });
+                }
+            }
+
+            members.sort(function(a, b) {
+                return String(a.displayName || '')
+                    .localeCompare(String(b.displayName || ''));
+            });
+
+            assignedTeamsVM.push({
+                teamId: teamId,
+                teamName: teamName,
+                members: members
+            });
+        }
+
+        // Guard: drop participant entries whose teamId is no longer
+        // in the assigned list. Mirrors the write-side prune in
+        // MissionCore.updateMission and the read-side guard in
+        // getParticipantsViewModel.
+        var assignedSet = Object.create(null);
+        for (var at = 0; at < teamIds.length; at++) {
+            assignedSet[String(teamIds[at])] = true;
+        }
+
+        var filteredParticipants = [];
+        for (var cp = 0; cp < currentParticipants.length; cp++) {
+            var entry = currentParticipants[cp];
+            if (entry.teamId === null) {
+                filteredParticipants.push(entry);
+                continue;
+            }
+            if (assignedSet[String(entry.teamId)] === true) {
+                filteredParticipants.push(entry);
+            }
+        }
+
+        return {
+            missionId: inputs.missionId !== null &&
+                       inputs.missionId !== undefined
+                ? String(inputs.missionId)
+                : null,
+            missionTitle: isNonEmptyString(inputs.missionTitle)
+                ? inputs.missionTitle
+                : 'Mission',
+            missionYear: year,
+            assignedTeams: assignedTeamsVM,
+            currentParticipants: filteredParticipants
+        };
+    }
+
+    /**
+     * Normalise an array of { characterId, teamId, source } records
+     * to the canonical participant shape, dropping malformed
+     * entries and duplicates on (characterId, teamId). This
+     * mirrors MissionQueries.getParticipantsForMission so that a
+     * staged list from the form yields the same display rows as a
+     * stored list from the record.
+     */
+    function normaliseParticipantRecords(raw) {
+        if (!Array.isArray(raw)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+            if (!isPlainObject(p)) { continue; }
+
+            var cid = isNonEmptyString(p.characterId)
+                ? String(p.characterId).trim()
+                : '';
+            if (cid === '') { continue; }
+
+            var tid = null;
+            if (p.teamId !== undefined &&
+                p.teamId !== null &&
+                p.teamId !== '') {
+                tid = String(p.teamId).trim();
+                if (tid === '') { tid = null; }
+            }
+
+            var source = p.source;
+            if (source !== 'team' && source !== 'rookie') { continue; }
+
+            // Skip incoherent source/teamId combinations rather
+            // than repairing them.
+            if (source === 'team' && tid === null) { continue; }
+            if (source === 'rookie' && tid !== null) { continue; }
+
+            var key = cid + '::' + (tid === null ? '__null__' : tid);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+
+            result.push({
+                characterId: cid,
+                teamId: tid,
+                source: source
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Turn a normalised participant list into the display rows the
+     * form and detail panel render. Same shape and ordering rules
+     * as buildParticipantsVM.
+     */
+    function buildParticipantDisplayList(participants) {
+        var result = [];
+
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+
+            var charRef = resolveCharacterRef(p.characterId);
+            var name = charRef ? charRef.name : 'Unknown';
+            var deceased = false;
+            if (charRef) {
+                var char = CharacterQueries.getCharacterById(p.characterId);
+                deceased = char && char.deceased === true;
+            }
+
+            var teamRef = p.teamId ? resolveTeamRef(p.teamId) : null;
+
+            var sourceLabel = 'Unknown';
+            if (typeof MissionConstants.getParticipantSourceLabel ===
+                'function') {
+                var lbl = MissionConstants.getParticipantSourceLabel(
+                    p.source
+                );
+                if (lbl) { sourceLabel = lbl; }
+            }
+
+            result.push({
+                characterId: p.characterId,
+                displayName: name,
+                deceased: deceased,
+                teamId: p.teamId,
+                teamName: teamRef ? teamRef.name : null,
+                source: p.source,
+                sourceLabel: sourceLabel
+            });
+        }
+
+        result.sort(function(a, b) {
+            if (a.teamId === null && b.teamId !== null) { return 1; }
+            if (a.teamId !== null && b.teamId === null) { return -1; }
+            if (a.teamId !== null && b.teamId !== null) {
+                var tn = String(a.teamName || '')
+                    .localeCompare(String(b.teamName || ''));
+                if (tn !== 0) { return tn; }
+            }
+            return String(a.displayName || '')
+                .localeCompare(String(b.displayName || ''));
+        });
+
+        return result;
+    }
+
+    function hasParticipantEntry(participants, charId, teamId) {
+        var targetChar = String(charId);
+        var targetTeam = (teamId === undefined || teamId === null ||
+                          teamId === '')
+            ? null
+            : String(teamId);
+
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.characterId !== targetChar) { continue; }
+            if (p.teamId === targetTeam) { return true; }
+        }
+        return false;
     }
 
     // ============================================================
@@ -1373,7 +1639,7 @@
     }
 
     // ============================================================
-    // PARTICIPANTS VM
+    // PARTICIPANTS VM — stored-record source
     // ============================================================
     //
     // See the file header for the full shape.
@@ -1387,29 +1653,6 @@
     // else the application year. Using the mission's year (not the
     // application year) is deliberate: a mission in 1930 should
     // list the team's 1930 membership, not the 2026 membership.
-    //
-    // FALLBACK AND DIAGNOSTICS:
-    //   When a team's members at the mission year come back empty,
-    //   we distinguish three cases:
-    //
-    //     - the mission year is outside the team's active window,
-    //     - the team has no member records,
-    //     - the team has records but nobody active that year.
-    //
-    //   Each case produces a `diagnostic` string on the team row,
-    //   and the first two trigger a FALLBACK: when the mission year
-    //   is not the application year AND the team has records, we
-    //   read the team's current membership instead and mark the
-    //   row with fallback: true and lookupYear: <applicationYear>.
-    //   This makes the panel usable when the mission is set to a
-    //   year the team did not yet exist in; the user can still
-    //   pick from a populated list, and the renderer can show a
-    //   hint that the roster shown is current, not the mission-
-    //   year roster.
-    //
-    //   The full diagnostics array is also returned so any caller
-    //   that wants to inspect (or log) why a panel came up empty
-    //   has the data without re-deriving it.
 
     function getParticipantsViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -1422,221 +1665,88 @@
         }
 
         var missionYear = resolveMissionYear(mission);
-        var applicationYear = getApplicationYearOrNull();
         var assignedTeamIds =
             MissionQueries.getTeamIdsForMission(mission);
+        var participants =
+            MissionQueries.getParticipantsForMission(mission);
 
-        var assignedTeamsVM = [];
-        var diagnostics = [];
-
-        for (var t = 0; t < assignedTeamIds.length; t++) {
-            var teamId = assignedTeamIds[t];
-            var team = null;
-            try {
-                team = TeamQueries.getTeamById(teamId);
-            } catch (e) {
-                team = null;
-            }
-
-            if (!team) {
-                assignedTeamsVM.push({
-                    teamId: teamId,
-                    teamName: 'Unknown Team',
-                    members: [],
-                    missing: true,
-                    fallback: false,
-                    lookupYear: missionYear,
-                    diagnostic:
-                        'Team id "' + teamId +
-                        '" does not resolve to a team record.'
-                });
-                diagnostics.push({
-                    teamId: teamId,
-                    teamName: 'Unknown Team',
-                    reason: 'missing-team',
-                    diagnostic:
-                        'Team id "' + teamId +
-                        '" does not resolve to a team record.'
-                });
-                continue;
-            }
-
-            var teamName = isNonEmptyString(team.name)
-                ? team.name
-                : 'Unknown Team';
-
-            // ---- Read the team's members at the mission year ----
-            var activeMembers = [];
-            try {
-                activeMembers = TeamQueries.getActiveTeamMembers(
-                    team, missionYear
-                ) || [];
-            } catch (e) {
-                activeMembers = [];
-            }
-
-            var lookupYear = missionYear;
-            var fallback = false;
-            var diagnostic = '';
-
-            if (activeMembers.length === 0) {
-                var teamWindowOK = false;
-                try {
-                    teamWindowOK = TeamQueries.teamWindowContains(
-                        team, missionYear
-                    );
-                } catch (e) {
-                    teamWindowOK = false;
-                }
-
-                var hasAnyMembers =
-                    Array.isArray(team.members) &&
-                    team.members.length > 0;
-
-                if (!teamWindowOK) {
-                    diagnostic =
-                        'Mission year ' + missionYear +
-                        ' is outside team "' + teamName +
-                        '" active window (' +
-                        (team.startPeriod || '?') + '\u2013' +
-                        (team.endPeriod || 'present') + ').';
-                } else if (!hasAnyMembers) {
-                    diagnostic =
-                        'Team "' + teamName +
-                        '" has no member records.';
-                } else {
-                    diagnostic =
-                        'Team "' + teamName +
-                        '" has no members active in ' +
-                        missionYear + '.';
-                }
-
-                // ---- Fallback to current membership ----
-                //
-                // Only applies when the mission year is not the
-                // application year AND the team has at least one
-                // member record. Reading the current roster gives
-                // the user something to pick from; the renderer
-                // marks the row so it is clear this is not the
-                // mission-year roster.
-                if (applicationYear !== null &&
-                    applicationYear !== missionYear &&
-                    hasAnyMembers) {
-
-                    var fallbackMembers = [];
-                    try {
-                        fallbackMembers =
-                            TeamQueries.getActiveTeamMembers(
-                                team, applicationYear
-                            ) || [];
-                    } catch (e) {
-                        fallbackMembers = [];
-                    }
-
-                    if (fallbackMembers.length > 0) {
-                        activeMembers = fallbackMembers;
-                        lookupYear = applicationYear;
-                        fallback = true;
-                        diagnostic +=
-                            ' Showing current members (' +
-                            applicationYear + ') instead.';
-                    }
-                }
-            }
-
-            // ---- Build member rows ----
-            var members = [];
-            for (var m = 0; m < activeMembers.length; m++) {
-                var member = activeMembers[m];
-                if (!member || !member.characterId) { continue; }
-
-                var charId = String(member.characterId);
-                var charRef = resolveCharacterRef(charId);
-
-                var deceased = false;
-                if (charRef && charRef.id) {
-                    var charRecord =
-                        CharacterQueries.getCharacterById(charId);
-                    deceased = charRecord &&
-                        charRecord.deceased === true;
-                }
-
-                var isParticipant =
-                    MissionQueries.isParticipantInMission(
-                        mission, charId, teamId
-                    );
-
-                members.push({
-                    characterId: charId,
-                    displayName: charRef ? charRef.name : 'Unknown',
-                    role: isNonEmptyString(member.role)
-                        ? member.role
-                        : 'Member',
-                    deceased: deceased,
-                    isParticipant: isParticipant
-                });
-            }
-
-            members.sort(function(a, b) {
-                return String(a.displayName || '')
-                    .localeCompare(String(b.displayName || ''));
-            });
-
-            assignedTeamsVM.push({
-                teamId: teamId,
-                teamName: teamName,
-                members: members,
-                missing: false,
-                fallback: fallback,
-                lookupYear: lookupYear,
-                diagnostic: diagnostic
-            });
-
-            if (members.length === 0) {
-                diagnostics.push({
-                    teamId: teamId,
-                    teamName: teamName,
-                    reason: 'empty-members',
-                    diagnostic: diagnostic
-                });
-            }
-        }
-
-        // Current participant entries, resolved to display shape.
-        var currentParticipants = buildParticipantsVM(mission);
-
-        // Guard: drop participants whose teamId is no longer
-        // assigned. The write path (MissionCore.updateMission)
-        // prunes orphans on the snapshot, but a record saved
-        // before that guard existed can still carry them. Dropping
-        // them here keeps the VM honest.
-        var assignedSet = Object.create(null);
-        for (var at = 0; at < assignedTeamIds.length; at++) {
-            assignedSet[String(assignedTeamIds[at])] = true;
-        }
-
-        var filteredParticipants = [];
-        for (var cp = 0; cp < currentParticipants.length; cp++) {
-            var entry = currentParticipants[cp];
-            if (entry.teamId === null) {
-                filteredParticipants.push(entry);
-                continue;
-            }
-            if (assignedSet[String(entry.teamId)] === true) {
-                filteredParticipants.push(entry);
-            }
-        }
-
-        return {
+        return assembleParticipantsVM({
             missionId: String(mission.id),
             missionTitle: isNonEmptyString(mission.title)
                 ? mission.title
                 : 'Mission',
-            missionYear: missionYear,
-            assignedTeams: assignedTeamsVM,
-            currentParticipants: filteredParticipants,
-            diagnostics: diagnostics
-        };
+            year: missionYear,
+            teamIds: assignedTeamIds,
+            participants: participants
+        });
+    }
+
+    // ============================================================
+    // PARTICIPANTS VM — form-state source
+    // ============================================================
+    //
+    // Same VM shape as getParticipantsViewModel, but every input
+    // comes from the caller's live form state:
+    //
+    //   options = {
+    //     missionId:        string | null,
+    //     missionTitle:     string,
+    //     year:             number | string | null,
+    //     month:            number | string | null,   (unused)
+    //     day:              number | string | null,   (unused)
+    //     assignedTeamIds:  [ string ],
+    //     participants:     [ { characterId, teamId, source } ]
+    //   }
+    //
+    // missionId may be null on the create form; missionTitle falls
+    // back to 'Mission'. year falls back to the application year
+    // when absent or invalid. assignedTeamIds and participants are
+    // coerced defensively: non-array input is treated as empty.
+    //
+    // This is the builder the form controller uses on create, and
+    // after every team-chip or year-field edit on edit.
+
+    function getParticipantsViewModelFromFormState(options) {
+        options = options || {};
+
+        var missionYear = resolveFormYear(options.year);
+        var teamIds = normaliseTeamIdArray(options.assignedTeamIds);
+        var participants = Array.isArray(options.participants)
+            ? options.participants
+            : [];
+
+        var missionId = isNonEmptyString(options.missionId)
+            ? String(options.missionId)
+            : null;
+
+        return assembleParticipantsVM({
+            missionId: missionId,
+            missionTitle: isNonEmptyString(options.missionTitle)
+                ? options.missionTitle
+                : 'Mission',
+            year: missionYear,
+            teamIds: teamIds,
+            participants: participants
+        });
+    }
+
+    function normaliseTeamIdArray(raw) {
+        if (!Array.isArray(raw)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var id = raw[i];
+            if (!isNonEmptyString(id)) { continue; }
+            var s = String(id).trim();
+            if (s === '') { continue; }
+            if (seen[s]) { continue; }
+            seen[s] = true;
+            result.push(s);
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -1660,14 +1770,6 @@
     // The UI decides how to render each combination. The aggregator
     // does not filter candidates out; filtering is a presentation
     // choice and belongs to the renderer.
-    //
-    // The "already on assigned team" test uses the same
-    // team-membership read the participant panel uses, so a
-    // candidate who was active at the mission year is marked
-    // correctly. It does NOT use the participant panel's current-
-    // membership fallback: whether a rookie is already on an
-    // assigned team is a fact about the mission year, not about
-    // the present day.
 
     function getRookieCandidatesViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -1925,6 +2027,8 @@
         getReportAuthorOptionsViewModel:
             getReportAuthorOptionsViewModel,
         getParticipantsViewModel: getParticipantsViewModel,
+        getParticipantsViewModelFromFormState:
+            getParticipantsViewModelFromFormState,
         getRookieCandidatesViewModel: getRookieCandidatesViewModel
     });
 
@@ -1943,6 +2047,7 @@
             'getMissionStatisticsViewModel',
             'getReportAuthorOptionsViewModel',
             'getParticipantsViewModel',
+            'getParticipantsViewModelFromFormState',
             'getRookieCandidatesViewModel'
         ];
 
@@ -1985,6 +2090,59 @@
             }
         } catch (e) {
             missing.push('rookie smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: form-state participant builder shape.
+        try {
+            var formVM = getParticipantsViewModelFromFormState({
+                missionId: null,
+                missionTitle: 'Test',
+                year: 1926,
+                assignedTeamIds: [],
+                participants: []
+            });
+            if (!formVM ||
+                formVM.missionId !== null ||
+                formVM.missionTitle !== 'Test' ||
+                formVM.missionYear !== 1926 ||
+                !Array.isArray(formVM.assignedTeams) ||
+                !Array.isArray(formVM.currentParticipants)) {
+                missing.push(
+                    'getParticipantsViewModelFromFormState returned ' +
+                    'an unexpected shape for an empty form'
+                );
+            }
+
+            // Year fallback.
+            var fallbackVM = getParticipantsViewModelFromFormState({
+                year: ''
+            });
+            if (!fallbackVM ||
+                typeof fallbackVM.missionYear !== 'number' ||
+                fallbackVM.missionYear < 1) {
+                missing.push(
+                    'getParticipantsViewModelFromFormState did not ' +
+                    'fall back to the application year'
+                );
+            }
+
+            // Malformed inputs are treated as empty, not fatal.
+            var malformedVM = getParticipantsViewModelFromFormState({
+                assignedTeamIds: 'not-an-array',
+                participants: 'not-an-array'
+            });
+            if (!malformedVM ||
+                malformedVM.assignedTeams.length !== 0 ||
+                malformedVM.currentParticipants.length !== 0) {
+                missing.push(
+                    'getParticipantsViewModelFromFormState did not ' +
+                    'tolerate malformed inputs'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'form-state participants smoke test threw: ' + e.message
+            );
         }
 
         if (missing.length > 0) {
