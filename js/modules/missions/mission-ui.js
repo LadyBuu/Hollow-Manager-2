@@ -24,48 +24,67 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
- * PARTICIPANTS:
- *   The mission form carries a participant editor built from one
- *   aggregator VM, attached to the form VM by this module before
- *   it is handed to the renderer:
+ * PARTICIPANTS (this revision):
+ *   The mission form carries a participant editor that must work
+ *   on BOTH create and edit. On edit, the stored mission record is
+ *   authoritative until save; on create, there is no stored record
+ *   at all. The panel therefore cannot read its inputs from
+ *   MissionQueries or from a stored mission id.
  *
- *     participantsVM    getParticipantsViewModel(editId)
+ *   Two sources feed the panel:
  *
- *   The VM is rebuilt every time the form opens. For a create form
- *   (no editId), it is not attached and the renderer draws the
- *   placeholder panel.
+ *     _formState.participants
+ *       The STAGED participant list for the form currently open.
+ *       Initialised from vm.mission.participants on edit, and
+ *       [] on create. Every toggle, every rookie-picker return,
+ *       and every form-side participant removal updates this
+ *       array. It is the single source of truth for the panel
+ *       and for the submit payload.
+ *
+ *     The live form DOM
+ *       Team chips (#mission-teams-list) and the year input
+ *       (#mission-year) are read on every panel refresh so the
+ *       panel reflects the CURRENT team assignment and year, not
+ *       the values that were in the record when the form opened.
+ *
+ *   The panel is rebuilt through
+ *   MissionAggregator.getParticipantsViewModelFromFormState(...)
+ *   and swapped in place (refreshParticipantsPanelFromFormState).
+ *   The surrounding form — every other input, the team chips, the
+ *   support rows, the objectives, the rookie chip list — is left
+ *   byte-identical. Ticking a participant or returning from the
+ *   picker must not discard an unsaved edit elsewhere in the form.
+ *
+ *   SUBMIT PATH:
+ *   _formState.participants is included in collectFormData's
+ *   payload, so MissionCore.createMission / updateMission receive
+ *   them. On create this is the ONLY write path (no mission id
+ *   exists while the user is ticking boxes). On edit, the
+ *   immediate-write path (MissionCore.addParticipant /
+ *   removeParticipant) is retained so the stored record stays
+ *   consistent even if the user navigates away without saving;
+ *   the submit payload then writes the staged array on top,
+ *   which is a no-op when the two agree and a reconcile when they
+ *   do not.
  *
  *   Two event wires:
  *
  *     mission-toggle-participant
- *       fires from a team-member checkbox inside the form's
+ *       Fires from a team-member checkbox inside the form's
  *       participant panel. The controller reads characterId,
- *       teamId, and the checked flag, calls
- *       MissionCore.addParticipant or MissionCore.removeParticipant,
- *       and re-renders the form's participant panel in place. The
- *       surrounding form is not closed and its other inputs are
- *       not touched.
+ *       teamId, and the checked flag, updates
+ *       _formState.participants, and (on edit) also calls
+ *       MissionCore.addParticipant / removeParticipant. The panel
+ *       is re-rendered in place afterwards.
  *
  *     mission-open-rookie-picker
- *       fires from the "+ Add Rookies" button on the form's
+ *       Fires from the "+ Add Rookies" button on the form's
  *       participant panel, from the "Add Rookies" button on the
  *       detail panel's Participants section header, and from any
- *       other surface that needs it. The controller opens the
- *       MissionRookiePicker modal scoped to the mission id carried
- *       on the button. The picker owns its own write path; when it
- *       closes, its onClose callback refreshes whichever surface
- *       launched it.
- *
- *   The panel is re-rendered by rebuilding the participantsVM from
- *   MissionAggregator and swapping the panel node in place. The
- *   rest of the form is left as-is. That is important: an in-flight
- *   edit in an unrelated field must not be lost when the user ticks
- *   a participant checkbox or returns from the picker.
- *
- *   Rookie rows are NOT rendered by the form. The form's rookie
- *   section is a summary strip (count + "+ Add Rookies" button +
- *   chip list with per-chip remove). Everything else about rookies
- *   is the picker's concern.
+ *       other surface that needs it. When the picker closes, its
+ *       onClose callback refreshes whichever surface launched it,
+ *       AND resyncs _formState.participants from the store (the
+ *       picker writes through MissionCore directly).
  *
  * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
@@ -76,6 +95,9 @@
  *   controller reads the chips on submit and passes the array to
  *   MissionCore. Chip add and remove are DOM-only operations
  *   inside the form modal; only the submit writes to the store.
+ *   Chip add and remove also refresh the participant panel, and
+ *   chip remove prunes staged participants whose teamId matches
+ *   the removed team.
  *
  * MISSION EXPORT:
  *   The detail panel's Export button opens a small format picker
@@ -85,12 +107,13 @@
  *   A header button opens the import modal.
  *
  * ACTIVITY LOG HAS BEEN REMOVED:
- *   The mission detail panel used to carry a "+ Log Entry" button
- *   and the controller used to route it to a window.prompt that
- *   appended a free-text entry to the mission's `log` array. The
- *   mission log field has been retired. There is no log modal, no
- *   prompt, no `mission-add-log` action. The relevant handler and
- *   branch are gone.
+ *   The mission detail panel used to carry a "+ Log Entry"
+ *   button and the controller used to route it to a
+ *   window.prompt that appended a free-text entry to the
+ *   mission's `log` array. The mission log field has been
+ *   retired. There is no log modal, no prompt, no
+ *   `mission-add-log` action. The relevant handler and branch
+ *   are gone.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
@@ -202,7 +225,8 @@
             'getMissionFormViewModel',
             'getMissionStatisticsViewModel',
             'getReportAuthorOptionsViewModel',
-            'getParticipantsViewModel'
+            'getParticipantsViewModel',
+            'getParticipantsViewModelFromFormState'
         ];
         for (var a = 0; a < aggRequired.length; a++) {
             if (typeof MissionAggregator[aggRequired[a]] !== 'function') {
@@ -274,14 +298,30 @@
         format: 'json'
     };
 
-    // Form scratch state that must survive across in-place panel
-    // re-renders. The form modal is rebuilt from the VM on open;
-    // the participant panel is re-rendered in place on a
-    // team-member toggle, and again when the rookie picker closes.
-    // The surrounding form inputs are left untouched.
+    // Form scratch state. The form modal is rebuilt from the VM on
+    // open; the participant panel is re-rendered in place on a
+    // team-member toggle, on a team-chip edit, on a year-field
+    // edit, and when the rookie picker closes. The surrounding
+    // form inputs are left untouched.
+    //
+    // editId:        the id of the mission being edited, or null
+    //                on create.
+    // participants:  the STAGED participant list for the form
+    //                currently open. This is the single source of
+    //                truth for the panel and for the submit
+    //                payload. Initialised from
+    //                vm.mission.participants on edit, [] on create.
     var _formState = {
-        editId: null
+        editId: null,
+        participants: []
     };
+
+    // Year-field debounce timer for the participant-panel refresh.
+    // Editing the year can change which team members are active,
+    // and users type the year a digit at a time; a short debounce
+    // avoids re-rendering on every keystroke.
+    var _yearRefreshTimer = null;
+    var YEAR_REFRESH_DEBOUNCE_MS = 200;
 
     // ============================================================
     // LAZY DEPENDENCY ACCESSORS
@@ -640,6 +680,28 @@
         if (dayEl && dayEl.dataset.touched !== 'true') {
             dayEl.value = '1';
         }
+
+        // Year changed: the participant panel's membership depends
+        // on the mission year. Debounce a refresh so typing a
+        // four-digit year does not trigger four rebuilds.
+        scheduleParticipantsPanelRefresh();
+    }
+
+    function scheduleParticipantsPanelRefresh() {
+        if (_yearRefreshTimer !== null) {
+            clearTimeout(_yearRefreshTimer);
+        }
+        _yearRefreshTimer = setTimeout(function() {
+            _yearRefreshTimer = null;
+            refreshParticipantsPanelFromFormState();
+        }, YEAR_REFRESH_DEBOUNCE_MS);
+    }
+
+    function cancelScheduledParticipantsPanelRefresh() {
+        if (_yearRefreshTimer !== null) {
+            clearTimeout(_yearRefreshTimer);
+            _yearRefreshTimer = null;
+        }
     }
 
     function handleContainerClick(event) {
@@ -959,25 +1021,16 @@
 
         _formState.editId = editId || null;
 
-        // Attach the participants VM when editing an existing
-        // mission. On the create form (editId null) it is not
-        // attached, and the renderer draws a placeholder panel.
-        //
-        // The rookie candidate list is NOT attached. The rookie
-        // section in the form is a summary strip; the picker
-        // fetches its own candidate list when opened.
-        if (editId) {
-            try {
-                vm.participantsVM =
-                    MissionAggregator.getParticipantsViewModel(editId);
-            } catch (e) {
-                console.warn(
-                    '[MissionUI] getParticipantsViewModel threw:',
-                    e
-                );
-                vm.participantsVM = null;
-            }
-        }
+        // Stage the participant list. On edit this starts from the
+        // stored mission's participants; on create it starts empty
+        // and grows as the user ticks team-member checkboxes.
+        _formState.participants = stageParticipantsFromVM(vm);
+
+        // Attach the form-state participants VM so the renderer
+        // can build the panel on FIRST render. The panel is then
+        // kept in sync in place by refreshParticipantsPanelFromFormState
+        // whenever the team chips, year field, or staged list change.
+        vm.participantsVM = buildParticipantsVMFromFormState(vm);
 
         var modal = state.container.querySelector('#mission-form-modal');
         var titleEl = state.container.querySelector('#mission-form-title');
@@ -1022,6 +1075,8 @@
     function closeFormModal() {
         if (!state.container) { return; }
 
+        cancelScheduledParticipantsPanelRefresh();
+
         var modal = state.container.querySelector('#mission-form-modal');
         var contentEl = state.container.querySelector(
             '#mission-form-content'
@@ -1031,6 +1086,7 @@
         if (contentEl) { contentEl.innerHTML = ''; }
 
         _formState.editId = null;
+        _formState.participants = [];
     }
 
     function updateSubtypeOptions(primarySelect, subtypeSelect) {
@@ -1068,6 +1124,281 @@
     }
 
     // ============================================================
+    // PARTICIPANT STAGING
+    // ============================================================
+    //
+    // _formState.participants is the single source of truth for
+    // the form's participant panel and for the submit payload.
+    // It is initialised from the VM on open, updated on every
+    // toggle, and pruned when a team chip is removed.
+
+    /**
+     * Extract the initial staged participant list from a form VM.
+     * On edit, this is a deep copy of vm.mission.participants. On
+     * create, it is an empty array.
+     */
+    function stageParticipantsFromVM(vm) {
+        if (!vm || !vm.mission ||
+            !Array.isArray(vm.mission.participants)) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < vm.mission.participants.length; i++) {
+            var p = vm.mission.participants[i];
+            if (!p || typeof p !== 'object') { continue; }
+            result.push({
+                characterId: p.characterId,
+                teamId: (p.teamId !== undefined) ? p.teamId : null,
+                source: p.source
+            });
+        }
+        return result;
+    }
+
+    /**
+     * Build a form-state participants VM from the CURRENT form
+     * inputs:
+     *
+     *   - team ids from the team chips (or from the form VM on the
+     *     first render, when the chips have not been rendered yet);
+     *   - year from the year input (or from the form VM on the
+     *     first render);
+     *   - the staged participant list.
+     */
+    function buildParticipantsVMFromFormState(vm) {
+        var form = null;
+        if (state.container) {
+            var contentEl = state.container.querySelector(
+                '#mission-form-content'
+            );
+            if (contentEl) {
+                form = contentEl.querySelector('#mission-form-inner');
+            }
+        }
+
+        var teamIds = [];
+        var year = null;
+
+        if (form) {
+            teamIds = readAssignedTeamIdsFromForm(form);
+            var yearEl = form.querySelector('#mission-year');
+            if (yearEl) {
+                year = yearEl.value;
+            }
+        } else if (vm && vm.mission) {
+            // First render: the chips have not been emitted yet.
+            // Fall back to the VM's assigned team ids and year.
+            if (Array.isArray(vm.mission.assignedTeamIds)) {
+                teamIds = vm.mission.assignedTeamIds.slice();
+            }
+            if (vm.mission.year !== undefined &&
+                vm.mission.year !== null) {
+                year = vm.mission.year;
+            }
+        }
+
+        if (year === null && vm && vm.defaults) {
+            year = vm.defaults.year;
+        }
+
+        var missionId = _formState.editId;
+        var missionTitle = vm && vm.mission
+            ? (vm.mission.title || 'Mission')
+            : 'Mission';
+
+        try {
+            return MissionAggregator.getParticipantsViewModelFromFormState({
+                missionId: missionId,
+                missionTitle: missionTitle,
+                year: year,
+                assignedTeamIds: teamIds,
+                participants: _formState.participants
+            });
+        } catch (e) {
+            console.warn(
+                '[MissionUI] getParticipantsViewModelFromFormState ' +
+                'threw:', e
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Rebuild the participants panel inside the open form and swap
+     * the panel node in place.
+     *
+     * The panel is re-rendered from the CURRENT form state (team
+     * chips, year field, staged participants), not from a stored
+     * mission id. The rest of the form — every other input, the
+     * team chips, the support rows, the objectives, the rookie
+     * chip list — is left byte-identical. That is the point:
+     * ticking a participant, adding a team chip, or changing the
+     * year must not discard an unsaved edit elsewhere in the form.
+     *
+     * No-op when the form is not open, or when the panel node
+     * cannot be found.
+     */
+    function refreshParticipantsPanelFromFormState() {
+        if (!state.container) { return; }
+        if (!_formState.editId && !_formState.isCreate) {
+            // Guard against refreshing a panel that does not
+            // belong to an open form. We only know the form is
+            // open by the presence of the modal shell, so check
+            // that instead of editId (which is null on create).
+        }
+
+        var contentEl = state.container.querySelector(
+            '#mission-form-content'
+        );
+        if (!contentEl) { return; }
+
+        var form = contentEl.querySelector('#mission-form-inner');
+        if (!form) { return; }
+
+        var panelNode = form.querySelector(
+            '#mission-participants-panel'
+        );
+        if (!panelNode) { return; }
+
+        // Rebuild the form VM so the renderer receives a VM whose
+        // non-participant fields match the form's current contract.
+        // We only swap the participants panel node.
+        var renderVM = null;
+        try {
+            renderVM = MissionAggregator.getMissionFormViewModel({
+                editId: _formState.editId
+            });
+        } catch (e) {
+            renderVM = null;
+        }
+        if (!renderVM) { return; }
+
+        renderVM.editId = _formState.editId;
+        renderVM.participantsVM = buildParticipantsVMFromFormState(
+            renderVM
+        );
+
+        var tmp = document.createElement('div');
+        tmp.innerHTML = MissionRender.renderForm(renderVM);
+
+        var newPanel = tmp.querySelector('#mission-participants-panel');
+        if (!newPanel) { return; }
+
+        panelNode.parentNode.replaceChild(newPanel, panelNode);
+    }
+
+    /**
+     * Add or remove a participant from the staged list. Returns the
+     * new list. Does not write to the store; the caller decides
+     * whether to persist.
+     */
+    function stageParticipant(characterId, teamId, source) {
+        if (!characterId) { return; }
+        var cid = String(characterId);
+        var tid = (teamId === undefined || teamId === null ||
+                   teamId === '')
+            ? null
+            : String(teamId);
+        var src = source || (tid === null ? 'rookie' : 'team');
+
+        // Reject incoherent source/teamId combinations up front,
+        // matching MissionSchema's participant validator.
+        if (src === 'team' && tid === null) { return; }
+        if (src === 'rookie' && tid !== null) { return; }
+
+        // Dedup on (characterId, teamId).
+        for (var i = 0; i < _formState.participants.length; i++) {
+            var p = _formState.participants[i];
+            if (String(p.characterId) !== cid) { continue; }
+            var pTid = (p.teamId === undefined || p.teamId === null)
+                ? null
+                : String(p.teamId);
+            if (pTid === tid) { return; }
+        }
+
+        _formState.participants.push({
+            characterId: cid,
+            teamId: tid,
+            source: src
+        });
+    }
+
+    function unstageParticipant(characterId, teamId) {
+        if (!characterId) { return; }
+        var cid = String(characterId);
+        var tid = (teamId === undefined || teamId === null ||
+                   teamId === '')
+            ? null
+            : String(teamId);
+
+        var kept = [];
+        for (var i = 0; i < _formState.participants.length; i++) {
+            var p = _formState.participants[i];
+            var pCid = String(p.characterId);
+            var pTid = (p.teamId === undefined || p.teamId === null)
+                ? null
+                : String(p.teamId);
+
+            if (pCid === cid && pTid === tid) { continue; }
+            kept.push(p);
+        }
+        _formState.participants = kept;
+    }
+
+    function pruneStagedParticipantsForTeam(teamId) {
+        if (!teamId) { return; }
+        var target = String(teamId);
+
+        var kept = [];
+        for (var i = 0; i < _formState.participants.length; i++) {
+            var p = _formState.participants[i];
+            if (p.teamId === null || p.teamId === undefined) {
+                kept.push(p);
+                continue;
+            }
+            if (String(p.teamId) === target) { continue; }
+            kept.push(p);
+        }
+        _formState.participants = kept;
+    }
+
+    /**
+     * Reload the staged participant list from the STORE. Used
+     * after the rookie picker closes, because the picker writes
+     * through MissionCore directly and the staged list must
+     * reflect those writes.
+     *
+     * No-op on create (no mission id exists yet; the staged list
+     * is the only source of truth).
+     */
+    function resyncStagedParticipantsFromStore() {
+        if (!_formState.editId) { return; }
+
+        var mission = null;
+        try {
+            mission = MissionQueries.getMission(_formState.editId);
+        } catch (e) {
+            mission = null;
+        }
+        if (!mission) { return; }
+
+        var participants =
+            MissionQueries.getParticipantsForMission(mission);
+
+        var next = [];
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            next.push({
+                characterId: p.characterId,
+                teamId: p.teamId,
+                source: p.source
+            });
+        }
+        _formState.participants = next;
+    }
+
+    // ============================================================
     // PARTICIPANT TOGGLE (team-member checkboxes)
     // ============================================================
 
@@ -1077,6 +1408,13 @@
      * The checkbox carries data-character-id, data-team-id, and
      * data-source="team". Rookie toggles do not go through this
      * path; the picker owns them.
+     *
+     * On create: stage the toggle and re-render the panel. The
+     *           write happens on submit, via the create payload.
+     * On edit:   stage the toggle AND call MissionCore immediately,
+     *           so the stored record stays consistent even if the
+     *           user navigates away without saving. Re-render the
+     *           panel afterwards.
      */
     function handleParticipantToggle(checkbox) {
         if (!checkbox) { return; }
@@ -1084,11 +1422,30 @@
         var missionId = checkbox.dataset.missionId;
         var characterId = checkbox.dataset.characterId;
         var teamId = checkbox.dataset.teamId || '';
+        var source = checkbox.dataset.source || 'team';
         var checked = checkbox.checked === true;
 
-        if (!missionId || !characterId) { return; }
-        if (teamId === '') { return; }
+        if (!characterId) { return; }
 
+        // On the form, teamId is required for team participants.
+        // Rookie entries are managed by the picker and do not use
+        // this handler.
+        if (source === 'team' && teamId === '') { return; }
+
+        // ---- Stage the toggle ----
+        if (checked) {
+            stageParticipant(characterId, teamId, source);
+        } else {
+            unstageParticipant(characterId, teamId);
+        }
+
+        // ---- On create, there is no mission row to write to ----
+        if (!missionId) {
+            refreshParticipantsPanelFromFormState();
+            return;
+        }
+
+        // ---- On edit, mirror the toggle to the store ----
         var promise;
         if (checked) {
             promise = MissionCore.addParticipant(
@@ -1106,11 +1463,21 @@
 
         promise.then(function(result) {
             if (result && result.success) {
-                refreshParticipantsPanelInPlace();
+                refreshParticipantsPanelFromFormState();
                 return;
             }
 
-            checkbox.checked = !checked;
+            // The store write failed. Roll back the staged toggle
+            // so the panel and the payload stay aligned with the
+            // store, and report.
+            if (checked) {
+                unstageParticipant(characterId, teamId);
+            } else {
+                stageParticipant(characterId, teamId, source);
+            }
+
+            refreshParticipantsPanelFromFormState();
+
             notify(
                 (result && result.message) ||
                     'Could not update participant.',
@@ -1120,7 +1487,15 @@
             console.warn(
                 '[MissionUI] participant toggle failed:', err
             );
-            checkbox.checked = !checked;
+
+            // Same rollback as the failure branch above.
+            if (checked) {
+                unstageParticipant(characterId, teamId);
+            } else {
+                stageParticipant(characterId, teamId, source);
+            }
+
+            refreshParticipantsPanelFromFormState();
             notify('Failed to update participant.', 'error');
         });
     }
@@ -1132,9 +1507,11 @@
      * For a detail-panel remove, the surrounding mission is
      * refreshed through the standard post-mutation path.
      *
-     * For a form-side rookie chip remove, the form's participant
-     * panel is refreshed in place; the surrounding form is not
-     * closed.
+     * For a form-side remove, the staged list is updated and the
+     * form's participant panel is refreshed in place; the
+     * surrounding form is not closed. If the form is editing an
+     * existing mission, the removal is also mirrored to the store
+     * so the record stays consistent.
      *
      * The two cases are distinguished by whether the form modal is
      * open and the passed-in element is inside it.
@@ -1142,7 +1519,7 @@
     function handleRemoveParticipant(
         missionId, characterId, teamIdStr, actionEl
     ) {
-        if (!missionId || !characterId) { return; }
+        if (!characterId) { return; }
 
         var teamId = (teamIdStr && teamIdStr !== '')
             ? teamIdStr
@@ -1166,6 +1543,20 @@
             }
         }
 
+        // Update the staged list first. This is the source of
+        // truth for the form panel and for the submit payload.
+        if (inForm) {
+            unstageParticipant(characterId, teamId);
+        }
+
+        // ---- On create, there is no mission row to write to ----
+        if (!missionId) {
+            if (inForm) {
+                refreshParticipantsPanelFromFormState();
+            }
+            return;
+        }
+
         var promise = MissionCore.removeParticipant(
             missionId, characterId, teamId
         );
@@ -1175,11 +1566,21 @@
                 if (result && result.message) {
                     notify(result.message, 'error');
                 }
+
+                // Roll back the staged removal.
+                if (inForm) {
+                    stageParticipant(
+                        characterId,
+                        teamId,
+                        teamId === null ? 'rookie' : 'team'
+                    );
+                    refreshParticipantsPanelFromFormState();
+                }
                 return;
             }
 
             if (inForm) {
-                refreshParticipantsPanelInPlace();
+                refreshParticipantsPanelFromFormState();
                 return;
             }
 
@@ -1190,6 +1591,15 @@
                 '[MissionUI] removeParticipant failed:', err
             );
             notify('Failed to remove participant.', 'error');
+
+            if (inForm) {
+                stageParticipant(
+                    characterId,
+                    teamId,
+                    teamId === null ? 'rookie' : 'team'
+                );
+                refreshParticipantsPanelFromFormState();
+            }
         });
     }
 
@@ -1205,14 +1615,26 @@
      *
      *   - If the mission form is open and editing the same
      *     mission, the form's participant panel is re-rendered
-     *     in place.
+     *     in place, and the staged list is resynced from the
+     *     store (the picker writes through MissionCore directly).
      *   - If the detail panel is open on the same mission, the
      *     detail panel is re-rendered.
      *   - Either way, the list is refreshed so the participant
      *     count on the row is up to date.
+     *
+     * On CREATE there is no mission id yet. The picker cannot
+     * write, so the opener is a no-op with a toast. The user adds
+     * rookies after the mission exists (via the detail panel).
      */
     function handleOpenRookiePicker(missionId) {
-        if (!missionId) { return; }
+        if (!missionId) {
+            notify(
+                'Save the mission first, then add rookies from ' +
+                'the detail panel.',
+                'info'
+            );
+            return;
+        }
 
         var Picker = getMissionRookiePicker();
         if (!Picker || typeof Picker.openModal !== 'function') {
@@ -1240,7 +1662,11 @@
             Picker.openModal(missionId, {
                 onClose: function() {
                     if (launchedFromForm) {
-                        refreshParticipantsPanelInPlace();
+                        // The picker wrote through MissionCore.
+                        // Resync the staged list from the store,
+                        // then rebuild the panel.
+                        resyncStagedParticipantsFromStore();
+                        refreshParticipantsPanelFromFormState();
                         return;
                     }
                     if (state.currentMissionId &&
@@ -1262,75 +1688,6 @@
                 'error'
             );
         }
-    }
-
-    // ============================================================
-    // PARTICIPANT PANEL IN-PLACE REFRESH
-    // ============================================================
-
-    /**
-     * Rebuild the participants panel inside the open form and swap
-     * the panel node in place.
-     *
-     * The panel is re-rendered with a fresh aggregator VM, but the
-     * rest of the form — every other input, the team chips, the
-     * support rows, the objectives, the rookie chip list — is left
-     * byte-identical. That is the point: ticking a participant or
-     * returning from the picker must not discard an unsaved edit
-     * elsewhere in the form.
-     *
-     * No-op when the form is not open, when the form is a create
-     * form (no editId), or when the panel node cannot be found.
-     */
-    function refreshParticipantsPanelInPlace() {
-        if (!state.container) { return; }
-        var editId = _formState.editId;
-        if (!editId) { return; }
-
-        var formContent = state.container.querySelector(
-            '#mission-form-content'
-        );
-        if (!formContent) { return; }
-
-        var panelNode = formContent.querySelector(
-            '#mission-participants-panel'
-        );
-        if (!panelNode) { return; }
-
-        var participantsVM = null;
-        try {
-            participantsVM =
-                MissionAggregator.getParticipantsViewModel(editId);
-        } catch (e) {
-            console.warn(
-                '[MissionUI] participant VM rebuild threw:', e
-            );
-            return;
-        }
-
-        // Reuse the current form VM's non-participant fields, so the
-        // renderer builds a panel that matches the form's own
-        // contract. Only the participant panel node is swapped.
-        var renderVM = null;
-        try {
-            renderVM = MissionAggregator.getMissionFormViewModel({
-                editId: editId
-            });
-        } catch (e) {
-            renderVM = null;
-        }
-        if (!renderVM) { return; }
-
-        renderVM.editId = editId;
-        renderVM.participantsVM = participantsVM;
-
-        var tmp = document.createElement('div');
-        tmp.innerHTML = MissionRender.renderForm(renderVM);
-
-        var newPanel = tmp.querySelector('#mission-participants-panel');
-        if (!newPanel) { return; }
-
-        panelNode.parentNode.replaceChild(newPanel, panelNode);
     }
 
     // ============================================================
@@ -1387,17 +1744,18 @@
             billing: readValue(form, '#mission-billing'),
             status: readValue(form, '#mission-status'),
             assignedTeamIds: readAssignedTeamIdsFromForm(form),
-            notes: readValue(form, '#mission-notes')
-        };
+            notes: readValue(form, '#mission-notes'),
 
-        // Participants are NOT collected from the form DOM.
-        // Team-member checkboxes and the rookie picker commit
-        // immediately as the user interacts with them, via
-        // MissionCore.addParticipant and removeParticipant. The
-        // form's submit does not rewrite them. This avoids a race
-        // between a toggle and a save in flight, and it means the
-        // toggle's success/failure is reported at the moment it
-        // happens, not deferred to save.
+            // Participants come from the STAGED list, which is the
+            // single source of truth for the form's participant
+            // panel. On create this is the ONLY write path (no
+            // mission id exists while the user is ticking boxes).
+            // On edit, the immediate-write path (MissionCore
+            // .addParticipant / removeParticipant) already ran for
+            // every toggle; sending the staged array on submit is
+            // a reconcile that keeps the two in sync.
+            participants: cloneParticipantStage()
+        };
 
         var tagsRaw = readValue(form, '#mission-tags');
         data.tags = tagsRaw
@@ -1409,6 +1767,19 @@
         data.objectives = readObjectivesFromForm(form);
 
         return data;
+    }
+
+    function cloneParticipantStage() {
+        var out = [];
+        for (var i = 0; i < _formState.participants.length; i++) {
+            var p = _formState.participants[i];
+            out.push({
+                characterId: p.characterId,
+                teamId: p.teamId,
+                source: p.source
+            });
+        }
+        return out;
     }
 
     function readValue(form, selector) {
@@ -1599,6 +1970,10 @@
 
         host.appendChild(chip);
         select.value = '';
+
+        // The panel's team sections depend on the assigned team
+        // list. Rebuild it in place.
+        refreshParticipantsPanelFromFormState();
     }
 
     function removeSupportRowFromForm(button) {
@@ -1632,6 +2007,7 @@
     function removeTeamChipFromForm(button) {
         var chip = button.closest('.mission-team-chip');
         if (!chip) { return; }
+        var teamId = chip.dataset.teamId || '';
         var host = chip.parentNode;
         chip.remove();
 
@@ -1642,6 +2018,14 @@
             empty.textContent = 'No teams assigned.';
             host.appendChild(empty);
         }
+
+        // Removing a team removes that team's participants from
+        // the mission. Prune the staged list to match, then
+        // rebuild the panel in place.
+        if (teamId) {
+            pruneStagedParticipantsForTeam(teamId);
+        }
+        refreshParticipantsPanelFromFormState();
     }
 
     // ============================================================
@@ -2898,6 +3282,7 @@
 
     function destroyMissions() {
         removeAllListeners();
+        cancelScheduledParticipantsPanelRefresh();
         state.container = null;
         state.currentMissionId = null;
         state.currentFilter = 'all';
@@ -2905,6 +3290,7 @@
         resetExportPicker();
         resetImportModal();
         _formState.editId = null;
+        _formState.participants = [];
     }
 
     // ============================================================
