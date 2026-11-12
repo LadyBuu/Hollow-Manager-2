@@ -16,6 +16,7 @@
  *   - Refresh the view after a successful mutation.
  *   - Show notifications on success and failure.
  *   - Manage modal lifecycle (open, close, DOM cleanup).
+ *   - Confirm before discarding an unsaved form.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   Domain rules, validation, mutations, projections, reads, and
@@ -85,6 +86,33 @@
  *       onClose callback refreshes whichever surface launched it,
  *       AND resyncs _formState.participants from the store (the
  *       picker writes through MissionCore directly).
+ *
+ * DISCARD CONFIRM (this revision):
+ *   The form can be closed three ways: the × at the top of the
+ *   modal, the "Discard Changes" button in the action bar, and
+ *   (not wired here) the Escape key. All in-form close paths
+ *   route through handleCloseForm(), which compares the form's
+ *   current field values against a baseline captured when the
+ *   form opened. If anything has changed, a confirm prompt
+ *   appears before the form is torn down.
+ *
+ *   The dirty check is COARSE and ERR-ON-THE-SIDE-OF-DIRTY: any
+ *   difference from the baseline counts as dirty. A false-positive
+ *   confirm is mildly annoying; a false-negative confirm silently
+ *   discards work. The check does not try to normalise field
+ *   values (trailing whitespace in a text input counts as a
+ *   change), and it does not distinguish "ticked a participant"
+ *   from "typed in the title". Both are dirty.
+ *
+ *   KNOWN LIMITATION:
+ *   On EDIT, a team-member participant toggle writes to the store
+ *   immediately (MissionCore.addParticipant / removeParticipant),
+ *   so discarding the form does NOT roll back an already-committed
+ *   toggle. The staged list is discarded with the rest of the
+ *   form, but the store write stands. Fixing this would mean
+ *   staging toggles on edit too, and reconciling on submit, which
+ *   is a larger change than this pass. On CREATE there is no
+ *   immediate write, so discard is clean.
  *
  * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
@@ -311,9 +339,15 @@
     //                truth for the panel and for the submit
     //                payload. Initialised from
     //                vm.mission.participants on edit, [] on create.
+    // baseline:      a snapshot of the form's field values captured
+    //                after the form renders and before any user
+    //                interaction. Used by isFormDirty() to decide
+    //                whether to confirm on close. Null when the
+    //                form is not open.
     var _formState = {
         editId: null,
-        participants: []
+        participants: [],
+        baseline: null
     };
 
     // Year-field debounce timer for the participant-panel refresh.
@@ -731,7 +765,7 @@
 
             case 'mission-close-form':
                 event.preventDefault();
-                closeFormModal();
+                handleCloseForm();
                 return;
 
             case 'mission-edit':
@@ -1025,6 +1059,7 @@
         // stored mission's participants; on create it starts empty
         // and grows as the user ticks team-member checkboxes.
         _formState.participants = stageParticipantsFromVM(vm);
+        _formState.baseline = null;
 
         // Attach the form-state participants VM so the renderer
         // can build the panel on FIRST render. The panel is then
@@ -1061,6 +1096,10 @@
                 event.preventDefault();
                 handleFormSubmit(form, editId);
             });
+
+            // Capture the baseline AFTER the form is in the DOM
+            // and all inputs have their initial values.
+            _formState.baseline = buildFormBaseline(form);
         }
 
         var primarySelect = contentEl.querySelector('#mission-primary-type');
@@ -1070,6 +1109,42 @@
                 updateSubtypeOptions(primarySelect, subtypeSelect);
             });
         }
+    }
+
+    /**
+     * The single in-form close path. Confirms when the form has
+     * unsaved changes; otherwise closes immediately.
+     *
+     * Called from:
+     *   - the × button at the top of the form modal;
+     *   - the "Discard Changes" button in the action bar.
+     *
+     * Both are emitted as data-action="mission-close-form", so the
+     * confirm applies to both.
+     */
+    function handleCloseForm() {
+        if (!state.container) { return; }
+
+        var contentEl = state.container.querySelector(
+            '#mission-form-content'
+        );
+        if (!contentEl) {
+            // Form is not open; nothing to close.
+            return;
+        }
+
+        var form = contentEl.querySelector('#mission-form-inner');
+
+        if (form && isFormDirty(form)) {
+            var confirmed = window.confirm(
+                'Discard unsaved changes to this mission?'
+            );
+            if (!confirmed) {
+                return;
+            }
+        }
+
+        closeFormModal();
     }
 
     function closeFormModal() {
@@ -1087,6 +1162,7 @@
 
         _formState.editId = null;
         _formState.participants = [];
+        _formState.baseline = null;
     }
 
     function updateSubtypeOptions(primarySelect, subtypeSelect) {
@@ -1121,6 +1197,164 @@
             opt.textContent = st.label;
             subtypeSelect.appendChild(opt);
         }
+    }
+
+    // ============================================================
+    // FORM DIRTY CHECK
+    // ============================================================
+    //
+    // The baseline is a coarse snapshot of the form's field values
+    // taken once, right after the form renders. isFormDirty reads
+    // the live DOM and compares.
+    //
+    // The check is ERR-ON-THE-SIDE-OF-DIRTY: any difference
+    // counts as a change. Trailing whitespace in a text input
+    // counts. A participant toggle counts. A team chip added and
+    // removed counts (the chip set is back to baseline, so it does
+    // not count — the participant list is compared as a SET of
+    // (characterId, teamId) pairs, so it also does not count in
+    // that case). This is intentional: the check is a safety net,
+    // not a precise diff.
+
+    function buildFormBaseline(form) {
+        if (!form) { return null; }
+
+        return {
+            title: readValue(form, '#mission-title'),
+            description: readValue(form, '#mission-description'),
+            year: readValue(form, '#mission-year'),
+            month: readValue(form, '#mission-month'),
+            day: readValue(form, '#mission-day'),
+            primaryType: readValue(form, '#mission-primary-type'),
+            subtype: readValue(form, '#mission-subtype'),
+            secondaryType: readValue(form, '#mission-secondary-type'),
+            escalation: readValue(form, '#mission-escalation'),
+            threatType: readValue(form, '#mission-threat-type'),
+            environment: readValue(form, '#mission-environment'),
+            location: readValue(form, '#mission-location'),
+            duration: readValue(form, '#mission-duration'),
+            difficulty: readValue(form, '#mission-difficulty'),
+            priority: readValue(form, '#mission-priority'),
+            basePay: readValue(form, '#mission-base-pay'),
+            surchargePay: readValue(form, '#mission-surcharge-pay'),
+            billing: readValue(form, '#mission-billing'),
+            status: readValue(form, '#mission-status'),
+            notes: readValue(form, '#mission-notes'),
+            tags: readValue(form, '#mission-tags'),
+
+            assignedTeamIds: readAssignedTeamIdsFromForm(form),
+            supportPersonnel: readSupportPersonnelFromForm(form),
+            objectives: readObjectivesFromForm(form),
+
+            // The staged participant list, as a sorted set of
+            // "characterId::teamId" keys. Comparing as a set means
+            // a toggle-on-then-off returns to baseline.
+            participantKeys: participantKeySet()
+        };
+    }
+
+    function isFormDirty(form) {
+        if (!form) { return false; }
+        var baseline = _formState.baseline;
+        if (!baseline) {
+            // No baseline captured: be conservative and treat the
+            // form as dirty if it has any content beyond the
+            // defaults. In practice this branch never fires,
+            // because openFormModal captures the baseline right
+            // after render.
+            return true;
+        }
+
+        var current = buildFormBaseline(form);
+
+        // Scalar fields: strict string comparison.
+        var scalarKeys = [
+            'title', 'description',
+            'year', 'month', 'day',
+            'primaryType', 'subtype', 'secondaryType',
+            'escalation', 'threatType', 'environment',
+            'location', 'duration',
+            'difficulty', 'priority',
+            'basePay', 'surchargePay', 'billing',
+            'status', 'notes', 'tags'
+        ];
+        for (var i = 0; i < scalarKeys.length; i++) {
+            var k = scalarKeys[i];
+            if (baseline[k] !== current[k]) { return true; }
+        }
+
+        // Team chips: set comparison on the id list.
+        if (!sameStringSet(baseline.assignedTeamIds,
+                           current.assignedTeamIds)) {
+            return true;
+        }
+
+        // Support personnel: set comparison on the id list.
+        if (!sameStringSet(baseline.supportPersonnel,
+                           current.supportPersonnel)) {
+            return true;
+        }
+
+        // Objectives: order-sensitive comparison on
+        // (text, done) tuples. Reordering an objective counts as
+        // a change because the index is part of the objective's
+        // identity in the form's list.
+        if (!sameObjectives(baseline.objectives,
+                            current.objectives)) {
+            return true;
+        }
+
+        // Participants: set comparison on (characterId, teamId).
+        if (!sameStringSet(baseline.participantKeys,
+                           current.participantKeys)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function participantKeySet() {
+        var keys = [];
+        for (var i = 0; i < _formState.participants.length; i++) {
+            var p = _formState.participants[i];
+            if (!p || !p.characterId) { continue; }
+            var cid = String(p.characterId);
+            var tid = (p.teamId === undefined || p.teamId === null)
+                ? '__null__'
+                : String(p.teamId);
+            keys.push(cid + '::' + tid);
+        }
+        return keys;
+    }
+
+    function sameStringSet(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b)) {
+            return false;
+        }
+        if (a.length !== b.length) { return false; }
+
+        var setA = Object.create(null);
+        for (var i = 0; i < a.length; i++) {
+            setA[String(a[i])] = (setA[String(a[i])] || 0) + 1;
+        }
+        for (var j = 0; j < b.length; j++) {
+            var k = String(b[j]);
+            if (!setA[k]) { return false; }
+            setA[k]--;
+        }
+        return true;
+    }
+
+    function sameObjectives(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b)) {
+            return false;
+        }
+        if (a.length !== b.length) { return false; }
+        for (var i = 0; i < a.length; i++) {
+            if (a[i].text !== b[i].text) { return false; }
+            if (a[i].done !== b[i].done) { return false; }
+        }
+        return true;
     }
 
     // ============================================================
@@ -1241,12 +1475,6 @@
      */
     function refreshParticipantsPanelFromFormState() {
         if (!state.container) { return; }
-        if (!_formState.editId && !_formState.isCreate) {
-            // Guard against refreshing a panel that does not
-            // belong to an open form. We only know the form is
-            // open by the presence of the modal shell, so check
-            // that instead of editId (which is null on create).
-        }
 
         var contentEl = state.container.querySelector(
             '#mission-form-content'
@@ -3291,6 +3519,7 @@
         resetImportModal();
         _formState.editId = null;
         _formState.participants = [];
+        _formState.baseline = null;
     }
 
     // ============================================================
