@@ -9,7 +9,8 @@
  *   - Member mutations: add interval, end interval, reopen interval,
  *     purge interval, replace interval, replace leave, remove member.
  *   - Batch member mutation (batchAddMembers).
- *   - Ranking mutations (add, remove).
+ *   - Ranking mutations: insert, remove, move, clear, plus legacy
+ *     add/remove compatibility shims.
  *   - Configuration (characterProvider injection).
  *   - The PERIODS model: validation, canonicalisation, and the
  *     legacy migration from nameHistory + scalars.
@@ -37,6 +38,71 @@
  *     owns the reference model for team → mission.
  *   - The weeklyTeams cleanup details. AcademyCascade.teamDeleted
  *     owns the reference model for team → academy.weeklyTeams.
+ *
+ * RANKINGS — ORDERED LIST MODEL (this revision):
+ *   A year carries an ORDERED LIST of teams. Positions are
+ *   contiguous 1..N; there is no "gap" and no "two #1 teams".
+ *
+ *   The canonical read of the list is:
+ *
+ *     TeamQueries.getRankedTeamsForYear(year)
+ *
+ *   which returns one entry per occupied position, sorted by
+ *   position ascending. Because the write path below guarantees
+ *   contiguity, `N` equals the number of teams with an explicit
+ *   entry at that year, and there are no gaps.
+ *
+ *   WRITE PRIMITIVES:
+ *
+ *     insertRankingAt(teamId, year, position)
+ *       Insert the team at `position`; every explicit entry at
+ *       `year` whose rank was >= `position` is rewritten to
+ *       `rank + 1`. If the team was already in the list, it is
+ *       removed first and the tail below the old position shifts
+ *       up by one, then the insert runs. If `position` exceeds
+ *       the current length, the team is appended.
+ *
+ *     removeRankingAt(teamId, year)
+ *       Remove the team's explicit entry; every explicit entry at
+ *       `year` whose rank was > the removed rank shifts up by
+ *       one. Idempotent.
+ *
+ *     moveRanking(teamId, year, newPosition)
+ *       Remove at old, insert at new. One transaction.
+ *
+ *   The storage shape is UNCHANGED: `rankingHistory` on each
+ *   team, holding `{ period, rank }` entries. What changed is the
+ *   INVARIANT enforced at write time: for any given `year`, the
+ *   multiset of explicit entries across all teams is a contiguous
+ *   range `1..N` with exactly one team per position.
+ *
+ *   Effective rank (read-time inheritance) is a separate concern
+ *   owned by TeamQueries.getEffectiveRanking. A team that is not
+ *   in the ordered list for `year` falls back to its most recent
+ *   explicit entry at or before `year`.
+ *
+ *   LEGACY SHIMS:
+ *
+ *     addRanking(teamId, period, rank)
+ *       Routes to insertRankingAt. The old "write an entry and
+ *       allow duplicates" behaviour is gone. Callers that
+ *       previously relied on duplicates (there were none in the
+ *       shipped data) get the new behaviour, which is the correct
+ *       one: the new team takes the position, the previous
+ *       occupant shifts down by one.
+ *
+ *     removeRanking(teamId, period)
+ *       Routes to removeRankingAt. Same shift-up-the-tail
+ *       behaviour.
+ *
+ *   MIGRATION:
+ *     There is no migration step. The shipped store has no
+ *     ranking entries, so there is nothing to normalise. A stored
+ *     record that somehow carries duplicates or gaps will be
+ *     cleaned the next time any team's ranking at the affected
+ *     year is written. If a hand-edited export ever introduces
+ *     duplicates or gaps, they will be visible in the ordered
+ *     list as soon as the year is reordered.
  *
  * TYPE COMPARISONS:
  *   Every comparison of a team's `type` field in this module
@@ -4191,12 +4257,128 @@
     }
 
     // ============================================================
-    // RANKING MUTATIONS
+    // RANKING MUTATIONS — ordered-list model
     // ============================================================
+    //
+    // The year is a single ordered list. Positions are contiguous
+    // 1..N; there is no gap and no duplicate.
+    //
+    // Storage is unchanged: each team carries its own
+    // rankingHistory, holding { period, rank } entries. The
+    // invariant enforced here is cross-team: for a given year, the
+    // multiset of explicit entries is 1..N with exactly one team
+    // per position.
+    //
+    // The read counterpart is TeamQueries.getRankedTeamsForYear.
+    //
+    // COLLECT / SHIFT HELPERS:
+    //   collectExplicitEntriesAtYear(missions, year)
+    //     Walks every team's rankingHistory, keeps entries whose
+    //     period === year (explicit only), sorts by rank asc.
+    //     Returns [{ teamId, rank }].
+    //
+    //   shiftExplicitRanksAtYear(missions, year, fromRank, delta)
+    //     For every explicit entry at year with rank >= fromRank,
+    //     add delta to rank. delta is +1 for insert-shift-down and
+    //     -1 for remove-shift-up. The caller is responsible for
+    //     keeping fromRank within the current range.
 
-    function addRanking(teamId, period, rank) {
+    function collectExplicitEntriesAtYear(missions, year) {
+        var targetYear = String(parseInt(year, 10));
+        var entries = [];
+
+        if (!Array.isArray(missions)) { return entries; }
+
+        for (var i = 0; i < missions.length; i++) {
+            var mission = missions[i];
+            if (!isObject(mission)) { continue; }
+            if (!Array.isArray(mission.rankingHistory)) { continue; }
+
+            for (var j = 0; j < mission.rankingHistory.length; j++) {
+                var entry = mission.rankingHistory[j];
+                if (!isObject(entry)) { continue; }
+
+                var entryYear = parsePeriod(entry.period);
+                if (entryYear === null) { continue; }
+                if (String(entryYear) !== targetYear) { continue; }
+
+                var rank = parsePeriod(entry.rank);
+                if (rank === null) { continue; }
+
+                entries.push({
+                    teamId: String(mission.id),
+                    team: mission,
+                    rank: rank
+                });
+            }
+        }
+
+        entries.sort(function(a, b) {
+            return a.rank - b.rank;
+        });
+
+        return entries;
+    }
+
+    function shiftExplicitRanksAtYear(missions, year, fromRank, delta) {
+        if (delta === 0) { return 0; }
+
+        var targetYear = String(parseInt(year, 10));
+        var shifted = 0;
+
+        if (!Array.isArray(missions)) { return shifted; }
+
+        for (var i = 0; i < missions.length; i++) {
+            var mission = missions[i];
+            if (!isObject(mission)) { continue; }
+            if (!Array.isArray(mission.rankingHistory)) { continue; }
+
+            for (var j = 0; j < mission.rankingHistory.length; j++) {
+                var entry = mission.rankingHistory[j];
+                if (!isObject(entry)) { continue; }
+
+                var entryYear = parsePeriod(entry.period);
+                if (entryYear === null) { continue; }
+                if (String(entryYear) !== targetYear) { continue; }
+
+                var rank = parsePeriod(entry.rank);
+                if (rank === null) { continue; }
+                if (rank < fromRank) { continue; }
+
+                var next = rank + delta;
+                if (next < 1) { next = 1; }
+                entry.rank = next;
+                shifted++;
+            }
+        }
+
+        return shifted;
+    }
+
+    function findTeamRankingEntryAtYear(team, year) {
+        if (!team || !Array.isArray(team.rankingHistory)) {
+            return null;
+        }
+        var targetYear = String(parseInt(year, 10));
+        for (var i = 0; i < team.rankingHistory.length; i++) {
+            var entry = team.rankingHistory[i];
+            if (!isObject(entry)) { continue; }
+            var entryYear = parsePeriod(entry.period);
+            if (entryYear === null) { continue; }
+            if (String(entryYear) !== targetYear) { continue; }
+            return entry;
+        }
+        return null;
+    }
+
+    /**
+     * Remove the team's explicit entry at `year`. Every explicit
+     * entry at `year` whose rank was strictly greater than the
+     * removed rank shifts up by one. Idempotent.
+     */
+    function removeRankingAt(teamId, year) {
         if (failIfMissing(
-            checkBaseDependencies(), 'addRanking'
+            checkBaseDependencies(), 'removeRankingAt'
         )) {
             return Promise.resolve(
                 failure('Dependencies not loaded. Please refresh.')
@@ -4207,17 +4389,10 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
 
-        var periodNum = parsePeriod(period);
+        var periodNum = parsePeriod(year);
         if (periodNum === null) {
             return Promise.resolve(
                 failure('Period must be a positive integer.')
-            );
-        }
-
-        var rankNum = parsePeriod(rank);
-        if (rankNum === null) {
-            return Promise.resolve(
-                failure('Rank must be a positive integer.')
             );
         }
 
@@ -4229,13 +4404,20 @@
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var entryCheck = validateRankingEntry(
-            { period: periodNum, rank: rankNum },
-            current.type
+        var existingEntry = findTeamRankingEntryAtYear(
+            current, periodNum
         );
-        if (!entryCheck.valid) {
-            return Promise.resolve(failure(entryCheck.message));
+
+        // Idempotent: no entry, nothing to do.
+        if (!existingEntry) {
+            return Promise.resolve(success({
+                period: periodStr,
+                teamId: targetId,
+                removed: false
+            }));
         }
+
+        var removedRank = parsePeriod(existingEntry.rank);
 
         return runMutation({
             validate: function(snapshot) {
@@ -4244,16 +4426,6 @@
                     return {
                         valid: false,
                         message: 'Team no longer exists.'
-                    };
-                }
-                var check = validateRankingEntry(
-                    { period: periodNum, rank: rankNum },
-                    target.type
-                );
-                if (!check.valid) {
-                    return {
-                        valid: false,
-                        message: check.message
                     };
                 }
                 return { valid: true };
@@ -4266,34 +4438,172 @@
                         'Team not found in data store.'
                     );
                 }
+
                 if (!Array.isArray(target.rankingHistory)) {
                     target.rankingHistory = [];
                 }
 
-                var existingIndex = -1;
-                for (var i = 0;
-                     i < target.rankingHistory.length;
-                     i++) {
-                    var entryPeriod = parsePeriod(
-                        target.rankingHistory[i].period
+                target.rankingHistory =
+                    target.rankingHistory.filter(function(entry) {
+                        if (!isObject(entry)) { return true; }
+                        var entryYear = parsePeriod(entry.period);
+                        if (entryYear === null) { return true; }
+                        return String(entryYear) !== periodStr;
+                    });
+
+                if (removedRank !== null && removedRank >= 1) {
+                    shiftExplicitRanksAtYear(
+                        snapshot.teams,
+                        periodStr,
+                        removedRank + 1,
+                        -1
                     );
-                    if (entryPeriod !== null &&
-                        String(entryPeriod) === periodStr) {
-                        existingIndex = i;
-                        break;
+                }
+
+                target.updatedAt = new Date().toISOString();
+
+                return {
+                    period: periodStr,
+                    teamId: targetId,
+                    removedRank: removedRank,
+                    removed: true
+                };
+            },
+
+            logMessage: 'Removed ranking from team: ' +
+                (current.name || targetId),
+            successMessage: 'Ranking removed successfully!',
+            failureMessage: 'Failed to remove ranking.'
+        });
+    }
+
+    /**
+     * Insert the team at `position` in the ordered list for `year`.
+     *
+     * If the team already has an explicit entry at `year`, it is
+     * removed first and the tail below the old position shifts up
+     * by one; then the insert runs. `position` is clamped to
+     * [1, N+1] where N is the current list length.
+     *
+     * Every explicit entry at `year` whose rank was >= `position`
+     * (after the removal, if any) is rewritten to rank + 1.
+     */
+    function insertRankingAt(teamId, year, position) {
+        if (failIfMissing(
+            checkBaseDependencies(), 'insertRankingAt'
+        )) {
+            return Promise.resolve(
+                failure('Dependencies not loaded. Please refresh.')
+            );
+        }
+
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+
+        var periodNum = parsePeriod(year);
+        if (periodNum === null) {
+            return Promise.resolve(
+                failure('Period must be a positive integer.')
+            );
+        }
+
+        var positionNum = parsePeriod(position);
+        if (positionNum === null || positionNum < 1) {
+            return Promise.resolve(
+                failure('Position must be a positive integer.')
+            );
+        }
+
+        var targetId = String(teamId).trim();
+        var periodStr = String(periodNum);
+
+        var current = findTeamInData(getDataStore(), targetId);
+        if (!current) {
+            return Promise.resolve(failure('Team not found.'));
+        }
+
+        var existingEntry = findTeamRankingEntryAtYear(
+            current, periodNum
+        );
+        var existingRank = existingEntry
+            ? parsePeriod(existingEntry.rank)
+            : null;
+
+        return runMutation({
+            validate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
+                    return {
+                        valid: false,
+                        message: 'Team no longer exists.'
+                    };
+                }
+                return { valid: true };
+            },
+
+            mutate: function(snapshot) {
+                var target = findTeamInData(snapshot, targetId);
+                if (!target) {
+                    throw new Error(
+                        'Team not found in data store.'
+                    );
+                }
+
+                if (!Array.isArray(target.rankingHistory)) {
+                    target.rankingHistory = [];
+                }
+
+                if (!Array.isArray(snapshot.teams)) {
+                    throw new Error('Team store is malformed.');
+                }
+
+                // ---- Remove the team's existing entry, if any ----
+                if (existingEntry) {
+                    target.rankingHistory =
+                        target.rankingHistory.filter(function(entry) {
+                            if (!isObject(entry)) { return true; }
+                            var entryYear = parsePeriod(
+                                entry.period
+                            );
+                            if (entryYear === null) { return true; }
+                            return String(entryYear) !== periodStr;
+                        });
+
+                    if (existingRank !== null && existingRank >= 1) {
+                        shiftExplicitRanksAtYear(
+                            snapshot.teams,
+                            periodStr,
+                            existingRank + 1,
+                            -1
+                        );
                     }
                 }
 
-                var newEntry = {
-                    period: periodStr,
-                    rank: rankNum
-                };
-                if (existingIndex !== -1) {
-                    target.rankingHistory[existingIndex] =
-                        newEntry;
-                } else {
-                    target.rankingHistory.push(newEntry);
+                // ---- Clamp the insert position ----
+                var listAfterRemoval = collectExplicitEntriesAtYear(
+                    snapshot.teams, periodStr
+                );
+                var maxPosition = listAfterRemoval.length + 1;
+                var insertAt = positionNum;
+                if (insertAt > maxPosition) {
+                    insertAt = maxPosition;
                 }
+                if (insertAt < 1) { insertAt = 1; }
+
+                // ---- Shift the tail down ----
+                shiftExplicitRanksAtYear(
+                    snapshot.teams,
+                    periodStr,
+                    insertAt,
+                    +1
+                );
+
+                // ---- Write the new entry ----
+                target.rankingHistory.push({
+                    period: periodStr,
+                    rank: insertAt
+                });
 
                 target.rankingHistory.sort(function(a, b) {
                     var ap = parsePeriod(a.period);
@@ -4308,21 +4618,28 @@
 
                 return {
                     period: periodStr,
-                    rank: rankNum,
-                    teamId: targetId
+                    teamId: targetId,
+                    position: insertAt,
+                    previousPosition: existingRank
                 };
             },
 
-            logMessage: 'Added ranking to team: ' +
-                (current.name || targetId),
-            successMessage: 'Ranking added successfully!',
-            failureMessage: 'Failed to add ranking.'
+            logMessage: 'Inserted ranking for team: ' +
+                (current.name || targetId) +
+                ' at position ' + positionNum + ' for ' + periodStr,
+            successMessage: 'Ranking inserted successfully!',
+            failureMessage: 'Failed to insert ranking.'
         });
     }
 
-    function removeRanking(teamId, period) {
+    /**
+     * Move a team to a new position in the ordered list for a
+     * year. Composes remove-at-old and insert-at-new in one
+     * transaction.
+     */
+    function moveRanking(teamId, year, newPosition) {
         if (failIfMissing(
-            checkBaseDependencies(), 'removeRanking'
+            checkBaseDependencies(), 'moveRanking'
         )) {
             return Promise.resolve(
                 failure('Dependencies not loaded. Please refresh.')
@@ -4333,10 +4650,17 @@
             return Promise.resolve(failure('Team ID is required.'));
         }
 
-        var periodNum = parsePeriod(period);
+        var periodNum = parsePeriod(year);
         if (periodNum === null) {
             return Promise.resolve(
                 failure('Period must be a positive integer.')
+            );
+        }
+
+        var positionNum = parsePeriod(newPosition);
+        if (positionNum === null || positionNum < 1) {
+            return Promise.resolve(
+                failure('Position must be a positive integer.')
             );
         }
 
@@ -4348,11 +4672,33 @@
             return Promise.resolve(failure('Team not found.'));
         }
 
+        var existingEntry = findTeamRankingEntryAtYear(
+            current, periodNum
+        );
+        var existingRank = existingEntry
+            ? parsePeriod(existingEntry.rank)
+            : null;
+
+        if (existingRank === null) {
+            return Promise.resolve(failure(
+                'Team is not ranked at ' + periodStr +
+                '; use insertRankingAt instead.'
+            ));
+        }
+
+        if (existingRank === positionNum) {
+            return Promise.resolve(success({
+                period: periodStr,
+                teamId: targetId,
+                position: existingRank,
+                noop: true
+            }));
+        }
+
         return runMutation({
             validate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
-                if (!target ||
-                    !Array.isArray(target.rankingHistory)) {
+                if (!target) {
                     return {
                         valid: false,
                         message: 'Team no longer exists.'
@@ -4363,40 +4709,111 @@
 
             mutate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
-                if (!target ||
-                    !Array.isArray(target.rankingHistory)) {
+                if (!target) {
                     throw new Error(
                         'Team not found in data store.'
                     );
                 }
 
-                var found = false;
-                target.rankingHistory =
-                    target.rankingHistory.filter(function(entry) {
-                        if (!entry) { return true; }
-                        var entryPeriod =
-                            parsePeriod(entry.period);
-                        if (entryPeriod !== null &&
-                            String(entryPeriod) === periodStr) {
-                            found = true;
-                            return false;
-                        }
-                        return true;
-                    });
-
-                if (!found) {
-                    throw new Error('Ranking entry not found.');
+                if (!Array.isArray(target.rankingHistory)) {
+                    target.rankingHistory = [];
+                }
+                if (!Array.isArray(snapshot.teams)) {
+                    throw new Error('Team store is malformed.');
                 }
 
+                // ---- Remove the team's entry ----
+                target.rankingHistory =
+                    target.rankingHistory.filter(function(entry) {
+                        if (!isObject(entry)) { return true; }
+                        var entryYear = parsePeriod(entry.period);
+                        if (entryYear === null) { return true; }
+                        return String(entryYear) !== periodStr;
+                    });
+
+                if (existingRank >= 1) {
+                    shiftExplicitRanksAtYear(
+                        snapshot.teams,
+                        periodStr,
+                        existingRank + 1,
+                        -1
+                    );
+                }
+
+                // ---- Clamp the insert position ----
+                var listAfterRemoval = collectExplicitEntriesAtYear(
+                    snapshot.teams, periodStr
+                );
+                var maxPosition = listAfterRemoval.length + 1;
+                var insertAt = positionNum;
+                if (insertAt > maxPosition) {
+                    insertAt = maxPosition;
+                }
+                if (insertAt < 1) { insertAt = 1; }
+
+                // ---- Shift the tail down ----
+                shiftExplicitRanksAtYear(
+                    snapshot.teams,
+                    periodStr,
+                    insertAt,
+                    +1
+                );
+
+                // ---- Write the new entry ----
+                target.rankingHistory.push({
+                    period: periodStr,
+                    rank: insertAt
+                });
+
+                target.rankingHistory.sort(function(a, b) {
+                    var ap = parsePeriod(a.period);
+                    var bp = parsePeriod(b.period);
+                    if (ap === null && bp === null) { return 0; }
+                    if (ap === null) { return 1; }
+                    if (bp === null) { return -1; }
+                    return ap - bp;
+                });
+
                 target.updatedAt = new Date().toISOString();
-                return { period: periodStr, teamId: targetId };
+
+                return {
+                    period: periodStr,
+                    teamId: targetId,
+                    position: insertAt,
+                    previousPosition: existingRank
+                };
             },
 
-            logMessage: 'Removed ranking from team: ' +
-                (current.name || targetId),
-            successMessage: 'Ranking removed successfully!',
-            failureMessage: 'Failed to remove ranking.'
+            logMessage: 'Moved ranking for team: ' +
+                (current.name || targetId) +
+                ' from ' + existingRank + ' to ' + positionNum +
+                ' for ' + periodStr,
+            successMessage: 'Ranking moved successfully!',
+            failureMessage: 'Failed to move ranking.'
         });
+    }
+
+    // ============================================================
+    // LEGACY RANKING SHIMS
+    // ============================================================
+    //
+    // addRanking and removeRanking predate the ordered-list model.
+    // They are kept as thin routes to insertRankingAt and
+    // removeRankingAt so existing callers do not have to change.
+    //
+    // The old addRanking wrote an explicit entry and allowed
+    // duplicates. That behaviour is gone. The new routing means a
+    // caller who previously called addRanking(teamId, year, 3)
+    // gets the team INSERTED at position 3, and every explicit
+    // entry at year with rank >= 3 shifts down by one. This is the
+    // correct model for a reorderable ordered list.
+
+    function addRanking(teamId, period, rank) {
+        return insertRankingAt(teamId, period, rank);
+    }
+
+    function removeRanking(teamId, period) {
+        return removeRankingAt(teamId, period);
     }
 
     // ============================================================
@@ -4539,6 +4956,12 @@
         replaceMemberInterval: replaceMemberInterval,
         replaceMemberLeave: replaceMemberLeave,
 
+        // ---- Rankings — ordered-list model ----
+        insertRankingAt: insertRankingAt,
+        removeRankingAt: removeRankingAt,
+        moveRanking: moveRanking,
+
+        // ---- Legacy ranking shims ----
         addRanking: addRanking,
         removeRanking: removeRanking,
 
