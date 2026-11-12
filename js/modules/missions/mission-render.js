@@ -38,6 +38,32 @@
  *   the markup or shows a clearly-marked empty state. It never
  *   invents data.
  *
+ * PARTICIPANTS PANEL (this revision):
+ *   The mission form's participant editor must work on BOTH create
+ *   and edit. The controller (mission-ui.js) attaches
+ *   `vm.participantsVM` on open in both cases:
+ *
+ *     - On EDIT, the VM is built from the stored mission record
+ *       via MissionAggregator.getParticipantsViewModel(editId).
+ *
+ *     - On CREATE, the VM is built from live form state via
+ *       MissionAggregator.getParticipantsViewModelFromFormState({
+ *         missionId: null,
+ *         ...
+ *         assignedTeamIds: [],
+ *         participants: []
+ *       })
+ *       and rebuilt in place as the user adds team chips.
+ *
+ *   The renderer therefore always sees a `participantsVM` when the
+ *   form is open. The placeholder path below is a DEFENSIVE
+ *   fallback for a malformed VM, not the normal create path.
+ *
+ *   The panel's year hint is read from `participantsVM.missionYear`
+ *   (which the aggregator resolves from the live year field on the
+ *   form), so changing the year refreshes the hint on the next
+ *   in-place rebuild.
+ *
  * TEAM EDITOR — SPECIALISATION-AWARE PICKER:
  *   The team <select> on the mission form carries richer labels
  *   and a smarter sort order:
@@ -74,11 +100,6 @@
  *   more. The detail panel now renders: header, fields,
  *   objectives, assigned teams, participants, support personnel,
  *   reports, and actions.
- *
- * PARTICIPANTS PANEL (form):
- *   The mission form carries a participant editor between the
- *   team chips and the support personnel block. See the inline
- *   documentation on renderParticipantsPanel.
  *
  * DATA-ACTION CONVENTION:
  *   Every interactive element that the controller should respond
@@ -1748,6 +1769,20 @@
     // ============================================================
     // PARTICIPANTS PANEL (form)
     // ============================================================
+    //
+    // The panel is rendered from `vm.participantsVM`, which the
+    // controller attaches on open for BOTH create and edit:
+    //
+    //   EDIT   -> MissionAggregator.getParticipantsViewModel(editId)
+    //   CREATE -> MissionAggregator.getParticipantsViewModelFromFormState
+    //
+    // and rebuilds in place via
+    // refreshParticipantsPanelFromFormState when the team chips,
+    // year field, or staged list change.
+    //
+    // The placeholder path (renderParticipantsPanelPlaceholder) is
+    // a DEFENSIVE fallback for a malformed VM. It is not the
+    // normal create path.
 
     function renderParticipantsPanel(vm) {
         var participantsVM = vm.participantsVM || null;
@@ -1798,9 +1833,8 @@
                     'id="mission-participants-panel">';
         html += '<label>Participants</label>';
         html += '<p class="field-hint">' +
-                    'Participants can be recorded once the mission ' +
-                    'has been created and at least one team is ' +
-                    'assigned.' +
+                    'The participant list could not be prepared. ' +
+                    'Reload the form and try again.' +
                 '</p>';
         html += '</div>';
         return html;
@@ -1814,6 +1848,12 @@
         var members = isArray(teamRow.members)
             ? teamRow.members
             : [];
+
+        var missionYear = vm.participantsVM &&
+            vm.participantsVM.missionYear !== undefined &&
+            vm.participantsVM.missionYear !== null
+            ? safeString(vm.participantsVM.missionYear)
+            : 'this year';
 
         var html = '';
         html += '<div class="participant-team-section" ' +
@@ -1833,9 +1873,7 @@
         if (members.length === 0) {
             html += '<p class="empty-state small">' +
                         'No members active in ' +
-                        escapeHtml(safeString(
-                            vm.participantsVM.missionYear
-                        )) +
+                        escapeHtml(missionYear) +
                         '.' +
                     '</p>';
             html += '</div>';
@@ -1860,6 +1898,14 @@
 
         var checked = member.isParticipant === true;
 
+        // data-mission-id is always present. On create it is '',
+        // and the controller stages the toggle locally instead of
+        // mirroring to the store (there is no mission row yet).
+        // On edit it is the mission id and the toggle is mirrored.
+        var missionIdAttr = vm.editId
+            ? String(vm.editId)
+            : '';
+
         var html = '';
         html += '<li class="participant-member-row">';
 
@@ -1868,7 +1914,7 @@
                     'class="participant-member-checkbox" ' +
                     'data-action="mission-toggle-participant" ' +
                     'data-mission-id="' +
-                        escapeAttribute(vm.editId || '') + '" ' +
+                        escapeAttribute(missionIdAttr) + '" ' +
                     'data-character-id="' +
                         escapeAttribute(member.characterId) + '" ' +
                     'data-team-id="' +
@@ -1899,6 +1945,12 @@
     // ============================================================
     // ROOKIE SUMMARY SECTION (form)
     // ============================================================
+    //
+    // Rookie chips are only rendered when the mission exists
+    // (vm.editId is non-empty). On create there is nothing to
+    // remove from and nothing to add to, because the picker needs
+    // a mission id to write against. The "+ Add Rookies" button is
+    // therefore gated on vm.editId.
 
     function renderRookieSummarySection(vm, participantsVM) {
         var currentParticipants =
@@ -1919,7 +1971,7 @@
                 .localeCompare(String(b.displayName || ''));
         });
 
-        var editId = vm.editId || '';
+        var editId = vm.editId ? String(vm.editId) : '';
         var canEdit = editId !== '';
 
         var html = '';
@@ -1950,8 +2002,7 @@
 
         html += '<div class="rookie-chip-list">';
         for (var r = 0; r < rookies.length; r++) {
-            var rookie = rookies[r];
-            html += renderRookieChip(vm, rookie);
+            html += renderRookieChip(vm, rookies[r]);
         }
         html += '</div>';
 
@@ -1962,7 +2013,7 @@
     function renderRookieChip(vm, rookie) {
         if (!rookie || !rookie.characterId) { return ''; }
 
-        var editId = vm.editId || '';
+        var editId = vm.editId ? String(vm.editId) : '';
 
         var html = '';
         html += '<span class="rookie-chip" ' +
