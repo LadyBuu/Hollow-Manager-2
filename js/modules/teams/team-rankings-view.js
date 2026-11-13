@@ -6,87 +6,118 @@
  * WHAT THIS OWNS:
  *   - Rendering the Rankings tab body.
  *   - The year picker.
- *   - The sortable table: rank, team, period, members, status.
- *   - The per-row rank cell, which is click-to-edit.
+ *   - The Show Inactive toggle.
+ *   - The position-ordered table (rank is POSITION, not a
+ *     user-editable field).
+ *   - Draggable rows.
+ *   - The drop-position indicator between rows.
+ *   - The "Insert team" strip for teams that have no position
+ *     yet.
+ *   - The per-row "remove from this position" clear button.
  *
  * WHAT THIS DOES NOT OWN:
  *   - Reads. TeamAggregator.getTeamRankingsViewModel owns them.
- *   - Writes. TeamCore.addRanking / removeRanking own them.
+ *   - Writes. TeamCore.insertRankingAt / removeRankingAt /
+ *     moveRanking own them.
  *   - Event binding. TeamEvents owns it.
  *   - The tab shell. TeamRender.renderContainer owns it. This
  *     module renders the BODY; the shell calls in.
+ *   - The drop-before / drop-after styling. teams.css owns it;
+ *     this module emits the row and the classes are applied at
+ *     drag time by TeamEvents.
  *
- * VM SHAPE:
+ * VM SHAPE (from TeamAggregator, ordered-list model):
+ *
  *   {
  *     year: number,
  *     rows: [
  *       {
- *         teamId,
- *         name,
- *         rank:         number|null,
- *         explicit:     boolean,      // true when an entry exists
- *                                     // at exactly `year`
- *         sourcePeriod: string|null,  // year the rank came from
- *         effectiveDisplay: string,   // '#3' or '—'
- *         provenanceLabel:  string,   // '(from 1904)' or 'set'
- *         periodDisplay:    string,
- *         memberCount:      number,
- *         status:           'active'|'inactive'|'deprecated',
- *         activeAtYear:     boolean
+ *         position:      integer 1..N,
+ *         teamId:        string,
+ *         name:          string,
+ *         rank:          integer (same as position; compat),
+ *         explicit:      true,
+ *         sourcePeriod:  String(year),
+ *         periodDisplay: string,
+ *         memberCount:   integer,
+ *         status:        raw stored status,
+ *         activeAtYear:  boolean
  *       }
  *     ],
- *     sortMode: 'rank'|'name'|'members',
- *     sortDirection: 'asc'|'desc',
+ *     unrankedTeams: [
+ *       {
+ *         teamId: string,
+ *         name:   string,
+ *         status: string,
+ *         activeAtYear: true
+ *       }
+ *     ],
  *     showInactive: boolean
  *   }
  *
- * RANK CELL STATES:
- *   The rank cell carries one of three state classes:
+ *   `rows` is already position-ordered by the query layer. This
+ *   renderer does not re-sort.
  *
- *     .ranking-rank-explicit    the value was written at this year
- *     .ranking-rank-inherited   the value comes from an earlier
- *                               year; a "(from 1904)" note is
- *                               shown beneath it
- *     .ranking-rank-empty       no entry at or before this year;
- *                               the cell shows an em dash
+ * ROW SHAPE:
+ *   Each row is a .rankings-table-row with data-team-id and
+ *   data-position. The row's column layout mirrors the header:
  *
- *   Click any cell to edit in place. An input appears, focused
- *   and selected. Enter commits, Escape cancels, blur commits.
- *   The commit calls TeamCore.addRanking(teamId, year, rank) for
- *   a non-empty value, or TeamCore.removeRanking(teamId, year)
- *   for an empty value. TeamEvents owns those calls; this module
- *   only emits the DOM shape and the data attributes they read.
+ *     .rankings-col-rank      position number + a drag grip
+ *     .rankings-col-name      team name
+ *     .rankings-col-period    the team's active window
+ *     .rankings-col-members   active member count
+ *     .rankings-col-status    raw status
+ *     .rankings-col-actions   clear button (only when explicit)
  *
- * CELL DOM CONTRACT:
- *   Each rank cell carries:
+ *   The row is draggable="true". The drag handle lives inside
+ *   the rank cell so the user knows where to grab; TeamEvents
+ *   reads it off .rankings-drag-handle and starts the drag.
  *
- *     <span class="ranking-row-rank ranking-rank-explicit"
- *           data-team-id="team_x"
- *           data-year="1905"
- *           data-current-rank="3">
- *       <span class="ranking-rank-value">#3</span>
- *       <span class="ranking-rank-provenance">set</span>
- *     </span>
+ * DROP INDICATOR:
+ *   The row carries a data-drop-marker child that renders an
+ *   empty strip. During a drag, TeamEvents adds
+ *   .drop-before or .drop-after to the row under the pointer;
+ *   teams.css styles those classes to draw the drop line. This
+ *   module renders the row with no drop class; the drag-time
+ *   state is entirely TeamEvents's.
  *
- *   On click, TeamEvents replaces the cell contents with:
+ * INSERT STRIP:
+ *   Below the table, a strip for teams that do not yet have a
+ *   position. Three controls:
  *
- *     <input class="ranking-inline-input"
- *            data-team-id="team_x"
- *            data-year="1905"
- *            data-original-rank="3" />
+ *     #rankings-insert-team       <select> of vm.unrankedTeams
+ *     #rankings-insert-position   <input type=number>
+ *     #rankings-insert-btn        <button data-year=...>
  *
- *   and commits on Enter or blur, cancels on Escape.
+ *   TeamEvents (C5) wires the button to
+ *   TeamCore.insertRankingAt(teamId, year, position). A blank
+ *   position means "append to the end" (position N+1); the
+ *   renderer does not compute this — the controller does, via
+ *   the aggregation's own rows length. The strip emits the
+ *   current rows length on #rankings-insert-btn as
+ *   data-current-rows so the controller does not have to
+ *   re-read the VM.
  *
  * CLEAR BUTTON:
- *   When a row's rank is explicit at this year, a small remove
- *   button appears in the row's actions cell. It calls
- *   TeamCore.removeRanking(teamId, year). Removing the entry
- *   exposes whatever the previous explicit entry governs; if
- *   there is none, the cell becomes empty.
+ *   Per-row. Calls TeamCore.removeRankingAt(teamId, year).
+ *   After a remove, the team drops out of `rows` and (if still
+ *   active at the year with no inherited rank) reappears in
+ *   `unrankedTeams`. The controller refreshes; the view is a
+ *   pure function.
  *
  * EMPTY STATE:
- *   When no teams are visible at the chosen year, an empty-state
- *   paragraph is shown in place of the table.
+ *   When `rows` is empty, an empty-state paragraph replaces the
+ *   table. When `rows` is empty AND `unrankedTeams` is empty,
+ *   a second paragraph explains why there is nothing to rank.
+ *   The insert strip is still rendered when `rows` is empty and
+ *   `unrankedTeams` is non-empty, so a first position can be
+ *   assigned.
+ *
+ * SHOW INACTIVE:
+ *   Echoed on the header toggle. Does not affect `rows`
+ *   composition (the query layer already excludes inactive
+ *   teams that are not explicitly ranked). Clicking the toggle
+ *   re-runs the aggregator; TeamEvents owns that.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -142,15 +173,16 @@
     // ============================================================
     // HEADER
     // ============================================================
+    //
+    // Year picker, Show Inactive toggle, Export year. No sort
+    // controls: position is the only order.
 
     function renderHeader(vm) {
         var activeCount = 0;
-        var rankedCount = 0;
+        var rankedCount = vm.rows.length;
 
         for (var i = 0; i < vm.rows.length; i++) {
-            var r = vm.rows[i];
-            if (r.activeAtYear) { activeCount++; }
-            if (r.rank !== null) { rankedCount++; }
+            if (vm.rows[i].activeAtYear) { activeCount++; }
         }
 
         var html = '';
@@ -204,10 +236,11 @@
     // ============================================================
 
     function renderTable(vm) {
-        if (vm.rows.length === 0) {
-            return '<p class="empty-state">' +
-                        'No teams to rank at this year.' +
-                    '</p>';
+        var rows = vm.rows;
+        var unrankedTeams = vm.unrankedTeams;
+
+        if (rows.length === 0) {
+            return renderEmptyState(unrankedTeams);
         }
 
         var html = '';
@@ -215,50 +248,28 @@
         html += '<div class="rankings-table">';
 
         // ---- Header row ----
+        //
+        // No sortable headers. The columns are static labels.
         html += '<div class="rankings-table-header">';
-        html += renderSortableHeader(
-            'rank', 'Rank',
-            vm.sortMode, vm.sortDirection
-        );
-        html += renderSortableHeader(
-            'name', 'Team',
-            vm.sortMode, vm.sortDirection
-        );
+        html += '<span class="rankings-col-rank">Position</span>';
+        html += '<span class="rankings-col-name">Team</span>';
         html += '<span class="rankings-col-period">Period</span>';
-        html += renderSortableHeader(
-            'members', 'Members',
-            vm.sortMode, vm.sortDirection
-        );
+        html += '<span class="rankings-col-members">Members</span>';
         html += '<span class="rankings-col-status">Status</span>';
         html += '<span class="rankings-col-actions"></span>';
         html += '</div>';
 
         // ---- Body ----
-        for (var i = 0; i < vm.rows.length; i++) {
-            html += renderRow(vm.rows[i], vm.year);
+        for (var i = 0; i < rows.length; i++) {
+            html += renderRow(rows[i], vm.year);
         }
 
         html += '</div>';
+
+        // ---- Insert strip ----
+        html += renderInsertStrip(unrankedTeams, vm.year, rows.length);
+
         return html;
-    }
-
-    function renderSortableHeader(
-        sortKey, label, currentSort, direction
-    ) {
-        var isActive = currentSort === sortKey;
-        var classes = 'rankings-col-' + sortKey;
-        if (isActive) { classes += ' is-sorted'; }
-
-        var arrow = '';
-        if (isActive) {
-            arrow = direction === 'desc' ? ' \u25be' : ' \u25b4';
-        }
-
-        return '<button type="button" class="' + classes + '" ' +
-                    'data-sort-key="' +
-                        escapeAttribute(sortKey) + '">' +
-                    escapeHtml(label) + arrow +
-                '</button>';
     }
 
     function renderRow(row, year) {
@@ -267,15 +278,32 @@
             rowClasses += ' is-inactive';
         }
 
+        var teamIdAttr = escapeAttribute(row.teamId);
+        var yearAttr = escapeAttribute(String(year));
+        var positionAttr = escapeAttribute(String(row.position));
+
         var html = '';
 
         html += '<div class="' + rowClasses + '" ' +
-                    'data-team-id="' +
-                        escapeAttribute(row.teamId) + '">';
+                    'data-team-id="' + teamIdAttr + '" ' +
+                    'data-position="' + positionAttr + '" ' +
+                    'draggable="true">';
 
-        // ---- Rank cell (click-to-edit) ----
+        // ---- Rank / drag handle ----
+        //
+        // The rank cell carries the position number and a drag
+        // grip. The grip is the drag handle; TeamEvents starts
+        // the drag from it. The whole row is draggable, but the
+        // grip exists so the user knows where to grab.
         html += '<span class="rankings-col-rank">';
-        html += renderRankCell(row, year);
+        html += '<span class="rankings-position-number">' +
+                    escapeHtml(String(row.position)) +
+                '</span>';
+        html += '<span class="rankings-drag-handle" ' +
+                    'title="Drag to reorder" ' +
+                    'aria-hidden="true">' +
+                    '\u2630' +
+                '</span>';
         html += '</span>';
 
         // ---- Name ----
@@ -299,71 +327,142 @@
                 '</span>';
 
         // ---- Actions ----
+        //
+        // The clear button removes the team's explicit entry
+        // at this year. After removal, the team drops out of
+        // `rows` and (if still active with no inherited rank)
+        // reappears in `unrankedTeams`. Idempotent on the
+        // backend, but the button is only rendered on rows
+        // whose entry is explicit (which is every row in the
+        // ordered-list VM).
         html += '<span class="rankings-col-actions">';
-        if (row.explicit) {
-            html += '<button type="button" ' +
-                        'class="small danger ' +
-                        'rankings-clear-rank" ' +
-                        'data-team-id="' +
-                            escapeAttribute(row.teamId) + '" ' +
-                        'data-year="' +
-                            escapeAttribute(String(year)) + '" ' +
-                        'title="Remove the ranking entry at this ' +
-                            'year. The team will fall back to its ' +
-                            'previous explicit ranking.">' +
-                        '\u2715' +
-                    '</button>';
-        }
+        html += '<button type="button" ' +
+                    'class="small danger rankings-clear-rank" ' +
+                    'data-team-id="' + teamIdAttr + '" ' +
+                    'data-year="' + yearAttr + '" ' +
+                    'title="Remove this team from the ranking at ' +
+                    'this year. The team will fall back to its ' +
+                    'previous explicit ranking, if any.">' +
+                    '\u2715' +
+                '</button>';
         html += '</span>';
 
         html += '</div>';
         return html;
     }
 
-    function renderRankCell(row, year) {
-        var cellClasses = 'ranking-row-rank';
-        if (row.explicit) {
-            cellClasses += ' ranking-rank-explicit';
-        } else if (row.rank !== null) {
-            cellClasses += ' ranking-rank-inherited';
-        } else {
-            cellClasses += ' ranking-rank-empty';
-        }
+    // ============================================================
+    // INSERT STRIP
+    // ============================================================
+    //
+    // Below the table. Lets the user add a team that has no
+    // position yet.
+    //
+    // Controls:
+    //   #rankings-insert-team       <select> of unranked teams
+    //   #rankings-insert-position   <input type=number>
+    //   #rankings-insert-btn        <button data-year=...>
+    //
+    // The button carries the current row count as
+    // data-current-rows so the controller can interpret a blank
+    // position as "append to the end" without re-reading the VM.
+    //
+    // When unrankedTeams is empty, the strip is rendered with a
+    // disabled state and a note explaining that every active
+    // team already has a position.
 
-        var displayText = row.rank === null
-            ? '\u2014'
-            : '#' + String(row.rank);
-
-        var provenanceText = '';
-        if (row.explicit) {
-            provenanceText = 'set';
-        } else if (row.rank !== null &&
-                   isNonEmptyString(row.sourcePeriod)) {
-            provenanceText = '(from ' + row.sourcePeriod + ')';
-        }
+    function renderInsertStrip(unrankedTeams, year, currentRows) {
+        var hasUnranked = Array.isArray(unrankedTeams) &&
+                          unrankedTeams.length > 0;
 
         var html = '';
-        html += '<span class="' + cellClasses + '" ' +
-                    'data-team-id="' +
-                        escapeAttribute(row.teamId) + '" ' +
+        html += '<div class="rankings-insert-strip">';
+
+        html += '<span class="rankings-insert-label">' +
+                    'Add to ranking:' +
+                '</span>';
+
+        // ---- Team picker ----
+        html += '<select id="rankings-insert-team" ' +
+                    'class="rankings-insert-select"' +
+                    (hasUnranked ? '' : ' disabled') + '>';
+
+        if (hasUnranked) {
+            html += '<option value="">Select a team...</option>';
+            for (var i = 0; i < unrankedTeams.length; i++) {
+                var t = unrankedTeams[i];
+                if (!t || !t.teamId) { continue; }
+                html += '<option value="' +
+                            escapeAttribute(t.teamId) + '">' +
+                            escapeHtml(t.name || t.teamId) +
+                        '</option>';
+            }
+        } else {
+            html += '<option value="" disabled selected>' +
+                        'No unranked teams available' +
+                    '</option>';
+        }
+
+        html += '</select>';
+
+        // ---- Position input ----
+        html += '<input type="number" ' +
+                    'id="rankings-insert-position" ' +
+                    'class="rankings-insert-position" ' +
+                    'min="1" ' +
+                    'placeholder="Pos."' +
+                    (hasUnranked ? '' : ' disabled') + '>';
+
+        // ---- Insert button ----
+        html += '<button type="button" ' +
+                    'id="rankings-insert-btn" ' +
+                    'class="small primary"' +
+                    (hasUnranked ? '' : ' disabled') + ' ' +
                     'data-year="' +
                         escapeAttribute(String(year)) + '" ' +
-                    'data-current-rank="' +
-                        escapeAttribute(
-                            row.rank === null
-                                ? ''
-                                : String(row.rank)
-                        ) + '" ' +
-                    'title="Click to edit">';
-        html += '<span class="ranking-rank-value">' +
-                    escapeHtml(displayText) +
-                '</span>';
-        if (provenanceText !== '') {
-            html += '<span class="ranking-rank-provenance">' +
-                        escapeHtml(provenanceText) +
-                    '</span>';
+                    'data-current-rows="' +
+                        escapeAttribute(String(currentRows)) + '">' +
+                    'Insert' +
+                '</button>';
+
+        html += '</div>';
+
+        return html;
+    }
+
+    // ============================================================
+    // EMPTY STATE
+    // ============================================================
+
+    function renderEmptyState(unrankedTeams) {
+        var hasUnranked = Array.isArray(unrankedTeams) &&
+                          unrankedTeams.length > 0;
+
+        var html = '';
+        html += '<p class="empty-state">' +
+                    'No teams ranked at this year.' +
+                '</p>';
+
+        if (hasUnranked) {
+            html += '<p class="empty-state small">' +
+                        'Use the picker below to assign the first ' +
+                        'position.' +
+                    '</p>';
+        } else {
+            html += '<p class="empty-state small">' +
+                        'No teams are active at this year to rank.' +
+                    '</p>';
         }
-        html += '</span>';
+
+        // The insert strip is still rendered when there is
+        // something to insert, so a first position can be
+        // assigned from the empty state.
+        if (hasUnranked) {
+            html += renderInsertStrip(
+                unrankedTeams, null, 0
+            );
+        }
+
         return html;
     }
 
@@ -381,6 +480,12 @@
         if (!Array.isArray(vm.rows)) {
             throw new Error(
                 '[TeamRankingsView] VM is missing rows array.'
+            );
+        }
+        if (!Array.isArray(vm.unrankedTeams)) {
+            throw new Error(
+                '[TeamRankingsView] VM is missing unrankedTeams ' +
+                'array.'
             );
         }
 
