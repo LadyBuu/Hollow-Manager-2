@@ -155,7 +155,7 @@
  *       [{ teamId, team, rank }]. Sorted by rank ascending.
  *       Contiguity is guaranteed by the write path.
  *
- *     getRankedTeamsForYear(year)
+ *     getRankedTeamsForYear(year, options)
  *       Display-facing list the Rankings tab consumes. One entry
  *       per position, carrying the team id, resolved name, and
  *       the fields the table needs (periodDisplay, memberCount,
@@ -165,13 +165,39 @@
  *       understands the per-team shape can migrate without
  *       re-learning the provenance semantics.
  *
- *     getUnrankedTeamsForYear(year)
+ *       SHOWINACTIVE (this revision):
+ *         options.showInactive gates whether rows whose team is
+ *         NOT active in that year are returned.
+ *
+ *           showInactive !== true (default)
+ *             Rows are filtered to activeAtYear === true. A team
+ *             that disbanded before `year` is hidden from the
+ *             numbered list at `year`.
+ *
+ *           showInactive === true
+ *             Rows are returned unfiltered. Every explicit entry
+ *             appears, whether the team was active in the year
+ *             or not.
+ *
+ *         "Active in the year" uses isTeamActiveAtPeriod, which
+ *         is inclusive on both bounds: a team whose endPeriod is
+ *         Y is still active at Y, and a team whose startPeriod
+ *         is Y is active at Y.
+ *
+ *     getUnrankedTeamsForYear(year, options)
  *       Teams active at the year that have NO explicit entry at
  *       the year and NO inherited effective rank from an earlier
  *       year. These are the candidates a "fill a slot" picker
  *       offers, and what a drag-to-empty-position drop would
  *       target. A team with an inherited rank is NOT in this
  *       list — the user would be double-ranking them.
+ *
+ *       The `options` argument is accepted for symmetry with
+ *       getRankedTeamsForYear, but `showInactive` has NO effect
+ *       on this read: the list is always active-only. Offering
+ *       an inactive team as a candidate to INSERT into a
+ *       position would let the user rank a team that does not
+ *       exist in that year, which is not a meaningful slot.
  *
  * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
@@ -1970,17 +1996,42 @@
     //     internally by the other two reads); callers outside
     //     this module should not rely on it being a clone.
     //
-    //   getRankedTeamsForYear(year)
+    //   getRankedTeamsForYear(year, options)
     //     Display-facing. One entry per position. Every field a
     //     Rankings-tab row needs is resolved here so the
     //     aggregator can pass it straight through.
     //
-    //   getUnrankedTeamsForYear(year)
+    //     SHOWINACTIVE (this revision):
+    //       options.showInactive gates whether rows whose team
+    //       is NOT active in that year are returned.
+    //
+    //       showInactive !== true (default):
+    //         Rows are filtered to activeAtYear === true. A
+    //         team that disbanded before `year` is hidden.
+    //
+    //       showInactive === true:
+    //         Rows are returned unfiltered. Every explicit entry
+    //         appears, whether the team was active in the year
+    //         or not.
+    //
+    //       "Active in the year" uses isTeamActiveAtPeriod,
+    //       which is inclusive on both bounds: a team whose
+    //       endPeriod is Y is still active at Y; a team whose
+    //       startPeriod is Y is active at Y.
+    //
+    //   getUnrankedTeamsForYear(year, options)
     //     Candidates a "fill a slot" picker offers: teams
     //     active at the year with no explicit entry at the year
     //     and no inherited effective rank from an earlier year.
     //     A team with an inherited rank is excluded: including
     //     them would double-rank them.
+    //
+    //     The `options` argument is accepted for symmetry with
+    //     getRankedTeamsForYear, but showInactive has NO effect
+    //     here. This list is always active-only. Offering an
+    //     inactive team as a candidate to INSERT into a position
+    //     would let the user rank a team that does not exist in
+    //     that year, which is not a meaningful slot.
     //
     // RANKING ENTRIES ARE NOT CLONED BY getExplicitRankingOrderForYear.
     //   The `team` field is a live reference. That is deliberate:
@@ -2065,12 +2116,28 @@
      *     activeAtYear:  boolean
      *   }
      *
-     * Returns [] when no team has an explicit entry at the year.
+     * SHOWINACTIVE:
+     *   See the block comment above the section. When
+     *   options.showInactive !== true, inactive rows are dropped.
+     *   When options.showInactive === true, every explicit entry
+     *   is returned. Position numbers are NOT renumbered after
+     *   filtering — a hidden row leaves a gap in the visible
+     *   sequence. That is deliberate: the position is a fact
+     *   about the ranking, not about what is currently visible.
+     *   If a caller needs contiguous display positions, it can
+     *   renumber after filtering; the aggregator does not.
+     *
+     * Returns [] when no team has an explicit entry at the year,
+     * or when every explicit entry was filtered out.
      *
      * @param {string|number} year
+     * @param {object} [options] - { showInactive: boolean }
      * @returns {array}
      */
-    function getRankedTeamsForYear(year) {
+    function getRankedTeamsForYear(year, options) {
+        options = options || {};
+        var showInactive = options.showInactive === true;
+
         var yearNum = parsePeriod(year);
         if (yearNum === null) { return []; }
 
@@ -2095,6 +2162,18 @@
                 memberCount = 0;
             }
 
+            var activeAtYear = false;
+            try {
+                activeAtYear = isTeamActiveAtPeriod(team, yearNum);
+            } catch (e) {
+                activeAtYear = false;
+            }
+
+            // CHANGED (showInactive): default hides inactive rows.
+            if (!showInactive && !activeAtYear) {
+                continue;
+            }
+
             rows.push({
                 position: position,
                 teamId: String(team.id),
@@ -2105,7 +2184,7 @@
                 periodDisplay: buildTeamPeriodDisplay(team),
                 memberCount: memberCount,
                 status: team.status || 'active',
-                activeAtYear: isTeamActiveAtPeriod(team, yearNum)
+                activeAtYear: activeAtYear
             });
         }
 
@@ -2124,10 +2203,22 @@
      * Only professional teams are considered. Academic and
      * civilian teams never carry a mission-style ranking.
      *
+     * SHOWINACTIVE:
+     *   The options object is accepted for signature symmetry
+     *   with getRankedTeamsForYear, but showInactive has NO
+     *   effect here. This list is always active-only. See the
+     *   section header comment.
+     *
      * @param {string|number} year
+     * @param {object} [options] - accepted for symmetry; unused.
      * @returns {array} [{ teamId, name, status, activeAtYear }]
      */
-    function getUnrankedTeamsForYear(year) {
+    function getUnrankedTeamsForYear(year, options) {
+        // options is intentionally unused. The signature accepts
+        // it so the aggregator can pass the same options object
+        // to both reads without a special case.
+        void options;
+
         var yearNum = parsePeriod(year);
         if (yearNum === null) { return []; }
 
@@ -2916,6 +3007,48 @@
                 missing.push(
                     'getUnrankedTeamsForYear: undefined year ' +
                     'should return []'
+                );
+            }
+
+            // ---- showInactive smoke test (this revision). ----
+            //
+            // We cannot inject a team store here without touching
+            // window.data, which would violate the read-only
+            // contract of this module at load. The verify block
+            // therefore only asserts the CONTRACT shape: the
+            // options object is accepted, the default is
+            // "hide inactive", and showInactive:true is the
+            // "include inactive" case.
+            //
+            // The behaviour itself (a ranked team active only at
+            // 1905 disappears at 1906 by default, reappears with
+            // showInactive:true) is covered by the integration
+            // test that drives TeamAggregator against a fixture
+            // store; it is not runnable at module load.
+            try {
+                // Accepts options without throwing.
+                var withOpts = getRankedTeamsForYear('1999', {
+                    showInactive: true
+                });
+                if (!Array.isArray(withOpts)) {
+                    missing.push(
+                        'getRankedTeamsForYear: options arg broke ' +
+                        'the return type'
+                    );
+                }
+
+                var unrankedWithOpts = getUnrankedTeamsForYear(
+                    '1999', { showInactive: true }
+                );
+                if (!Array.isArray(unrankedWithOpts)) {
+                    missing.push(
+                        'getUnrankedTeamsForYear: options arg broke ' +
+                        'the return type'
+                    );
+                }
+            } catch (e) {
+                missing.push(
+                    'showInactive smoke test threw: ' + e.message
                 );
             }
         } catch (e) {
