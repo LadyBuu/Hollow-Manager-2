@@ -15,7 +15,7 @@
  *   - Own the professional tab's view mode.
  *   - Own the timeline's range and expanded-years state.
  *   - Own the professional pool's expansion and selection state.
- *   - Own the rankings tab's year, sort, and expanded state.
+ *   - Own the rankings tab's year and expanded state.
  *   - Own the TEAM LIST's selection set (for bulk export).
  *   - Own the periods editor's DOM-only staging.
  *   - Open the team export picker and the candidate export.
@@ -25,9 +25,7 @@
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. TeamCore owns mutations; TeamQueries owns reads;
  *     TeamAggregator owns projections.
- *   - Rendering. TeamRender owns HTML. TeamEvents delegates to it
- *     for every row that must also be re-rendered dynamically
- *     (see buildNewPeriodRowHTML).
+ *   - Rendering. TeamRender owns HTML.
  *   - Eligibility. TeamQueries.getProfessionalPersonnelAtPeriod
  *     owns it.
  *   - The verifier's checks. TeamVerifier owns them.
@@ -39,45 +37,61 @@
  *   - The periods shape. TeamCore owns the schema.
  *   - The rankings tab body. TeamRankingsView owns it.
  *
- * VIEW MODES:
- *   'teams' | 'pool' | 'timeline' | 'rankings'. Module-level.
- *   Forced to 'teams' on non-professional tabs. Reset on init and
- *   destroy.
+ * RANKINGS TAB (ordered-list model, this revision):
+ *   The Rankings tab renders a POSITION-ORDERED list per year.
+ *   Rows are draggable; dragging a row onto another row inserts
+ *   it at that position and shifts the tail down by one.
  *
- * SHOW INACTIVE FILTER:
- *   The filter bar's Show Inactive checkbox is stored on TeamUI
- *   as a `showInactive` boolean. refreshUI reads it via
- *   TeamUI.getFilter and passes it into
- *   TeamAggregator.getTeamPageViewModel as `showInactive`.
- *   The aggregator translates it to the correct TeamQueries
- *   status ('active' or 'operational').
+ *   Interactions:
  *
- *   applyFilters writes the checkbox's checked state into
- *   TeamUI as a boolean. It does not write a status string.
- *   The old `filterStatus: 'inactive'` shape was inverted —
- *   it filtered to ONLY inactive teams, hiding the active ones.
+ *     Drag a row onto another row
+ *       TeamCore.moveRanking(teamId, year, newPosition).
+ *       newPosition is the target row's position, adjusted for
+ *       whether the drop was above or below the target row's
+ *       midpoint. The controller reads the target row's
+ *       data-position and the pointer's position within that
+ *       row to compute newPosition.
  *
- * POOL STATE:
- *   _poolExpandedIds  { [characterId]: true }
- *   _poolSelectedIds  { [characterId]: true }
+ *     Drag a row onto the empty area below the last row
+ *       TeamCore.moveRanking(teamId, year, N) — append to the
+ *       end. N is the row count plus one, read from the last
+ *       row's data-position plus one.
  *
- * TEAM SELECTION STATE:
- *   _teamSelectedIds  { [teamId]: true }
+ *     Insert button (#rankings-insert-btn)
+ *       TeamCore.insertRankingAt(teamId, year, position).
+ *       A blank position means append (currentRows + 1),
+ *       read from the button's data-current-rows.
  *
- * RANKINGS STATE:
- *   _rankingsYear            the year the rankings tab is viewing
- *   _rankingsSortMode        'rank' | 'name' | 'members'
- *   _rankingsSortDirection   'asc' | 'desc'
- *   _rankingsShowInactive    whether inactive teams are visible
- *                            (Rankings-specific; not the same as
- *                            the Teams tab's Show Inactive)
+ *     Clear button (.rankings-clear-rank)
+ *       TeamCore.removeRankingAt(teamId, year). Idempotent.
+ *       After removal, the team drops out of `rows` and (if
+ *       still active with no inherited rank) reappears in
+ *       `unrankedTeams`.
  *
- * PERIODS EDITOR:
+ *     Year apply button (#rankings-apply-year-btn, Enter in
+ *     #rankings-year-input)
+ *       Sets _rankingsYear; refreshes the tab.
+ *
+ *     Show Inactive toggle (#rankings-show-inactive)
+ *       Sets _rankingsShowInactive; refreshes the tab.
+ *
+ *     Export year button (#rankings-export-year-btn)
+ *       Calls TeamExport.exportTeamsByYear(_rankingsYear).
+ *
+ *   There is no click-to-edit rank input anymore. Position is
+ *   a fact about the list, not a text field.
+ *
+ * PERIODS EDITOR (D2, this revision):
  *   The team form's periods editor is a DOM-only staging area.
- *   Rows can be added, removed, reordered by the user; chip
- *   lists within each row can be edited. Nothing hits the store
+ *   Rows can be added and removed by the user; chip lists
+ *   within each row can be edited. Nothing hits the store
  *   until submit, when collectPeriodsFromForm reads every row
  *   back out.
+ *
+ *   The LAST period's end input is now a normal editable
+ *   number input, not a read-only "present" placeholder. A
+ *   blank end on the last row means the team is still ongoing;
+ *   a non-blank end means the team disbanded at that year.
  *
  *   Handlers:
  *
@@ -91,161 +105,41 @@
  *   style and specialisations, per the periods model. The new
  *   row's start year defaults to one greater than the previous
  *   row's start, or the application year if the previous start
- *   cannot be parsed. This prevents appending a row that starts
- *   before its predecessor (an ordering error that surfaces only
- *   on save). The previous row's end year is auto-set to
- *   (start - 1) unless the user has already given it an explicit
- *   end.
+ *   cannot be parsed. The previous row's end year is auto-set
+ *   to (start - 1) unless the user has already given it an
+ *   explicit end.
  *
- *   The append path builds its row HTML via TeamRender
- *   .renderPeriodRow, the same function renderPeriodsEditor uses.
- *   buildNewPeriodRowHTML is a thin adapter that shapes the
- *   append-path arguments into the renderer's contract; it does
- *   not build markup itself. This eliminates the drift hazard
- *   between the initial-render and append-path markup.
+ *   Removing a row no longer promotes the remaining last row
+ *   to a special "current" state. Every row's end input is
+ *   editable at all times; removing a row simply leaves the
+ *   new last row's end as the user last set it.
  *
  *   All four handlers bind on the modal, not through the
  *   container delegation chain. The form is its own modal shell
  *   and is not a descendant of the teams container.
  *
  * TOP-OF-FORM NAME AND nameIsAuto:
- *   The team form has two inputs that can own the current
- *   period's name: the top-of-form #team-name field and the
- *   last period row's .team-period-name input.
- *
- *   The resolution rule uses the team's nameIsAuto flag plus a
- *   session-local dirty-check:
- *
- *     topFieldTouched = currentValue !== data-original-value
- *
- *   nameIsAuto is a model-level boolean (see team-core.js):
- *     true   the current name was generated (by TeamNaming or
- *            by default on create)
- *     false  a user has typed the current name
- *
- *   On save:
- *     - If topFieldTouched, the top field wins (and we pass
- *       nameIsAuto: false to TeamCore so the flag reflects that
- *       the user is now the owner of the name).
- *     - If not touched, the periods array wins as-edited, and
- *       nameIsAuto is left unchanged (TeamCore preserves the
- *       existing value when the update omits it).
- *
- *   This means a user who retitles the last period in the
- *   editor and leaves the top field alone has their edit
- *   preserved, and the flag stays accurate.
+ *   Unchanged from the previous revision. The top-of-form name
+ *   input and the last period's name input can both edit the
+ *   current period's name; the submit-time resolution uses the
+ *   dirty-check on the top field plus the team's nameIsAuto flag.
  *
  * SPECIALISATION VOCABULARY:
- *   When showTeamForm creates the modal, it stashes the form
- *   VM's specialisationOptions on the modal as
- *   __specialisationOptions. getSpecialisationOptions(form)
- *   reads from that stash when present, and falls back to
- *   scraping existing selects/chips for a vocabulary only when
- *   the stash is absent.
- *
- *   The scrape fallback is a safety net, not the primary path.
- *   Without the stash, a vocabulary entry that was selected in
- *   every existing row would be invisible to a newly-appended
- *   row's select; the stash guarantees the full vocabulary is
- *   always available.
- *
- * RANKINGS TAB:
- *   The professional tab's fourth view mode. Delegated to
- *   TeamRankingsView for the table body; TeamEvents owns the
- *   interactions:
- *
- *     #rankings-apply-year-btn        commit the year input
- *     #rankings-year-input (Enter)    same
- *     #rankings-show-inactive         toggle inactive teams
- *     #rankings-export-year-btn       call TeamExport.exportTeamsByYear
- *     .rankings-table-header button[data-sort-key]
- *                                     cycle sort key / direction
- *     .ranking-row-rank                click-to-edit the rank
- *     .rankings-clear-rank             remove the explicit entry
- *
- *   The rank editor opens inline. Enter commits, Escape cancels,
- *   blur commits. A blank value with an original value present
- *   calls TeamCore.removeRanking; a blank value with no original
- *   is a no-op.
- *
- *   DOUBLE-COMMIT GUARD:
- *   Enter and blur can both fire on the same input within one
- *   tick (Enter → commit → re-render → blur on the detached
- *   input). A module-level in-flight flag plus a per-input
- *   `dataset.committed` marker ensure a single commit per
- *   editor instance.
+ *   Unchanged from the previous revision. The form VM's
+ *   specialisationOptions is stashed on the modal, and
+ *   getSpecialisationOptions(form) reads from that stash.
  *
  * TIMELINE STATE:
- *   _timelineYearStart, _timelineYearEnd, _timelineExpandedYears.
- *
- *   The range is clamped to a 200-year span. The timeline is a
- *   UI affordance over team history, not a general-purpose date
- *   explorer; 200 years covers any plausible game chronology
- *   while keeping the row count bounded. A request wider than
- *   that is clamped to the most recent 200 years and the user is
- *   notified.
+ *   Unchanged from the previous revision.
  *
  * MATCHMAKING PLANNER:
- *   The planner is a MATRIX. Teams are columns, candidates are
- *   rows, and each intersection carries a radio. The radio group
- *   name is scoped per candidate:
- *
- *     name="planner-cand-<candidateId>"
- *
- *   so at most one team per candidate can be checked.
- *
- *   Below each candidate's radio row is a DETAILS STRIP: a
- *   full-width band that holds the Join and Leave inputs for the
- *   candidate's currently-checked team. When no radio is checked,
- *   the strip is hidden. When a radio is checked, the strip is
- *   populated with the team name and the two inputs, and
- *   unhidden. Moving the check to a different team in the same
- *   row swaps the strip's contents in place.
- *
- *   PENDING LEAVE:
- *   The strip preserves a typed Leave year per team within one
- *   candidate's row. Switching team A → B → A carries A's typed
- *   Leave back to A. The staging lives on the strip's
- *   data-pending-leave-by-team attribute as a JSON map keyed by
- *   teamId. Join does not need this staging because the default
- *   Join is computed from the candidate's availability window
- *   per team; Leave has no such default.
+ *   Unchanged from the previous revision.
  *
  * EXPORT BUTTONS:
- *   Page header Export button (#team-export-btn)
- *     Bulk. Exports every ticked team into ONE file.
- *
- *   Per-row .export-team button
- *     Single team. Exports that team directly with no picker
- *     when it has one period; opens the picker when it has more
- *     than one, so the user chooses which period to export.
- *
- *   Rankings tab Export year button (#rankings-export-year-btn)
- *     Calls TeamExport.exportTeamsByYear with the current
- *     rankings year.
+ *   Unchanged from the previous revision.
  *
  * MODAL LIFECYCLE:
- *   The member manager, matchmaking planner, ranking modal, and
- *   team form each have a module-level modal variable. Opening
- *   any of them closes the previous instance first. destroy()
- *   closes every one. This prevents stacked modals and orphaned
- *   listeners when the tab is unmounted.
- *
- * LOAD ORDER AND DEPENDENCIES (deliberate):
- *   Every dependency in the DEPENDENCIES block below is
- *   resolved at module load and required. A missing dependency
- *   throws here, and the Teams tab does not exist.
- *
- *   This is deliberate. A missing core dependency is a
- *   load-order bug that must surface loudly, not be papered
- *   over with a silent degradation. A Teams tab that renders
- *   but has non-functional buttons is harder to diagnose than a
- *   Teams tab that refuses to exist and says why on the console.
- *
- *   If a future dependency can be genuinely optional, add it to
- *   the LAZY DEPENDENCIES block instead — a lazy dependency
- *   produces a toast at the point of use, which is the correct
- *   failure mode for a genuinely optional feature.
+ *   Unchanged from the previous revision.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -301,11 +195,15 @@
     if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
         _missing.push('TeamCore.deleteTeam');
     }
-    if (!TeamCore || typeof TeamCore.addRanking !== 'function') {
-        _missing.push('TeamCore.addRanking');
+    // ---- Rankings — ordered-list primitives ----
+    if (!TeamCore || typeof TeamCore.insertRankingAt !== 'function') {
+        _missing.push('TeamCore.insertRankingAt');
     }
-    if (!TeamCore || typeof TeamCore.removeRanking !== 'function') {
-        _missing.push('TeamCore.removeRanking');
+    if (!TeamCore || typeof TeamCore.removeRankingAt !== 'function') {
+        _missing.push('TeamCore.removeRankingAt');
+    }
+    if (!TeamCore || typeof TeamCore.moveRanking !== 'function') {
+        _missing.push('TeamCore.moveRanking');
     }
     if (!TeamCore ||
         typeof TeamCore.batchAddMembers !== 'function') {
@@ -573,14 +471,15 @@
 
     var _teamSelectedIds = Object.create(null);
 
+    // ---- Rankings — ordered-list ----
     var _rankingsYear = null;
-    var _rankingsSortMode = 'rank';
-    var _rankingsSortDirection = 'asc';
     var _rankingsShowInactive = false;
 
-    var _pendingTeamMemberIds = null;
+    // Drag state (cleared on dragend and on refreshUI).
+    var _rankDragTeamId = null;
+    var _rankDragYear = null;
 
-    var _rankCommitInFlight = false;
+    var _pendingTeamMemberIds = null;
 
     var TIMELINE_MAX_SPAN = 200;
 
@@ -651,12 +550,6 @@
         return null;
     }
 
-    /**
-     * Read the Show Inactive state for a tab from TeamUI.
-     *
-     * The stored value is a boolean. An absent filter (invalid
-     * tab, cleared state) defaults to false — hide inactive.
-     */
     function getShowInactive(tab) {
         var filter = TeamUI.getFilter(tab);
         return filter && filter.showInactive === true;
@@ -669,6 +562,10 @@
     function refreshUI() {
         if (!_container) { return; }
 
+        // ---- Clear drag state before any re-render. ----
+        _rankDragTeamId = null;
+        _rankDragYear = null;
+
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
         var showInactive = getShowInactive(currentTab);
@@ -679,8 +576,6 @@
             _poolExpandedIds = Object.create(null);
             _poolSelectedIds = Object.create(null);
             _rankingsYear = null;
-            _rankingsSortMode = 'rank';
-            _rankingsSortDirection = 'asc';
             _rankingsShowInactive = false;
         }
 
@@ -740,11 +635,10 @@
                     ? period
                     : getApplicationYear();
             }
+            // ---- Ordered-list VM. No sort options. ----
             pageVM.rankingsVM =
                 TeamAggregator.getTeamRankingsViewModel({
                     year: _rankingsYear,
-                    sort: _rankingsSortMode,
-                    sortDirection: _rankingsSortDirection,
                     showInactive: _rankingsShowInactive
                 });
         } else {
@@ -810,11 +704,10 @@
         _poolSelectedIds = Object.create(null);
         _teamSelectedIds = Object.create(null);
         _rankingsYear = null;
-        _rankingsSortMode = 'rank';
-        _rankingsSortDirection = 'asc';
         _rankingsShowInactive = false;
+        _rankDragTeamId = null;
+        _rankDragYear = null;
         _pendingTeamMemberIds = null;
-        _rankCommitInFlight = false;
 
         bindTabSwitching();
         bindModeToggle();
@@ -873,11 +766,10 @@
         _poolSelectedIds = Object.create(null);
         _teamSelectedIds = Object.create(null);
         _rankingsYear = null;
-        _rankingsSortMode = 'rank';
-        _rankingsSortDirection = 'asc';
         _rankingsShowInactive = false;
+        _rankDragTeamId = null;
+        _rankDragYear = null;
         _pendingTeamMemberIds = null;
-        _rankCommitInFlight = false;
     }
 
     // ============================================================
@@ -899,8 +791,6 @@
                 _poolExpandedIds = Object.create(null);
                 _poolSelectedIds = Object.create(null);
                 _rankingsYear = null;
-                _rankingsSortMode = 'rank';
-                _rankingsSortDirection = 'asc';
                 _rankingsShowInactive = false;
             }
 
@@ -945,8 +835,6 @@
             }
             if (_viewMode !== 'rankings') {
                 _rankingsYear = null;
-                _rankingsSortMode = 'rank';
-                _rankingsSortDirection = 'asc';
                 _rankingsShowInactive = false;
             }
 
@@ -1224,8 +1112,42 @@
     }
 
     // ============================================================
-    // RANKINGS TAB ACTIONS
+    // RANKINGS TAB ACTIONS — ordered-list model
     // ============================================================
+    //
+    // The Rankings tab is now a position-ordered list with
+    // draggable rows and an insert strip. There is no click-to-
+    // edit rank input and no sort controls.
+    //
+    // Interactions wired here:
+    //
+    //   #rankings-apply-year-btn, Enter in #rankings-year-input
+    //     Commit the year.
+    //
+    //   #rankings-show-inactive (change)
+    //     Toggle inactive teams.
+    //
+    //   #rankings-export-year-btn
+    //     Export the year.
+    //
+    //   .rankings-clear-rank (click)
+    //     TeamCore.removeRankingAt(teamId, year).
+    //
+    //   #rankings-insert-btn (click)
+    //     TeamCore.insertRankingAt(teamId, year, position). Blank
+    //     position means append (currentRows + 1).
+    //
+    //   .rankings-table-row (dragstart, dragover, dragleave,
+    //                        drop, dragend)
+    //     Drag-to-reorder. A drop on row N before its midpoint
+    //     targets position N. A drop after its midpoint targets
+    //     position N+1 (which is equivalent to "insert after row
+    //     N", i.e. one position further down). The write is
+    //     TeamCore.moveRanking(teamId, year, newPosition).
+    //
+    //     Visual feedback: the row under the pointer carries
+    //     .drop-before or .drop-after (styled by teams.css).
+    //     The dragged row carries .is-dragging.
 
     function bindRankingsActions() {
         delegate('#rankings-apply-year-btn', 'click', function(e) {
@@ -1258,54 +1180,58 @@
             }
         );
 
-        delegate(
-            '.rankings-table-header button[data-sort-key]',
-            'click',
-            function(e, target) {
-                e.preventDefault();
-                var key = target.dataset.sortKey;
-                if (!key) { return; }
-
-                if (_rankingsSortMode === key) {
-                    _rankingsSortDirection =
-                        _rankingsSortDirection === 'asc'
-                            ? 'desc' : 'asc';
-                } else {
-                    _rankingsSortMode = key;
-                    _rankingsSortDirection = 'asc';
-                }
-
-                refreshUI();
-            }
-        );
-
-        delegate('.ranking-row-rank', 'click', function(e, target) {
-            e.preventDefault();
-            e.stopPropagation();
-            openRankEditor(target);
-        });
-
+        // ---- Clear entry ----
         delegate('.rankings-clear-rank', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
-            clearRankAtYear(target);
+
+            var teamId = target.dataset.teamId;
+            var year = parseInt(target.dataset.year, 10);
+            if (!teamId || isNaN(year)) { return; }
+
+            handleRankingsClearEntry(teamId, year);
         });
 
-        delegate('.ranking-inline-input', 'blur', function(e, target) {
-            commitRankEditor(target);
+        // ---- Insert strip ----
+        delegate('#rankings-insert-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleRankingsInsert(target);
         });
 
+        // ---- Drag-to-reorder ----
         delegate(
-            '.ranking-inline-input',
-            'keydown',
+            '.rankings-table-row',
+            'dragstart',
             function(e, target) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    commitRankEditor(target);
-                } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    cancelRankEditor(target);
-                }
+                handleRankDragStart(e, target);
+            }
+        );
+        delegate(
+            '.rankings-table-row',
+            'dragover',
+            function(e, target) {
+                handleRankDragOver(e, target);
+            }
+        );
+        delegate(
+            '.rankings-table-row',
+            'dragleave',
+            function(e, target) {
+                handleRankDragLeave(e, target);
+            }
+        );
+        delegate(
+            '.rankings-table-row',
+            'drop',
+            function(e, target) {
+                handleRankDrop(e, target);
+            }
+        );
+        delegate(
+            '.rankings-table-row',
+            'dragend',
+            function(e, target) {
+                handleRankDragEnd(e, target);
             }
         );
     }
@@ -1372,138 +1298,20 @@
         );
     }
 
-    function openRankEditor(span) {
-        var existing = _container
-            ? _container.querySelector('.ranking-inline-input')
-            : null;
-        if (existing) {
-            commitRankEditor(existing);
-        }
-
-        var teamId = span.dataset.teamId;
-        var year = span.dataset.year;
-        var currentRank = span.dataset.currentRank || '';
-
-        if (!teamId || !year) { return; }
-
-        var input = document.createElement('input');
-        input.type = 'number';
-        input.className = 'ranking-inline-input';
-        input.min = '1';
-        input.value = currentRank;
-        input.dataset.teamId = teamId;
-        input.dataset.year = year;
-        input.dataset.originalRank = currentRank;
-        input.dataset.committed = '0';
-
-        span.textContent = '';
-        span.appendChild(input);
-        span.classList.add('is-editing');
-
-        setTimeout(function() {
-            try {
-                input.focus();
-                input.select();
-            } catch (e) { /* ignore */ }
-        }, 0);
-    }
-
-    function commitRankEditor(input) {
-        if (!input || !input.parentNode) { return; }
-
-        if (input.dataset &&
-            input.dataset.committed === '1') {
-            return;
-        }
-        if (_rankCommitInFlight) {
-            return;
-        }
-
-        var teamId = input.dataset.teamId;
-        var year = parseInt(input.dataset.year, 10);
-        var originalRank = input.dataset.originalRank || '';
-        var raw = String(input.value || '').trim();
-
-        if (!teamId || isNaN(year)) { return; }
-
-        if (raw === '') {
-            if (originalRank === '') {
-                refreshUI();
-                return;
-            }
-            input.dataset.committed = '1';
-            clearRankAtYearInternal(teamId, year);
-            return;
-        }
-
-        var rank = parsePositiveInteger(raw);
-        if (rank === null) {
-            notify(
-                'Rank must be a positive integer.',
-                'error'
-            );
-            refreshUI();
-            return;
-        }
-
-        if (String(rank) === originalRank) {
-            refreshUI();
-            return;
-        }
-
-        input.dataset.committed = '1';
-        _rankCommitInFlight = true;
-
-        TeamCore.addRanking(teamId, year, rank)
-            .then(function(result) {
-                _rankCommitInFlight = false;
-                if (!result || !result.success) {
-                    notify(
-                        'Failed to set rank: ' +
-                        ((result && result.message) ||
-                            'Unknown error'),
-                        'error'
-                    );
-                }
-                refreshUI();
-            })
-            .catch(function(err) {
-                _rankCommitInFlight = false;
-                console.warn(
-                    '[TeamEvents] addRanking failed:', err
-                );
-                notify('Failed to set rank.', 'error');
-                refreshUI();
-            });
-    }
-
-    function cancelRankEditor(input) {
-        if (!input || !input.parentNode) { return; }
-        refreshUI();
-    }
-
-    function clearRankAtYear(button) {
-        var teamId = button.dataset.teamId;
-        var year = parseInt(button.dataset.year, 10);
-        if (!teamId || isNaN(year)) { return; }
-        clearRankAtYearInternal(teamId, year);
-    }
-
-    function clearRankAtYearInternal(teamId, year) {
+    function handleRankingsClearEntry(teamId, year) {
         if (!confirm(
-            'Remove the ranking entry at year ' + year + '? ' +
-            'The team will fall back to its previous explicit ' +
-            'ranking.'
+            'Remove this team from the ranking at ' + year +
+            '? The team will fall back to its previous explicit ' +
+            'ranking, if any.'
         )) {
-            refreshUI();
             return;
         }
 
-        TeamCore.removeRanking(teamId, year)
+        TeamCore.removeRankingAt(teamId, year)
             .then(function(result) {
                 if (!result || !result.success) {
                     notify(
-                        'Failed to remove rank: ' +
+                        'Failed to remove ranking: ' +
                         ((result && result.message) ||
                             'Unknown error'),
                         'error'
@@ -1513,11 +1321,211 @@
             })
             .catch(function(err) {
                 console.warn(
-                    '[TeamEvents] removeRanking failed:', err
+                    '[TeamEvents] removeRankingAt failed:', err
                 );
-                notify('Failed to remove rank.', 'error');
+                notify('Failed to remove ranking.', 'error');
                 refreshUI();
             });
+    }
+
+    function handleRankingsInsert(button) {
+        if (!_container) { return; }
+
+        var year = parseInt(button.dataset.year, 10);
+        if (isNaN(year)) {
+            // Fall back to the module year on a malformed
+            // attribute.
+            year = _rankingsYear;
+        }
+        if (year === null) {
+            notify('No year selected.', 'error');
+            return;
+        }
+
+        var select = _container.querySelector(
+            '#rankings-insert-team'
+        );
+        var positionInput = _container.querySelector(
+            '#rankings-insert-position'
+        );
+
+        if (!select) {
+            notify('Pick a team to insert.', 'error');
+            return;
+        }
+
+        var teamId = select.value;
+        if (!teamId) {
+            notify('Pick a team to insert.', 'error');
+            return;
+        }
+
+        // A blank position means "append to the end". The
+        // current row count is published on the button's
+        // data-current-rows so we do not have to re-read the VM.
+        var currentRows = parseInt(
+            button.dataset.currentRows, 10
+        );
+        if (isNaN(currentRows) || currentRows < 0) {
+            currentRows = 0;
+        }
+
+        var position = parsePositiveInteger(
+            positionInput ? positionInput.value : ''
+        );
+        if (position === null) {
+            position = currentRows + 1;
+        }
+
+        TeamCore.insertRankingAt(teamId, year, position)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    notify(
+                        'Failed to insert ranking: ' +
+                        ((result && result.message) ||
+                            'Unknown error'),
+                        'error'
+                    );
+                }
+                refreshUI();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[TeamEvents] insertRankingAt failed:', err
+                );
+                notify('Failed to insert ranking.', 'error');
+                refreshUI();
+            });
+    }
+
+    // ---- Drag-to-reorder ----
+
+    function handleRankDragStart(e, row) {
+        var teamId = row.dataset.teamId;
+        var position = parseInt(row.dataset.position, 10);
+
+        if (!teamId || isNaN(position)) {
+            e.preventDefault();
+            return;
+        }
+
+        _rankDragTeamId = teamId;
+        _rankDragYear = _rankingsYear;
+
+        row.classList.add('is-dragging');
+
+        if (e.dataTransfer) {
+            try {
+                e.dataTransfer.effectAllowed = 'move';
+                // Some browsers require a data payload for the
+                // drag to be considered valid.
+                e.dataTransfer.setData(
+                    'text/plain', teamId
+                );
+            } catch (err) {
+                // Ignore.
+            }
+        }
+    }
+
+    function handleRankDragOver(e, row) {
+        if (!_rankDragTeamId) { return; }
+
+        var targetTeamId = row.dataset.teamId;
+        if (targetTeamId === _rankDragTeamId) {
+            // Dropping on the dragged row itself is a no-op.
+            return;
+        }
+
+        e.preventDefault();
+        if (e.dataTransfer) {
+            try {
+                e.dataTransfer.dropEffect = 'move';
+            } catch (err) {
+                // Ignore.
+            }
+        }
+
+        // Decide before/after by pointer position within the
+        // row.
+        var rect = row.getBoundingClientRect();
+        var isAfter = (e.clientY - rect.top) > (rect.height / 2);
+
+        row.classList.remove('drop-before', 'drop-after');
+        row.classList.add(isAfter ? 'drop-after' : 'drop-before');
+    }
+
+    function handleRankDragLeave(e, row) {
+        row.classList.remove('drop-before', 'drop-after');
+    }
+
+    function handleRankDrop(e, row) {
+        e.preventDefault();
+
+        var draggedTeamId = _rankDragTeamId;
+        var year = _rankDragYear;
+
+        // Clear drag state immediately so a re-entrant event
+        // cannot act on stale ids.
+        _rankDragTeamId = null;
+        _rankDragYear = null;
+
+        row.classList.remove('drop-before', 'drop-after');
+        var draggedRow = _container
+            ? _container.querySelector('.rankings-table-row.is-dragging')
+            : null;
+        if (draggedRow) {
+            draggedRow.classList.remove('is-dragging');
+        }
+
+        if (!draggedTeamId || year === null) { return; }
+
+        var targetTeamId = row.dataset.teamId;
+        if (targetTeamId === draggedTeamId) { return; }
+
+        var targetPosition = parseInt(row.dataset.position, 10);
+        if (isNaN(targetPosition)) { return; }
+
+        // Before-vs-after decision, recomputed at drop time (the
+        // dragover class is advisory; we do not trust it if the
+        // pointer moved between dragover and drop).
+        var rect = row.getBoundingClientRect();
+        var isAfter = (e.clientY - rect.top) > (rect.height / 2);
+
+        var newPosition = isAfter
+            ? targetPosition + 1
+            : targetPosition;
+
+        TeamCore.moveRanking(draggedTeamId, year, newPosition)
+            .then(function(result) {
+                if (!result || !result.success) {
+                    notify(
+                        'Failed to reorder: ' +
+                        ((result && result.message) ||
+                            'Unknown error'),
+                        'error'
+                    );
+                }
+                refreshUI();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[TeamEvents] moveRanking failed:', err
+                );
+                notify('Failed to reorder.', 'error');
+                refreshUI();
+            });
+    }
+
+    function handleRankDragEnd(e, row) {
+        _rankDragTeamId = null;
+        _rankDragYear = null;
+
+        if (row) {
+            row.classList.remove(
+                'is-dragging', 'drop-before', 'drop-after'
+            );
+        }
     }
 
     // ============================================================
@@ -1703,8 +1711,24 @@
     }
 
     // ============================================================
-    // PERIODS EDITOR
+    // PERIODS EDITOR (D2: closed last period is now allowed)
     // ============================================================
+    //
+    // The periods editor is a DOM-only staging area. Appending a
+    // row adds a new period after the current last row; it does
+    // NOT auto-close the previous last row's end input unless the
+    // user left it blank (in which case it is set to newStart-1
+    // so the previous period has a coherent end).
+    //
+    // Removing a row no longer promotes the remaining last row.
+    // Every row's end input is editable at all times; removing
+    // a row simply leaves the new last row's end as the user last
+    // set it.
+    //
+    // collectPeriodsFromForm reads EVERY row's end input,
+    // including the last. A blank end on the last row means
+    // "still ongoing"; a non-blank end means the team disbanded
+    // at that year.
 
     function appendPeriodRow(form, modal) {
         var list = form.querySelector('#team-periods-list');
@@ -1757,35 +1781,22 @@
                     newStart = prevStartNum + 1;
                 }
             }
-        }
 
-        if (lastRow) {
+            // ---- If the previous last row's end is blank,
+            //      fill it with (newStart - 1) so the previous
+            //      period has a coherent end. If it already has
+            //      a non-blank end, leave it alone: the user
+            //      set it, and we do not overwrite explicit
+            //      values. ----
             var prevEndEl = lastRow.querySelector(
                 '.team-period-end'
             );
             if (prevEndEl) {
-                var wasLastDisabled =
-                    prevEndEl.hasAttribute('disabled');
-                if (wasLastDisabled) {
-                    replaceEndInputWithEditable(
-                        prevEndEl, String(newStart - 1)
-                    );
-                } else {
-                    var currentEnd = String(prevEndEl.value || '');
-                    if (currentEnd === '') {
-                        prevEndEl.value = String(newStart - 1);
-                    }
+                var currentEnd = String(prevEndEl.value || '').trim();
+                if (currentEnd === '') {
+                    prevEndEl.value = String(newStart - 1);
                 }
             }
-
-            var hint = lastRow.querySelector(
-                '.team-period-field-hint'
-            );
-            if (hint && hint.parentNode) {
-                hint.parentNode.removeChild(hint);
-            }
-
-            lastRow.dataset.isLast = 'false';
         }
 
         var newRowHtml = buildNewPeriodRowHTML(
@@ -1826,18 +1837,6 @@
         return TeamRender.renderPeriodRow(
             period, 0, true, options, false
         );
-    }
-
-    function replaceEndInputWithEditable(oldInput, value) {
-        var newInput = document.createElement('input');
-        newInput.type = 'number';
-        newInput.className = 'team-period-end';
-        newInput.min = '1';
-        newInput.value = value;
-        newInput.placeholder = 'Year';
-        if (oldInput && oldInput.parentNode) {
-            oldInput.parentNode.replaceChild(newInput, oldInput);
-        }
     }
 
     function getSpecialisationOptions(form, modal) {
@@ -1920,52 +1919,10 @@
             : null;
         if (!row) { return; }
 
-        var wasLast = row.dataset.isLast === 'true';
         row.parentNode.removeChild(row);
-
-        if (wasLast) {
-            var remaining = list.querySelectorAll(
-                '.team-period-row'
-            );
-            var newLast = remaining[remaining.length - 1];
-            if (newLast) {
-                promoteToCurrentPeriod(newLast);
-            }
-        }
 
         reindexPeriodRows(list);
         updateRemoveButtons(list);
-    }
-
-    function promoteToCurrentPeriod(row) {
-        row.dataset.isLast = 'true';
-
-        var endEl = row.querySelector('.team-period-end');
-        if (endEl) {
-            var replacement = document.createElement('input');
-            replacement.type = 'text';
-            replacement.className = 'team-period-end';
-            replacement.value = '';
-            replacement.placeholder = 'present';
-            replacement.readOnly = true;
-            replacement.disabled = true;
-
-            if (endEl.parentNode) {
-                endEl.parentNode.replaceChild(replacement, endEl);
-            }
-        }
-
-        var fieldEnd = row.querySelector(
-            '.team-period-field-end'
-        );
-        if (fieldEnd && !fieldEnd.querySelector(
-            '.team-period-field-hint'
-        )) {
-            var hint = document.createElement('span');
-            hint.className = 'team-period-field-hint';
-            hint.textContent = '(open)';
-            fieldEnd.appendChild(hint);
-        }
     }
 
     function reindexPeriodRows(list) {
@@ -1977,10 +1934,10 @@
                 '.team-period-row-label'
             );
             if (label) {
-                var isLast = rows[i].dataset.isLast === 'true';
-                label.textContent = isLast
-                    ? 'Period ' + (i + 1) + ' (current)'
-                    : 'Period ' + (i + 1);
+                // The "(current)" suffix is gone. Every row is
+                // just "Period N". The last row is identifiable
+                // by its position in the list, not by a label.
+                label.textContent = 'Period ' + (i + 1);
             }
 
             var removeBtn = rows[i].querySelector(
@@ -2371,6 +2328,16 @@
         });
     }
 
+    /**
+     * Read every period row's fields, including the last row's
+     * end input. A blank end on any row means "unbounded on that
+     * side"; for the last row specifically, that means the team
+     * is still ongoing. A non-blank end on the last row means the
+     * team disbanded at that year.
+     *
+     * The previous revision skipped the last row's end; this one
+     * reads it. That is the whole point of D2.
+     */
     function collectPeriodsFromForm(form) {
         var list = form.querySelector('#team-periods-list');
         if (!list) {
@@ -2391,7 +2358,6 @@
 
         for (var i = 0; i < rows.length; i++) {
             var row = rows[i];
-            var isLast = (i === rows.length - 1);
 
             var nameEl = row.querySelector('.team-period-name');
             var startEl = row.querySelector('.team-period-start');
@@ -2422,19 +2388,12 @@
                 return null;
             }
 
+            // ---- End is read on EVERY row, including the last. ----
+            var endRaw = endEl
+                ? String(endEl.value || '').trim()
+                : '';
             var endCanon = '';
-            if (!isLast) {
-                var endRaw = endEl
-                    ? String(endEl.value || '').trim()
-                    : '';
-                if (endRaw === '') {
-                    notify(
-                        'Period ' + (i + 1) +
-                        ' requires an end year.',
-                        'error'
-                    );
-                    return null;
-                }
+            if (endRaw !== '') {
                 var endNum = parsePositiveInteger(endRaw);
                 if (endNum === null) {
                     notify(
@@ -3359,6 +3318,12 @@
     // ============================================================
     // RANKING MODAL (per-team)
     // ============================================================
+    //
+    // The per-team ranking modal is unchanged from the previous
+    // revision. It shows the team's own ranking history and
+    // offers period/rank Add and remove controls. Those route to
+    // TeamCore.addRanking / removeRanking, which are now
+    // compatibility shims over insertRankingAt / removeRankingAt.
 
     function showRankingModal(teamId) {
         var vm = TeamAggregator.getRankingModalViewModel(teamId);
@@ -3451,7 +3416,7 @@
                 return;
             }
 
-            TeamCore.removeRanking(teamId, period)
+            TeamCore.removeRankingAt(teamId, period)
                 .then(function(result) {
                     if (result && result.success) {
                         refreshRankingListInPlace(
@@ -3469,7 +3434,7 @@
                 })
                 .catch(function(err) {
                     console.warn(
-                        '[TeamEvents] removeRanking failed:', err
+                        '[TeamEvents] removeRankingAt failed:', err
                     );
                     notify(
                         'Failed to remove ranking.',
@@ -3507,7 +3472,7 @@
             return;
         }
 
-        TeamCore.addRanking(teamId, periodNum, rankNum)
+        TeamCore.insertRankingAt(teamId, periodNum, rankNum)
             .then(function(result) {
                 if (!result || !result.success) {
                     notify(
@@ -3525,7 +3490,7 @@
             })
             .catch(function(err) {
                 console.warn(
-                    '[TeamEvents] addRanking failed:', err
+                    '[TeamEvents] insertRankingAt failed:', err
                 );
                 notify('Failed to add ranking.', 'error');
             });
