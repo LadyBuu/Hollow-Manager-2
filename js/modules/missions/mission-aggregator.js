@@ -135,13 +135,23 @@
  *   The two builders share the same assembly code
  *   (assembleParticipantsVM). Only the input resolution differs.
  *
- * ROOKIE CANDIDATES VM:
+ * ROOKIE CANDIDATES VM (year-scoped, this revision):
  *   getRookieCandidatesViewModel(missionId) builds the list for
- *   the rookie search panel. Shape:
+ *   the rookie search panel. A candidate is a character who held
+ *   a 'rookie' career status AT THE MISSION'S YEAR — i.e. the
+ *   mission year falls within one of their rookie career-status
+ *   entries (inclusive on both ends; a blank endYear means the
+ *   rookie status is still ongoing). "Has ever been a rookie" is
+ *   NOT the rule; a character who was a rookie in 1920 is not a
+ *   candidate for a mission in 1905.
+ *
+ *   Shape:
  *
  *     {
  *       missionId,
- *       candidates: [         // sorted alphabetically by name
+ *       missionTitle,
+ *       missionYear,       // the year the mission takes place
+ *       candidates: [      // sorted alphabetically by name
  *         {
  *           characterId,
  *           displayName,
@@ -152,12 +162,12 @@
  *       ]
  *     }
  *
- *   A candidate is any character who has ever held a 'rookie'
- *   career status, is not filler, and is not already a team member
- *   of any of the mission's assigned teams. A character who is
- *   already a rookie participant appears with isParticipant true
- *   so the UI can render them as selected; the UI can filter them
- *   out or show them checked.
+ *   A candidate is any character whose rookie career status
+ *   covers the mission year, is not filler, and is not already a
+ *   team member of any of the mission's assigned teams. A
+ *   character who is already a rookie participant appears with
+ *   isParticipant true so the UI can render them as selected; the
+ *   UI can filter them out or show them checked.
  *
  *   The character pool is walked once; there is no per-call cache.
  *   The candidate list is small (rookies are a bounded slice of
@@ -388,31 +398,46 @@
     }
 
     // ============================================================
-    // ROOKIE DETECTION
+    // ROOKIE DETECTION (year-scoped)
     // ============================================================
     //
-    // "Rookie" is a career status. A character has ever been a
-    // rookie when any entry in `char.careerStatus` normalises to
-    // 'rookie'. Normalisation:
+    // "Rookie" is a career status. A character is a rookie
+    // candidate for a mission when the mission's year falls
+    // WITHIN one of their rookie career-status entries. The rule
+    // is inclusive on both ends:
+    //
+    //   entry.startYear <= missionYear <= entry.endYear
+    //
+    // A blank endYear means the rookie status is still ongoing;
+    // such an entry matches any missionYear >= startYear.
+    //
+    // This is DIFFERENT from "has ever been a rookie", which was
+    // the previous rule. A character who was a rookie in 1920 is
+    // not a candidate for a mission in 1905. A character whose
+    // rookie status is ongoing (blank endYear) is a candidate for
+    // any mission at or after their rookie start year.
+    //
+    // Normalisation:
     //
     //   - lowercase
     //   - strip a trailing ' (former)' suffix
     //   - trim
     //
-    // This is the same normalisation the team domain uses in
-    // TeamQueries.normaliseCareerStatusKey. It is duplicated here
-    // rather than imported because the mission domain does not
-    // depend on TeamQueries' private helpers, and the rule is
-    // three lines.
+    // The ' (Former)' strip is kept: a career-status entry whose
+    // label reads "Rookie (Former)" still describes a period during
+    // which the character held the rookie status, and its
+    // start/end years are still the bounds of that period. The
+    // suffix is a UI label, not a disqualifier.
     //
-    // A character with a `'rookie (Former)'` entry counts. A
-    // character whose current status is no longer rookie but who
-    // was a rookie in a past year counts.
+    // A character with a 'rookie' entry whose startYear is
+    // unparseable is SKIPPED for that entry. A character with a
+    // 'rookie' entry whose endYear is unparseable (and non-blank)
+    // is also SKIPPED for that entry; a malformed end cannot be
+    // treated as "open-ended", because that would silently turn a
+    // bad record into a permanent candidacy.
     //
-    // The check does NOT consult CharacterConstants.STUDENT_STATUSES
-    // or classifyStatus. Those treat 'rookie' as one of five
-    // student statuses; the question here is narrower. A character
-    // who was a 'junior' has never been a rookie.
+    // Filler characters are never rookie candidates, regardless of
+    // their careerStatus entries.
 
     function normaliseCareerStatusKey(status) {
         if (status === undefined || status === null) { return ''; }
@@ -426,24 +451,72 @@
     }
 
     /**
-     * Has this character ever held a 'rookie' career status?
+     * Was this character a rookie at the given year?
      *
      * A filler character is not a rookie candidate, so this returns
      * false for fillers regardless of their careerStatus entries.
+     *
+     * The year must be a positive integer. A missing, malformed, or
+     * non-positive year returns false (no candidacy can be
+     * established without a year to establish it against).
+     *
+     * @param {object} char
+     * @param {number|string} year
+     * @returns {boolean}
      */
-    function hasEverBeenRookie(char) {
+    function isRookieAtYear(char, year) {
         if (!isPlainObject(char)) { return false; }
         if (char.isFiller === true) { return false; }
         if (!Array.isArray(char.careerStatus)) { return false; }
 
+        var targetYear = parseInt(year, 10);
+        if (isNaN(targetYear) || targetYear < 1) {
+            return false;
+        }
+
         for (var i = 0; i < char.careerStatus.length; i++) {
             var entry = char.careerStatus[i];
             if (!isPlainObject(entry)) { continue; }
+
             var key = normaliseCareerStatusKey(entry.status);
-            if (key === 'rookie') {
+            if (key !== 'rookie') { continue; }
+
+            var start = parseInt(entry.startYear, 10);
+            if (isNaN(start) || start < 1) {
+                // A rookie entry without a parseable start cannot
+                // establish a year range. Skip it rather than
+                // assume the character has always been a rookie.
+                continue;
+            }
+
+            if (targetYear < start) {
+                // Entry starts after the mission year. Not this
+                // entry; check the next.
+                continue;
+            }
+
+            var hasEnd = entry.endYear !== undefined &&
+                         entry.endYear !== null &&
+                         String(entry.endYear).trim() !== '';
+
+            if (!hasEnd) {
+                // Ongoing rookie status. Matches any year at or
+                // after the start year.
+                return true;
+            }
+
+            var end = parseInt(entry.endYear, 10);
+            if (isNaN(end) || end < 1) {
+                // Malformed end. Do NOT treat as open-ended;
+                // skip the entry.
+                continue;
+            }
+
+            if (targetYear <= end) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -1750,14 +1823,17 @@
     }
 
     // ============================================================
-    // ROOKIE CANDIDATES VM
+    // ROOKIE CANDIDATES VM (year-scoped)
     // ============================================================
     //
-    // See the file header for the full shape.
+    // See the file header for the full shape and the year-scoped
+    // candidacy rule.
     //
-    // A candidate is any character who has ever held a 'rookie'
-    // career status and is not a filler. The list is sorted
-    // alphabetically by display name.
+    // A candidate is any character whose rookie career status
+    // covers the mission's year, who is not filler, and who is not
+    // already a member of one of the mission's assigned teams at
+    // that year. The list is sorted alphabetically by display
+    // name.
     //
     // Each candidate carries three flags the UI reads:
     //
@@ -1769,7 +1845,11 @@
     //
     // The UI decides how to render each combination. The aggregator
     // does not filter candidates out; filtering is a presentation
-    // choice and belongs to the renderer.
+    // choice and belongs to the renderer. (The rookie picker's own
+    // fetchVM, which this VM feeds, additionally merges in any
+    // current rookie participant whose career-status history no
+    // longer covers the mission year, so an already-recorded
+    // participant can always be found and unticked.)
 
     function getRookieCandidatesViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -1839,7 +1919,12 @@
             var char = allChars[c];
             if (!char || !char.id) { continue; }
 
-            if (!hasEverBeenRookie(char)) { continue; }
+            // ---- Year-scoped rookie check. ----
+            //
+            // A character is a candidate only when the mission's
+            // year falls within one of their rookie career-status
+            // entries. "Has ever been a rookie" is not the rule.
+            if (!isRookieAtYear(char, missionYear)) { continue; }
 
             var charId = String(char.id);
             var name = '';
@@ -2057,39 +2142,201 @@
             }
         }
 
-        // Smoke test: rookie detection.
+        // Smoke test: year-scoped rookie detection.
+        //
+        // A character is a rookie at a year only when the year
+        // falls within one of their rookie career-status entries.
+        // The boundary cases are the whole point of the change:
+        // start-year and end-year are inclusive, a blank endYear
+        // is open-ended, and a year outside the range is excluded.
         try {
-            if (hasEverBeenRookie({
-                careerStatus: [{ status: 'rookie' }]
-            }) !== true) {
-                missing.push('hasEverBeenRookie did not accept a rookie');
+            // 1. Year inside the range. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1903) !== true) {
+                missing.push(
+                    'isRookieAtYear: year inside the range should be true'
+                );
             }
-            if (hasEverBeenRookie({
-                careerStatus: [{ status: 'Rookie' }]
-            }) !== true) {
-                missing.push('hasEverBeenRookie did not handle case');
+
+            // 2. Start year is inclusive. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1900) !== true) {
+                missing.push(
+                    'isRookieAtYear: start year should be inclusive'
+                );
             }
-            if (hasEverBeenRookie({
-                careerStatus: [{ status: 'rookie (Former)' }]
-            }) !== true) {
-                missing.push('hasEverBeenRookie did not accept former');
+
+            // 3. End year is inclusive. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1905) !== true) {
+                missing.push(
+                    'isRookieAtYear: end year should be inclusive'
+                );
             }
-            if (hasEverBeenRookie({
-                careerStatus: [{ status: 'junior' }]
-            }) !== false) {
-                missing.push('hasEverBeenRookie accepted a junior');
+
+            // 4. Year before the range. False.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1899) !== false) {
+                missing.push(
+                    'isRookieAtYear: year before the range should be false'
+                );
             }
-            if (hasEverBeenRookie({
+
+            // 5. Year after the range. False.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1906) !== false) {
+                missing.push(
+                    'isRookieAtYear: year after the range should be false'
+                );
+            }
+
+            // 6. Blank endYear means open-ended. True for any
+            //    year at or after the start.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: '' }
+                ]
+            }, 1920) !== true) {
+                missing.push(
+                    'isRookieAtYear: blank endYear should be open-ended'
+                );
+            }
+
+            // 7. Same, but with endYear absent entirely. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900 }
+                ]
+            }, 1920) !== true) {
+                missing.push(
+                    'isRookieAtYear: missing endYear should be open-ended'
+                );
+            }
+
+            // 8. Case-insensitive status. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'Rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1903) !== true) {
+                missing.push(
+                    'isRookieAtYear: should be case-insensitive'
+                );
+            }
+
+            // 9. 'Rookie (Former)' normalises to 'rookie'. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    {
+                        status: 'Rookie (Former)',
+                        startYear: 1900,
+                        endYear: 1905
+                    }
+                ]
+            }, 1903) !== true) {
+                missing.push(
+                    'isRookieAtYear: should strip the (Former) suffix'
+                );
+            }
+
+            // 10. Non-rookie status. False.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'junior', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1903) !== false) {
+                missing.push(
+                    'isRookieAtYear: should reject a junior status'
+                );
+            }
+
+            // 11. Filler character. False, regardless of status.
+            if (isRookieAtYear({
                 isFiller: true,
-                careerStatus: [{ status: 'rookie' }]
-            }) !== false) {
-                missing.push('hasEverBeenRookie accepted a filler');
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1903) !== false) {
+                missing.push(
+                    'isRookieAtYear: should reject a filler character'
+                );
             }
-            if (hasEverBeenRookie({}) !== false) {
-                missing.push('hasEverBeenRookie accepted an empty record');
+
+            // 12. Empty record. False.
+            if (isRookieAtYear({}, 1903) !== false) {
+                missing.push(
+                    'isRookieAtYear: empty record should be false'
+                );
+            }
+
+            // 13. Missing year argument. False. (No candidacy can
+            //     be established without a year.)
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, null) !== false) {
+                missing.push(
+                    'isRookieAtYear: missing year should be false'
+                );
+            }
+
+            // 14. Malformed startYear. The entry is skipped; the
+            //     character is not a candidate for that entry.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: '', endYear: 1905 }
+                ]
+            }, 1903) !== false) {
+                missing.push(
+                    'isRookieAtYear: malformed startYear should not ' +
+                    'match'
+                );
+            }
+
+            // 15. Malformed non-blank endYear. The entry is
+            //     skipped (NOT treated as open-ended). False.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'rookie', startYear: 1900, endYear: 'xyz' }
+                ]
+            }, 1903) !== false) {
+                missing.push(
+                    'isRookieAtYear: malformed non-blank endYear ' +
+                    'should not match'
+                );
+            }
+
+            // 16. Second entry is the matching one. True.
+            if (isRookieAtYear({
+                careerStatus: [
+                    { status: 'junior', startYear: 1890, endYear: 1899 },
+                    { status: 'rookie', startYear: 1900, endYear: 1905 }
+                ]
+            }, 1903) !== true) {
+                missing.push(
+                    'isRookieAtYear: should match a later entry'
+                );
             }
         } catch (e) {
-            missing.push('rookie smoke test threw: ' + e.message);
+            missing.push(
+                'rookie year-scoped smoke test threw: ' + e.message
+            );
         }
 
         // Smoke test: form-state participant builder shape.
