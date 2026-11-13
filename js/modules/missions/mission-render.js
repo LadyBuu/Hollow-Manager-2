@@ -30,9 +30,13 @@
  *     participant-toggle change, mission-ui.js rebuilds it and
  *     swaps only the #mission-participants-panel node.
  *   - Layout of the participants panel. That is owned by
- *     missions.css. The renderer emits class names only; the
- *     inline flex styles that were added as a temporary
- *     workaround have been removed.
+ *     missions.css. The renderer emits class names only.
+ *   - The custom calendar. That is owned by CalendarConfig
+ *     (js/modules/shared/calendar-config.js). This module calls
+ *     CalendarConfig.getMonthsForYear(year) and getDaysInMonth()
+ *     to build the month <select> and to clamp the day input.
+ *     When CalendarConfig is not loaded, the date fields fall
+ *     back to Gregorian in-line, so the form keeps working.
  *
  * LAYOUT CONTRACT (missions.css):
  *   The participant editor's layout is:
@@ -99,10 +103,37 @@
  *   "Discard Changes", NOT "Cancel", so it cannot be confused
  *   with the detail panel's "Cancel Mission".
  *
+ * DATE FIELDS (E1):
+ *   The three date inputs are:
+ *
+ *     <input  id="mission-year"  data-mission-year-field="true">
+ *     <select id="mission-month" data-mission-month-field="true">
+ *     <input  id="mission-day"   data-mission-day-field="true">
+ *
+ *   The month is now a <select>, not an <input>. The option
+ *   values are the month ids returned by
+ *   CalendarConfig.getMonthsForYear(year). Those ids are
+ *   integers 1..N, renumbered in calendar order per year. In a
+ *   year that carries a per-year leap month, N is larger than
+ *   in an ordinary year; the leap month appears in the select
+ *   with its own name.
+ *
+ *   The day's `max` attribute is set to
+ *   CalendarConfig.getDaysInMonth(year, month). When the user
+ *   changes the year or month in the UI, mission-ui.js
+ *   (E1.6, one-line edit) updates the day's `max` in place.
+ *   Until that edit lands, the schema still rejects out-of-range
+ *   days on submit via CalendarValidation.isValidCalendarDate,
+ *   so the model stays correct.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
  *   - window.MissionConstants
  *   - window.MissionViews
+ *
+ * DEPENDENCIES (LAZY, at call time, optional):
+ *   - window.CalendarConfig   (custom month names and lengths;
+ *                              Gregorian fallback when absent)
  */
 
 (function() {
@@ -185,6 +216,71 @@
             : String(value);
     }
 
+    function toPositiveInt(value, fallback) {
+        var n = parseInt(value, 10);
+        if (isNaN(n) || n < 1) { return fallback; }
+        return n;
+    }
+
+    // ============================================================
+    // CALENDAR ACCESS (with Gregorian fallback)
+    // ============================================================
+    //
+    // The month <select> and the day input's max come from
+    // CalendarConfig. When it is not loaded, or when the active
+    // project has no custom calendar, everything falls back to
+    // Gregorian exactly as before. The fallback lives here so
+    // mission-render.js is self-contained and works in a stripped
+    // build that does not include calendar-config.js.
+
+    var GREG_MONTHS = [
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+
+    function isGregorianLeap(y) {
+        return (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+    }
+
+    function gregorianMonths(year) {
+        var lp = isGregorianLeap(year);
+        var out = [];
+        for (var i = 0; i < 12; i++) {
+            out.push({
+                id: i + 1,
+                name: GREG_MONTHS[i],
+                days: i === 1 && lp ? 29 :
+                      [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][i]
+            });
+        }
+        return out;
+    }
+
+    function getMonthsForYear(year) {
+        var cfg = window.CalendarConfig;
+        if (cfg && typeof cfg.getMonthsForYear === 'function') {
+            var list = cfg.getMonthsForYear(year);
+            if (isArray(list) && list.length > 0) {
+                return list;
+            }
+        }
+        return gregorianMonths(year);
+    }
+
+    function getDaysInMonth(year, monthId) {
+        var cfg = window.CalendarConfig;
+        if (cfg && typeof cfg.getDaysInMonth === 'function') {
+            var n = cfg.getDaysInMonth(year, monthId);
+            if (typeof n === 'number' && n >= 1) {
+                return n;
+            }
+        }
+        var m = toPositiveInt(monthId, 1);
+        var list = gregorianMonths(year);
+        if (m > list.length) { return 31; }
+        return list[m - 1].days;
+    }
+
     // ============================================================
     // CONTAINER
     // ============================================================
@@ -194,21 +290,6 @@
     // renderList. The modal shells are also installed here once
     // and then filled by openDetailModal / openFormModal /
     // openReportFormModal.
-    //
-    // The shell carries:
-    //
-    //   .page-header
-    //     h2 "Missions"
-    //     .header-actions: Import, New Mission
-    //   .filter-section
-    //     #mission-filter select (status filter)
-    //     .mission-count
-    //   #missions-list.missions-list     (list mount point)
-    //   #mission-detail-modal            (hidden modal shell)
-    //   #mission-form-modal              (hidden modal shell)
-    //
-    // The report modal shell is installed by mission-ui.js
-    // (ensureReportModalShell), not here.
 
     function renderContainer(vm) {
         vm = vm || {};
@@ -293,22 +374,6 @@
     // ============================================================
     // LIST
     // ============================================================
-    //
-    // One row per mission. The row is a .list-item.mission-item,
-    // which missions.css lays out as a 10-column grid:
-    //
-    //   [id] [date] [title] [type] [escalation] [difficulty]
-    //   [team] [progress] [status/priority] [actions]
-    //
-    // The order is load-bearing; if you add or remove a cell,
-    // update the grid-template-columns in missions.css.
-    //
-    // Each row is clickable: it carries data-action="mission-list-item"
-    // and data-mission-id so mission-ui.js can open the detail
-    // modal.
-    //
-    // The row carries modifier classes for status styling:
-    //   .mission-archived, .mission-completed, .mission-cancelled
 
     function renderList(missions) {
         if (!isArray(missions) || missions.length === 0) {
@@ -416,9 +481,7 @@
                 '</span>';
         html += '</span>';
 
-        // ---- 10. (grid filler — actions live on the detail modal,
-        //          not on the row; this cell keeps the grid count
-        //          stable) ----
+        // ---- 10. Grid filler ----
         html += '<span class="mission-row-tail"></span>';
 
         html += '</div>';
@@ -472,28 +535,6 @@
     // ============================================================
     // DETAIL
     // ============================================================
-    //
-    // The detail panel body, rendered into #mission-detail-content.
-    // Consumes a getMissionDetailViewModel-shaped VM.
-    //
-    // Sections:
-    //
-    //   .mission-detail-header      title, id, description
-    //   .mission-detail-fields      read-only scalar fields
-    //   assigned teams              .assigned-teams-section
-    //   objectives                  .objectives-section
-    //   participants                .participants-section
-    //   support personnel           .support-section
-    //   reports                     .reports-section
-    //   notes / tags                inline in fields
-    //   .mission-detail-actions     status buttons, edit, export
-    //
-    // The "Edit" and "Edit Participants" actions both open the
-    // form. The latter jumps the user's eye to the participant
-    // panel by opening the same modal (mission-ui.js does not
-    // currently scroll; the label is a functional alias).
-    //
-    // The activity log is NOT rendered. The field is retired.
 
     function renderDetail(vm) {
         if (!vm) { return ''; }
@@ -546,10 +587,8 @@
 
         html += renderDetailField('Date', vm.dateDisplay);
         html += renderDetailField('Type', vm.typeDisplay);
-        html += renderDetailField('Difficulty',
-            vm.difficultyLabel);
-        html += renderDetailField('Escalation',
-            vm.escalationLabel);
+        html += renderDetailField('Difficulty', vm.difficultyLabel);
+        html += renderDetailField('Escalation', vm.escalationLabel);
         html += renderDetailField('Billing', vm.billingLabel);
         html += renderDetailField('Pay', vm.pay);
         html += renderDetailField('Threat type', vm.threatType);
@@ -562,12 +601,9 @@
                 ? vm.progress + '%'
                 : ''));
 
-        html += renderDetailField('Created',
-            vm.createdAtDisplay);
-        html += renderDetailField('Completed',
-            vm.completedAtDisplay);
-        html += renderDetailField('Archived',
-            vm.archivedAtDisplay);
+        html += renderDetailField('Created', vm.createdAtDisplay);
+        html += renderDetailField('Completed', vm.completedAtDisplay);
+        html += renderDetailField('Archived', vm.archivedAtDisplay);
 
         if (isArray(vm.tags) && vm.tags.length > 0) {
             html += '<div class="detail-row tags-row">';
@@ -740,9 +776,7 @@
 
         html += '<div class="section-header">';
         html += '<strong>Participants</strong>';
-        html += '<span class="count">' +
-                    participants.length +
-                '</span>';
+        html += '<span class="count">' + participants.length + '</span>';
         html += '<button type="button" class="small secondary" ' +
                     'data-action="mission-open-rookie-picker" ' +
                     'data-mission-id="' +
@@ -956,7 +990,6 @@
         var html = '';
         html += '<div class="mission-detail-actions">';
 
-        // ---- Edit (any non-archived mission) ----
         if (caps.edit === true) {
             html += '<button type="button" class="primary" ' +
                         'data-action="mission-edit" ' +
@@ -966,7 +999,6 @@
                     '</button>';
         }
 
-        // ---- Complete (active + all objectives done) ----
         if (caps.complete === true) {
             html += '<button type="button" class="secondary" ' +
                         'data-action="mission-complete" ' +
@@ -976,7 +1008,6 @@
                     '</button>';
         }
 
-        // ---- Cancel (active) ----
         if (caps.cancel === true) {
             html += '<button type="button" class="secondary" ' +
                         'data-action="mission-cancel" ' +
@@ -986,7 +1017,6 @@
                     '</button>';
         }
 
-        // ---- Reactivate (completed or cancelled) ----
         if (caps.reactivate === true) {
             html += '<button type="button" class="secondary" ' +
                         'data-action="mission-reactivate" ' +
@@ -996,7 +1026,6 @@
                     '</button>';
         }
 
-        // ---- Export ----
         html += '<button type="button" class="secondary" ' +
                     'data-action="mission-export" ' +
                     'data-mission-id="' +
@@ -1004,7 +1033,6 @@
                     'Export' +
                 '</button>';
 
-        // ---- Archive / Unarchive ----
         if (vm.isArchived === true) {
             html += '<button type="button" class="danger" ' +
                         'data-action="mission-unarchive" ' +
@@ -1028,46 +1056,12 @@
     // ============================================================
     // FORM
     // ============================================================
-    //
-    // The mission form body, rendered into #mission-form-content.
-    // Consumes a getMissionFormViewModel-shaped VM. In addition,
-    // mission-ui.js attaches:
-    //
-    //   vm.participantsVM   a participants VM built from the
-    //                       current form state (see
-    //                       getParticipantsViewModelFromFormState)
-    //
-    // The form carries:
-    //
-    //   #team-form-inner .mission-form
-    //     .form-grid (2 columns, .full-width spans both)
-    //       Title, Description
-    //       Year / Month / Day (data-* markers)
-    //       Primary type / Subtype / Secondary type
-    //       Escalation / Threat type
-    //       Environment / Location / Duration
-    //       Difficulty / Priority
-    //       Base pay / Surcharge pay / Billing
-    //       Status
-    //       Assigned Teams editor (#mission-teams-list)
-    //       Support personnel editor (#mission-support-list)
-    //       Objectives editor (#mission-objectives-list)
-    //       Participants panel (#mission-participants-panel)
-    //       Notes / Tags
-    //     .form-actions
-    //       Discard Changes (data-action="mission-close-form")
-    //       Create / Update Mission (submit)
-    //
-    // The form does NOT preview the derived label. On edit, the
-    // current derived label is shown as static text; on create,
-    // a muted "Assigned on save" placeholder is shown.
 
     function renderForm(vm) {
         if (!vm) { return ''; }
 
         var isEdit = vm.isEdit === true;
         var mission = isPlainObject(vm.mission) ? vm.mission : {};
-
         var defaults = isPlainObject(vm.defaults) ? vm.defaults : {};
 
         var titleVal = isNonEmptyString(mission.title)
@@ -1104,27 +1098,21 @@
 
         html += '<div class="form-grid">';
 
-        // ---- Title ----
         html += renderFormText('mission-title', 'Title',
             titleVal, 'full-width', true);
 
-        // ---- Description ----
         html += renderFormTextarea('mission-description', 'Description',
             descriptionVal, 'full-width');
 
-        // ---- Date ----
         html += renderDateFields(yearVal, monthVal, dayVal);
 
-        // ---- Primary / subtype / secondary type ----
         html += renderTypeFields(vm, mission);
 
-        // ---- Escalation / threat type ----
         html += renderFormSelect('mission-escalation', 'Escalation',
             vm.escalationTiers || [], mission.escalation || '');
         html += renderFormText('mission-threat-type', 'Threat Type',
             mission.threatType || '');
 
-        // ---- Environment / location / duration ----
         html += renderFormText('mission-environment', 'Environment',
             mission.environment || '');
         html += renderFormText('mission-location', 'Location',
@@ -1132,13 +1120,11 @@
         html += renderFormText('mission-duration', 'Duration',
             mission.duration || '');
 
-        // ---- Difficulty / priority ----
         html += renderFormSelect('mission-difficulty', 'Difficulty',
             vm.difficulties || [], mission.difficulty || '');
         html += renderFormSelect('mission-priority', 'Priority',
             vm.priorities || [], mission.priority || '');
 
-        // ---- Pay ----
         html += renderFormText('mission-base-pay', 'Base Pay',
             mission.basePay || '');
         html += renderFormText('mission-surcharge-pay',
@@ -1146,30 +1132,22 @@
         html += renderFormSelect('mission-billing', 'Billing',
             vm.billingTypes || [], mission.billing || '');
 
-        // ---- Status ----
         html += renderFormSelect('mission-status', 'Status',
             vm.statuses || [], mission.status || '');
 
-        // ---- Derived label ----
         html += renderDerivedLabel(vm, isEdit);
 
-        // ---- Assigned Teams editor ----
         html += renderTeamsEditor(vm, mission);
 
-        // ---- Support personnel editor ----
         html += renderSupportEditor(vm, mission);
 
-        // ---- Objectives editor ----
         html += renderObjectivesEditor(mission);
 
-        // ---- Participants panel ----
         html += renderParticipantsPanel(vm);
 
-        // ---- Notes ----
         html += renderFormTextarea('mission-notes', 'Notes',
             notesVal, 'full-width');
 
-        // ---- Tags ----
         html += renderFormText('mission-tags', 'Tags',
             tagsVal, 'full-width',
             false,
@@ -1178,13 +1156,6 @@
         html += '</div>'; // form-grid
 
         // ---- Action bar ----
-        //
-        // "Discard Changes" is the abandon-edit button. It closes
-        // the form without writing. It is deliberately NOT
-        // labelled "Cancel", because the detail panel already has
-        // a "Cancel Mission" button (which transitions the
-        // mission's status to cancelled). mission-ui.js owns the
-        // confirm prompt when the form is dirty.
         html += '<div class="form-actions">';
         html += '<button type="button" class="secondary" ' +
                     'data-action="mission-close-form">' +
@@ -1281,19 +1252,52 @@
     }
 
     // ============================================================
-    // DATE FIELDS
+    // DATE FIELDS (custom-calendar aware)
     // ============================================================
     //
-    // The three date inputs carry data-* markers so mission-ui.js
-    // can detect "the user has explicitly edited this field". The
-    // markers are behavioral, not stylistic.
+    // Year is a number input. Month is a <select> populated from
+    // CalendarConfig.getMonthsForYear(year) — the active project's
+    // calendar when one is set, Gregorian otherwise. The month ids
+    // are integers 1..N, renumbered per year so that in a year with
+    // a leap-month insertion, the leap month appears at its own
+    // position and the following months shift by one.
+    //
+    // Day's max is the number of days in that month, in that year,
+    // in that calendar. The browser clamps the number spinner; a
+    // manually typed out-of-range day is rejected on submit by
+    // MissionSchema via CalendarValidation.isValidCalendarDate.
+    //
+    // The data-* markers on the three fields are what mission-ui.js
+    // reads to reset untouched month/day when the year changes.
 
     function renderDateFields(yearVal, monthVal, dayVal) {
+        var yearNum = toPositiveInt(yearVal, null);
+        var fallbackYear = yearNum !== null
+            ? yearNum
+            : new Date().getFullYear();
+
+        var months = getMonthsForYear(fallbackYear);
+        if (!isArray(months) || months.length === 0) {
+            months = gregorianMonths(fallbackYear);
+        }
+
+        var selectedMonth = toPositiveInt(monthVal, 1);
+        if (selectedMonth > months.length) {
+            selectedMonth = 1;
+        }
+
+        var maxDays = months[selectedMonth - 1].days;
+        var selectedDay = toPositiveInt(dayVal, 1);
+        if (selectedDay > maxDays) {
+            selectedDay = maxDays;
+        }
+
         var html = '';
         html += '<div class="form-group full-width">';
         html += '<label>Date</label>';
         html += '<div class="date-input-group">';
 
+        // ---- Year ----
         html += '<div class="date-field">';
         html += '<span class="date-label">Year</span>';
         html += '<input type="number" id="mission-year" ' +
@@ -1303,37 +1307,41 @@
                     'placeholder="Year">';
         html += '</div>';
 
+        // ---- Month (custom-calendar <select>) ----
         html += '<div class="date-field">';
         html += '<span class="date-label">Month</span>';
-        html += '<input type="number" id="mission-month" ' +
-                    'class="date-month" min="1" max="12" ' +
-                    'data-mission-month-field="true" ' +
-                    'value="' + escapeAttribute(monthVal) + '">';
+        html += '<select id="mission-month" ' +
+                    'class="date-month" ' +
+                    'data-mission-month-field="true">';
+        for (var i = 0; i < months.length; i++) {
+            var m = months[i];
+            var isSel = m.id === selectedMonth;
+            html += '<option value="' + escapeAttribute(m.id) + '"' +
+                        (isSel ? ' selected' : '') + '>' +
+                        escapeHtml(m.name) +
+                    '</option>';
+        }
+        html += '</select>';
         html += '</div>';
 
+        // ---- Day ----
         html += '<div class="date-field">';
         html += '<span class="date-label">Day</span>';
         html += '<input type="number" id="mission-day" ' +
-                    'class="date-day" min="1" max="31" ' +
+                    'class="date-day" min="1" max="' +
+                    escapeAttribute(String(maxDays)) + '" ' +
                     'data-mission-day-field="true" ' +
-                    'value="' + escapeAttribute(dayVal) + '">';
+                    'value="' + escapeAttribute(String(selectedDay)) + '">';
         html += '</div>';
 
-        html += '</div>'; // date-input-group
-        html += '</div>'; // form-group
+        html += '</div>';
+        html += '</div>';
         return html;
     }
 
     // ============================================================
     // TYPE FIELDS (primary / subtype / secondary)
     // ============================================================
-    //
-    // The primary type select drives the subtype options via a
-    // change listener that mission-ui.js installs when the form
-    // is opened. The subtype select is rendered with the
-    // options for the currently-stored primary type. On create,
-    // the subtype select renders an empty "select category
-    // first" placeholder and is repopulated by the listener.
 
     function renderTypeFields(vm, mission) {
         var types = isArray(vm.missionTypes) ? vm.missionTypes : [];
@@ -1425,11 +1433,6 @@
     // ============================================================
     // DERIVED LABEL
     // ============================================================
-    //
-    // The form does not preview the derived label as an editable
-    // field. On edit, the current label is shown as static text.
-    // On create, a muted "Assigned on save" placeholder is shown.
-    // Neither is submitted.
 
     function renderDerivedLabel(vm, isEdit) {
         var label = isNonEmptyString(vm.currentLabel)
@@ -1456,26 +1459,6 @@
     // ============================================================
     // TEAMS EDITOR
     // ============================================================
-    //
-    // The "Assigned Teams" form control. Emits:
-    //
-    //   .mission-team-editor
-    //     .mission-team-input-group
-    //       #mission-team-select (select)
-    //       .mission-add-team (button, data-action="mission-add-team")
-    //     #mission-teams-list (chip list)
-    //       .mission-team-chip[data-team-id="..."]
-    //         .mission-team-chip-name
-    //         button[data-action="mission-remove-team"]
-    //
-    // The chip list is the source of truth for the assigned team
-    // ids on submit. mission-ui.js reads
-    // `.mission-team-chip[data-team-id]` from
-    // `#mission-teams-list` to collect them.
-    //
-    // The select lists the eligible teams NOT already assigned.
-    // When the eligible list is empty, the select is disabled
-    // with a placeholder.
 
     function renderTeamsEditor(vm, mission) {
         var teamOptions = isArray(vm.teams) ? vm.teams : [];
@@ -1490,8 +1473,6 @@
             }
         }
 
-        // Build the lookup from id to option so we can render the
-        // chip labels.
         var optionById = Object.create(null);
         for (var o = 0; o < teamOptions.length; o++) {
             var opt = teamOptions[o];
@@ -1499,7 +1480,6 @@
             optionById[String(opt.id)] = opt;
         }
 
-        // Pickable = not already assigned.
         var pickable = [];
         for (var p = 0; p < teamOptions.length; p++) {
             var pt = teamOptions[p];
@@ -1513,7 +1493,6 @@
         html += '<label>Assigned Teams</label>';
         html += '<div class="mission-team-editor">';
 
-        // ---- Input group ----
         html += '<div class="mission-team-input-group">';
         html += '<select id="mission-team-select" ' +
                     'class="mission-team-select"' +
@@ -1544,7 +1523,6 @@
                 '</button>';
         html += '</div>';
 
-        // ---- Chip list ----
         html += '<div id="mission-teams-list" ' +
                     'class="mission-teams-list">';
         if (currentTeamIds.length === 0) {
@@ -1586,22 +1564,6 @@
     // ============================================================
     // SUPPORT EDITOR
     // ============================================================
-    //
-    // The "Support Personnel" form control. Emits:
-    //
-    //   .support-input-group
-    //     #mission-support-select (select)
-    //     .mission-add-support (button, data-action="mission-add-support")
-    //   #mission-support-list (stacked .support-row entries)
-    //     .support-row[data-character-id="..."]
-    //       .support-name
-    //       button[data-action="mission-remove-support"]
-    //
-    // The row list is the source of truth for the support ids on
-    // submit. mission-ui.js reads
-    // `.support-row[data-character-id]` from `#mission-support-list`.
-    //
-    // The select lists the characters NOT already support.
 
     function renderSupportEditor(vm, mission) {
         var charOptions = isArray(vm.characters) ? vm.characters : [];
@@ -1694,27 +1656,13 @@
         }
         html += '</div>';
 
-        html += '</div>'; // form-group full-width
+        html += '</div>';
         return html;
     }
 
     // ============================================================
     // OBJECTIVES EDITOR
     // ============================================================
-    //
-    // The "Objectives" form control. Emits:
-    //
-    //   .objective-input-group
-    //     #mission-objective-input (text input)
-    //     .mission-add-objective (button, data-action="mission-add-objective")
-    //   #mission-objectives-list (stacked .objective-row entries)
-    //     .objective-row
-    //       input.objective-done (checkbox)
-    //       input.objective-text-input (text)
-    //       button[data-action="mission-remove-objective"]
-    //
-    // The list is the source of truth on submit. mission-ui.js
-    // reads `.objective-row` from `#mission-objectives-list`.
 
     function renderObjectivesEditor(mission) {
         var objectives = isArray(mission.objectives)
@@ -1763,61 +1711,13 @@
         }
         html += '</div>';
 
-        html += '</div>'; // form-group full-width
+        html += '</div>';
         return html;
     }
 
     // ============================================================
     // PARTICIPANTS PANEL
     // ============================================================
-    //
-    // The "Participants" form control. Rendered into
-    // #mission-participants-panel, which mission-ui.js swaps in
-    // place on every team-chip, year-field, or participant-toggle
-    // change.
-    //
-    // vm.participantsVM is built by MissionUI from the current
-    // form state and attached to the form VM BEFORE renderForm is
-    // called. It has the shape documented at the top of this file.
-    //
-    // The panel emits:
-    //
-    //   .participants-panel
-    //     (per team)
-    //       .participant-team-section
-    //         .participant-section-header
-    //           .participant-team-name
-    //           .participant-team-count
-    //         .participant-member-list
-    //           .participant-member-row
-    //             .participant-member-label
-    //               input.participant-member-checkbox[
-    //                 data-action="mission-toggle-participant"
-    //                 data-character-id
-    //                 data-team-id
-    //                 data-source="team"
-    //                 data-mission-id (edit only)
-    //               ]
-    //               .participant-member-name
-    //               .participant-member-role
-    //               .participant-member-deceased
-    //     (rookies block, when any)
-    //       .participant-rookie-section
-    //         .participant-section-header
-    //           .participant-team-name "Rookies"
-    //           .participant-team-count
-    //           button[data-action="mission-open-rookie-picker"]
-    //         .rookie-chip-list
-    //           .rookie-chip
-    //             .rookie-chip-name
-    //             .rookie-chip-deceased (optional)
-    //             button.rookie-chip-remove
-    //
-    // "Edit" affordance for rookies is the "+ Add Rookies" button
-    // on the rookie section header (opens the picker), plus the
-    // per-chip ✕ button. The picker itself writes through
-    // MissionCore; mission-ui.js resyncs the staged list on
-    // close.
 
     function renderParticipantsPanel(vm) {
         var pvm = vm && vm.participantsVM
@@ -1835,8 +1735,8 @@
                         'Add a team to the mission to manage ' +
                         'its participants.' +
                     '</p>';
-            html += '</div>'; // participants-panel
-            html += '</div>'; // form-group
+            html += '</div>';
+            html += '</div>';
             return html;
         }
 
@@ -1853,7 +1753,6 @@
             ? pvm.currentParticipants
             : [];
 
-        // ---- Per-team sections ----
         if (assignedTeams.length === 0) {
             html += '<p class="empty-state small">' +
                         'No teams assigned yet. Add a team above to ' +
@@ -1867,13 +1766,12 @@
             }
         }
 
-        // ---- Rookies section ----
         html += renderRookieSection(
             currentParticipants, missionIdAttr
         );
 
-        html += '</div>'; // participants-panel
-        html += '</div>'; // form-group full-width
+        html += '</div>';
+        html += '</div>';
         return html;
     }
 
@@ -1885,7 +1783,6 @@
         var html = '';
         html += '<div class="participant-team-section">';
 
-        // ---- Header ----
         html += '<div class="participant-section-header">';
         html += '<span class="participant-team-name">' +
                     escapeHtml(team.teamName || 'Unnamed Team') +
@@ -1896,7 +1793,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Members ----
         if (members.length === 0) {
             html += '<p class="empty-state small">' +
                         'No active members at the mission year.' +
@@ -1961,7 +1857,6 @@
     }
 
     function renderRookieSection(currentParticipants, missionIdAttr) {
-        // Rookie participants are those with source 'rookie'.
         var rookies = [];
         for (var i = 0; i < currentParticipants.length; i++) {
             var p = currentParticipants[i];
@@ -1973,7 +1868,6 @@
         var html = '';
         html += '<div class="participant-rookie-section">';
 
-        // ---- Header ----
         html += '<div class="participant-section-header">';
         html += '<span class="participant-team-name">Rookies</span>';
         html += '<span class="participant-team-count">' +
@@ -1986,7 +1880,6 @@
                 '</button>';
         html += '</div>';
 
-        // ---- Chips ----
         if (rookies.length === 0) {
             html += '<p class="empty-state small">' +
                         'No rookies selected.' +
@@ -2028,29 +1921,6 @@
     // ============================================================
     // REPORT FORM MODAL
     // ============================================================
-    //
-    // The report form body, rendered into .modal-report-content.
-    // Consumes a report VM:
-    //
-    //   {
-    //     mode: 'create' | 'edit',
-    //     missionId, missionTitle,
-    //     reportId,
-    //     authorId, authorRedacted, text,
-    //     teamMembers: [ { id, name, deceased } ],
-    //     otherCharacters: [ { id, name, deceased } ]
-    //   }
-    //
-    // Emits:
-    //
-    //   .mission-report-body
-    //     #mission-report-author (select with two optgroups)
-    //     #mission-report-redacted (checkbox)
-    //     #mission-report-text (textarea)
-    //     #mission-report-error (hidden error region)
-    //   .form-actions
-    //     Cancel (data-action="mission-report-cancel")
-    //     Save (data-action="mission-report-submit")
 
     function renderReportFormModal(vm) {
         if (!vm) { return ''; }
@@ -2072,7 +1942,6 @@
 
         html += '<div class="modal-body mission-report-body">';
 
-        // ---- Author ----
         html += '<div class="form-group">';
         html += '<label for="mission-report-author">Author</label>';
         html += '<select id="mission-report-author"' +
@@ -2092,7 +1961,6 @@
         html += '</select>';
         html += '</div>';
 
-        // ---- Redacted ----
         html += '<div class="form-group mission-report-redact-row">';
         html += '<label>';
         html += '<input type="checkbox" ' +
@@ -2108,7 +1976,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Text ----
         html += '<div class="form-group">';
         html += '<label for="mission-report-text">' +
                     'Report Text' +
@@ -2124,7 +1991,6 @@
                 '</span>';
         html += '</div>';
 
-        // ---- Error region ----
         html += '<div id="mission-report-error" ' +
                     'class="mission-report-error" ' +
                     'style="display:none;padding:8px 12px;' +
@@ -2133,7 +1999,7 @@
                     'border-radius:4px;' +
                     'font-size:0.75rem;color:var(--danger);"></div>';
 
-        html += '</div>'; // modal-body
+        html += '</div>';
 
         html += '<div class="form-actions" ' +
                     'style="display:flex;gap:8px;' +
@@ -2221,10 +2087,7 @@
             }
         }
 
-        // Smoke test: the participant panel must emit the exact
-        // class names and data attributes missions.css and
-        // mission-ui.js depend on, and must NOT emit inline flex
-        // styles (the stylesheet owns the layout).
+        // Smoke test: participant panel contract, no inline styles.
         try {
             var fakeVM = {
                 isEdit: false,
@@ -2343,8 +2206,7 @@
                 );
             }
 
-            // Inline flex styles are forbidden on the participant
-            // panel; the stylesheet owns the layout.
+            // No inline flex on the participant panel.
             if (html.indexOf('participant-member-label" ' +
                              'style="display:flex') !== -1) {
                 missing.push(
@@ -2366,12 +2228,51 @@
                     'participant name'
                 );
             }
+
+            // E1: date fields emit the correct elements.
+            if (html.indexOf('id="mission-year"') === -1) {
+                missing.push('renderForm missing #mission-year');
+            }
+            if (html.indexOf('id="mission-month"') === -1) {
+                missing.push('renderForm missing #mission-month');
+            }
+            if (html.indexOf('id="mission-day"') === -1) {
+                missing.push('renderForm missing #mission-day');
+            }
+            // Month is a <select>, not an <input>.
+            if (html.indexOf('select id="mission-month"') === -1) {
+                missing.push(
+                    'renderForm did not emit #mission-month as a <select>'
+                );
+            }
+            // data-* markers must survive.
+            if (html.indexOf('data-mission-year-field="true"') === -1) {
+                missing.push(
+                    'renderForm lost data-mission-year-field'
+                );
+            }
+            if (html.indexOf('data-mission-month-field="true"') === -1) {
+                missing.push(
+                    'renderForm lost data-mission-month-field'
+                );
+            }
+            if (html.indexOf('data-mission-day-field="true"') === -1) {
+                missing.push(
+                    'renderForm lost data-mission-day-field'
+                );
+            }
+            // January must appear in the Gregorian fallback.
+            if (html.indexOf('>January<') === -1) {
+                missing.push(
+                    'renderForm month <select> did not include Gregorian ' +
+                    'fallback months'
+                );
+            }
         } catch (e) {
             missing.push('form smoke test threw: ' + e.message);
         }
 
-        // Smoke test: renderReportFormModal must emit the two
-        // optgroups and the submit/cancel actions.
+        // Smoke test: report form modal.
         try {
             var reportHtml = renderReportFormModal({
                 mode: 'create',
