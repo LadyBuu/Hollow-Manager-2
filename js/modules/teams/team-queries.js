@@ -10,7 +10,8 @@
  *   - Team-scoped membership reads.
  *   - Character membership reads (all-time, current).
  *   - Ranking queries, including the read-time inheritance
- *     model described below.
+ *     model described below, AND the ordered-list reads that
+ *     back the Rankings tab (this revision).
  *   - Period-scoped readers: getPeriods, getCurrentPeriod,
  *     getPeriodForYear, getActiveTeamMembersForPeriod,
  *     getRankingsForPeriod.
@@ -109,9 +110,9 @@
  *   Same strict upper bound, same infinity for a blank
  *   period.end. A 1905 ranking belongs to Rapid II, not Rapid.
  *
- * RANKING INHERITANCE:
- *   The `rankingHistory` array holds EXPLICIT entries only — the
- *   values the user actually wrote:
+ * RANKING STORAGE AND THE INHERITANCE MODEL:
+ *   `rankingHistory` on each team holds EXPLICIT entries only —
+ *   the values the user actually wrote:
  *
  *     { period: '1905', rank: 3 }
  *
@@ -128,22 +129,49 @@
  *     1907  #5        (explicit)
  *     1908  #5        (inherited from 1907)
  *
- *   Writing a new entry at 1905 (#4, say) shadows 1904 for
- *   1905–1906 without touching 1907:
- *
- *     1904  #3        (explicit)
- *     1905  #4        (explicit, written)
- *     1906  #4        (inherited from 1905)
- *     1907  #5        (explicit)
- *
  *   That is "change it in time and keep the previous records."
  *   The 1904 entry survives untouched; it just stops governing
- *   1905.
+ *   1905 if a new entry is written.
  *
  *   getRankAtPeriod returns the EFFECTIVE rank; it does not
  *   distinguish explicit from inherited. Callers that need the
  *   distinction use getEffectiveRanking, which returns
  *   { rank, explicit, sourcePeriod }.
+ *
+ * RANKINGS — ORDERED-LIST MODEL (this revision):
+ *   The Rankings tab does not render per-team effective ranks in
+ *   arbitrary order. It renders a POSITION-ORDERED list per
+ *   year: position 1, position 2, ..., position N, one team per
+ *   position, no gaps, no duplicates.
+ *
+ *   That invariant is owned by TeamCore's write primitives
+ *   (insertRankingAt, removeRankingAt, moveRanking). This module
+ *   only reads the result.
+ *
+ *   Three new reads:
+ *
+ *     getExplicitRankingOrderForYear(year)
+ *       Raw ordered list of explicit entries at the year.
+ *       [{ teamId, team, rank }]. Sorted by rank ascending.
+ *       Contiguity is guaranteed by the write path.
+ *
+ *     getRankedTeamsForYear(year)
+ *       Display-facing list the Rankings tab consumes. One entry
+ *       per position, carrying the team id, resolved name, and
+ *       the fields the table needs (periodDisplay, memberCount,
+ *       status, activeAtYear). Also carries `explicit: true` and
+ *       `sourcePeriod: String(year)` for symmetry with
+ *       getEffectiveRanking, so a caller that already
+ *       understands the per-team shape can migrate without
+ *       re-learning the provenance semantics.
+ *
+ *     getUnrankedTeamsForYear(year)
+ *       Teams active at the year that have NO explicit entry at
+ *       the year and NO inherited effective rank from an earlier
+ *       year. These are the candidates a "fill a slot" picker
+ *       offers, and what a drag-to-empty-position drop would
+ *       target. A team with an inherited rank is NOT in this
+ *       list — the user would be double-ranking them.
  *
  * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
@@ -264,6 +292,12 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isPlainObject(value) {
+        return value !== null &&
+               typeof value === 'object' &&
+               !Array.isArray(value);
     }
 
     function clone(value) {
@@ -449,6 +483,20 @@
     function getTeamArray() {
         var data = window.data || {};
         return Array.isArray(data.teams) ? data.teams : [];
+    }
+
+    function getTeamByIdInternal(teamId) {
+        if (!isNonEmptyString(teamId)) { return null; }
+        var target = String(teamId);
+        var teams = getTeamArray();
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (team && typeof team === 'object' &&
+                String(team.id) === target) {
+                return team;
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -857,20 +905,6 @@
     function getTeamById(teamId) {
         var team = getTeamByIdInternal(teamId);
         return team ? clone(team) : null;
-    }
-
-    function getTeamByIdInternal(teamId) {
-        if (!isNonEmptyString(teamId)) { return null; }
-        var target = String(teamId);
-        var teams = getTeamArray();
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' &&
-                String(team.id) === target) {
-                return team;
-            }
-        }
-        return null;
     }
 
     /**
@@ -1918,7 +1952,273 @@
     }
 
     // ============================================================
-    // RANKINGS
+    // RANKINGS — ORDERED-LIST READS (this revision)
+    // ============================================================
+    //
+    // The write path (TeamCore.insertRankingAt /
+    // removeRankingAt / moveRanking) guarantees that, for any
+    // given year, the multiset of explicit entries across all
+    // teams is a contiguous range 1..N with exactly one team per
+    // position. The reads below consume that guarantee; they do
+    // not re-validate it.
+    //
+    // Three reads:
+    //
+    //   getExplicitRankingOrderForYear(year)
+    //     Raw ordered list. [{ teamId, team, rank }], sorted
+    //     ascending by rank. team is the LIVE record (used only
+    //     internally by the other two reads); callers outside
+    //     this module should not rely on it being a clone.
+    //
+    //   getRankedTeamsForYear(year)
+    //     Display-facing. One entry per position. Every field a
+    //     Rankings-tab row needs is resolved here so the
+    //     aggregator can pass it straight through.
+    //
+    //   getUnrankedTeamsForYear(year)
+    //     Candidates a "fill a slot" picker offers: teams
+    //     active at the year with no explicit entry at the year
+    //     and no inherited effective rank from an earlier year.
+    //     A team with an inherited rank is excluded: including
+    //     them would double-rank them.
+    //
+    // RANKING ENTRIES ARE NOT CLONED BY getExplicitRankingOrderForYear.
+    //   The `team` field is a live reference. That is deliberate:
+    //   the two public wrappers both read from it and do not
+    //   expose it. A future caller that needs the raw list should
+    //   clone it (or use the display wrapper).
+
+    function collectExplicitEntriesAtYearInternal(targetYear) {
+        var targetStr = String(parseInt(targetYear, 10));
+        var teams = getTeamArray();
+        var entries = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') { continue; }
+            if (!Array.isArray(team.rankingHistory)) { continue; }
+
+            for (var j = 0; j < team.rankingHistory.length; j++) {
+                var entry = team.rankingHistory[j];
+                if (!entry || typeof entry !== 'object') { continue; }
+
+                var entryYear = parsePeriod(entry.period);
+                if (entryYear === null) { continue; }
+                if (String(entryYear) !== targetStr) { continue; }
+
+                var rank = parsePeriod(entry.rank);
+                if (rank === null) { continue; }
+
+                entries.push({
+                    teamId: String(team.id),
+                    team: team,
+                    rank: rank
+                });
+            }
+        }
+
+        entries.sort(function(a, b) {
+            return a.rank - b.rank;
+        });
+
+        return entries;
+    }
+
+    /**
+     * The raw ordered list of explicit entries at a year.
+     *
+     * @param {string|number} year
+     * @returns {array} [{ teamId, team, rank }]
+     *
+     *   team is the LIVE team record. Do not mutate it. Use the
+     *   display wrapper (getRankedTeamsForYear) if you want a
+     *   read-safe shape.
+     */
+    function getExplicitRankingOrderForYear(year) {
+        var yearNum = parsePeriod(year);
+        if (yearNum === null) { return []; }
+        return collectExplicitEntriesAtYearInternal(yearNum);
+    }
+
+    /**
+     * Display-facing ordered list for the Rankings tab.
+     *
+     * One entry per occupied position 1..N, sorted by position
+     * ascending. Because the write path guarantees contiguity,
+     * there are no gaps and N equals the number of teams with an
+     * explicit entry at the year.
+     *
+     * Each entry:
+     *
+     *   {
+     *     position:      integer 1..N, the display position
+     *     teamId:        string
+     *     name:          string (resolved via getCurrentTeamName)
+     *     rank:          integer (same as position; kept for
+     *                    callers that already use `rank`)
+     *     explicit:      true   (write path guarantees this)
+     *     sourcePeriod:  String(year)   (same as the query year,
+     *                    kept for symmetry with getEffectiveRanking)
+     *     periodDisplay: string  ('1900-1904', 'From 1900', ...)
+     *     memberCount:   integer (active members at `year`)
+     *     status:        raw stored status
+     *     activeAtYear:  boolean
+     *   }
+     *
+     * Returns [] when no team has an explicit entry at the year.
+     *
+     * @param {string|number} year
+     * @returns {array}
+     */
+    function getRankedTeamsForYear(year) {
+        var yearNum = parsePeriod(year);
+        if (yearNum === null) { return []; }
+
+        var raw = collectExplicitEntriesAtYearInternal(yearNum);
+        if (raw.length === 0) { return []; }
+
+        var rows = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var entry = raw[i];
+            var team = entry.team;
+            if (!team) { continue; }
+
+            var position = i + 1;
+
+            var memberCount = 0;
+            try {
+                memberCount = getActiveTeamMemberCount(
+                    team, yearNum
+                );
+            } catch (e) {
+                memberCount = 0;
+            }
+
+            rows.push({
+                position: position,
+                teamId: String(team.id),
+                name: getCurrentTeamName(team),
+                rank: entry.rank,
+                explicit: true,
+                sourcePeriod: String(yearNum),
+                periodDisplay: buildTeamPeriodDisplay(team),
+                memberCount: memberCount,
+                status: team.status || 'active',
+                activeAtYear: isTeamActiveAtPeriod(team, yearNum)
+            });
+        }
+
+        return rows;
+    }
+
+    /**
+     * Teams active at `year` that have no explicit entry at the
+     * year and no inherited effective rank from an earlier year.
+     *
+     * These are the candidates a "fill a slot" picker offers, and
+     * what a drag-to-empty-position drop would target. A team
+     * with an inherited rank is excluded: including them would
+     * double-rank them.
+     *
+     * Only professional teams are considered. Academic and
+     * civilian teams never carry a mission-style ranking.
+     *
+     * @param {string|number} year
+     * @returns {array} [{ teamId, name, status, activeAtYear }]
+     */
+    function getUnrankedTeamsForYear(year) {
+        var yearNum = parsePeriod(year);
+        if (yearNum === null) { return []; }
+
+        // Which teams already have an explicit entry at the year?
+        var explicitSet = Object.create(null);
+        var raw = collectExplicitEntriesAtYearInternal(yearNum);
+        for (var r = 0; r < raw.length; r++) {
+            explicitSet[raw[r].teamId] = true;
+        }
+
+        var teams = getTeamArray();
+        var result = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') { continue; }
+            if (!team.id) { continue; }
+            if (!isProfessionalType(team.type)) { continue; }
+
+            var teamId = String(team.id);
+            if (explicitSet[teamId]) { continue; }
+
+            // A team that has an inherited rank at the year is
+            // already in the display list implicitly; the user
+            // should not be offered it for double-ranking.
+            var effective = getEffectiveRanking(team, yearNum);
+            if (effective.rank !== null) { continue; }
+
+            // Only include teams that were actually active at the
+            // year. A disbanded team cannot take a new position.
+            var activeAtYear = false;
+            try {
+                activeAtYear = isTeamActiveAtPeriod(team, yearNum);
+            } catch (e) {
+                activeAtYear = false;
+            }
+            if (!activeAtYear) { continue; }
+
+            result.push({
+                teamId: teamId,
+                name: getCurrentTeamName(team),
+                status: team.status || 'active',
+                activeAtYear: true
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // PERIOD DISPLAY (internal helper for the rankings reads)
+    // ============================================================
+    //
+    // Mirrors TeamAggregator.getTeamPeriodDisplay. It lives here
+    // because getRankedTeamsForYear needs a period display and it
+    // would be wrong for the query layer to depend on the
+    // aggregator. The aggregator still owns its own copy; the two
+    // are kept in sync by convention. If they ever diverge, this
+    // one wins for the rankings tab (it is the one the rankings
+    // VM reads from).
+
+    function buildTeamPeriodDisplay(team) {
+        if (!team || typeof team !== 'object') { return '-'; }
+
+        var normalizedType = TeamConstants.normalizeTeamType(
+            team.type
+        );
+        var start = team.startPeriod || '';
+        var end = team.endPeriod || '';
+
+        if (normalizedType === 'academic') {
+            if (start && end) {
+                return 'Wk ' + start + ' - Wk ' + end;
+            }
+            if (start) { return 'From Wk ' + start; }
+            if (end) { return 'Until Wk ' + end; }
+            return '-';
+        }
+
+        if (start && end) { return start + ' - ' + end; }
+        if (start) { return 'From ' + start; }
+        if (end) { return 'Until ' + end; }
+        return '-';
+    }
+
+    // ============================================================
+    // RANKINGS — INHERITANCE MODEL (unchanged)
     // ============================================================
     //
     // RANKING MODEL:
@@ -2318,7 +2618,13 @@
         isCharacterStaffAtYear: isCharacterStaffAtYear,
         getStaffInfoAtYear: getStaffInfoAtYear,
 
-        // ---- Rankings ----
+        // ---- Rankings — ordered-list model (this revision) ----
+        getExplicitRankingOrderForYear:
+            getExplicitRankingOrderForYear,
+        getRankedTeamsForYear: getRankedTeamsForYear,
+        getUnrankedTeamsForYear: getUnrankedTeamsForYear,
+
+        // ---- Rankings — inheritance model (unchanged) ----
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
@@ -2362,6 +2668,8 @@
             'getTeamShortagePeriods',
             'getProfessionalPersonnelAtPeriod',
             'isCharacterStaffAtYear', 'getStaffInfoAtYear',
+            'getExplicitRankingOrderForYear', 'getRankedTeamsForYear',
+            'getUnrankedTeamsForYear',
             'getSortedRankings', 'getMostRecentRanking',
             'getCurrentRank', 'getRankAtPeriod', 'hasRankings',
             'getRankingSummary',
@@ -2559,6 +2867,55 @@
                 missing.push(
                     'ranking ranges: expected [1904->1907, ' +
                     '1907->null], got ' + JSON.stringify(ranges)
+                );
+            }
+
+            // ---- Ordered-list smoke test: empty year. ----
+            var emptyOrder = getExplicitRankingOrderForYear('1999');
+            if (!Array.isArray(emptyOrder) || emptyOrder.length !== 0) {
+                missing.push(
+                    'getExplicitRankingOrderForYear: empty year ' +
+                    'should return []'
+                );
+            }
+
+            var emptyRanked = getRankedTeamsForYear('1999');
+            if (!Array.isArray(emptyRanked) || emptyRanked.length !== 0) {
+                missing.push(
+                    'getRankedTeamsForYear: empty year should ' +
+                    'return []'
+                );
+            }
+
+            var emptyUnranked = getUnrankedTeamsForYear('1999');
+            if (!Array.isArray(emptyUnranked)) {
+                missing.push(
+                    'getUnrankedTeamsForYear: should return an array'
+                );
+            }
+
+            // ---- Ordered-list smoke test: invalid year. ----
+            var badOrder = getExplicitRankingOrderForYear('not-a-year');
+            if (!Array.isArray(badOrder) || badOrder.length !== 0) {
+                missing.push(
+                    'getExplicitRankingOrderForYear: invalid year ' +
+                    'should return []'
+                );
+            }
+
+            var badRanked = getRankedTeamsForYear(null);
+            if (!Array.isArray(badRanked) || badRanked.length !== 0) {
+                missing.push(
+                    'getRankedTeamsForYear: null year should ' +
+                    'return []'
+                );
+            }
+
+            var badUnranked = getUnrankedTeamsForYear(undefined);
+            if (!Array.isArray(badUnranked) || badUnranked.length !== 0) {
+                missing.push(
+                    'getUnrankedTeamsForYear: undefined year ' +
+                    'should return []'
                 );
             }
         } catch (e) {
