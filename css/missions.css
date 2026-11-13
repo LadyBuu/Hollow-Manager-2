@@ -14,17 +14,17 @@
  *     .objective-item)
  *   - Support personnel (.support-section, .support-list,
  *     .support-item)
- *   - Participants — detail panel (.participants-list,
- *     .participant-item, .participant-name, .participant-team,
- *     .participant-source, .participant-deceased)
  *   - Participants — form editor (.participants-panel,
  *     .participant-team-section, .participant-section-header,
  *     .participant-member-list, .participant-member-row,
- *     .participant-member-label, .participant-member-name,
- *     .participant-member-role, .participant-member-deceased,
- *     .participant-rookie-section, .rookie-chip-list,
- *     .rookie-chip, .rookie-chip-name, .rookie-chip-deceased,
- *     .rookie-chip-remove)
+ *     .participant-member-label, .participant-member-checkbox,
+ *     .participant-member-name, .participant-member-role,
+ *     .participant-member-deceased, .participant-rookie-section,
+ *     .rookie-chip-list, .rookie-chip, .rookie-chip-name,
+ *     .rookie-chip-deceased, .rookie-chip-remove)
+ *   - Participants — detail panel (.participants-section,
+ *     .participants-list, .participant-item, .participant-name,
+ *     .participant-team, .participant-source, .participant-deceased)
  *   - Reports (.reports-section, .report-row, .report-meta,
  *     .report-body)
  *   - Activity log (.log-section, .log-list, .log-entry)
@@ -39,33 +39,33 @@
  *
  * Load order: shared.css → missions.css
  *
- * PARTICIPANT LAYOUT CONTRACT (this revision):
- *   The participant editor's layout is owned by THIS FILE, not
- *   by inline styles in the renderer. The renderer emits class
- *   names only; any inline style it emits is a defensive
- *   fallback and can be overridden or ignored here.
+ * PARTICIPANT LAYOUT CONTRACT:
+ *   The participant editor's layout is owned by THIS FILE, not by
+ *   inline styles in the renderer. The renderer (mission-render.js)
+ *   emits class names only. If you add or change a class in the
+ *   participant editor, change it here, not in the renderer.
  *
- *   The key rules are:
+ *   The three rules that make the "checkbox + name" row work:
  *
  *     .participant-member-label
- *       display: flex; align-items: center; gap: 8px;
- *       width: 100%; cursor: pointer;
+ *         display: flex; align-items: center; gap: 8px;
+ *         width: 100%; cursor: pointer;
  *
  *     .participants-panel .participant-member-checkbox
- *       width: auto; margin: 0; flex: 0 0 auto;
+ *         width: auto; flex: 0 0 auto;
  *
  *     .participant-member-name
- *       flex: 1 1 auto; min-width: 0; white-space: normal;
+ *         flex: 1 1 auto; min-width: 0; white-space: normal;
  *
- *   The checkbox selector carries two classes specifically to
- *   beat the generic .form-group input { width: 100% } rule
- *   from shared.css. Without that specificity the checkbox
- *   stretched to full width and pushed the name span to zero.
+ *   The checkbox selector carries TWO classes on purpose:
+ *   `.form-group input` in shared.css sets `width: 100%`, and a
+ *   single-class selector (0,1,0) would lose to it (0,1,1). Two
+ *   classes (0,2,0) wins. Do not collapse it to a single class.
  *
- *   The name span uses white-space:normal (not nowrap) because
- *   a name that is clipped to zero width reads as "no name",
- *   which is exactly the failure this block exists to prevent.
- *   Long names wrap rather than truncate.
+ *   The name span uses white-space: normal (not nowrap). A name
+ *   that is truncated to zero width reads as "no name", which is
+ *   exactly the failure this block exists to prevent. Long names
+ *   wrap rather than truncate.
  */
 
 /* ============================================================
@@ -525,7 +525,7 @@
 
 /* ============================================================
    SECTION HEADER (shared by objectives, support, teams,
-   reports, log)
+   reports, participants, log)
    ============================================================ */
 
 .section-header {
@@ -736,29 +736,7 @@
      white-space: normal (not nowrap).
    A truncated name reads as "no name" and was the original
    user-facing bug.
-
-   LAYOUT:
-     .participants-panel        column flex, one block per team
-     .participant-team-section  bordered box per assigned team
-     .participant-section-header
-                                row: team name + member count +
-                                (rookies) "+ Add Rookies" button
-     .participant-member-list   reset list, column flex
-     .participant-member-row    <li>, plain block
-     .participant-member-label  row flex: checkbox | name | role | †
-     .participant-member-name   flex: 1, wraps
-     .participant-member-role   small dim text
-     .participant-member-deceased
-                                dim dagger
-     .participant-rookie-section
-                                same box as a team section, plus
-                                the rookie chip list
-     .rookie-chip-list          row flex, wraps
-     .rookie-chip               inline pill
-     .rookie-chip-name          the name
-     .rookie-chip-deceased      dagger
-     .rookie-chip-remove        small ✕
- */
+   ============================================================ */
 
 .participants-panel {
     display: flex;
