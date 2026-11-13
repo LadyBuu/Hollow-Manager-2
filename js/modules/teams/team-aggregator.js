@@ -9,10 +9,10 @@
  *   - The Professional Pool VM (getProfessionalPoolViewModel).
  *   - The Matchmaking Planner VM
  *     (getMatchmakingPlannerViewModel).
- *   - The Team Rankings VM (getTeamRankingsViewModel), now
- *     consuming the ORDERED-LIST reads from TeamQueries
- *     (getRankedTeamsForYear, getUnrankedTeamsForYear) rather
- *     than the per-team effective-rank shape.
+ *   - The Team Rankings VM (getTeamRankingsViewModel), consuming
+ *     the ORDERED-LIST reads from TeamQueries
+ *     (getRankedTeamsForYear, getUnrankedTeamsForYear) and
+ *     passing the Show Inactive flag through to both.
  *   - Team list, team detail, member modal, ranking modal VMs.
  *   - The periods array on the team detail and form VMs.
  *
@@ -87,10 +87,28 @@
  *   only order. The "Insert team" picker offers `unrankedTeams`;
  *   the view is responsible for the picker's own sort.
  *
- *   `showInactive` is echoed for the view's checkbox. It does
- *   not change `rows` composition: the read layer already
- *   excludes inactive teams that have no explicit entry and no
- *   inherited rank.
+ *   SHOWINACTIVE (this revision):
+ *     showInactive is passed through to BOTH query reads.
+ *
+ *       showInactive === false (default)
+ *         getRankedTeamsForYear filters rows to activeAtYear ===
+ *         true. A team that disbanded before `year` is hidden
+ *         from the list at `year`. getUnrankedTeamsForYear
+ *         ignores the flag and returns active-only candidates
+ *         (its only behaviour).
+ *
+ *       showInactive === true
+ *         getRankedTeamsForYear returns every explicit entry,
+ *         including teams not active in `year`.
+ *         getUnrankedTeamsForYear still returns active-only
+ *         candidates; the flag has no effect on it. See the
+ *         query module's block comment for why (offering an
+ *         inactive team as a candidate to ENTER a position
+ *         would let the user rank a team that does not exist in
+ *         that year).
+ *
+ *     The flag is also echoed on the VM so the view's checkbox
+ *     can render its own state without re-reading anything.
  *
  * (rest of header unchanged from the Pass 2 / Show Inactive ship;
  * dependencies, helpers, and every other VM builder preserved.)
@@ -1566,9 +1584,30 @@
     //
     // The aggregator does not sort `rows`; the query layer already
     // returns them in position order. `unrankedTeams` is
-    // alphabetical (the query layer's own order). `showInactive`
-    // is echoed for the view's checkbox; it does NOT change the
-    // composition of `rows`.
+    // alphabetical (the query layer's own order).
+    //
+    // SHOWINACTIVE:
+    //   `showInactive` is passed through to BOTH query reads:
+    //
+    //     getRankedTeamsForYear(year, { showInactive })
+    //       false (default): rows whose team is not active in
+    //                        `year` are dropped.
+    //       true:            every explicit entry is returned,
+    //                        including teams not active in `year`.
+    //
+    //     getUnrankedTeamsForYear(year, { showInactive })
+    //       The flag has no effect here (the list is always
+    //       active-only). It is passed for signature symmetry so
+    //       the aggregator does not special-case which read takes
+    //       the flag. See the query module's block comment.
+    //
+    //   `showInactive` is also echoed on the VM for the view's
+    //   checkbox. Echoing it and passing it through are not
+    //   redundant: the checkbox renders from the echo, and the
+    //   rows render from the query result. If the two ever
+    //   diverged (a caller mutated the echo without re-running),
+    //   the checkbox would lie. Passing the flag through is what
+    //   keeps them honest.
     //
     // A note on validation: `year` must be a valid positive
     // integer. An invalid or missing year throws, matching the
@@ -1588,10 +1627,16 @@
         }
 
         var showInactive = options.showInactive === true;
+        var readOptions = { showInactive: showInactive };
 
-        var rows = TeamQueries.getRankedTeamsForYear(yearNum);
+        // CHANGED (showInactive): the flag is passed to both reads.
+        var rows = TeamQueries.getRankedTeamsForYear(
+            yearNum, readOptions
+        );
         var unrankedTeams =
-            TeamQueries.getUnrankedTeamsForYear(yearNum);
+            TeamQueries.getUnrankedTeamsForYear(
+                yearNum, readOptions
+            );
 
         // Normalise the row shape so the view can rely on the
         // same field names for both the ranked rows and the
@@ -2187,5 +2232,100 @@
         getTeamPeriodDisplay: getTeamPeriodDisplay,
         getRankingHistoryDisplay: getRankingHistoryDisplay
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TeamAggregator;
+        var missing = [];
+
+        var required = [
+            'getTeamViewModel',
+            'getTeamListViewModel',
+            'getTeamMembersViewModel',
+            'getTeamPageViewModel',
+            'getTeamFormViewModel',
+            'getMemberModalViewModel',
+            'getRankingModalViewModel',
+            'getFilterBarViewModel',
+            'getTeamRankingsViewModel',
+            'getProfessionalPoolViewModel',
+            'getMatchmakingPlannerViewModel',
+            'getTimelineViewModel',
+            'getTeamPeriodDisplay',
+            'getRankingHistoryDisplay'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        // Smoke test: the Rankings VM contract. We do not have
+        // a store fixture at load, so we assert shape only:
+        //   - invalid year throws
+        //   - a valid year returns { year, rows, unrankedTeams,
+        //     showInactive }
+        //   - showInactive is echoed verbatim
+        //   - sortMode / sortDirection are absent
+        try {
+            var threwOnBadYear = false;
+            try {
+                getTeamRankingsViewModel({ year: null });
+            } catch (e) {
+                threwOnBadYear = true;
+            }
+            if (!threwOnBadYear) {
+                missing.push(
+                    'getTeamRankingsViewModel(null year) did not throw'
+                );
+            }
+
+            var emptyFalse = getTeamRankingsViewModel({
+                year: 1900,
+                showInactive: false
+            });
+            if (!emptyFalse ||
+                emptyFalse.year !== 1900 ||
+                !Array.isArray(emptyFalse.rows) ||
+                !Array.isArray(emptyFalse.unrankedTeams) ||
+                emptyFalse.showInactive !== false) {
+                missing.push(
+                    'getTeamRankingsViewModel did not return the ' +
+                    'expected shape for an empty year'
+                );
+            }
+            if ('sortMode' in emptyFalse ||
+                'sortDirection' in emptyFalse) {
+                missing.push(
+                    'getTeamRankingsViewModel leaked sortMode/' +
+                    'sortDirection'
+                );
+            }
+
+            var emptyTrue = getTeamRankingsViewModel({
+                year: 1900,
+                showInactive: true
+            });
+            if (!emptyTrue || emptyTrue.showInactive !== true) {
+                missing.push(
+                    'getTeamRankingsViewModel did not echo ' +
+                    'showInactive: true'
+                );
+            }
+        } catch (e) {
+            missing.push('rankings VM smoke test threw: ' + e.message);
+        }
+
+        if (missing.length > 0) {
+            console.warn(
+                '[TeamAggregator] Verification failed:',
+                missing.join(', ')
+            );
+        }
+    })();
 
 })();
