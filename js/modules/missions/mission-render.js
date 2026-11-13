@@ -38,93 +38,27 @@
  *     When CalendarConfig is not loaded, the date fields fall
  *     back to Gregorian in-line, so the form keeps working.
  *
- * LAYOUT CONTRACT (missions.css):
- *   The participant editor's layout is:
- *
- *     .participants-panel                 outer column
- *     .participant-team-section           one box per team
- *     .participant-rookie-section         one box for rookies
- *     .participant-section-header         name + count + action
- *     .participant-member-list            reset ul
- *     .participant-member-row             <li>
- *     .participant-member-label           flex row (CSS)
- *     .participant-member-checkbox        auto width (CSS)
- *     .participant-member-name            flex:1 wrap (CSS)
- *     .participant-member-role            trailing
- *     .participant-member-deceased        trailing dagger
- *     .rookie-chip-list / .rookie-chip*   rookie chips
- *
- *   The two-class selector
- *   `.participants-panel .participant-member-checkbox` beats
- *   the generic `.form-group input { width:100% }` rule. The
- *   renderer does not need to fight that rule; it emits the
- *   class and the stylesheet wins.
- *
- * DETAIL PARTICIPANT LIST:
- *   The detail panel's participants are a flat list, not a
- *   grouped editor. The classes are distinct from the form
- *   editor:
- *
- *     .participants-list / .participant-item
- *     .participant-name / .participant-team
- *     .participant-source-(team|rookie|unknown)
- *     .participant-deceased
- *
- *   These match MissionViews.getParticipantSourceClass()
- *   exactly. The renderer uses vm.sourceClass.
- *
- * DOM CONTRACT (mission-ui.js):
- *   The form must expose these exact IDs/classes so the
- *   controller can read the form back on submit:
- *
- *     #mission-support-list       .support-row[data-character-id]
- *     #mission-objectives-list    .objective-row
- *     #mission-teams-list         .mission-team-chip[data-team-id]
- *     #mission-participants-panel (swapped in place)
- *     #mission-title, #mission-description, #mission-year,
- *     #mission-month, #mission-day, #mission-primary-type,
- *     #mission-subtype, #mission-secondary-type,
- *     #mission-escalation, #mission-threat-type,
- *     #mission-environment, #mission-location, #mission-duration,
- *     #mission-difficulty, #mission-priority, #mission-base-pay,
- *     #mission-surcharge-pay, #mission-billing, #mission-status,
- *     #mission-notes, #mission-tags
- *
- *   The participant checkboxes on the form must emit:
- *
- *     data-action="mission-toggle-participant"
- *     data-character-id="..."
- *     data-team-id="..."
- *     data-source="team"
- *     data-mission-id="..."      (edit only; omitted on create)
- *
- *   The Discard Changes button must emit
- *   data-action="mission-close-form". It is labelled
- *   "Discard Changes", NOT "Cancel", so it cannot be confused
- *   with the detail panel's "Cancel Mission".
- *
- * DATE FIELDS (E1):
+ * DATE FIELDS:
  *   The three date inputs are:
  *
  *     <input  id="mission-year"  data-mission-year-field="true">
  *     <select id="mission-month" data-mission-month-field="true">
  *     <input  id="mission-day"   data-mission-day-field="true">
  *
- *   The month is now a <select>, not an <input>. The option
- *   values are the month ids returned by
- *   CalendarConfig.getMonthsForYear(year). Those ids are
- *   integers 1..N, renumbered in calendar order per year. In a
- *   year that carries a per-year leap month, N is larger than
- *   in an ordinary year; the leap month appears in the select
- *   with its own name.
+ *   The month is a <select>, not an <input>. The option values
+ *   are the month ids returned by CalendarConfig.getMonthsForYear
+ *   (year). Those ids are integers 1..N, renumbered in calendar
+ *   order per year. In a year that carries a per-year leap month,
+ *   N is larger than in an ordinary year; the leap month appears
+ *   in the select with its own name.
  *
  *   The day's `max` attribute is set to
  *   CalendarConfig.getDaysInMonth(year, month). When the user
- *   changes the year or month in the UI, mission-ui.js
- *   (E1.6, one-line edit) updates the day's `max` in place.
- *   Until that edit lands, the schema still rejects out-of-range
- *   days on submit via CalendarValidation.isValidCalendarDate,
- *   so the model stays correct.
+ *   changes the year or month in the UI, mission-ui.js updates
+ *   the day's `max` in place. Until that edit lands, the schema
+ *   still rejects out-of-range days on submit via
+ *   CalendarValidation.isValidCalendarDate, so the model stays
+ *   correct.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.DomUtils
@@ -284,12 +218,6 @@
     // ============================================================
     // CONTAINER
     // ============================================================
-    //
-    // The page shell. mission-ui.js calls this once per render and
-    // then swaps the contents of #missions-list in place via
-    // renderList. The modal shells are also installed here once
-    // and then filled by openDetailModal / openFormModal /
-    // openReportFormModal.
 
     function renderContainer(vm) {
         vm = vm || {};
@@ -2239,13 +2167,11 @@
             if (html.indexOf('id="mission-day"') === -1) {
                 missing.push('renderForm missing #mission-day');
             }
-            // Month is a <select>, not an <input>.
             if (html.indexOf('select id="mission-month"') === -1) {
                 missing.push(
                     'renderForm did not emit #mission-month as a <select>'
                 );
             }
-            // data-* markers must survive.
             if (html.indexOf('data-mission-year-field="true"') === -1) {
                 missing.push(
                     'renderForm lost data-mission-year-field'
@@ -2261,7 +2187,6 @@
                     'renderForm lost data-mission-day-field'
                 );
             }
-            // January must appear in the Gregorian fallback.
             if (html.indexOf('>January<') === -1) {
                 missing.push(
                     'renderForm month <select> did not include Gregorian ' +
