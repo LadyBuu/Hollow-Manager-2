@@ -179,6 +179,17 @@
  *   `applicationYear` is `window.data.currentYear` when present,
  *   else the current calendar year.
  *
+ * DATE DISPLAY (this revision):
+ *   buildDateDisplay resolves the month name through
+ *   CalendarConfig.getMonthName(year, month), so a mission
+ *   stored as { year: 1920, month: 12, day: 8 } renders as
+ *   "Twelfth Moon 8, 1920" under a custom calendar, and as
+ *   "December 8, 1920" under the Gregorian fallback. When the
+ *   year or month is out of range for the active calendar (e.g.
+ *   a legacy record with month 13 in a non-leap year), the
+ *   display falls back to the numeric form "8/13/1920" instead
+ *   of printing an empty month name.
+ *
  * DEPENDENCIES (MANDATORY):
  *   - window.MissionQueries
  *   - window.MissionConstants
@@ -190,6 +201,7 @@
  *
  * DEPENDENCIES (LAZY, at call time):
  *   - window.CharacterConstants   (rookie status check)
+ *   - window.CalendarConfig       (month names for buildDateDisplay)
  */
 
 (function() {
@@ -298,6 +310,10 @@
 
     function getCharacterConstants() {
         return window.CharacterConstants || null;
+    }
+
+    function getCalendarConfig() {
+        return window.CalendarConfig || null;
     }
 
     // ============================================================
@@ -1028,6 +1044,35 @@
     // ============================================================
     // DATE DISPLAY
     // ============================================================
+    //
+    // Renders the mission's (year, month, day) for the detail panel
+    // and the list row.
+    //
+    // MONTH NAME:
+    //   The month name comes from CalendarConfig.getMonthName(year,
+    //   month). When the active project has a custom calendar, that
+    //   calendar's month name is printed ("Twelfth Moon"). When no
+    //   calendar is loaded, CalendarConfig falls back to Gregorian
+    //   internally and returns "December". The two paths cannot
+    //   disagree, because both go through the same lookup.
+    //
+    //   CalendarConfig is resolved LAZILY at call time. It is an
+    //   optional dependency of this module; when it is absent (a
+    //   stripped build), the numeric fallback below runs.
+    //
+    // NUMERIC FALLBACK:
+    //   When getMonthName returns '' — the year or month is out of
+    //   range for the active calendar, or the calendar is absent and
+    //   the Gregorian lookup rejected the month — the date is printed
+    //   numerically: "8/13/1920". That is never " , 1920", which was
+    //   the previous failure mode when the hardcoded table ran out of
+    //   entries.
+    //
+    // SHAPE:
+    //   year + month + day   "December 8, 1920"  or  "Twelfth Moon 8, 1920"
+    //   year + month only    "December 1920"     or  "Twelfth Moon 1920"
+    //   year only            "1920"
+    //   nothing              "Not specified"
 
     function buildDateDisplay(mission) {
         if (!mission) { return 'Not specified'; }
@@ -1040,14 +1085,29 @@
                      mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            var monthNames = [
-                'January', 'February', 'March', 'April', 'May',
-                'June', 'July', 'August', 'September', 'October',
-                'November', 'December'
-            ];
-            var monthName = monthNames[mission.month - 1] || '';
+            var monthName = resolveMonthName(mission.year, mission.month);
+
+            if (monthName === '') {
+                // Out-of-range month for the active calendar. Print
+                // numerically rather than dropping the month.
+                return String(mission.day) + '/' +
+                       String(mission.month) + '/' +
+                       String(mission.year);
+            }
+
             return monthName + ' ' + mission.day + ', ' +
                 mission.year;
+        }
+
+        if (hasYear && hasMonth) {
+            var monthNameOnly = resolveMonthName(
+                mission.year, mission.month
+            );
+            if (monthNameOnly === '') {
+                return String(mission.month) + '/' +
+                       String(mission.year);
+            }
+            return monthNameOnly + ' ' + mission.year;
         }
 
         if (hasYear) {
@@ -1055,6 +1115,43 @@
         }
 
         return 'Not specified';
+    }
+
+    /**
+     * Resolve a month name through CalendarConfig, with an inline
+     * Gregorian fallback when the module is not loaded.
+     *
+     * Returns '' when the year/month pair is out of range for the
+     * active calendar. The caller decides whether to fall back to
+     * a numeric display.
+     *
+     * The Gregorian fallback is inlined here so this module is
+     * self-contained in a stripped build that omits
+     * calendar-config.js. The month table is not a domain table; it
+     * exists only so the function has something to say when the
+     * calendar module is absent.
+     */
+    function resolveMonthName(year, monthId) {
+        var cfg = getCalendarConfig();
+        if (cfg && typeof cfg.getMonthName === 'function') {
+            var name = cfg.getMonthName(year, monthId);
+            if (typeof name === 'string' && name !== '') {
+                return name;
+            }
+            return '';
+        }
+
+        // No CalendarConfig loaded. Inline Gregorian.
+        var y = parseInt(year, 10);
+        var m = parseInt(monthId, 10);
+        if (isNaN(y) || y < 1 || isNaN(m) || m < 1 || m > 12) {
+            return '';
+        }
+        return [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November',
+            'December'
+        ][m - 1];
     }
 
     // ============================================================
@@ -2389,6 +2486,69 @@
         } catch (e) {
             missing.push(
                 'form-state participants smoke test threw: ' + e.message
+            );
+        }
+
+        // Smoke test: date display.
+        //
+        // The month name must be resolved through CalendarConfig,
+        // not from a hardcoded Gregorian table. Under the Gregorian
+        // fallback the December case must still render "December",
+        // and an out-of-range month must render numerically rather
+        // than as ", 1920".
+        try {
+            var decDisplay = buildDateDisplay({
+                year: 1920,
+                month: 12,
+                day: 8
+            });
+            if (decDisplay !== 'December 8, 1920' &&
+                decDisplay !== 'Twelfth Moon 8, 1920') {
+                missing.push(
+                    'buildDateDisplay: 1920-12-08 rendered as "' +
+                    decDisplay + '", expected a named month'
+                );
+            }
+
+            var yearOnly = buildDateDisplay({ year: 1920 });
+            if (yearOnly !== '1920') {
+                missing.push(
+                    'buildDateDisplay: year-only rendered as "' +
+                    yearOnly + '"'
+                );
+            }
+
+            var nothing = buildDateDisplay({});
+            if (nothing !== 'Not specified') {
+                missing.push(
+                    'buildDateDisplay: empty mission rendered as "' +
+                    nothing + '"'
+                );
+            }
+
+            // Out-of-range month. The CalendarConfig lookup (or
+            // the inline Gregorian fallback) rejects it; the
+            // display must be numeric, not a bare " , 1920".
+            var bad = buildDateDisplay({
+                year: 1920,
+                month: 13,
+                day: 8
+            });
+            if (bad.indexOf('13') === -1) {
+                missing.push(
+                    'buildDateDisplay: out-of-range month did not ' +
+                    'fall back to numeric, got "' + bad + '"'
+                );
+            }
+            if (bad.indexOf(',') !== -1) {
+                missing.push(
+                    'buildDateDisplay: out-of-range month still ' +
+                    'printed a comma, got "' + bad + '"'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'date-display smoke test threw: ' + e.message
             );
         }
 
