@@ -57,6 +57,33 @@
  *   is not an error; it is the correct representation of "the
  *   rename happened in the same year the team was founded."
  *
+ * A ROLLOVER REQUIRES AN OPEN LAST PERIOD (D3):
+ *   The rollover closes the current (last) period and opens a
+ *   new one after it. That only makes sense if the current
+ *   period is still open. If the user has already closed the
+ *   last period — by setting its end year in the team form, i.e.
+ *   disbanding the team — a subsequent member edit that crosses
+ *   a suffix threshold must NOT try to close the already-closed
+ *   period again.
+ *
+ *   Closing an already-closed period would be either a
+ *   redundant no-op (if the trigger year equals the last
+ *   period's start) or an inverted range (if the trigger year is
+ *   before the last period's start). Neither is correct.
+ *
+ *   The correct behaviour is: a disbanded team does not open a
+ *   new period. The naming module rewrites the current period's
+ *   name in place (so the record reflects the new suffix the
+ *   team "would have had"), and leaves the closed range intact.
+ *   That is what applyTeamName's fallback to update.name does
+ *   when buildRolloverPeriods returns null.
+ *
+ *   If a user wants to reopen a disbanded team and give it a
+ *   fresh period under a new suffix, that is an explicit edit
+ *   through the team form (set the last period's end back to
+ *   blank, then add a new period). The naming hook does not
+ *   invent this.
+ *
  * THE TRIGGER YEAR:
  *   The year the new period opens is the EARLIEST joinPeriod
  *   across the stints of the distinct member who triggered the
@@ -499,24 +526,18 @@
     //
     // Build the next periods array.
     //
-    // The current (last) period closes at the trigger year. A new
-    // period opens at the same trigger year, inheriting the
-    // previous period's tacticalStyle and specialisations and
-    // taking the recomputed name.
+    // D3 — A ROLLOVER REQUIRES AN OPEN LAST PERIOD:
+    //   The rollover closes the current (last) period and opens
+    //   a new one after it. If the last period is already
+    //   closed, closing it again would be either a redundant
+    //   no-op or an inverted range. The guard below returns null
+    //   in that case, and applyTeamName falls back to a
+    //   rewrite-in-place of the current period's name.
     //
-    // The half-open convention in team-core.js means a period
-    // ending at year Y and another starting at year Y do NOT
-    // overlap: the boundary year belongs to the LATER period.
-    // That is what makes the same-year rollover legal:
+    //   See the file header's "A ROLLOVER REQUIRES AN OPEN LAST
+    //   PERIOD" block for the full reasoning.
     //
-    //   Rapid     1900–1900
-    //   Rapid II  1900–present
-    //
-    // The same year sees both the founding and the rename. Both
-    // periods name it. Under the half-open rule, 1900 belongs to
-    // Rapid II.
-    //
-    // THREE CASES:
+    // THE THREE OPEN-PERIOD CASES:
     //
     //   1. lastStart < triggerYear
     //        Normal case. The current period closes at
@@ -551,6 +572,28 @@
             return null;
         }
         if (computed.triggerJoinYear === null) {
+            return null;
+        }
+
+        // ---- D3 GUARD: last period must be OPEN. ----
+        //
+        // A closed last period means the team was disbanded at
+        // that year. A disbanded team does not open a new
+        // period. Refuse the rollover and let applyTeamName
+        // rewrite the current period's name in place.
+        //
+        // Without this guard, closing an already-closed last
+        // period would be either a redundant no-op (case 2) or
+        // an inverted range (case 3). Neither is correct.
+        var lastEntry = team.periods[team.periods.length - 1];
+        var lastEndRaw = lastEntry ? lastEntry.endPeriod : null;
+        var lastEndTrimmed = (lastEndRaw === undefined ||
+                              lastEndRaw === null)
+            ? ''
+            : String(lastEndRaw).trim();
+
+        if (lastEndTrimmed !== '') {
+            // Last period is already closed. No rollover.
             return null;
         }
 
@@ -643,6 +686,13 @@
      *                            // opened
      *     error?: string
      *   }
+     *
+     * BEHAVIOUR WITH A CLOSED LAST PERIOD (D3):
+     *   When the last period is closed, buildRolloverPeriods
+     *   returns null. applyTeamName then falls back to
+     *   update.name = computed.displayName. That rewrites the
+     *   current (closed) period's name in place, without opening
+     *   a new period. The `rolledOver` field is false.
      */
     function applyTeamName(teamId) {
         if (!teamId) {
@@ -720,6 +770,10 @@
         var newPeriods = null;
         if (requiresRollover) {
             newPeriods = buildRolloverPeriods(team, computed);
+            // ---- D3: buildRolloverPeriods returns null when
+            //      the last period is closed. The fallback
+            //      below handles that case by rewriting the
+            //      current period's name in place. ----
         }
 
         // ---- Build the update ----
@@ -783,6 +837,10 @@
     // members before the periods model existed. For those, the
     // last period's name may not reflect the current distinct
     // count, and the migrator closes-and-opens as needed.
+    //
+    // D3 also applies here: a team whose last period is closed
+    // gets a rewrite-in-place, not a rollover. The migrator's
+    // `rolledOver` count will not include such teams.
 
     function previewAllTeams() {
         var teams = getTeamsArrayForMigration();
