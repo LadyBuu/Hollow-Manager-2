@@ -3,9 +3,9 @@
  *
  * Path: js/modules/shared/calendar-config.js
  *
- * Reads and validates the custom calendar block that lives on a
- * project record (`window.data.projects[active].calendar`), and
- * exposes the primitives the date pickers and the schema need:
+ * Reads and validates the custom calendar block that lives at
+ * `window.data.calendar`, and exposes the primitives the date
+ * pickers and the schema need:
  *
  *   getMonthsForYear(year)         → [{ id, name, days }]
  *   getDaysInMonth(year, monthId)  → number | 0
@@ -14,21 +14,27 @@
  *
  * plus:
  *
- *   parseCalendarBlock(raw)              pure validator/canonicaliser
- *   getActiveProject()                   read the live project
- *   getActiveCalendar()                  read its calendar or null
- *   setActiveCalendar(calendar)          write it in memory
- *   clearActiveCalendar()                revert to Gregorian
+ *   parseCalendarBlock(raw)        pure validator/canonicaliser
+ *   getActiveCalendar()            read window.data.calendar or null
+ *   setActiveCalendar(calendar)    write window.data.calendar
+ *   clearActiveCalendar()          delete it, revert to Gregorian
+ *
+ * STORAGE:
+ *   The calendar is a single flat object at `window.data.calendar`.
+ *   There is no project concept. This app has one store, one
+ *   calendar, one active application. A calendar that is present
+ *   is the calendar; a calendar that is absent means "use the
+ *   Gregorian fallback".
  *
  * WHAT THIS MODULE DOES NOT DO:
  *   - The calendar grid, the preset catalogue, school terms, the
  *     paint UI, the leap-month editor. This module is data only.
  *   - Mutations to missions. It only describes what a valid date
  *     looks like.
- *   - Caching. Live reads on every call so switching projects or
- *     importing a new calendar takes effect immediately.
+ *   - Caching. Live reads on every call so importing a new
+ *     calendar takes effect immediately.
  *
- * THE CALENDAR SHAPE (from the project JSON):
+ * THE CALENDAR SHAPE:
  *
  *   {
  *     preset:       'hebrew',          // optional, informational
@@ -227,70 +233,55 @@
     }
 
     // ============================================================
-    // ACTIVE PROJECT / CALENDAR ACCESS
+    // FLAT-STORE CALENDAR ACCESS
     // ============================================================
-
-    function getActiveProject() {
-        var data = window.data;
-        if (!data || !Array.isArray(data.projects) || data.projects.length === 0) {
-            return null;
-        }
-        var pid = null;
-        try {
-            if (window.MissionUI &&
-                typeof window.MissionUI.activeProjectId === 'function') {
-                pid = window.MissionUI.activeProjectId();
-            }
-        } catch (e) { pid = null; }
-
-        if (pid) {
-            for (var i = 0; i < data.projects.length; i++) {
-                if (data.projects[i] &&
-                    String(data.projects[i].id) === String(pid)) {
-                    return data.projects[i];
-                }
-            }
-        }
-        for (var j = 0; j < data.projects.length; j++) {
-            if (data.projects[j] &&
-                isPlainObject(data.projects[j].calendar) &&
-                Array.isArray(data.projects[j].calendar.months) &&
-                data.projects[j].calendar.months.length) {
-                return data.projects[j];
-            }
-        }
-        return data.projects[0] || null;
-    }
+    //
+    // The calendar lives at `window.data.calendar`. There is no
+    // project concept in this application: one store, one calendar,
+    // one active application. A calendar that is present is the
+    // calendar. A calendar that is absent means "use the Gregorian
+    // fallback".
+    //
+    // The only reason setActiveCalendar / clearActiveCalendar can
+    // fail is that window.data itself is missing or not an object.
+    // That is a real load-order / boot failure, not a project
+    // failure.
 
     function getActiveCalendar() {
-        var project = getActiveProject();
-        if (!project) { return null; }
-        if (!isPlainObject(project.calendar)) { return null; }
-        var parsed = parseCalendarBlock(project.calendar);
+        var data = window.data;
+        if (!data || typeof data !== 'object') { return null; }
+        if (!isPlainObject(data.calendar)) { return null; }
+        var parsed = parseCalendarBlock(data.calendar);
         if (!parsed.ok) { return null; }
         return parsed.calendar;
     }
 
     function setActiveCalendar(calendar) {
-        var project = getActiveProject();
-        if (!project) {
-            return { ok: false, error: 'No active project.' };
+        var data = window.data;
+        if (!data || typeof data !== 'object') {
+            return {
+                ok: false,
+                error: 'Application data is not available.'
+            };
         }
         var parsed = parseCalendarBlock(calendar);
         if (!parsed.ok) {
             return { ok: false, error: parsed.error };
         }
-        project.calendar = parsed.calendar;
+        data.calendar = parsed.calendar;
         return { ok: true, calendar: parsed.calendar };
     }
 
     function clearActiveCalendar() {
-        var project = getActiveProject();
-        if (!project) {
-            return { ok: false, error: 'No active project.' };
+        var data = window.data;
+        if (!data || typeof data !== 'object') {
+            return {
+                ok: false,
+                error: 'Application data is not available.'
+            };
         }
-        if (project.calendar !== undefined) {
-            delete project.calendar;
+        if (data.calendar !== undefined) {
+            delete data.calendar;
         }
         return { ok: true };
     }
@@ -398,7 +389,6 @@
         getDaysInMonth: getDaysInMonth,
         getMonthName: getMonthName,
         isValidCalendarDate: isValidCalendarDate,
-        getActiveProject: getActiveProject,
         getActiveCalendar: getActiveCalendar,
         setActiveCalendar: setActiveCalendar,
         clearActiveCalendar: clearActiveCalendar,
