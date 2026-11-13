@@ -35,11 +35,8 @@
  *   A broken VM produces a visible failure, not a plausible empty
  *   list. renderCount() throws deliberately; a malformed count
  *   blanks the tab, and the console names the malformed field.
- *   Per-row containment is a design change (adds an error-row
- *   state, hides the failure inside the list) and is not applied
- *   here.
  *
- * PERIODS MODEL:
+ * PERIODS MODEL (D1, this revision):
  *   The team form VM carries `periods`, an array of display-shaped
  *   entries:
  *
@@ -51,15 +48,22 @@
  *
  *   Each entry renders as one row in the periods editor via
  *   renderPeriodRow(period, index, isLast, options, canRemove).
+ *
+ *   THE LAST ROW IS NOT SPECIAL:
+ *   Every row's end input is a normal editable number input. A
+ *   blank end means "unbounded on this side"; for the last row
+ *   specifically, that means the team is still ongoing. A
+ *   non-blank end on the last row means the team disbanded at
+ *   that year.
+ *
  *   The row emits:
  *
  *     .team-period-row[data-period-index="N"]
  *       .team-period-row-header       (label + remove button)
  *       input.team-period-name        (name)
  *       input.team-period-start       (start year)
- *       input.team-period-end         (end year; disabled on the
- *                                      last row, which is the
- *                                      open-ended current period)
+ *       input.team-period-end         (end year; editable on
+ *                                      every row)
  *       textarea.team-period-style    (tactical style)
  *       .team-period-specialisations  (chip list, one per
  *                                      specialisation)
@@ -73,15 +77,15 @@
  *   updateRemoveButtons() to reveal the button on every row once
  *   there is more than one.
  *
- *   The end year input on the last row is disabled AND read-only:
- *   the open-ended sentinel is a fact about the model, not a
- *   value the user picks. The renderer sets value="" on that
- *   input. TeamEvents reads the empty value as '' when
- *   collecting.
+ *   The `isLast` parameter is preserved in the public contract
+ *   (TeamEvents passes it when appending) but the renderer no
+ *   longer uses it to disable or hint the end input. Both the
+ *   initial render and the append path emit an editable end
+ *   input on every row.
  *
- *   On a create form, the VM synthesises a single period seeded
- *   with the current calendar year. The user sees one editable
- *   row and no history. On edit, every stored period renders.
+ *   Row labels are plain "Period N". There is no "(current)"
+ *   suffix; the last row is identified by its position in the
+ *   list, not by a label.
  *
  * TEAM TYPE IN THE FORM SELECT:
  *   The form's #team-type select offers every non-academic type
@@ -91,17 +95,7 @@
  *   the type is appended as a DISABLED option marked
  *   "(current; not editable here)". The select shows the truth,
  *   and the hint explains why changing it would reclassify the
- *   team. This prevents the silent-default bug where editing a
- *   team whose type had no matching option rewrote the type to
- *   the first option on save.
- *
- *   The current type is normalised via TeamConstants
- *   .normalizeTeamType before the comparison, so a stored
- *   'temporary' or 'internship' record displays correctly (the
- *   select shows 'professional' because that is what it
- *   normalises to, and the user sees the canonical id). A future
- *   change to the aggregator (Pass 2) will hand this function a
- *   normalised type, which is a no-op for the logic below.
+ *   team.
  *
  * LEGACY SHAPE:
  *   The read-only descriptive block reads `team.tacticalStyle` and
@@ -110,46 +104,20 @@
  *   periods exist, and from the legacy scalars otherwise. This
  *   module does not touch nameHistory or any legacy field.
  *
- * TAB VOCABULARY:
- *   The Teams tab renders two top-level tabs:
- *     professional | civilian
- *
- * PAGE HEADER ACTIONS:
- *   Export / Matchmaking / Add Team appear on the Professional tab.
- *   Civilian shows Add Team and Export.
- *
- *   The Export button is a BULK export: it exports every team the
- *   user has ticked in the list below, into a single file. It is
- *   disabled when nothing is selected. The per-row Export button
- *   on each team row remains a single-team export.
- *
- * TEAM SELECTION:
- *   Each team row carries a checkbox at the leading edge. State is
- *   held by TeamEvents as a Set of teamIds and passed in as
- *   `selectedIds` on the render options.
- *
- * TEAM ROW ACTIONS:
- *   The row action strip carries a Kill Team button between
- *   Export and Edit.
- *
- * VIEW MODES:
- *   The professional tab carries four modes:
- *
- *     teams     the default list
- *     pool      the Professional Pool
- *     timeline  the year-by-year event timeline
- *     rankings  the ranking table
- *
- *   The mode toggle is rendered by renderFilterBar. The body is
- *   chosen by renderContainer.
+ * RANKINGS PASSTHROUGH:
+ *   The Rankings tab body is rendered by TeamRankingsView. This
+ *   module's only role is to hand `pageVM.rankingsVM` through to
+ *   it via renderRankingsContent(pageVM). The rankings VM is the
+ *   ordered-list shape ({ year, rows, unrankedTeams,
+ *   showInactive }); this module does not read `sortMode` or
+ *   `sortDirection` and would not need to change if the rankings
+ *   VM grew new fields.
  *
  * DEPRECATED STATUS:
  *   A team whose status is 'deprecated' is styled and labelled
  *   distinctly in the list and card. The signal is
  *   `team.isDeprecated`, which the aggregator sets from
- *   normalizeTeamStatus. Until the aggregator supplies it, the
- *   checks are no-ops and the existing 'inactive' treatment
- *   remains the only status signal.
+ *   normalizeTeamStatus.
  *
  * EXPANDED MEMBERS — MULTI-STINT DISPLAY:
  *   A member may have multiple stints on the same team (e.g.
@@ -160,22 +128,12 @@
  *
  *   The expanded-member view must not filter to the interval that
  *   contains the current period — that hides a re-joined member's
- *   earlier stints, which is exactly the bug this revision fixes.
- *   Instead:
+ *   earlier stints. Instead:
  *
  *     - A member is SHOWN when they have at least one active
  *       stint (the aggregate flag or any per-interval flag).
- *       Members with no active stint belong in the "Former
- *       Members" section, which is the member manager's job,
- *       not this view's.
- *
  *     - A shown member renders ALL of their intervals, with the
- *       active interval(s) marked. The earlier, closed stints
- *       remain visible so the user can see the full history.
- *
- *   This makes a 1901-1905 / 1910-present member render as two
- *   rows under the same member header, with the 1910-present row
- *   marked active.
+ *       active interval(s) marked.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -258,12 +216,7 @@
      * deliberate: a malformed count is a data-layer bug, and
      * surfacing it as a render failure means the tab visibly
      * refuses to display rather than silently rendering "NaN" or
-     * "0". The cost is that one bad team blanks the tab; the
-     * benefit is that the failure is loud and points at the
-     * malformed field. Per-row containment (an error row per
-     * broken team) is a design change: it preserves the tab at
-     * the cost of hiding the failure inside the list, which is
-     * the failure mode this contract exists to avoid.
+     * "0".
      */
     function renderCount(value) {
         if (!isCount(value)) {
@@ -301,13 +254,7 @@
     /**
      * Normalise a stored type for form display. Routes through
      * TeamConstants.normalizeTeamType so a legacy 'temporary' or
-     * 'internship' record displays as 'professional', which is
-     * what the reader compares against.
-     *
-     * Falls back to the raw value when the helper is missing
-     * (never at runtime in practice — TeamConstants is a
-     * module-load dependency above — but the guard costs
-     * nothing and makes the function safe in isolation).
+     * 'internship' record displays as 'professional'.
      */
     function normaliseTeamTypeForDisplay(rawType) {
         if (typeof TeamConstants.normalizeTeamType !== 'function') {
@@ -375,12 +322,6 @@
     // ============================================================
     // STATUS LABELS
     // ============================================================
-    //
-    // Both statuses are additive: a team can be inactive OR
-    // deprecated; the current data model treats them as mutually
-    // exclusive in practice, but the renderer does not assume it.
-    // The labels render independently so a future status change
-    // does not silently lose one of them.
 
     function renderStatusLabels(team) {
         var html = '';
@@ -403,25 +344,6 @@
     // ============================================================
     // DESCRIPTIVE FIELDS (read-only)
     // ============================================================
-    //
-    // Rendered in two places:
-    //
-    //   .team-members-expanded      when a row is expanded
-    //   .team-card                  a card-layout caller
-    //
-    // Reads `team.tacticalStyle` and `team.specialisations` off
-    // the VM. Those fields are populated by TeamAggregator from
-    // the current period (or the legacy scalars, pre-migration).
-    //
-    // The block renders:
-    //
-    //   Tactical Style: <value>
-    //   Specialisations: <label>, <label>, ...
-    //   Periods: <list>            (only when > 1 period)
-    //
-    // Either row is omitted when its field is empty. When both
-    // are empty AND there is only one period, the whole block is
-    // omitted.
 
     function renderDescriptiveFields(team) {
         if (!team || typeof team !== 'object') { return ''; }
@@ -761,19 +683,6 @@
         return html;
     }
 
-    /**
-     * Render one pool row.
-     *
-     * The row depends on three sub-objects of the pool VM:
-     * availability, assignment, and history. If any is missing,
-     * this function throws with a message naming the missing
-     * field. The alternative — reading row.availability.display
-     * unguarded — produces a TypeError from inside the render
-     * with no context about which field is missing and which row.
-     *
-     * This is consistent with the renderer's "fail loudly"
-     * contract; see the file header for the rationale.
-     */
     function renderPoolRow(
         row, variantClass, expandedIds, selectedIds
     ) {
@@ -1067,8 +976,14 @@
     }
 
     // ============================================================
-    // RANKINGS (delegated)
+    // RANKINGS (delegated — C6: pure passthrough)
     // ============================================================
+    //
+    // The rankings tab body is rendered by TeamRankingsView. The
+    // ordered-list VM ({ year, rows, unrankedTeams, showInactive })
+    // is passed through unchanged. This module does NOT read
+    // sortMode, sortDirection, or any other ranking field; it just
+    // hands the VM over.
 
     function renderRankingsContent(pageVM) {
         var RV = window.TeamRankingsView;
@@ -1101,18 +1016,10 @@
     // A member is shown here when ANY of their stints is active
     // at the viewed period. Members whose stints are ALL closed
     // are "former" members and belong in the member manager's
-    // Former section, not here — that split is the manager's
-    // job, not this view's.
+    // Former section, not here.
     //
     // A shown member renders EVERY stint, not just the active
-    // one. That is the fix for the reported bug: a member with
-    // 1901-1905 then 1910-present must render BOTH rows so the
-    // earlier stint does not silently disappear once they
-    // rejoin. The 1910-present row is marked active; the
-    // 1901-1905 row is shown as historical context.
-    //
-    // If a member has active stints at the viewed period we
-    // render them; the active stint(s) carry the `active` class.
+    // one, so a re-joined member's earlier stints remain visible.
 
     function memberHasActiveStint(member) {
         if (!member || typeof member !== 'object') { return false; }
@@ -1136,10 +1043,6 @@
             ? membersVM.members
             : [];
 
-        // Members with any active stint at the viewed period.
-        // Former members (no active stint) are intentionally not
-        // rendered here; they belong in the member manager's
-        // Former section.
         var shownMembers = [];
         for (var i = 0; i < allMembers.length; i++) {
             var m = allMembers[i];
@@ -1210,12 +1113,6 @@
         }
         html += '</div>';
 
-        // ---- Every stint, not just the active one. ----
-        //
-        // This is what makes a re-joined member's earlier stints
-        // visible. Each row carries its own `active` class when
-        // the stint contains the viewed period, so the user sees
-        // the full history with the current stint highlighted.
         var intervals = Array.isArray(member.intervals)
             ? member.intervals
             : [];
@@ -1381,18 +1278,7 @@
     //
     // The year input and the Show Inactive checkbox appear only
     // in Teams mode. The other modes have their own controls on
-    // their own body. Rankings mode owns its year picker; the
-    // filter bar just carries the mode buttons in that mode.
-    //
-    // ARIA:
-    //   The mode toggle buttons carry role="tab" and
-    //   aria-selected. They also carry aria-controls pointing at
-    //   #team-list-container, which is the role="tabpanel"
-    //   element rendered by renderContainer. Arrow-key navigation
-    //   between the tabs is a larger a11y addition and is not
-    //   implemented here; the buttons remain individually
-    //   focusable and click-activatable, which is what makes the
-    //   current shape usable with a keyboard.
+    // their own body.
 
     function renderFilterBar(filterVM) {
         if (!filterVM || !filterVM.tab) { return ''; }
@@ -1509,18 +1395,7 @@
     // The Rankings tab is the cross-team view.
     //
     // Each explicit entry renders as one row, with a small line
-    // beneath it describing the range of years it governs:
-    //
-    //   Period: 1904  Rank: #3
-    //   governs 1904–1906
-    //
-    //   Period: 1907  Rank: #5
-    //   governs 1907–present
-    //
-    // The governing range comes from `historyWithRanges` on the
-    // VM. It makes the inheritance model visible: the user sees
-    // which entry is authoritative in which years, without having
-    // to work it out from the raw list.
+    // beneath it describing the range of years it governs.
 
     function renderRankingList(rankVM) {
         if (!rankVM ||
@@ -1529,7 +1404,6 @@
             return '<p class="empty-state">No ranking history</p>';
         }
 
-        // Build a lookup from period -> { governsFrom, governsTo }.
         var rangeByPeriod = Object.create(null);
         if (Array.isArray(rankVM.historyWithRanges)) {
             for (var r = 0; r < rankVM.historyWithRanges.length; r++) {
@@ -1558,11 +1432,6 @@
                 } else if (to === from + 1) {
                     governsText = 'governs ' + from + ' only';
                 } else {
-                    // Valid data: to > from + 1. The
-                    // 'to === from' case cannot occur — an
-                    // entry's governing range starts at its own
-                    // year and ends at the next entry's year,
-                    // which is strictly greater.
                     governsText = 'governs ' + from +
                         '\u2013' + (to - 1);
                 }
@@ -1611,16 +1480,11 @@
     //   rule: the field wins only if the user typed in it this
     //   session. TeamEvents reads data-original-value to detect
     //   that. If the field is untouched, the periods array — as
-    //   edited — wins. This resolves the two-owners-of-name
-    //   problem without an extra flag, and it is forward-
-    //   compatible with a future nameIsAuto flag that would
-    //   simply take over the "did the user type" decision.
+    //   edited — wins.
     //
     // The top-level start / end inputs are NOT rendered: the
     // team's start and end are derived from periods[0].start and
-    // periods[last].end. The periods editor owns them. Two
-    // separate places to edit the same value would be a bug
-    // factory.
+    // periods[last].end. The periods editor owns them.
 
     function renderTeamForm(formVM) {
         if (!formVM) {
@@ -1738,12 +1602,6 @@
         return html;
     }
 
-    /**
-     * Emit the type hint. When the current type normalises to
-     * something not in the offered list (academic, or an
-     * unrecognised legacy alias), explain why the select shows a
-     * disabled current-type option instead of a normal choice.
-     */
     function renderTypeHint(rawCurrentType) {
         var normalised = normaliseTeamTypeForDisplay(rawCurrentType);
         if (normalised === '') { return ''; }
@@ -1779,14 +1637,14 @@
     }
 
     // ============================================================
-    // PERIODS EDITOR
+    // PERIODS EDITOR (D1: editable end on every row)
     // ============================================================
     //
     // One row per period. Each row carries:
     //
     //   name             text input
     //   start            number input
-    //   end              number input (disabled on the last row)
+    //   end              number input (EDITABLE on EVERY row)
     //   tacticalStyle    textarea
     //   specialisations  chip list, with a select + Add button
     //
@@ -1815,8 +1673,9 @@
         html += '<label>Periods</label>';
         html += '<p class="field-hint">' +
                     'Each period describes the team for a range of ' +
-                    'years. The last period is the team\u2019s ' +
-                    'present; its end year is open.' +
+                    'years. Leave the last period\u2019s end year ' +
+                    'blank if the team is still ongoing; set it to ' +
+                    'close the team at that year.' +
                 '</p>';
 
         html += '<div id="team-periods-list" class="team-periods-list">';
@@ -1848,17 +1707,27 @@
      * buildNewPeriodRowHTML). Any change to the row's markup
      * belongs here, not in the append helper.
      *
+     * D1 (this revision):
+     *   The end input is EDITABLE on every row, including the
+     *   last. A blank end on the last row means the team is
+     *   still ongoing; a non-blank end means the team disbanded
+     *   at that year. The `isLast` parameter is preserved for
+     *   the caller's own use (TeamEvents passes it when
+     *   appending) but is not consulted by this function.
+     *
+     * The row label is plain "Period N" for every row. The
+     * "(current)" suffix is gone; the last row is identified by
+     * its position in the list, not by a label.
+     *
      * @param {object} period  A display-shaped period entry:
      *   { startPeriod, endPeriod, name, tacticalStyle,
      *     specialisations: [{ id, label }] }
      * @param {number} index   0-based position in the list.
-     * @param {boolean} isLast True for the open-ended current
-     *   period (the last row).
+     * @param {boolean} isLast  True for the last row. Preserved
+     *   in the contract for caller convenience; NOT used here.
      * @param {array} options  The full specialisation vocabulary.
-     *   Entries already chipped in this row are filtered out of
-     *   the select.
-     * @param {boolean} canRemove True when the row should carry a
-     *   remove button. The initial render passes
+     * @param {boolean} canRemove True when the row should carry
+     *   a remove button. The initial render passes
      *   `periods.length > 1`; TeamEvents passes `false` when
      *   appending and reveals the button via
      *   updateRemoveButtons() once there is more than one.
@@ -1884,18 +1753,14 @@
             ? String(period.tacticalStyle)
             : '';
 
-        var headerLabel;
-        if (isLast) {
-            headerLabel = 'Period ' + (index + 1) + ' (current)';
-        } else {
-            headerLabel = 'Period ' + (index + 1);
-        }
+        // The label is plain "Period N" for every row. `isLast`
+        // is intentionally not consulted. See the block comment.
+        var headerLabel = 'Period ' + (index + 1);
 
         var html = '';
         html += '<div class="team-period-row" ' +
                     'data-period-index="' +
-                        escapeAttribute(String(index)) + '" ' +
-                    'data-is-last="' + (isLast ? 'true' : 'false') + '">';
+                        escapeAttribute(String(index)) + '">';
 
         // ---- Header ----
         html += '<div class="team-period-row-header">';
@@ -1933,24 +1798,19 @@
                     'placeholder="Year">';
         html += '</div>';
 
+        // ---- End: EDITABLE on every row. ----
+        //
+        // A blank value means "unbounded on this side". For the
+        // last row, that means the team is still ongoing. For a
+        // non-last row, the user must fill it in before saving
+        // (enforced by collectPeriodsFromForm in team-events.js).
         html += '<div class="team-period-field team-period-field-end">';
         html += '<label class="team-period-field-label">End</label>';
-        if (isLast) {
-            html += '<input type="text" ' +
-                        'class="team-period-end" ' +
-                        'value="" ' +
-                        'placeholder="present" ' +
-                        'readonly disabled>';
-            html += '<span class="team-period-field-hint">' +
-                        '(open)' +
-                    '</span>';
-        } else {
-            html += '<input type="number" ' +
-                        'class="team-period-end" ' +
-                        'min="1" ' +
-                        'value="' + escapeAttribute(end) + '" ' +
-                        'placeholder="Year">';
-        }
+        html += '<input type="number" ' +
+                    'class="team-period-end" ' +
+                    'min="1" ' +
+                    'value="' + escapeAttribute(end) + '" ' +
+                    'placeholder="Year">';
         html += '</div>';
 
         html += '</div>'; // row-fields
@@ -1983,7 +1843,6 @@
             ? period.specialisations
             : [];
 
-        // Normalise: entries may be strings or { id, label } refs.
         var currentIds = [];
         var currentLabels = Object.create(null);
         var labelById = Object.create(null);
@@ -2013,7 +1872,6 @@
                 : opt.id;
         }
 
-        // Options still selectable in this row.
         var selectedSet = Object.create(null);
         for (var s = 0; s < currentIds.length; s++) {
             selectedSet[currentIds[s]] = true;
@@ -2104,18 +1962,6 @@
         return html;
     }
 
-    /**
-     * Render the <option> list for the team type select.
-     *
-     * Every non-academic type is offered. If the current type
-     * normalises to something not in that list (academic, or an
-     * unrecognised legacy alias), it is emitted as a DISABLED
-     * option at the end, marked "(current; not editable here)".
-     *
-     * The disabled option keeps the select showing the truth
-     * instead of silently falling back to the first offered type
-     * on save. renderTypeHint() explains why.
-     */
     function renderTypeOptions(currentType) {
         var normalised = normaliseTeamTypeForDisplay(currentType);
         var types = getFormTeamTypes();
@@ -2136,10 +1982,6 @@
         }
 
         if (!inList && normalised !== '') {
-            // The stored type is not in the offered list. Emit a
-            // disabled option so the select shows it, with a
-            // clear label. Selecting it does nothing (it is
-            // disabled); picking a different type replaces it.
             var displayLabel = normalised;
             var typeRecord = TeamConstants.getTeamType(normalised);
             if (typeRecord && isNonEmptyString(typeRecord.label)) {
@@ -2223,12 +2065,6 @@
     // ============================================================
     // RANKING FORM
     // ============================================================
-    //
-    // The ranking-period and ranking-rank inputs hint their
-    // constraints. Both must be positive integers; the backend
-    // (TeamCore.addRanking) also rejects non-integer values, so
-    // these hints are a convenience for the user, not a guard
-    // against a bypass.
 
     function renderRankingForm() {
         var html = '';
@@ -2260,16 +2096,7 @@
     //   teams     the list, with the expanded team inline
     //   pool      the Professional Pool
     //   timeline  the year-by-year event timeline (delegated)
-    //   rankings  the ranking table (delegated)
-    //
-    // Every mode shares the page header, the stats row, the tab
-    // nav, and the filter bar. Only the body differs.
-    //
-    // The body container (#team-list-container) carries
-    // role="tabpanel" so the mode buttons' role="tab" +
-    // aria-controls point at a real target. Arrow-key navigation
-    // between the tabs is not implemented; the buttons remain
-    // individually focusable.
+    //   rankings  the ranking table (delegated — C6 passthrough)
 
     function renderContainer(pageVM) {
         if (!pageVM) {
