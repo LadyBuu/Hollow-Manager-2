@@ -1,37 +1,29 @@
 /**
  * js/modules/dashboard/dashboard-ui.js - Dashboard UI Controller
- * Event wiring and UI coordination for the dashboard
- * 
+ *
  * Path: js/modules/dashboard/dashboard-ui.js
- * 
- * This module provides:
- *   - render(container) - Render the dashboard and bind events
- *   - destroy() - Clean up event listeners
- * 
- * IMPORTANT:
- *   - UI-ONLY - no domain mutations
- *   - Fetches view models from DashboardAggregator
- *   - Delegates year updates to ApplicationSettingsCore
- *   - Notifications come from MutationPipeline via ApplicationSettingsCore;
- *     the UI does NOT show its own success/failure for year updates
- *   - All HTML is produced by DashboardRender
- *   - All event listeners are tracked for cleanup
- * 
- * LIFECYCLE:
- *   - render(container) may be called multiple times
- *   - Each render cleans up prior listeners before binding new ones
- *   - destroy() removes all listeners and clears the container reference
- * 
+ *
+ * UI-ONLY. Fetches view models from DashboardAggregator,
+ * delegates year updates to ApplicationSettingsCore, delegates
+ * calendar imports to CalendarImport.
+ *
+ * E1 addition: handles the dashboard's calendar-import button.
+ * Reads the selected file, hands its text to
+ * CalendarImport.importFromText, and on success:
+ *   - shows a toast,
+ *   - re-renders the dashboard so the button label flips,
+ *   - re-renders the missions tab if it is mounted, so the
+ *     mission form's month picker picks up the new months.
+ *
  * DEPENDENCIES:
  *   - window.DashboardRender
  *   - window.DashboardAggregator
  *   - window.ApplicationSettingsCore
  *   - window.TabManager
- * 
- * USAGE:
- *   DashboardUI.render(container);
- *   // Later, when the tab is torn down:
- *   DashboardUI.destroy();
+ *
+ * DEPENDENCIES (lazy, at click time):
+ *   - window.CalendarImport  (calendar import; button hidden if absent)
+ *   - window.NotificationSystem (toast; silent if absent)
  */
 
 (function() {
@@ -84,16 +76,26 @@
     var _eventListeners = [];
 
     // ============================================================
+    // SMALL HELPERS
+    // ============================================================
+
+    function notify(message, type) {
+        var N = window.NotificationSystem;
+        if (N && typeof N.notify === 'function') {
+            N.notify(message, type || 'info');
+        } else {
+            console.log('[DashboardUI] ' + (type || 'info') + ': ' + message);
+        }
+    }
+
+    function getCalendarImport() {
+        return window.CalendarImport || null;
+    }
+
+    // ============================================================
     // EVENT LISTENER TRACKING
     // ============================================================
 
-    /**
-     * Register an event listener for cleanup.
-     * 
-     * @param {HTMLElement} element - Target element
-     * @param {string} eventName - Event name
-     * @param {function} handler - Event handler
-     */
     function addTrackedListener(element, eventName, handler) {
         if (!element) {
             return;
@@ -106,9 +108,6 @@
         });
     }
 
-    /**
-     * Remove all tracked event listeners.
-     */
     function removeAllTrackedListeners() {
         for (var i = 0; i < _eventListeners.length; i++) {
             var item = _eventListeners[i];
@@ -122,20 +121,9 @@
     }
 
     // ============================================================
-    // YEAR UPDATE
+    // YEAR UPDATE (unchanged)
     // ============================================================
 
-    /**
-     * Handle year update.
-     * 
-     * Reads the year input, validates it, and delegates to
-     * ApplicationSettingsCore.setCurrentYear(). On success, re-renders
-     * the dashboard to reflect the new value.
-     * 
-     * On failure, ApplicationSettingsCore returns a structured result
-     * with a message. MutationPipeline handles user notification.
-     * The UI does not display its own notification for year updates.
-     */
     function handleYearUpdate() {
         if (!_container) {
             return;
@@ -154,27 +142,118 @@
         AppSettings.setCurrentYear(year)
             .then(function(result) {
                 if (result && result.success) {
-                    // Re-render with the new year
                     render(_container);
                 }
-                // Notification and rollback handled by MutationPipeline
             })
             .catch(function(err) {
-                // Unexpected error (should be rare - MutationPipeline handles
-                // most failure cases). Log it for debugging.
                 console.error('[DashboardUI] Failed to update year:', err);
             });
+    }
+
+    // ============================================================
+    // CALENDAR IMPORT
+    // ============================================================
+
+    /**
+     * Open the file picker. The actual import happens on the
+     * file input's change event (handleCalendarFileChosen).
+     */
+    function handleImportCalendarClick(e) {
+        if (e) { e.preventDefault(); }
+        if (!_container) { return; }
+
+        var input = _container.querySelector('#dashboard-calendar-input');
+        if (!input) {
+            notify('Calendar import is not available.', 'error');
+            return;
+        }
+        input.value = '';
+        input.click();
+    }
+
+    /**
+     * Read the chosen file, hand its text to CalendarImport, and
+     * react to the result.
+     */
+    function handleCalendarFileChosen(e) {
+        var input = e && e.target;
+        if (!input || !input.files || input.files.length === 0) {
+            return;
+        }
+
+        var file = input.files[0];
+
+        var Importer = getCalendarImport();
+        if (!Importer || typeof Importer.importFromText !== 'function') {
+            notify(
+                'Calendar import module is not loaded. Check the ' +
+                'script order in index.html.',
+                'error'
+            );
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onerror = function() {
+            notify('Failed to read the file.', 'error');
+        };
+        reader.onload = function() {
+            var text = String(reader.result || '');
+            var result;
+            try {
+                result = Importer.importFromText(text);
+            } catch (err) {
+                notify(
+                    'Calendar import failed: ' +
+                    (err && err.message ? err.message : String(err)),
+                    'error'
+                );
+                return;
+            }
+
+            if (!result || !result.ok) {
+                notify(
+                    'Calendar import failed: ' +
+                    ((result && result.error) || 'Unknown error.'),
+                    'error'
+                );
+                return;
+            }
+
+            // Success: the active project now carries a calendar.
+            notify(
+                'Calendar imported: ' + result.calendar.name + '.',
+                'success'
+            );
+
+            // Re-render the dashboard so the header button
+            // label flips from "Import calendar…" to
+            // "Replace calendar…".
+            if (_container) {
+                render(_container);
+            }
+
+            // If the missions tab is mounted, re-render it too
+            // so any open form picks up the new month list. The
+            // missions UI rebuilds the form panel from the
+            // active project's calendar on the next open, and
+            // the aggregator reads CalendarConfig live, so a
+            // plain re-render is enough.
+            try {
+                if (window.Missions && typeof window.Missions.refresh === 'function') {
+                    window.Missions.refresh();
+                }
+            } catch (err2) {
+                // Do not fail the import over this.
+            }
+        };
+        reader.readAsText(file);
     }
 
     // ============================================================
     // RENDER
     // ============================================================
 
-    /**
-     * Render the dashboard into the given container.
-     * 
-     * @param {HTMLElement} container - Container element
-     */
     function render(container) {
         if (!container) {
             container = document.getElementById('tab-dashboard');
@@ -184,7 +263,6 @@
             return;
         }
 
-        // Clean up prior listeners before re-rendering
         if (_mounted) {
             removeAllTrackedListeners();
         }
@@ -192,13 +270,9 @@
         _container = container;
         _mounted = true;
 
-        // Fetch the view model from the aggregator
         var viewModel = Aggregator.getDashboardViewModel();
-
-        // Render into the container
         container.innerHTML = Render.renderDashboard(viewModel);
 
-        // Bind events
         bindEvents(container);
     }
 
@@ -206,11 +280,6 @@
     // EVENT BINDING
     // ============================================================
 
-    /**
-     * Bind all dashboard events to the container.
-     * 
-     * @param {HTMLElement} container - Container element
-     */
     function bindEvents(container) {
         // ---- Year update button ----
         var updateBtn = container.querySelector('#dashboard-update-year-btn');
@@ -232,6 +301,16 @@
             });
         }
 
+        // ---- Calendar import ----
+        var importBtn = container.querySelector('#dashboard-import-calendar-btn');
+        if (importBtn) {
+            addTrackedListener(importBtn, 'click', handleImportCalendarClick);
+        }
+        var fileInput = container.querySelector('#dashboard-calendar-input');
+        if (fileInput) {
+            addTrackedListener(fileInput, 'change', handleCalendarFileChosen);
+        }
+
         // ---- Quick links (event delegation) ----
         addTrackedListener(container, 'click', function(e) {
             var link = e.target.closest('.quick-link');
@@ -250,12 +329,6 @@
     // DESTROY
     // ============================================================
 
-    /**
-     * Tear down the dashboard.
-     * Removes all event listeners and clears state.
-     * Does NOT clear the container's HTML - the caller may want to
-     * preserve the DOM for inspection or gradual teardown.
-     */
     function destroy() {
         removeAllTrackedListeners();
         _container = null;
@@ -266,20 +339,10 @@
     // QUERIES
     // ============================================================
 
-    /**
-     * Get the current container element.
-     * 
-     * @returns {HTMLElement|null} Container or null
-     */
     function getContainer() {
         return _container;
     }
 
-    /**
-     * Check if the dashboard is currently mounted.
-     * 
-     * @returns {boolean} True if mounted
-     */
     function isMounted() {
         return _mounted;
     }
