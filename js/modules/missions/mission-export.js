@@ -70,6 +70,17 @@
  *   (sorted by team name), then the rookie block (sorted by
  *   character name within it).
  *
+ * DATE DISPLAY (this revision):
+ *   The text report's timing section prints the mission's date in
+ *   the same shape the detail panel uses: "<Month Name> <day>,
+ *   <year>". The month name comes from
+ *   CalendarConfig.getMonthName(year, month), so a custom calendar
+ *   prints "Twelfth Moon" where the detail panel prints "Twelfth
+ *   Moon" — one lookup, one answer. When the year or month is out
+ *   of range for the active calendar (e.g. a legacy record with
+ *   month 13 in a non-leap year), the date prints numerically
+ *   ("8/13/1920") instead of " , 1920".
+ *
  * SECTIONS COLLAPSE when empty. A mission with no reports shows
  * "(none)" under REPORTS rather than an empty section. The reader
  * always sees what is present and what is not.
@@ -107,7 +118,7 @@
  *   - window.ExportUtils
  *
  * DEPENDENCIES (LAZY, at call time):
- *   - (none)
+ *   - window.CalendarConfig       (month names for buildDateDisplay)
  */
 
 (function() {
@@ -208,6 +219,14 @@
             '[MissionExport] Missing mandatory dependencies: ' +
             _missing.join(', ')
         );
+    }
+
+    // ============================================================
+    // LAZY DEPENDENCIES
+    // ============================================================
+
+    function getCalendarConfig() {
+        return window.CalendarConfig || null;
     }
 
     // ============================================================
@@ -441,23 +460,95 @@
         lines.push('');
     }
 
+    // ============================================================
+    // DATE DISPLAY
+    // ============================================================
+    //
+    // The text report prints the mission's date in the same shape
+    // the detail panel uses: "<Month Name> <day>, <year>".
+    //
+    // The month name comes from CalendarConfig.getMonthName(year,
+    // month), so a custom calendar prints "Twelfth Moon" where the
+    // detail panel prints "Twelfth Moon" — one lookup, one answer.
+    //
+    // CalendarConfig is resolved LAZILY. When it is absent, the
+    // Gregorian fallback runs. When the month is out of range for
+    // the active calendar, the date prints numerically
+    // ("8/13/1920"), never " , 1920".
+    //
+    // SHAPE:
+    //   year + month + day   "December 8, 1920"  or  "Twelfth Moon 8, 1920"
+    //   year + month only    "December 1920"     or  "Twelfth Moon 1920"
+    //   year only            "1920"
+    //   nothing              ''
+
     function buildDateDisplay(mission) {
         var hasYear = mission.year !== undefined && mission.year !== null;
         var hasMonth = mission.month !== undefined && mission.month !== null;
         var hasDay = mission.day !== undefined && mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            return mission.year + '-' +
-                pad(mission.month, 2) + '-' +
-                pad(mission.day, 2);
+            var monthName = resolveMonthName(mission.year, mission.month);
+            if (monthName === '') {
+                // Out-of-range month for the active calendar.
+                return String(mission.day) + '/' +
+                       String(mission.month) + '/' +
+                       String(mission.year);
+            }
+            return monthName + ' ' + mission.day + ', ' + mission.year;
         }
+
         if (hasYear && hasMonth) {
-            return mission.year + '-' + pad(mission.month, 2);
+            var monthNameOnly = resolveMonthName(
+                mission.year, mission.month
+            );
+            if (monthNameOnly === '') {
+                return String(mission.month) + '/' +
+                       String(mission.year);
+            }
+            return monthNameOnly + ' ' + mission.year;
         }
+
         if (hasYear) {
             return String(mission.year);
         }
+
         return '';
+    }
+
+    /**
+     * Resolve a month name through CalendarConfig, with an inline
+     * Gregorian fallback for a stripped build.
+     *
+     * Identical in shape to the helper in mission-aggregator.js.
+     * Kept local rather than shared so the two files stay
+     * independently loadable.
+     *
+     * Returns '' when the year/month pair is out of range for the
+     * active calendar. The caller decides whether to fall back to
+     * a numeric display.
+     */
+    function resolveMonthName(year, monthId) {
+        var cfg = getCalendarConfig();
+        if (cfg && typeof cfg.getMonthName === 'function') {
+            var name = cfg.getMonthName(year, monthId);
+            if (typeof name === 'string' && name !== '') {
+                return name;
+            }
+            return '';
+        }
+
+        // No CalendarConfig loaded. Inline Gregorian.
+        var y = parseInt(year, 10);
+        var m = parseInt(monthId, 10);
+        if (isNaN(y) || y < 1 || isNaN(m) || m < 1 || m > 12) {
+            return '';
+        }
+        return [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November',
+            'December'
+        ][m - 1];
     }
 
     function pushAssignment(lines, mission) {
@@ -1181,6 +1272,72 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke test: the date display routes through
+        // CalendarConfig, not a hardcoded Gregorian table. Under
+        // the Gregorian fallback the December case must still
+        // render "December 8, 1920"; under a custom calendar it
+        // must render that calendar's name. The exact string is
+        // environment-dependent, so we only assert that the
+        // result contains the year and that the out-of-range case
+        // never leaves a bare " , " behind.
+        try {
+            var decDisplay = buildDateDisplay({
+                year: 1920,
+                month: 12,
+                day: 8
+            });
+            if (decDisplay.indexOf('1920') === -1) {
+                missing.push(
+                    'buildDateDisplay: 1920-12-08 lost the year'
+                );
+            }
+            if (decDisplay.indexOf('December') === -1 &&
+                decDisplay.indexOf('Twelfth Moon') === -1 &&
+                decDisplay.indexOf('12/') === -1) {
+                missing.push(
+                    'buildDateDisplay: 1920-12-08 rendered as "' +
+                    decDisplay + '", no recognisable month'
+                );
+            }
+
+            var yearOnly = buildDateDisplay({ year: 1920 });
+            if (yearOnly !== '1920') {
+                missing.push(
+                    'buildDateDisplay: year-only rendered as "' +
+                    yearOnly + '"'
+                );
+            }
+
+            var nothing = buildDateDisplay({});
+            if (nothing !== '') {
+                missing.push(
+                    'buildDateDisplay: empty mission should be ""'
+                );
+            }
+
+            var bad = buildDateDisplay({
+                year: 1920,
+                month: 13,
+                day: 8
+            });
+            if (bad.indexOf('13') === -1) {
+                missing.push(
+                    'buildDateDisplay: out-of-range month did not ' +
+                    'fall back to numeric, got "' + bad + '"'
+                );
+            }
+            if (bad.indexOf(',') !== -1) {
+                missing.push(
+                    'buildDateDisplay: out-of-range month still ' +
+                    'printed a comma, got "' + bad + '"'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'date-display smoke test threw: ' + e.message
+            );
         }
 
         if (missing.length > 0) {
