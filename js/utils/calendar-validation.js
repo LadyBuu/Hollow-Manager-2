@@ -26,10 +26,6 @@
  *     true, false, [5], new Date(), {}, Symbol(), undefined
  *     '0x5', '1e1', '5.0', '-5', '+5', ' 5 ', ''
  *
- *   The previous version coerced via Number() and accepted most
- *   of these. Because this module claims to be "strict" and
- *   "canonical", it now actually is.
- *
  * DEPENDENCIES - LAZY:
  *   CalendarConstants is required by the bounded integer parsers
  *   (parseWeek, parseDay, parseHour, parseCalendarHour,
@@ -39,6 +35,11 @@
  *   A caller that invokes a bounded parser before
  *   CalendarConstants is on window gets a clear error naming the
  *   missing file.
+ *
+ *   CalendarConfig is required only by isValidCalendarDate, and
+ *   only when the active project carries a custom calendar. It is
+ *   resolved at CALL time, and falls back silently to Gregorian
+ *   when absent or when the project has no calendar.
  *
  *   parseYear and isValidCalendarDate have NO dependency on
  *   CalendarConstants. They work regardless of load order.
@@ -53,14 +54,18 @@
  *
  * CALENDAR DATE SEMANTICS:
  *   - isValidCalendarDate(y, m, d) validates a (year, month, day)
- *     triple against the real Gregorian calendar.
- *   - Year is unbounded (any positive safe integer).
- *   - Month is 1-12.
- *   - Day is 1-31, and must fit the month. Feb 30 is rejected.
- *     Feb 29 is accepted only in leap years.
- *   - Uses a leap-year formula and month table, not a Date
- *     object. This avoids the local-time and year-range quirks
- *     of `new Date(y, m, 0)`.
+ *     triple.
+ *   - When the active project carries a custom calendar,
+ *     validity is decided by CalendarConfig: the month count is
+ *     the number of months that year under the active calendar
+ *     (per-year leap-month insertions shift the count), and the
+ *     day range is the day count of that month in that year.
+ *   - When no custom calendar is set — or when CalendarConfig is
+ *     not loaded — validity is decided by the Gregorian calendar
+ *     exactly as before.
+ *   - Uses a leap-year formula and month table for the Gregorian
+ *     path, not a Date object. This avoids the local-time and
+ *     year-range quirks of `new Date(y, m, 0)`.
  *   - Returns a boolean. Does not return a parsed date.
  *
  * PARSEHOUR NAME CLASH:
@@ -99,6 +104,11 @@
     // CalendarConstants is required by the bounded parsers and the
     // bounds accessors. It is resolved at CALL time, not at load
     // time. parseYear and isValidCalendarDate do not need it.
+    //
+    // CalendarConfig is required only by isValidCalendarDate, and
+    // only when the active project carries a custom calendar. It
+    // is resolved at CALL time. When absent, or when the project
+    // has no calendar, Gregorian validation is used.
 
     var REQUIRED_CONSTANTS = [
         'MIN_WEEK', 'MAX_WEEK',
@@ -301,6 +311,15 @@
     // ============================================================
     // CALENDAR DATE VALIDATION - dependency-free
     // ============================================================
+    //
+    // Gregorian tables used by the fallback path. They are also
+    // what CalendarConfig falls back to when no calendar is set.
+    //
+    // The custom-calendar seam lives inside isValidCalendarDate
+    // below. Everything the seam needs is on window.CalendarConfig,
+    // resolved at call time. When CalendarConfig is absent, or
+    // when the active project has no calendar, the Gregorian
+    // path below runs unchanged.
 
     var DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -318,19 +337,49 @@
     }
 
     /**
-     * Validate a (year, month, day) triple against the Gregorian
-     * calendar.
+     * Validate a (year, month, day) triple.
      *
      * STRICT INPUT: year, month, and day must each be integers or
      * digit-only strings. Booleans, arrays, Dates, and NaN are
      * rejected. This matches the strictness of the other parsers
      * in this module.
      *
+     * CUSTOM CALENDAR SEAM: when a project carries a custom
+     * calendar, CalendarConfig decides month count and day count
+     * for that year and month. When no project calendar is set —
+     * or CalendarConfig is not loaded — the Gregorian path runs
+     * exactly as before.
+     *
      * This function does NOT require CalendarConstants.
      *
      * @returns {boolean} True if the date is valid.
      */
     function isValidCalendarDate(year, month, day) {
+        // ---- Custom-calendar seam (E1) ----
+        //
+        // Fast path: when CalendarConfig is present and the active
+        // project carries a calendar, defer to it. Anything that
+        // throws inside the seam is caught and falls through to
+        // Gregorian, so a half-loaded CalendarConfig cannot break
+        // validation.
+        var cfg = window.CalendarConfig;
+        if (cfg && typeof cfg.isValidCalendarDate === 'function') {
+            var activeCalendar = null;
+            try {
+                activeCalendar = cfg.getActiveCalendar();
+            } catch (e) {
+                activeCalendar = null;
+            }
+            if (activeCalendar) {
+                try {
+                    return cfg.isValidCalendarDate(year, month, day);
+                } catch (e2) {
+                    // Fall through to Gregorian.
+                }
+            }
+        }
+
+        // ---- Gregorian fallback (unchanged) ----
         var y = strictInteger(year);
         if (y === null || y < 1) { return false; }
         if (!Number.isSafeInteger(y)) { return false; }
@@ -487,7 +536,8 @@
         parseYear: parseYear,
         isYearValid: isYearValid,
 
-        // Calendar date (no constants needed)
+        // Calendar date (no constants needed; uses CalendarConfig
+        // when the active project carries a custom calendar)
         isValidCalendarDate: isValidCalendarDate,
 
         // Slot
