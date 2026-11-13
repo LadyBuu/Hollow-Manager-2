@@ -9,7 +9,10 @@
  *   - The Professional Pool VM (getProfessionalPoolViewModel).
  *   - The Matchmaking Planner VM
  *     (getMatchmakingPlannerViewModel).
- *   - The Team Rankings VM (getTeamRankingsViewModel).
+ *   - The Team Rankings VM (getTeamRankingsViewModel), now
+ *     consuming the ORDERED-LIST reads from TeamQueries
+ *     (getRankedTeamsForYear, getUnrankedTeamsForYear) rather
+ *     than the per-team effective-rank shape.
  *   - Team list, team detail, member modal, ranking modal VMs.
  *   - The periods array on the team detail and form VMs.
  *
@@ -32,14 +35,7 @@
  *   TeamCore.addMember appends to an existing entry's intervals
  *   when the characterId matches.
  *
- *   Before this ship, getMemberModalViewModel EXCLUDED current
- *   members from the candidate list. That made the second stint
- *   impossible to create through the manager: a current member
- *   could not be selected from the Add row, and the only remaining
- *   action (Rejoin) reopens the existing stint rather than
- *   creating a new one.
- *
- *   Current members are now INCLUDED as candidates, tagged with
+ *   Current members are INCLUDED as candidates, tagged with
  *   `alreadyOnTeam: true`, and sorted to a new top tier so a user
  *   who wants to add a stint finds the member immediately. The
  *   manager labels them ("— already on team (add stint)") and the
@@ -48,6 +44,53 @@
  *   the existing member entry. Overlap with the member's existing
  *   intervals is rejected by TeamCore's validation, which is the
  *   correct constraint.
+ *
+ * TEAM RANKINGS VM (ordered-list model, this revision):
+ *   The Rankings tab does not render per-team effective ranks in
+ *   an arbitrary order. It renders a POSITION-ORDERED list per
+ *   year: position 1, position 2, ..., position N, one team per
+ *   position, no gaps, no duplicates.
+ *
+ *   The write-side contiguity invariant is owned by TeamCore's
+ *   write primitives (insertRankingAt, removeRankingAt,
+ *   moveRanking). The read-side wrappers are
+ *   TeamQueries.getRankedTeamsForYear (position-ordered rows)
+ *   and TeamQueries.getUnrankedTeamsForYear (teams active at the
+ *   year with no explicit entry and no inherited rank).
+ *
+ *   The VM shape is:
+ *
+ *     {
+ *       year: number,
+ *       rows: [             // one per occupied position 1..N
+ *         {
+ *           position,       // 1..N
+ *           teamId,
+ *           name,
+ *           rank,           // same as position (compat)
+ *           explicit,       // always true from this read
+ *           sourcePeriod,   // String(year)
+ *           periodDisplay,
+ *           memberCount,
+ *           status,
+ *           activeAtYear
+ *         }
+ *       ],
+ *       unrankedTeams: [    // candidates a fill-a-slot picker
+ *                           // offers
+ *         { teamId, name, status, activeAtYear }
+ *       ],
+ *       showInactive: boolean
+ *     }
+ *
+ *   `sortMode` and `sortDirection` are GONE. Position is the
+ *   only order. The "Insert team" picker offers `unrankedTeams`;
+ *   the view is responsible for the picker's own sort.
+ *
+ *   `showInactive` is echoed for the view's checkbox. It does
+ *   not change `rows` composition: the read layer already
+ *   excludes inactive teams that have no explicit entry and no
+ *   inherited rank.
  *
  * (rest of header unchanged from the Pass 2 / Show Inactive ship;
  * dependencies, helpers, and every other VM builder preserved.)
@@ -162,6 +205,15 @@
     if (!TeamQueries ||
         typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
         _missing.push('TeamQueries.isTeamActiveAtPeriod');
+    }
+    // ---- New: ordered-list reads ----
+    if (!TeamQueries ||
+        typeof TeamQueries.getRankedTeamsForYear !== 'function') {
+        _missing.push('TeamQueries.getRankedTeamsForYear');
+    }
+    if (!TeamQueries ||
+        typeof TeamQueries.getUnrankedTeamsForYear !== 'function') {
+        _missing.push('TeamQueries.getUnrankedTeamsForYear');
     }
 
     if (!TeamConstants ||
@@ -1507,8 +1559,22 @@
     }
 
     // ============================================================
-    // TEAM RANKINGS VM
+    // TEAM RANKINGS VM (ordered-list model)
     // ============================================================
+    //
+    // See the file header for the shape and rationale.
+    //
+    // The aggregator does not sort `rows`; the query layer already
+    // returns them in position order. `unrankedTeams` is
+    // alphabetical (the query layer's own order). `showInactive`
+    // is echoed for the view's checkbox; it does NOT change the
+    // composition of `rows`.
+    //
+    // A note on validation: `year` must be a valid positive
+    // integer. An invalid or missing year throws, matching the
+    // other required-year readers in this module (see
+    // getProfessionalPoolViewModel). This is a caller bug, not a
+    // degraded state.
 
     function getTeamRankingsViewModel(options) {
         options = options || {};
@@ -1521,102 +1587,49 @@
             );
         }
 
-        var sortMode = options.sort || 'rank';
-        if (sortMode !== 'rank' &&
-            sortMode !== 'name' &&
-            sortMode !== 'members') {
-            sortMode = 'rank';
-        }
-
-        var sortDirection = options.sortDirection === 'desc'
-            ? 'desc'
-            : 'asc';
         var showInactive = options.showInactive === true;
 
-        var teams = TeamQueries.getTeams(
-            'professional', null, showInactive
-        );
+        var rows = TeamQueries.getRankedTeamsForYear(yearNum);
+        var unrankedTeams =
+            TeamQueries.getUnrankedTeamsForYear(yearNum);
 
-        var rows = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || !team.id) { continue; }
-
-            var isActive = TeamQueries.isTeamActiveAtPeriod(
-                team, yearNum
-            );
-
-            if (!showInactive && !isActive) { continue; }
-
-            var effective = TeamQueries.getEffectiveRanking(
-                team, yearNum
-            );
-
-            var members = TeamQueries.getActiveTeamMembers(
-                team, yearNum
-            );
-
-            var rankDisplay = effective.rank === null
-                ? '\u2014'
-                : '#' + String(effective.rank);
-
-            var provenanceLabel;
-            if (effective.explicit) {
-                provenanceLabel = 'set';
-            } else if (effective.rank !== null) {
-                provenanceLabel = '(from ' +
-                    effective.sourcePeriod + ')';
-            } else {
-                provenanceLabel = '';
-            }
-
-            var rowStatus = normalizedStatus(team);
-
-            rows.push({
-                teamId: String(team.id),
-                name: TeamQueries.getCurrentTeamName(team),
-                rank: effective.rank,
-                explicit: effective.explicit,
-                sourcePeriod: effective.sourcePeriod,
-                effectiveDisplay: rankDisplay,
-                provenanceLabel: provenanceLabel,
-                periodDisplay: getTeamPeriodDisplay(team),
-                memberCount: members.length,
-                status: team.status || 'active',
-                activeAtYear: isActive,
-                isActive: rowStatus === 'active',
-                isDeprecated: rowStatus === 'deprecated'
+        // Normalise the row shape so the view can rely on the
+        // same field names for both the ranked rows and the
+        // unranked picker options.
+        var rankedRows = [];
+        for (var i = 0; i < rows.length; i++) {
+            var r = rows[i];
+            if (!r) { continue; }
+            rankedRows.push({
+                position: r.position,
+                teamId: r.teamId,
+                name: r.name,
+                rank: r.rank,
+                explicit: r.explicit,
+                sourcePeriod: r.sourcePeriod,
+                periodDisplay: r.periodDisplay,
+                memberCount: r.memberCount,
+                status: r.status,
+                activeAtYear: r.activeAtYear
             });
         }
 
-        rows.sort(function(a, b) {
-            var cmp;
-
-            if (sortMode === 'rank') {
-                var aR = a.rank === null ? Infinity : a.rank;
-                var bR = b.rank === null ? Infinity : b.rank;
-                cmp = aR - bR;
-                if (cmp === 0) {
-                    cmp = a.name.localeCompare(b.name);
-                }
-            } else if (sortMode === 'members') {
-                cmp = a.memberCount - b.memberCount;
-                if (cmp === 0) {
-                    cmp = a.name.localeCompare(b.name);
-                }
-            } else {
-                cmp = a.name.localeCompare(b.name);
-            }
-
-            return sortDirection === 'desc' ? -cmp : cmp;
-        });
+        var unrankedList = [];
+        for (var j = 0; j < unrankedTeams.length; j++) {
+            var u = unrankedTeams[j];
+            if (!u) { continue; }
+            unrankedList.push({
+                teamId: u.teamId,
+                name: u.name,
+                status: u.status,
+                activeAtYear: u.activeAtYear
+            });
+        }
 
         return {
             year: yearNum,
-            rows: rows,
-            sortMode: sortMode,
-            sortDirection: sortDirection,
+            rows: rankedRows,
+            unrankedTeams: unrankedList,
             showInactive: showInactive
         };
     }
