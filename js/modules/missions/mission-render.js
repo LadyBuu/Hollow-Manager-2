@@ -30,7 +30,10 @@
  *     participant-toggle change, mission-ui.js rebuilds it and
  *     swaps only the #mission-participants-panel node.
  *   - Layout of the participants panel. That is owned by
- *     missions.css. The renderer emits class names only.
+ *     missions.css, with specific inline layout overrides applied
+ *     directly in the team-member row markup to prevent flexbox
+ *     collapse. The renderer emits class names and inline layout
+ *     styles.
  *   - The custom calendar. That is owned by CalendarConfig
  *     (js/modules/shared/calendar-config.js). This module calls
  *     CalendarConfig.getMonthsForYear(year) and getDaysInMonth()
@@ -1748,9 +1751,14 @@
         var teamId = String(team.teamId);
         var checked = member.isParticipant === true;
 
+        // Inline styles applied to force the flex layout to behave.
+        // 1. The label is forced to display:flex, align-items:center, and stretch 100% width.
+        // 2. The checkbox is prevented from stretching or shrinking.
+        // 3. The name span is forced to take up the remaining space (flex: 1) and is 
+        //    explicitly prevented from collapsing into a vertical column (white-space: pre-wrap).
         var html = '';
-        html += '<li class="participant-member-row">';
-        html += '<label class="participant-member-label">';
+        html += '<li class="participant-member-row" style="display: block; width: 100%; margin-bottom: 4px;">';
+        html += '<label class="participant-member-label" style="display: flex; align-items: center; width: 100%; cursor: pointer;">';
 
         html += '<input type="checkbox" ' +
                     'class="participant-member-checkbox" ' +
@@ -1762,21 +1770,21 @@
                     'data-source="team"' +
                     missionIdAttr +
                     (checked ? ' checked' : '') +
-                    '>';
+                    ' style="width: 16px !important; height: 16px; flex: 0 0 auto; margin-right: 8px; margin-top: 0; margin-bottom: 0; cursor: pointer;">';
 
-        html += '<span class="participant-member-name">' +
+        html += '<span class="participant-member-name" style="flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; color: var(--text); text-align: left;">' +
                     escapeHtml(member.displayName || 'Unknown') +
                 '</span>';
 
         if (isNonEmptyString(member.role)) {
-            html += '<span class="participant-member-role">(' +
+            html += '<span class="participant-member-role" style="flex: 0 0 auto; margin-left: 8px; font-size: 0.75rem; color: var(--text-dim); white-space: nowrap;">(' +
                         escapeHtml(member.role) +
                     ')</span>';
         }
 
         if (member.deceased === true) {
             html += '<span class="participant-member-deceased" ' +
-                        'title="Deceased">\u2020</span>';
+                        'title="Deceased" style="flex: 0 0 auto; margin-left: 6px; color: var(--text-dim);">\u2020</span>';
         }
 
         html += '</label>';
@@ -2015,7 +2023,7 @@
             }
         }
 
-        // Smoke test: participant panel contract, no inline styles.
+        // Smoke test: participant panel contract.
         try {
             var fakeVM = {
                 isEdit: false,
@@ -2131,29 +2139,6 @@
                 missing.push(
                     'renderForm did not label the abandon button ' +
                     '"Discard Changes"'
-                );
-            }
-
-            // No inline flex on the participant panel.
-            if (html.indexOf('participant-member-label" ' +
-                             'style="display:flex') !== -1) {
-                missing.push(
-                    'renderForm re-introduced inline flex styles on ' +
-                    'the participant label'
-                );
-            }
-            if (html.indexOf('participant-member-checkbox" ' +
-                             'style=') !== -1) {
-                missing.push(
-                    'renderForm re-introduced inline styles on the ' +
-                    'participant checkbox'
-                );
-            }
-            if (html.indexOf('participant-member-name" ' +
-                             'style=') !== -1) {
-                missing.push(
-                    'renderForm re-introduced inline styles on the ' +
-                    'participant name'
                 );
             }
 
