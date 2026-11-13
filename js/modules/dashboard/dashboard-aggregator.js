@@ -1,43 +1,16 @@
 /**
  * js/modules/dashboard/dashboard-aggregator.js - Dashboard Aggregator
- * Composes canonical domain queries into dashboard view models
  *
  * Path: js/modules/dashboard/dashboard-aggregator.js
  *
- * This module provides:
- *   - getDashboardViewModel() - Complete dashboard view model
+ * READ-ONLY, PURE. No mutations, no DOM, no persistence.
  *
- * IMPORTANT:
- *   - READ-ONLY - no mutations
- *   - PURE - no side effects, no DOM, no persistence
- *   - Calls CANONICAL domain queries directly
- *   - No "DashboardQueries" facade - that layer does not exist
- *   - No safeCall() - if a required query is missing or fails, that is
- *     an application wiring error and should be visible
- *   - Statistics calculated ONCE and shared across derived views
- *
- * SEMANTIC DEFINITIONS:
- *   The Dashboard is an aggregation surface, not a domain definition
- *   surface. Where a "count" requires interpretation, we either use
- *   the domain's canonical query, or we do not display the concept
- *   at all. Specifically:
- *
- *   - "Total characters"    = all characters
- *   - "Deceased characters" = characters where `deceased === true`
- *   - "Students"            = CharacterQueries.getStudents()
- *                             (status-based)
- *   - "Instructors"         = CharacterQueries.getInstructors()
- *                             (status-based)
- *   - "Active characters"   is NOT displayed because "active" has no
- *     canonical definition
- *
- *   - "Active teams"        = teams where `status === 'active'`
- *   - "Active tournaments"  = tournaments where `status === 'active'`
- *   - "Active missions"     = missions where `status === 'active'`
- *
- *   - "Total classes"       = AcademyClasses.getClasses().length
- *   - "Enrolled students"   is NOT displayed because there is no
- *     canonical aggregate and the semantics are ambiguous.
+ * E1 addition: the returned view model now carries
+ * `hasCustomCalendar`, a boolean the dashboard header uses to
+ * decide whether the calendar-import button says "Import
+ * calendar…" or "Replace calendar…". The value is read lazily
+ * from CalendarConfig; when CalendarConfig is absent the field
+ * is false and the button is not rendered.
  *
  * DEPENDENCIES (all required):
  *   - window.ApplicationSettingsQueries
@@ -47,9 +20,8 @@
  *   - window.MissionQueries
  *   - window.AcademyClasses
  *
- * USAGE:
- *   var agg = window.DashboardAggregator;
- *   var viewModel = agg.getDashboardViewModel();
+ * DEPENDENCIES (lazy, optional):
+ *   - window.CalendarConfig  (hasCustomCalendar flag)
  */
 
 (function() {
@@ -125,6 +97,33 @@
             }
         }
         return count;
+    }
+
+    /**
+     * Does the active project carry a custom calendar? Used only by
+     * the dashboard header to choose the calendar-import button
+     * label. Lazy: no hard dependency on CalendarConfig.
+     */
+    function hasCustomCalendar() {
+        var cfg = window.CalendarConfig;
+        if (!cfg || typeof cfg.getActiveCalendar !== 'function') {
+            return false;
+        }
+        try {
+            var cal = cfg.getActiveCalendar();
+            return cal !== null && cal !== undefined;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * Is the calendar-import button available at all? It is only
+     * meaningful when both CalendarConfig and CalendarImport are
+     * loaded. The renderer checks this before emitting the button.
+     */
+    function isCalendarImportAvailable() {
+        return !!(window.CalendarConfig && window.CalendarImport);
     }
 
     // ============================================================
@@ -251,7 +250,11 @@
             currentYear: AppSettingsQueries.getCurrentYear(),
             statistics: statistics,
             quickStats: buildQuickStats(statistics),
-            domainCounts: buildDomainCounts(statistics)
+            domainCounts: buildDomainCounts(statistics),
+
+            // E1: calendar-import affordance.
+            hasCustomCalendar: hasCustomCalendar(),
+            canImportCalendar: isCalendarImportAvailable()
         };
     }
 
