@@ -8,7 +8,8 @@
  * RESPONSIBILITIES:
  *   - Own transient UI state (current filter, current mission id,
  *     which modal is open, report-form scratch state, export
- *     picker state, import modal state, form scratch state).
+ *     picker state, import modal state, form scratch state,
+ *     bulk-selection state).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -17,6 +18,7 @@
  *   - Show notifications on success and failure.
  *   - Manage modal lifecycle (open, close, DOM cleanup).
  *   - Confirm before discarding an unsaved form.
+ *   - Track the missions-list selection set (bulk export).
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   Domain rules, validation, mutations, projections, reads, and
@@ -25,7 +27,32 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
- * PARTICIPANTS (this revision):
+ * BULK SELECTION (this revision):
+ *   The missions list carries a per-row .mission-select-checkbox,
+ *   mirroring the teams list. The set of ticked mission ids lives
+ *   in _missionSelectedIds. It is:
+ *
+ *     - reset on renderMissions (a fresh view has no selection),
+ *     - reset on destroyMissions,
+ *     - reset after a successful bulk export.
+ *
+ *   The header carries #mission-export-selected-btn. It is disabled
+ *   when the set is empty and reads "Export (N)" otherwise.
+ *   Clicking it opens a small format picker (Text / JSON) which
+ *   calls MissionExport.exportMissionsText or exportMissionsJson.
+ *   Both produce a single file:
+ *
+ *     Text  — missions-export-<N>.txt, one full report per
+ *             selected mission, separated by a bulk banner.
+ *     JSON  — missions-export-<N>.json, a JSON array of full
+ *             mission records. Round-trips through
+ *             MissionImport.importFromJson.
+ *
+ *   A click that lands inside .mission-select-cell is stopped
+ *   before the row's own data-action handler runs, so ticking a
+ *   checkbox does not also open the mission detail modal.
+ *
+ * PARTICIPANTS:
  *   The mission form carries a participant editor that must work
  *   on BOTH create and edit. On edit, the stored mission record is
  *   authoritative until save; on create, there is no stored record
@@ -68,25 +95,6 @@
  *   which is a no-op when the two agree and a reconcile when they
  *   do not.
  *
- *   Two event wires:
- *
- *     mission-toggle-participant
- *       Fires from a team-member checkbox inside the form's
- *       participant panel. The controller reads characterId,
- *       teamId, and the checked flag, updates
- *       _formState.participants, and (on edit) also calls
- *       MissionCore.addParticipant / removeParticipant. The panel
- *       is re-rendered in place afterwards.
- *
- *     mission-open-rookie-picker
- *       Fires from the "+ Add Rookies" button on the form's
- *       participant panel, from the "Add Rookies" button on the
- *       detail panel's Participants section header, and from any
- *       other surface that needs it. When the picker closes, its
- *       onClose callback refreshes whichever surface launched it,
- *       AND resyncs _formState.participants from the store (the
- *       picker writes through MissionCore directly).
- *
  * DISCARD CONFIRM (this revision):
  *   The form can be closed three ways: the × at the top of the
  *   modal, the "Discard Changes" button in the action bar, and
@@ -97,22 +105,14 @@
  *   appears before the form is torn down.
  *
  *   The dirty check is COARSE and ERR-ON-THE-SIDE-OF-DIRTY: any
- *   difference from the baseline counts as dirty. A false-positive
- *   confirm is mildly annoying; a false-negative confirm silently
- *   discards work. The check does not try to normalise field
- *   values (trailing whitespace in a text input counts as a
- *   change), and it does not distinguish "ticked a participant"
- *   from "typed in the title". Both are dirty.
+ *   difference from the baseline counts as dirty.
  *
  *   KNOWN LIMITATION:
  *   On EDIT, a team-member participant toggle writes to the store
  *   immediately (MissionCore.addParticipant / removeParticipant),
  *   so discarding the form does NOT roll back an already-committed
- *   toggle. The staged list is discarded with the rest of the
- *   form, but the store write stands. Fixing this would mean
- *   staging toggles on edit too, and reconciling on submit, which
- *   is a larger change than this pass. On CREATE there is no
- *   immediate write, so discard is clean.
+ *   toggle. On CREATE there is no immediate write, so discard is
+ *   clean.
  *
  * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
@@ -128,20 +128,22 @@
  *   the removed team.
  *
  * MISSION EXPORT:
- *   The detail panel's Export button opens a small format picker
- *   modal with two options: Text and JSON.
+ *   Two separate flows:
+ *
+ *     - Single-mission export from the detail panel's Export
+ *       button, via the #mission-export-modal picker (Text /
+ *       JSON per mission).
+ *     - Bulk export from the header's #mission-export-selected-btn,
+ *       via the #mission-bulk-export-modal picker (Text / JSON
+ *       across the selection).
  *
  * MISSION IMPORT:
  *   A header button opens the import modal.
  *
  * ACTIVITY LOG HAS BEEN REMOVED:
- *   The mission detail panel used to carry a "+ Log Entry"
- *   button and the controller used to route it to a
- *   window.prompt that appended a free-text entry to the
- *   mission's `log` array. The mission log field has been
- *   retired. There is no log modal, no prompt, no
- *   `mission-add-log` action. The relevant handler and branch
- *   are gone.
+ *   The mission log field has been retired. There is no log modal,
+ *   no prompt, no `mission-add-log` action. The relevant handler
+ *   and branch are gone.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
@@ -155,24 +157,6 @@
  *   array. removeAllListeners walks that array and removes each
  *   entry. renderMissions removes the previous batch before
  *   installing a new one.
- *
- * CONTEXT DISCRIMINATION:
- *   Two classes of button share action names between the detail
- *   modal and the form modal: add/remove support, add/remove
- *   objective, add/remove team. The discriminator is the presence
- *   of a `data-mission-id` attribute on the button.
- *
- *   The participant toggles are form-only. They always carry
- *   `data-mission-id`.
- *
- *   The rookie-picker launch button is emitted from two surfaces
- *   (form panel and detail panel) and always carries
- *   `data-mission-id`. The controller routes both to the same
- *   opener.
- *
- * DETACHED CONTAINER GUARD:
- *   Modal openers check that state.container is still attached
- *   to the document before querying for modal shells.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.NotificationSystem
@@ -331,29 +315,18 @@
     // team-member toggle, on a team-chip edit, on a year-field
     // edit, and when the rookie picker closes. The surrounding
     // form inputs are left untouched.
-    //
-    // editId:        the id of the mission being edited, or null
-    //                on create.
-    // participants:  the STAGED participant list for the form
-    //                currently open. This is the single source of
-    //                truth for the panel and for the submit
-    //                payload. Initialised from
-    //                vm.mission.participants on edit, [] on create.
-    // baseline:      a snapshot of the form's field values captured
-    //                after the form renders and before any user
-    //                interaction. Used by isFormDirty() to decide
-    //                whether to confirm on close. Null when the
-    //                form is not open.
     var _formState = {
         editId: null,
         participants: [],
         baseline: null
     };
 
+    // Bulk-selection state for the missions list. Mirrors the
+    // teams list's _teamSelectedIds. Reset on render, on destroy,
+    // and after a successful bulk export.
+    var _missionSelectedIds = Object.create(null);
+
     // Year-field debounce timer for the participant-panel refresh.
-    // Editing the year can change which team members are active,
-    // and users type the year a digit at a time; a short debounce
-    // avoids re-rendering on every keystroke.
     var _yearRefreshTimer = null;
     var YEAR_REFRESH_DEBOUNCE_MS = 200;
 
@@ -445,6 +418,11 @@
 
         state.container = container;
 
+        // Reset the bulk-selection set. A fresh render is a fresh
+        // selection context; nothing in the new view has been
+        // ticked yet.
+        _missionSelectedIds = Object.create(null);
+
         var listVM;
         try {
             listVM = MissionAggregator.getMissionListViewModel({
@@ -460,7 +438,8 @@
 
         container.innerHTML = MissionRender.renderContainer({
             filter: state.currentFilter,
-            counts: listVM.counts || {}
+            counts: listVM.counts || {},
+            selectedIds: _missionSelectedIds
         });
 
         try {
@@ -473,6 +452,7 @@
         }
 
         ensureReportModalShell(container);
+        ensureBulkExportModalShell(container);
 
         bindContainerEvents(container);
     }
@@ -490,7 +470,10 @@
             filter: state.currentFilter
         });
 
-        listHost.innerHTML = MissionRender.renderList(vm.missions);
+        listHost.innerHTML = MissionRender.renderList(
+            vm.missions,
+            { selectedIds: _missionSelectedIds }
+        );
 
         var totalEl = container.querySelector('#mission-count-total');
         if (totalEl) {
@@ -500,6 +483,37 @@
         if (readyEl) {
             readyEl.textContent = String(vm.counts.readyForCompletion || 0);
         }
+
+        // Refresh the header export button's enabled state and
+        // label to match the current selection.
+        refreshBulkExportButton(container);
+    }
+
+    /**
+     * Update the header's #mission-export-selected-btn to reflect
+     * the current _missionSelectedIds set. Called after a list
+     * re-render and after every selection toggle.
+     */
+    function refreshBulkExportButton(container) {
+        if (!container) { return; }
+        var btn = container.querySelector(
+            '#mission-export-selected-btn'
+        );
+        if (!btn) { return; }
+
+        var count = 0;
+        for (var k in _missionSelectedIds) {
+            if (Object.prototype.hasOwnProperty.call(
+                _missionSelectedIds, k
+            ) && _missionSelectedIds[k] === true) {
+                count++;
+            }
+        }
+
+        btn.disabled = count === 0;
+        btn.textContent = count > 0
+            ? 'Export (' + count + ')'
+            : 'Export';
     }
 
     function refreshDetailIfOpen() {
@@ -537,6 +551,29 @@
     }
 
     // ============================================================
+    // BULK EXPORT MODAL SHELL
+    // ============================================================
+
+    function ensureBulkExportModalShell(container) {
+        if (!container) { return; }
+
+        var existing = container.querySelector(
+            '#mission-bulk-export-modal'
+        );
+        if (existing) { return; }
+
+        var shell = document.createElement('div');
+        shell.id = 'mission-bulk-export-modal';
+        shell.className = 'modal hidden';
+
+        var content = document.createElement('div');
+        content.className = 'modal-content modal-bulk-export-content';
+        shell.appendChild(content);
+
+        container.appendChild(shell);
+    }
+
+    // ============================================================
     // CONTAINER EVENTS
     // ============================================================
 
@@ -556,15 +593,30 @@
             return;
         }
 
+        // ---- Bulk-selection checkbox ----
+        //
+        // A change event on .mission-select-checkbox updates the
+        // selection set and re-renders the list so the row's
+        // selected class and the header button both reflect the
+        // new state. The list is small; a full re-render is
+        // simpler and less error-prone than a surgical update.
+        if (target.dataset &&
+            target.dataset.missionId &&
+            target.classList &&
+            target.classList.contains('mission-select-checkbox')) {
+
+            var mid = String(target.dataset.missionId);
+            if (target.checked) {
+                _missionSelectedIds[mid] = true;
+            } else {
+                delete _missionSelectedIds[mid];
+            }
+
+            renderListInto(state.container);
+            return;
+        }
+
         // ---- Participant checkboxes (team-member rows) ----
-        //
-        // The change event fires when a checkbox is toggled. The
-        // click event also fires; that is handled below. We react
-        // only to the change event so the toggle runs once.
-        //
-        // Rookie toggles are the rookie picker's concern; the
-        // form's rookie section is a chip list and does not carry
-        // these attributes.
         if (target.dataset &&
             target.dataset.action === 'mission-toggle-participant') {
             handleParticipantToggle(target);
@@ -670,6 +722,18 @@
                 return;
             }
 
+            var bulkModal = state.container
+                ? state.container.querySelector(
+                    '#mission-bulk-export-modal'
+                )
+                : null;
+            if (bulkModal &&
+                !bulkModal.classList.contains('hidden')) {
+                event.preventDefault();
+                closeBulkExportModal();
+                return;
+            }
+
             var importModal = state.container
                 ? state.container.querySelector(
                     '#mission-import-modal'
@@ -739,6 +803,18 @@
     }
 
     function handleContainerClick(event) {
+        // ---- Selection-cell propagation guard ----
+        //
+        // A click that lands inside the selection cell must not
+        // reach the row's data-action handler. The checkbox's own
+        // change event is what actually updates the set; the
+        // click only matters for stopping propagation.
+        if (event.target.closest &&
+            event.target.closest('.mission-select-cell')) {
+            event.stopPropagation();
+            return;
+        }
+
         var actionEl = event.target.closest('[data-action]');
         if (!actionEl) { return; }
 
@@ -796,6 +872,21 @@
             case 'mission-export-submit':
                 event.preventDefault();
                 handleExportSubmit();
+                return;
+
+            case 'mission-export-selected':
+                event.preventDefault();
+                openBulkExportModal();
+                return;
+
+            case 'mission-bulk-export-cancel':
+                event.preventDefault();
+                closeBulkExportModal();
+                return;
+
+            case 'mission-bulk-export-submit':
+                event.preventDefault();
+                handleBulkExportSubmit();
                 return;
 
             case 'mission-import':
@@ -1055,16 +1146,9 @@
 
         _formState.editId = editId || null;
 
-        // Stage the participant list. On edit this starts from the
-        // stored mission's participants; on create it starts empty
-        // and grows as the user ticks team-member checkboxes.
         _formState.participants = stageParticipantsFromVM(vm);
         _formState.baseline = null;
 
-        // Attach the form-state participants VM so the renderer
-        // can build the panel on FIRST render. The panel is then
-        // kept in sync in place by refreshParticipantsPanelFromFormState
-        // whenever the team chips, year field, or staged list change.
         vm.participantsVM = buildParticipantsVMFromFormState(vm);
 
         var modal = state.container.querySelector('#mission-form-modal');
@@ -1097,8 +1181,6 @@
                 handleFormSubmit(form, editId);
             });
 
-            // Capture the baseline AFTER the form is in the DOM
-            // and all inputs have their initial values.
             _formState.baseline = buildFormBaseline(form);
         }
 
@@ -1111,17 +1193,6 @@
         }
     }
 
-    /**
-     * The single in-form close path. Confirms when the form has
-     * unsaved changes; otherwise closes immediately.
-     *
-     * Called from:
-     *   - the × button at the top of the form modal;
-     *   - the "Discard Changes" button in the action bar.
-     *
-     * Both are emitted as data-action="mission-close-form", so the
-     * confirm applies to both.
-     */
     function handleCloseForm() {
         if (!state.container) { return; }
 
@@ -1129,7 +1200,6 @@
             '#mission-form-content'
         );
         if (!contentEl) {
-            // Form is not open; nothing to close.
             return;
         }
 
@@ -1202,19 +1272,6 @@
     // ============================================================
     // FORM DIRTY CHECK
     // ============================================================
-    //
-    // The baseline is a coarse snapshot of the form's field values
-    // taken once, right after the form renders. isFormDirty reads
-    // the live DOM and compares.
-    //
-    // The check is ERR-ON-THE-SIDE-OF-DIRTY: any difference
-    // counts as a change. Trailing whitespace in a text input
-    // counts. A participant toggle counts. A team chip added and
-    // removed counts (the chip set is back to baseline, so it does
-    // not count — the participant list is compared as a SET of
-    // (characterId, teamId) pairs, so it also does not count in
-    // that case). This is intentional: the check is a safety net,
-    // not a precise diff.
 
     function buildFormBaseline(form) {
         if (!form) { return null; }
@@ -1246,9 +1303,6 @@
             supportPersonnel: readSupportPersonnelFromForm(form),
             objectives: readObjectivesFromForm(form),
 
-            // The staged participant list, as a sorted set of
-            // "characterId::teamId" keys. Comparing as a set means
-            // a toggle-on-then-off returns to baseline.
             participantKeys: participantKeySet()
         };
     }
@@ -1257,17 +1311,11 @@
         if (!form) { return false; }
         var baseline = _formState.baseline;
         if (!baseline) {
-            // No baseline captured: be conservative and treat the
-            // form as dirty if it has any content beyond the
-            // defaults. In practice this branch never fires,
-            // because openFormModal captures the baseline right
-            // after render.
             return true;
         }
 
         var current = buildFormBaseline(form);
 
-        // Scalar fields: strict string comparison.
         var scalarKeys = [
             'title', 'description',
             'year', 'month', 'day',
@@ -1283,28 +1331,21 @@
             if (baseline[k] !== current[k]) { return true; }
         }
 
-        // Team chips: set comparison on the id list.
         if (!sameStringSet(baseline.assignedTeamIds,
                            current.assignedTeamIds)) {
             return true;
         }
 
-        // Support personnel: set comparison on the id list.
         if (!sameStringSet(baseline.supportPersonnel,
                            current.supportPersonnel)) {
             return true;
         }
 
-        // Objectives: order-sensitive comparison on
-        // (text, done) tuples. Reordering an objective counts as
-        // a change because the index is part of the objective's
-        // identity in the form's list.
         if (!sameObjectives(baseline.objectives,
                             current.objectives)) {
             return true;
         }
 
-        // Participants: set comparison on (characterId, teamId).
         if (!sameStringSet(baseline.participantKeys,
                            current.participantKeys)) {
             return true;
@@ -1360,17 +1401,7 @@
     // ============================================================
     // PARTICIPANT STAGING
     // ============================================================
-    //
-    // _formState.participants is the single source of truth for
-    // the form's participant panel and for the submit payload.
-    // It is initialised from the VM on open, updated on every
-    // toggle, and pruned when a team chip is removed.
 
-    /**
-     * Extract the initial staged participant list from a form VM.
-     * On edit, this is a deep copy of vm.mission.participants. On
-     * create, it is an empty array.
-     */
     function stageParticipantsFromVM(vm) {
         if (!vm || !vm.mission ||
             !Array.isArray(vm.mission.participants)) {
@@ -1390,16 +1421,6 @@
         return result;
     }
 
-    /**
-     * Build a form-state participants VM from the CURRENT form
-     * inputs:
-     *
-     *   - team ids from the team chips (or from the form VM on the
-     *     first render, when the chips have not been rendered yet);
-     *   - year from the year input (or from the form VM on the
-     *     first render);
-     *   - the staged participant list.
-     */
     function buildParticipantsVMFromFormState(vm) {
         var form = null;
         if (state.container) {
@@ -1421,8 +1442,6 @@
                 year = yearEl.value;
             }
         } else if (vm && vm.mission) {
-            // First render: the chips have not been emitted yet.
-            // Fall back to the VM's assigned team ids and year.
             if (Array.isArray(vm.mission.assignedTeamIds)) {
                 teamIds = vm.mission.assignedTeamIds.slice();
             }
@@ -1458,21 +1477,6 @@
         }
     }
 
-    /**
-     * Rebuild the participants panel inside the open form and swap
-     * the panel node in place.
-     *
-     * The panel is re-rendered from the CURRENT form state (team
-     * chips, year field, staged participants), not from a stored
-     * mission id. The rest of the form — every other input, the
-     * team chips, the support rows, the objectives, the rookie
-     * chip list — is left byte-identical. That is the point:
-     * ticking a participant, adding a team chip, or changing the
-     * year must not discard an unsaved edit elsewhere in the form.
-     *
-     * No-op when the form is not open, or when the panel node
-     * cannot be found.
-     */
     function refreshParticipantsPanelFromFormState() {
         if (!state.container) { return; }
 
@@ -1489,9 +1493,6 @@
         );
         if (!panelNode) { return; }
 
-        // Rebuild the form VM so the renderer receives a VM whose
-        // non-participant fields match the form's current contract.
-        // We only swap the participants panel node.
         var renderVM = null;
         try {
             renderVM = MissionAggregator.getMissionFormViewModel({
@@ -1516,11 +1517,6 @@
         panelNode.parentNode.replaceChild(newPanel, panelNode);
     }
 
-    /**
-     * Add or remove a participant from the staged list. Returns the
-     * new list. Does not write to the store; the caller decides
-     * whether to persist.
-     */
     function stageParticipant(characterId, teamId, source) {
         if (!characterId) { return; }
         var cid = String(characterId);
@@ -1530,12 +1526,9 @@
             : String(teamId);
         var src = source || (tid === null ? 'rookie' : 'team');
 
-        // Reject incoherent source/teamId combinations up front,
-        // matching MissionSchema's participant validator.
         if (src === 'team' && tid === null) { return; }
         if (src === 'rookie' && tid !== null) { return; }
 
-        // Dedup on (characterId, teamId).
         for (var i = 0; i < _formState.participants.length; i++) {
             var p = _formState.participants[i];
             if (String(p.characterId) !== cid) { continue; }
@@ -1591,15 +1584,6 @@
         _formState.participants = kept;
     }
 
-    /**
-     * Reload the staged participant list from the STORE. Used
-     * after the rookie picker closes, because the picker writes
-     * through MissionCore directly and the staged list must
-     * reflect those writes.
-     *
-     * No-op on create (no mission id exists yet; the staged list
-     * is the only source of truth).
-     */
     function resyncStagedParticipantsFromStore() {
         if (!_formState.editId) { return; }
 
@@ -1630,20 +1614,6 @@
     // PARTICIPANT TOGGLE (team-member checkboxes)
     // ============================================================
 
-    /**
-     * Toggle a team-member participant on the mission.
-     *
-     * The checkbox carries data-character-id, data-team-id, and
-     * data-source="team". Rookie toggles do not go through this
-     * path; the picker owns them.
-     *
-     * On create: stage the toggle and re-render the panel. The
-     *           write happens on submit, via the create payload.
-     * On edit:   stage the toggle AND call MissionCore immediately,
-     *           so the stored record stays consistent even if the
-     *           user navigates away without saving. Re-render the
-     *           panel afterwards.
-     */
     function handleParticipantToggle(checkbox) {
         if (!checkbox) { return; }
 
@@ -1655,25 +1625,19 @@
 
         if (!characterId) { return; }
 
-        // On the form, teamId is required for team participants.
-        // Rookie entries are managed by the picker and do not use
-        // this handler.
         if (source === 'team' && teamId === '') { return; }
 
-        // ---- Stage the toggle ----
         if (checked) {
             stageParticipant(characterId, teamId, source);
         } else {
             unstageParticipant(characterId, teamId);
         }
 
-        // ---- On create, there is no mission row to write to ----
         if (!missionId) {
             refreshParticipantsPanelFromFormState();
             return;
         }
 
-        // ---- On edit, mirror the toggle to the store ----
         var promise;
         if (checked) {
             promise = MissionCore.addParticipant(
@@ -1695,9 +1659,6 @@
                 return;
             }
 
-            // The store write failed. Roll back the staged toggle
-            // so the panel and the payload stay aligned with the
-            // store, and report.
             if (checked) {
                 unstageParticipant(characterId, teamId);
             } else {
@@ -1716,7 +1677,6 @@
                 '[MissionUI] participant toggle failed:', err
             );
 
-            // Same rollback as the failure branch above.
             if (checked) {
                 unstageParticipant(characterId, teamId);
             } else {
@@ -1728,22 +1688,6 @@
         });
     }
 
-    /**
-     * Remove a participant. Called by the detail panel's per-row
-     * remove button and by the rookie chip's ✕ in the form.
-     *
-     * For a detail-panel remove, the surrounding mission is
-     * refreshed through the standard post-mutation path.
-     *
-     * For a form-side remove, the staged list is updated and the
-     * form's participant panel is refreshed in place; the
-     * surrounding form is not closed. If the form is editing an
-     * existing mission, the removal is also mirrored to the store
-     * so the record stays consistent.
-     *
-     * The two cases are distinguished by whether the form modal is
-     * open and the passed-in element is inside it.
-     */
     function handleRemoveParticipant(
         missionId, characterId, teamIdStr, actionEl
     ) {
@@ -1753,8 +1697,6 @@
             ? teamIdStr
             : null;
 
-        // Is the action element inside the mission form's
-        // participant panel?
         var inForm = false;
         if (actionEl && state.container) {
             var formContent = state.container.querySelector(
@@ -1771,13 +1713,10 @@
             }
         }
 
-        // Update the staged list first. This is the source of
-        // truth for the form panel and for the submit payload.
         if (inForm) {
             unstageParticipant(characterId, teamId);
         }
 
-        // ---- On create, there is no mission row to write to ----
         if (!missionId) {
             if (inForm) {
                 refreshParticipantsPanelFromFormState();
@@ -1795,7 +1734,6 @@
                     notify(result.message, 'error');
                 }
 
-                // Roll back the staged removal.
                 if (inForm) {
                     stageParticipant(
                         characterId,
@@ -1835,25 +1773,6 @@
     // ROOKIE PICKER
     // ============================================================
 
-    /**
-     * Open the rookie picker modal for a mission.
-     *
-     * The picker owns its own write path. On close, the onClose
-     * callback refreshes whichever surface launched it:
-     *
-     *   - If the mission form is open and editing the same
-     *     mission, the form's participant panel is re-rendered
-     *     in place, and the staged list is resynced from the
-     *     store (the picker writes through MissionCore directly).
-     *   - If the detail panel is open on the same mission, the
-     *     detail panel is re-rendered.
-     *   - Either way, the list is refreshed so the participant
-     *     count on the row is up to date.
-     *
-     * On CREATE there is no mission id yet. The picker cannot
-     * write, so the opener is a no-op with a toast. The user adds
-     * rookies after the mission exists (via the detail panel).
-     */
     function handleOpenRookiePicker(missionId) {
         if (!missionId) {
             notify(
@@ -1874,8 +1793,6 @@
             return;
         }
 
-        // Determine whether the picker was launched from the form
-        // or from the detail panel. The onClose behaviour differs.
         var formContent = state.container
             ? state.container.querySelector('#mission-form-content')
             : null;
@@ -1890,9 +1807,6 @@
             Picker.openModal(missionId, {
                 onClose: function() {
                     if (launchedFromForm) {
-                        // The picker wrote through MissionCore.
-                        // Resync the staged list from the store,
-                        // then rebuild the panel.
                         resyncStagedParticipantsFromStore();
                         refreshParticipantsPanelFromFormState();
                         return;
@@ -1974,14 +1888,6 @@
             assignedTeamIds: readAssignedTeamIdsFromForm(form),
             notes: readValue(form, '#mission-notes'),
 
-            // Participants come from the STAGED list, which is the
-            // single source of truth for the form's participant
-            // panel. On create this is the ONLY write path (no
-            // mission id exists while the user is ticking boxes).
-            // On edit, the immediate-write path (MissionCore
-            // .addParticipant / removeParticipant) already ran for
-            // every toggle; sending the staged array on submit is
-            // a reconcile that keeps the two in sync.
             participants: cloneParticipantStage()
         };
 
@@ -2199,8 +2105,6 @@
         host.appendChild(chip);
         select.value = '';
 
-        // The panel's team sections depend on the assigned team
-        // list. Rebuild it in place.
         refreshParticipantsPanelFromFormState();
     }
 
@@ -2247,9 +2151,6 @@
             host.appendChild(empty);
         }
 
-        // Removing a team removes that team's participants from
-        // the mission. Prune the staged list to match, then
-        // rebuild the panel in place.
         if (teamId) {
             pruneStagedParticipantsForTeam(teamId);
         }
@@ -2257,7 +2158,7 @@
     }
 
     // ============================================================
-    // EXPORT MODAL
+    // EXPORT MODAL (single mission)
     // ============================================================
 
     function ensureExportModalShell(container) {
@@ -2509,6 +2410,244 @@
         }
 
         setExportError(
+            (result && result.error) || 'Unknown error.'
+        );
+    }
+
+    // ============================================================
+    // BULK EXPORT MODAL (this revision)
+    // ============================================================
+
+    function openBulkExportModal() {
+        if (!isContainerAttached()) {
+            notifyContainerLost();
+            return;
+        }
+
+        var ids = Object.keys(_missionSelectedIds)
+            .filter(function(k) {
+                return _missionSelectedIds[k] === true;
+            });
+
+        if (ids.length === 0) {
+            notify('Select at least one mission to export.', 'info');
+            return;
+        }
+
+        ensureBulkExportModalShell(state.container);
+
+        var modal = state.container.querySelector(
+            '#mission-bulk-export-modal'
+        );
+        if (!modal) {
+            notify('Could not open the bulk export picker.', 'error');
+            return;
+        }
+
+        var contentEl = modal.querySelector(
+            '.modal-bulk-export-content'
+        );
+        if (!contentEl) {
+            contentEl = document.createElement('div');
+            contentEl.className =
+                'modal-content modal-bulk-export-content';
+            modal.appendChild(contentEl);
+        }
+
+        contentEl.innerHTML = buildBulkExportModalHTML(ids.length);
+        showModal(modal);
+    }
+
+    function buildBulkExportModalHTML(count) {
+        var html = '';
+
+        html += '<div class="modal-header">';
+        html += '<h3>Export ' + count + ' Mission' +
+                    (count === 1 ? '' : 's') +
+                '</h3>';
+        html += '<button type="button" class="close-modal" ' +
+                    'data-action="mission-bulk-export-cancel" ' +
+                    'aria-label="Close">&times;</button>';
+        html += '</div>';
+
+        html += '<div class="modal-body">';
+        html += '<p class="field-hint" ' +
+                    'style="font-size:0.75rem;color:var(--text-dim);' +
+                    'margin:0 0 12px 0;line-height:1.5;">' +
+                    'Pick a format. Text is a human-readable report ' +
+                    'for each mission, one after another in a single ' +
+                    'file. JSON is an array of full mission records, ' +
+                    'and is the format the import accepts back for ' +
+                    'round-tripping.' +
+                '</p>';
+
+        html += '<div class="mission-export-formats">';
+        html += buildBulkFormatRow(
+            'text', 'Text report',
+            'All selected missions as one plain-text file.'
+        );
+        html += buildBulkFormatRow(
+            'json', 'JSON',
+            'All selected missions as a JSON array of records. ' +
+            'Round-trips through the import path.'
+        );
+        html += '</div>';
+
+        html += '<div id="mission-bulk-export-error" ' +
+                    'class="mission-export-error" ' +
+                    'style="display:none;margin-top:10px;' +
+                    'padding:8px 12px;' +
+                    'background:var(--danger-soft);' +
+                    'border-left:3px solid var(--danger);' +
+                    'border-radius:4px;' +
+                    'font-size:0.75rem;' +
+                    'color:var(--danger);"></div>';
+
+        html += '</div>';
+
+        html += '<div class="form-actions" ' +
+                    'style="display:flex;gap:8px;' +
+                    'justify-content:flex-end;' +
+                    'margin-top:12px;padding-top:12px;' +
+                    'border-top:1px solid var(--border-soft);">';
+        html += '<button type="button" class="secondary" ' +
+                    'data-action="mission-bulk-export-cancel">' +
+                    'Cancel' +
+                '</button>';
+        html += '<button type="button" class="primary" ' +
+                    'data-action="mission-bulk-export-submit">' +
+                    'Export' +
+                '</button>';
+        html += '</div>';
+
+        return html;
+    }
+
+    function buildBulkFormatRow(value, title, description) {
+        var html = '';
+        html += '<label class="mission-export-format">';
+        html += '<input type="radio" ' +
+                    'name="mission-bulk-export-format" ' +
+                    'value="' + escapeAttribute(value) + '"' +
+                    (value === 'text' ? ' checked' : '') + '>';
+        html += '<span class="mission-export-format-body">';
+        html += '<span class="mission-export-format-title">' +
+                    escapeHtml(title) +
+                '</span>';
+        html += '<span class="mission-export-format-desc">' +
+                    escapeHtml(description) +
+                '</span>';
+        html += '</span>';
+        html += '</label>';
+        return html;
+    }
+
+    function closeBulkExportModal() {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-bulk-export-modal'
+        );
+        if (!modal) { return; }
+        var contentEl = modal.querySelector(
+            '.modal-bulk-export-content'
+        );
+        hideModal(modal);
+        if (contentEl) { contentEl.innerHTML = ''; }
+    }
+
+    function setBulkExportError(message) {
+        if (!state.container) { return; }
+        var modal = state.container.querySelector(
+            '#mission-bulk-export-modal'
+        );
+        if (!modal) { return; }
+        var errEl = modal.querySelector(
+            '#mission-bulk-export-error'
+        );
+        if (!errEl) { return; }
+
+        if (!message) {
+            errEl.style.display = 'none';
+            errEl.textContent = '';
+            return;
+        }
+        errEl.textContent = message;
+        errEl.style.display = 'block';
+    }
+
+    function handleBulkExportSubmit() {
+        if (!state.container) { return; }
+
+        var modal = state.container.querySelector(
+            '#mission-bulk-export-modal'
+        );
+        if (!modal) { return; }
+
+        var radio = modal.querySelector(
+            'input[name="mission-bulk-export-format"]:checked'
+        );
+        var format = radio ? String(radio.value || 'text') : 'text';
+
+        var ids = Object.keys(_missionSelectedIds)
+            .filter(function(k) {
+                return _missionSelectedIds[k] === true;
+            });
+
+        if (ids.length === 0) {
+            setBulkExportError('No missions selected.');
+            return;
+        }
+
+        var Exporter = getMissionExport();
+        if (!Exporter) {
+            setBulkExportError(
+                'Mission export module is not loaded. Check the ' +
+                'script order in index.html.'
+            );
+            return;
+        }
+
+        var fn = format === 'json'
+            ? Exporter.exportMissionsJson
+            : Exporter.exportMissionsText;
+
+        if (typeof fn !== 'function') {
+            setBulkExportError(
+                'The ' + format + ' bulk export is not available.'
+            );
+            return;
+        }
+
+        var result;
+        try {
+            result = fn.call(Exporter, ids);
+        } catch (err) {
+            console.warn(
+                '[MissionUI] bulk export threw:', err
+            );
+            setBulkExportError(
+                'Export failed: ' +
+                (err && err.message ? err.message : String(err))
+            );
+            return;
+        }
+
+        if (result && result.exported) {
+            var msg = 'Exported ' + result.count + ' mission' +
+                (result.count === 1 ? '' : 's') +
+                ': ' + result.filename;
+            if (result.skipped > 0) {
+                msg += ' (' + result.skipped + ' skipped)';
+            }
+            notify(msg, 'success');
+
+            _missionSelectedIds = Object.create(null);
+            closeBulkExportModal();
+            renderListInto(state.container);
+            return;
+        }
+
+        setBulkExportError(
             (result && result.error) || 'Unknown error.'
         );
     }
@@ -3517,6 +3656,7 @@
         resetReportForm();
         resetExportPicker();
         resetImportModal();
+        _missionSelectedIds = Object.create(null);
         _formState.editId = null;
         _formState.participants = [];
         _formState.baseline = null;
