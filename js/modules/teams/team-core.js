@@ -39,7 +39,7 @@
  *   - The weeklyTeams cleanup details. AcademyCascade.teamDeleted
  *     owns the reference model for team → academy.weeklyTeams.
  *
- * RANKINGS — ORDERED LIST MODEL (this revision):
+ * RANKINGS — CASCADING SNAPSHOT MODEL (this revision):
  *   A year carries an ORDERED LIST of teams. Positions are
  *   contiguous 1..N; there is no "gap" and no "two #1 teams".
  *
@@ -48,61 +48,42 @@
  *     TeamQueries.getRankedTeamsForYear(year)
  *
  *   which returns one entry per occupied position, sorted by
- *   position ascending. Because the write path below guarantees
- *   contiguity, `N` equals the number of teams with an explicit
- *   entry at that year, and there are no gaps.
+ *   position ascending.
+ *
+ *   RANKINGS PROPAGATE FORWARD:
+ *   Because we want a ranking set in 1920 to remain in effect
+ *   until 1945 (when the team is dethroned), the write path
+ *   works on a "snapshot" model. When you reorder the rankings
+ *   for a specific year (via drag-and-drop or insert), this
+ *   module calculates the FULL new order for that year and
+ *   writes an EXPLICIT entry for EVERY team at that year. 
+ *
+ *   This means the read path simply looks at the most recent
+ *   explicit entry at or before the requested year. If you
+ *   reorder in 1920, every team gets a 1920 entry. If you do
+ *   not touch 1945, 1944's exact order cascades into 1945. If
+ *   you reorder in 1945, a new snapshot is written for 1945,
+ *   overriding the inherited 1944 order.
  *
  *   WRITE PRIMITIVES:
  *
  *     insertRankingAt(teamId, year, position)
- *       Insert the team at `position`; every explicit entry at
- *       `year` whose rank was >= `position` is rewritten to
- *       `rank + 1`. If the team was already in the list, it is
- *       removed first and the tail below the old position shifts
- *       up by one, then the insert runs. If `position` exceeds
- *       the current length, the team is appended.
+ *       Insert the team at `position`; calculates the full
+ *       ordered list for `year` and writes an explicit entry for
+ *       EVERY team in that list at `year`.
+ *
+ *     moveRanking(teamId, year, newPosition)
+ *       Remove the team from the list and insert at `newPosition`.
+ *       Calculates the full ordered list for `year` and writes
+ *       an explicit entry for EVERY team at `year`.
  *
  *     removeRankingAt(teamId, year)
  *       Remove the team's explicit entry; every explicit entry at
  *       `year` whose rank was > the removed rank shifts up by
- *       one. Idempotent.
- *
- *     moveRanking(teamId, year, newPosition)
- *       Remove at old, insert at new. One transaction.
+ *       one. (Used mostly for cleanup).
  *
  *   The storage shape is UNCHANGED: `rankingHistory` on each
- *   team, holding `{ period, rank }` entries. What changed is the
- *   INVARIANT enforced at write time: for any given `year`, the
- *   multiset of explicit entries across all teams is a contiguous
- *   range `1..N` with exactly one team per position.
- *
- *   Effective rank (read-time inheritance) is a separate concern
- *   owned by TeamQueries.getEffectiveRanking. A team that is not
- *   in the ordered list for `year` falls back to its most recent
- *   explicit entry at or before `year`.
- *
- *   LEGACY SHIMS:
- *
- *     addRanking(teamId, period, rank)
- *       Routes to insertRankingAt. The old "write an entry and
- *       allow duplicates" behaviour is gone. Callers that
- *       previously relied on duplicates (there were none in the
- *       shipped data) get the new behaviour, which is the correct
- *       one: the new team takes the position, the previous
- *       occupant shifts down by one.
- *
- *     removeRanking(teamId, period)
- *       Routes to removeRankingAt. Same shift-up-the-tail
- *       behaviour.
- *
- *   MIGRATION:
- *     There is no migration step. The shipped store has no
- *     ranking entries, so there is nothing to normalise. A stored
- *     record that somehow carries duplicates or gaps will be
- *     cleaned the next time any team's ranking at the affected
- *     year is written. If a hand-edited export ever introduces
- *     duplicates or gaps, they will be visible in the ordered
- *     list as soon as the year is reordered.
+ *   team, holding `{ period, rank }` entries.
  *
  * TYPE COMPARISONS:
  *   Every comparison of a team's `type` field in this module
@@ -122,248 +103,36 @@
  *     - the top-of-form field in the team form
  *     - the last period's name input in the periods editor
  *
- *   Without the flag, whichever side edited last wins on save,
- *   and the losing edit is silently discarded. With it, the
- *   reader/writer (team-events.js saveTeam) can decide:
- *
- *     nameIsAuto === true  → the periods array wins; the top
- *                            field is a display, and only
- *                            overrides if the user typed in it.
- *     nameIsAuto === false → the top field wins if dirty;
- *                            otherwise the periods array wins
- *                            as-edited.
- *
  *   WRITER RULES:
  *     createTeam                    → nameIsAuto: true (default)
  *     updateTeam with nameIsAuto    → nameIsAuto: <value>
  *     updateTeam without nameIsAuto → preserves the existing value
  *
- *   The migration (database.js v35) defaults existing teams to
- *   true. See the migration's comment for the reasoning.
+ * THE PERIODS MODEL:
+ *   A team carries a `periods` array. Each entry is a self-contained
+ *   description of what the team was during a range of years:
  *
- * ============================================================
- * THE PERIODS MODEL
- * ============================================================
+ *     {
+ *       startPeriod: '1900',        // required, positive integer
+ *       endPeriod: '1905',          // '' means open-ended; only
+ *                                   // allowed on the last entry
+ *       name: 'Rapid',              // required, non-empty
+ *       tacticalStyle: '',          // free text, may be empty
+ *       specialisations: []         // array of mission-type ids
+ *     }
  *
- * A team carries a `periods` array. Each entry is a self-contained
- * description of what the team was during a range of years:
+ *   OVERLAP SEMANTICS — HALF-OPEN ON THE UPPER BOUND:
  *
- *   {
- *     startPeriod: '1900',        // required, positive integer
- *     endPeriod: '1905',          // '' means open-ended; only
- *                                 // allowed on the last entry
- *     name: 'Rapid',              // required, non-empty
- *     tacticalStyle: '',          // free text, may be empty
- *     specialisations: []         // array of mission-type ids
- *   }
+ *     Two periods [s1, e1] and [s2, e2] overlap iff:
+ *       s1 < e2   AND   s2 < e1
+ *     with a blank endPeriod treated as Infinity (open-ended).
  *
- * INVARIANTS (enforced here, trusted by readers):
- *
- *   - At least one entry.
- *   - Entries sorted by startPeriod ascending.
- *   - Each startPeriod is a valid positive integer.
- *   - Only the LAST entry may have endPeriod: ''.
- *   - Each non-last entry's endPeriod is a valid positive integer
- *     >= its startPeriod.
- *   - No two entries OVERLAP when compared as half-open ranges
- *     [start, end). See the OVERLAP SEMANTICS note below.
- *     Shared-boundary periods ARE allowed.
- *   - Names are non-empty strings.
- *   - tacticalStyle is a string.
- *   - specialisations is an array of unique known mission-type ids.
- *
- * OVERLAP SEMANTICS — HALF-OPEN ON THE UPPER BOUND:
- *
- *   Two periods [s1, e1] and [s2, e2] overlap iff:
- *
- *     s1 < e2   AND   s2 < e1
- *
- *   with a blank endPeriod treated as Infinity (open-ended).
- *
- *   THE BOUNDARY YEAR BELONGS TO THE LATER PERIOD. A period that
- *   ends in 1904 and another that starts in 1904 do NOT overlap;
- *   1904 belongs to the second period.
- *
- *   WHY STRICT ON THE UPPER BOUND:
- *
- *     Periods are year-granular. A team can be renamed mid-year,
- *     and both the pre-rename and post-rename period will name
- *     that year as one of their own. With only years available,
- *     the boundary year must belong to BOTH periods or to
- *     NEITHER; it cannot be assigned unambiguously.
- *
- *     The half-open convention makes the boundary year belong to
- *     the LATER period, exactly as
- *     TeamQueries.intervalOverlapsPeriod does for stints vs.
- *     periods, and as TeamQueries.rankingInPeriod does for
- *     rankings.
- *
- *     This is what allows:
- *
- *       Aegis     1900–1900
- *       Aegis II  1900–present
- *
- *     Both periods name 1900, and that is the correct semantic
- *     for "renamed mid-year, only years recorded."
- *
- * THE LAST ENTRY IS "CURRENT":
- *   Every reader that wants the team's display name, tactical
- *   style, or specialisations without a period context reads the
- *   last entry. See TeamQueries.getCurrentPeriod and
- *   getCurrentTeamName.
- *
- * `team.name` IS A DENORMALISED CACHE:
- *   Written by this module on every save as periods[last].name.
- *   Every existing reader (TeamQueries.getTeamName's fallback,
- *   TeamAggregator, TeamExport, the mission form's team picker)
- *   keeps working unchanged. Nothing writes to team.name except
- *   this module.
- *
- * WHY PERIODS RATHER THAN PARALLEL HISTORIES:
- *   nameHistory, styleHistory, and specialisationHistory would be
- *   three arrays that have to stay aligned by convention. Any
- *   drift between them is a bug waiting to be discovered. One
- *   array of self-contained entries makes drift structurally
- *   impossible.
- *
- * LEGACY INPUT:
- *   The canonicaliser accepts a record that carries any of:
- *
- *     nameHistory       array of { name, startPeriod, endPeriod }
- *     style             string, an alias for tacticalStyle
- *     specialisations   array of mission-type ids
- *     tacticalStyle     string, the canonical name
- *
- *   and produces the periods shape. Migration rule:
- *
- *     - If nameHistory is present and non-empty: one period per
- *       name-history entry. The scalars (style / specialisations)
- *       are applied to every produced period, because we have no
- *       way to know which historical period carried which values.
- *       The current values are the safest guess.
- *     - Otherwise: one period built from the record's current
- *       scalars (name, style/tacticalStyle, specialisations) and
- *       its top-level startPeriod / endPeriod.
- *
- *   Legacy fields are then dropped from the canonical output,
- *   exactly like the assignedTeamId → assignedTeamIds migration.
- *
- * ============================================================
- * MUTATION CONTRACT
- * ============================================================
- *
+ * MUTATION CONTRACT:
  *   Every public mutation returns Promise<{ success, data?, message? }>.
  *   Validation runs twice: pre-flight against window.data, then
  *   snapshot-scoped inside pipeline.validate(). The candidate is
  *   re-derived inside mutate() so applied state never diverges from
  *   what was validated.
- *
- * MEMBER INTERVALS MODEL:
- *   member = {
- *     memberId, characterId, role,
- *     intervals: [ { joinPeriod, leavePeriod }, ... ]
- *   }
- *
- *   Both bounds are inclusive. Blank means unbounded on that side.
- *   Intervals within one member must not overlap.
- *   joinPeriod is IMMUTABLE once set: to move a stint start, purge
- *   and add a new interval (or call replaceMemberInterval).
- *
- * PERIOD SEMANTICS:
- *   Periods are positive integers. Blank ('', null, undefined) is
- *   the "unbounded" sentinel, distinct from a period. All writes go
- *   through canonicalisePeriod.
- *
- * REPLACEMENT PRIMITIVES:
- *   replaceMemberInterval and replaceMemberLeave are composed
- *   operations that run entirely inside one MutationPipeline
- *   transaction. They exist because a purge-then-add or a
- *   reopen-then-end split across two transactions loses state if
- *   the second transaction fails. The composed primitives either
- *   apply both halves or neither.
- *
- *   replaceMemberInterval:
- *     Removes the interval identified by oldJoin and adds the
- *     interval (newJoin, newLeave) in one transaction. The member
- *     entry is preserved across the operation even if the purge
- *     would have removed the last interval; the role is carried
- *     over (and can be overridden via the optional `role` arg).
- *     Rejects an overlap with any other interval on the same
- *     member, or an out-of-bounds new interval.
- *
- *   replaceMemberLeave:
- *     Sets the leave period on the interval identified by
- *     joinPeriod to newLeave, whether the interval was open
- *     (leavePeriod '') or closed at some earlier year. This is
- *     the ONLY correct way to extend an already-closed stint:
- *     calling endMemberInterval to extend would fail with
- *     "already closed at or before"; calling reopen then end
- *     separately would leave the interval open if the second
- *     transaction failed. replaceMemberLeave reopens internally
- *     and closes to newLeave, atomically.
- *
- * DEATH / CAREER-TRANSITION CASCADE (endStintsForCharacter):
- *   For every open professional-team stint, set leavePeriod to the
- *   death/transition year. Idempotent. Never throws. Runs inside the
- *   caller's pipeline transaction.
- *
- *   Scope: professional teams only.
- *   Granularity: year. deathWeek is not read.
- *   Non-reversible: clearing deathYear does not restore ended stints.
- *
- *   OPEN STINTS ON A DECEASED CHARACTER ARE CLOSED UNCONDITIONALLY:
- *   the join-after-death check in addMember and batchAddMembers
- *   guards the write path, but a legacy record can reach this
- *   cascade with an open stint whose joinPeriod is strictly after
- *   the death year. Leaving such a stint open produces a record
- *   where a dead person is still on a team, which is worse than an
- *   impossible-range interval. This module closes it at the death
- *   year and counts it under skippedStartsAfterDeath for the
- *   diagnostic, but does not skip the close.
- *
- * ADD-AFTER-DEATH GUARD:
- *   addMember, addMemberInterval, batchAddMembers, and
- *   replaceMemberInterval reject assignments whose joinPeriod is
- *   strictly after the character's deathYear.
- *
- * TEAM NAMING HOOK:
- *   After any successful member add, this module fires
- *   TeamNaming.applyTeamName(teamId) for each team touched by the
- *   mutation. That call recomputes the team's display name from the
- *   distinct-member count and, when the suffix changes, closes the
- *   current period and opens a new one. See team-naming.js.
- *
- *   The hook is fire-and-forget: it does not block the caller's
- *   promise, and an error inside it does not fail the member
- *   mutation.
- *
- * DELETE CASCADE:
- *   deleteTeam removes the team from the snapshot and cleans up
- *   every cross-domain reference to it inside the same transaction:
- *
- *     TournamentCore.stripTeamRefs     — tournament participants
- *                                        (MANDATORY: throws if
- *                                        TournamentCore is missing)
- *     MissionCascade.stripTeamRefs     — mission.assignedTeamIds
- *                                        and participant rows
- *                                        (defensive: warn-and-skip)
- *     AcademyCascade.teamDeleted       — academy.weeklyTeams
- *                                        (defensive: warn-and-skip)
- *
- *   All three cleanups run against the same snapshot that will be
- *   committed.
- *
- *   POLICY:
- *   TournamentCore is mandatory because a team whose tournament
- *   references survive deletion leaves a tournament bracket that
- *   names a team that no longer exists — a structural failure the
- *   user sees every time they open the bracket. Mission and Academy
- *   references are milder: a dangling mission.assignedTeamIds entry
- *   or weeklyTeams record renders as an empty slot, not a broken
- *   page. Those two cascades therefore warn-and-continue when
- *   their module is missing, matching fireMissionCascade's
- *   existing policy in the same function, so a load-order problem
- *   never rolls back a delete.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -371,14 +140,6 @@
  *   - window.MutationPipeline
  *   - window.ObjectUtils
  *   - characterProvider (injected via configure)
- *
- * DEPENDENCIES (LAZY, at call time):
- *   - window.MissionConstants    (specialisation id validation)
- *   - window.MissionCascade      (deleteTeam mission cleanup)
- *   - window.AcademyCascade      (deleteTeam weeklyTeams cleanup)
- *   - window.TournamentCore      (deleteTeam cascade; mandatory at
- *                                 that call, throws if unavailable)
- *   - window.TeamNaming          (post-member-add rename; optional)
  */
 
 (function() {
@@ -4257,7 +4018,7 @@
     }
 
     // ============================================================
-    // RANKING MUTATIONS — ordered-list model
+    // RANKING MUTATIONS — cascading snapshot model
     // ============================================================
     //
     // The year is a single ordered list. Positions are contiguous
@@ -4276,12 +4037,6 @@
     //     Walks every team's rankingHistory, keeps entries whose
     //     period === year (explicit only), sorts by rank asc.
     //     Returns [{ teamId, rank }].
-    //
-    //   shiftExplicitRanksAtYear(missions, year, fromRank, delta)
-    //     For every explicit entry at year with rank >= fromRank,
-    //     add delta to rank. delta is +1 for insert-shift-down and
-    //     -1 for remove-shift-up. The caller is responsible for
-    //     keeping fromRank within the current range.
 
     function collectExplicitEntriesAtYear(missions, year) {
         var targetYear = String(parseInt(year, 10));
@@ -4479,14 +4234,12 @@
 
     /**
      * Insert the team at `position` in the ordered list for `year`.
-     *
-     * If the team already has an explicit entry at `year`, it is
-     * removed first and the tail below the old position shifts up
-     * by one; then the insert runs. `position` is clamped to
-     * [1, N+1] where N is the current list length.
-     *
-     * Every explicit entry at `year` whose rank was >= `position`
-     * (after the removal, if any) is rewritten to rank + 1.
+     * 
+     * CASCADE LOGIC: 
+     * Because we want rankings to propagate forward until changed, 
+     * inserting/moving a team at year Y creates a FULL SNAPSHOT 
+     * of the new order at year Y. This overrides any inherited 
+     * rankings from previous years.
      */
     function insertRankingAt(teamId, year, position) {
         if (failIfMissing(
@@ -4523,13 +4276,6 @@
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var existingEntry = findTeamRankingEntryAtYear(
-            current, periodNum
-        );
-        var existingRank = existingEntry
-            ? parsePeriod(existingEntry.rank)
-            : null;
-
         return runMutation({
             validate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
@@ -4553,82 +4299,66 @@
                 if (!Array.isArray(target.rankingHistory)) {
                     target.rankingHistory = [];
                 }
-
                 if (!Array.isArray(snapshot.teams)) {
                     throw new Error('Team store is malformed.');
                 }
 
-                // ---- Remove the team's existing entry, if any ----
-                if (existingEntry) {
-                    target.rankingHistory =
-                        target.rankingHistory.filter(function(entry) {
-                            if (!isObject(entry)) { return true; }
-                            var entryYear = parsePeriod(
-                                entry.period
-                            );
-                            if (entryYear === null) { return true; }
-                            return String(entryYear) !== periodStr;
-                        });
-
-                    if (existingRank !== null && existingRank >= 1) {
-                        shiftExplicitRanksAtYear(
-                            snapshot.teams,
-                            periodStr,
-                            existingRank + 1,
-                            -1
-                        );
-                    }
-                }
-
-                // ---- Clamp the insert position ----
-                var listAfterRemoval = collectExplicitEntriesAtYear(
-                    snapshot.teams, periodStr
-                );
-                var maxPosition = listAfterRemoval.length + 1;
-                var insertAt = positionNum;
-                if (insertAt > maxPosition) {
-                    insertAt = maxPosition;
-                }
-                if (insertAt < 1) { insertAt = 1; }
-
-                // ---- Shift the tail down ----
-                shiftExplicitRanksAtYear(
-                    snapshot.teams,
-                    periodStr,
-                    insertAt,
-                    +1
-                );
-
-                // ---- Write the new entry ----
-                target.rankingHistory.push({
-                    period: periodStr,
-                    rank: insertAt
+                // 1. Get the *inherited* ordered list for this year
+                var currentList = collectExplicitEntriesAtYear(snapshot.teams, periodNum);
+                
+                // 2. Remove the target team from the list if they were already in it
+                currentList = currentList.filter(function(e) { return e.teamId !== targetId; });
+                
+                // 3. Clamp the insert position
+                var insertAt = positionNum - 1;
+                if (insertAt > currentList.length) { insertAt = currentList.length; }
+                if (insertAt < 0) { insertAt = 0; }
+                
+                // 4. Insert the target team
+                currentList.splice(insertAt, 0, {
+                    teamId: targetId,
+                    team: target
                 });
 
-                target.rankingHistory.sort(function(a, b) {
-                    var ap = parsePeriod(a.period);
-                    var bp = parsePeriod(b.period);
-                    if (ap === null && bp === null) { return 0; }
-                    if (ap === null) { return 1; }
-                    if (bp === null) { return -1; }
-                    return ap - bp;
-                });
+                // 5. Create a full snapshot. 
+                // Write an explicit entry for EVERY team at this year to lock it in.
+                for (var i = 0; i < currentList.length; i++) {
+                    var t = currentList[i].team;
+                    if (!Array.isArray(t.rankingHistory)) { t.rankingHistory = []; }
+                    
+                    // Remove any existing entry for this year
+                    t.rankingHistory = t.rankingHistory.filter(function(entry) {
+                        if (!isObject(entry)) { return true; }
+                        var eYear = parsePeriod(entry.period);
+                        return String(eYear) !== periodStr;
+                    });
 
-                target.updatedAt = new Date().toISOString();
+                    // Write the new explicit entry
+                    t.rankingHistory.push({
+                        period: periodStr,
+                        rank: i + 1
+                    });
+
+                    // Sort descending
+                    t.rankingHistory.sort(function(a, b) {
+                        var ap = parsePeriod(a.period) || 0;
+                        var bp = parsePeriod(b.period) || 0;
+                        return bp - ap;
+                    });
+                    
+                    t.updatedAt = new Date().toISOString();
+                }
 
                 return {
                     period: periodStr,
                     teamId: targetId,
-                    position: insertAt,
-                    previousPosition: existingRank
+                    position: insertAt + 1
                 };
             },
 
-            logMessage: 'Inserted ranking for team: ' +
-                (current.name || targetId) +
-                ' at position ' + positionNum + ' for ' + periodStr,
-            successMessage: 'Ranking inserted successfully!',
-            failureMessage: 'Failed to insert ranking.'
+            logMessage: 'Set rankings for ' + periodStr + ' (cascading forward)',
+            successMessage: 'Rankings updated successfully!',
+            failureMessage: 'Failed to update rankings.'
         });
     }
 
@@ -4672,29 +4402,6 @@
             return Promise.resolve(failure('Team not found.'));
         }
 
-        var existingEntry = findTeamRankingEntryAtYear(
-            current, periodNum
-        );
-        var existingRank = existingEntry
-            ? parsePeriod(existingEntry.rank)
-            : null;
-
-        if (existingRank === null) {
-            return Promise.resolve(failure(
-                'Team is not ranked at ' + periodStr +
-                '; use insertRankingAt instead.'
-            ));
-        }
-
-        if (existingRank === positionNum) {
-            return Promise.resolve(success({
-                period: periodStr,
-                teamId: targetId,
-                position: existingRank,
-                noop: true
-            }));
-        }
-
         return runMutation({
             validate: function(snapshot) {
                 var target = findTeamInData(snapshot, targetId);
@@ -4715,80 +4422,61 @@
                     );
                 }
 
-                if (!Array.isArray(target.rankingHistory)) {
-                    target.rankingHistory = [];
-                }
                 if (!Array.isArray(snapshot.teams)) {
                     throw new Error('Team store is malformed.');
                 }
 
-                // ---- Remove the team's entry ----
-                target.rankingHistory =
-                    target.rankingHistory.filter(function(entry) {
+                // 1. Get the current inherited list for this year
+                var currentList = collectExplicitEntriesAtYear(snapshot.teams, periodNum);
+                
+                // 2. Remove target from the list
+                currentList = currentList.filter(function(e) { return e.teamId !== targetId; });
+
+                // 3. Clamp insert position
+                var insertAt = positionNum - 1;
+                if (insertAt > currentList.length) { insertAt = currentList.length; }
+                if (insertAt < 0) { insertAt = 0; }
+
+                // 4. Insert target
+                currentList.splice(insertAt, 0, {
+                    teamId: targetId,
+                    team: target
+                });
+
+                // 5. Write the full snapshot to all teams for this year
+                for (var i = 0; i < currentList.length; i++) {
+                    var t = currentList[i].team;
+                    if (!Array.isArray(t.rankingHistory)) { t.rankingHistory = []; }
+                    
+                    t.rankingHistory = t.rankingHistory.filter(function(entry) {
                         if (!isObject(entry)) { return true; }
-                        var entryYear = parsePeriod(entry.period);
-                        if (entryYear === null) { return true; }
-                        return String(entryYear) !== periodStr;
+                        var eYear = parsePeriod(entry.period);
+                        return String(eYear) !== periodStr;
                     });
 
-                if (existingRank >= 1) {
-                    shiftExplicitRanksAtYear(
-                        snapshot.teams,
-                        periodStr,
-                        existingRank + 1,
-                        -1
-                    );
+                    t.rankingHistory.push({
+                        period: periodStr,
+                        rank: i + 1
+                    });
+
+                    t.rankingHistory.sort(function(a, b) {
+                        var ap = parsePeriod(a.period) || 0;
+                        var bp = parsePeriod(b.period) || 0;
+                        return bp - ap;
+                    });
+                    
+                    t.updatedAt = new Date().toISOString();
                 }
-
-                // ---- Clamp the insert position ----
-                var listAfterRemoval = collectExplicitEntriesAtYear(
-                    snapshot.teams, periodStr
-                );
-                var maxPosition = listAfterRemoval.length + 1;
-                var insertAt = positionNum;
-                if (insertAt > maxPosition) {
-                    insertAt = maxPosition;
-                }
-                if (insertAt < 1) { insertAt = 1; }
-
-                // ---- Shift the tail down ----
-                shiftExplicitRanksAtYear(
-                    snapshot.teams,
-                    periodStr,
-                    insertAt,
-                    +1
-                );
-
-                // ---- Write the new entry ----
-                target.rankingHistory.push({
-                    period: periodStr,
-                    rank: insertAt
-                });
-
-                target.rankingHistory.sort(function(a, b) {
-                    var ap = parsePeriod(a.period);
-                    var bp = parsePeriod(b.period);
-                    if (ap === null && bp === null) { return 0; }
-                    if (ap === null) { return 1; }
-                    if (bp === null) { return -1; }
-                    return ap - bp;
-                });
-
-                target.updatedAt = new Date().toISOString();
 
                 return {
                     period: periodStr,
                     teamId: targetId,
-                    position: insertAt,
-                    previousPosition: existingRank
+                    position: insertAt + 1
                 };
             },
 
-            logMessage: 'Moved ranking for team: ' +
-                (current.name || targetId) +
-                ' from ' + existingRank + ' to ' + positionNum +
-                ' for ' + periodStr,
-            successMessage: 'Ranking moved successfully!',
+            logMessage: 'Moved ranking for team: ' + (current.name || targetId) + ' to position ' + positionNum,
+            successMessage: 'Rankings updated successfully!',
             failureMessage: 'Failed to move ranking.'
         });
     }
@@ -4800,13 +4488,6 @@
     // addRanking and removeRanking predate the ordered-list model.
     // They are kept as thin routes to insertRankingAt and
     // removeRankingAt so existing callers do not have to change.
-    //
-    // The old addRanking wrote an explicit entry and allowed
-    // duplicates. That behaviour is gone. The new routing means a
-    // caller who previously called addRanking(teamId, year, 3)
-    // gets the team INSERTED at position 3, and every explicit
-    // entry at year with rank >= 3 shifts down by one. This is the
-    // correct model for a reorderable ordered list.
 
     function addRanking(teamId, period, rank) {
         return insertRankingAt(teamId, period, rank);
@@ -4956,7 +4637,7 @@
         replaceMemberInterval: replaceMemberInterval,
         replaceMemberLeave: replaceMemberLeave,
 
-        // ---- Rankings — ordered-list model ----
+        // ---- Rankings — cascading snapshot model ----
         insertRankingAt: insertRankingAt,
         removeRankingAt: removeRankingAt,
         moveRanking: moveRanking,
