@@ -36,7 +36,7 @@
  *   list. renderCount() throws deliberately; a malformed count
  *   blanks the tab, and the console names the malformed field.
  *
- * PERIODS MODEL (D1, this revision):
+ * PERIODS MODEL:
  *   The team form VM carries `periods`, an array of display-shaped
  *   entries:
  *
@@ -56,84 +56,51 @@
  *   non-blank end on the last row means the team disbanded at
  *   that year.
  *
- *   The row emits:
- *
- *     .team-period-row[data-period-index="N"]
- *       .team-period-row-header       (label + remove button)
- *       input.team-period-name        (name)
- *       input.team-period-start       (start year)
- *       input.team-period-end         (end year; editable on
- *                                      every row)
- *       textarea.team-period-style    (tactical style)
- *       .team-period-specialisations  (chip list, one per
- *                                      specialisation)
- *       .team-period-specialisation-add-row
- *                                     (select + Add button for
- *                                      the current row)
- *
- *   `canRemove` controls whether the remove button is emitted.
- *   The initial render passes `periods.length > 1`; TeamEvents
- *   passes `false` when appending and then calls its own
- *   updateRemoveButtons() to reveal the button on every row once
- *   there is more than one.
- *
- *   The `isLast` parameter is preserved in the public contract
- *   (TeamEvents passes it when appending) but the renderer no
- *   longer uses it to disable or hint the end input. Both the
- *   initial render and the append path emit an editable end
- *   input on every row.
- *
- *   Row labels are plain "Period N". There is no "(current)"
- *   suffix; the last row is identified by its position in the
- *   list, not by a label.
- *
  * TEAM TYPE IN THE FORM SELECT:
  *   The form's #team-type select offers every non-academic type
  *   (academic teams are managed by the Academy module). If the
  *   current team's type is not in that list — because it is
  *   academic, or because it is an unnormalised legacy alias —
  *   the type is appended as a DISABLED option marked
- *   "(current; not editable here)". The select shows the truth,
- *   and the hint explains why changing it would reclassify the
- *   team.
+ *   "(current; not editable here)".
  *
- * LEGACY SHAPE:
- *   The read-only descriptive block reads `team.tacticalStyle` and
- *   `team.specialisations` off the detail / list VM. Those are
- *   populated by TeamAggregator from the current period when
- *   periods exist, and from the legacy scalars otherwise. This
- *   module does not touch nameHistory or any legacy field.
+ * FILTER BAR SORT AND SPECIALISATION CONTROLS (this revision):
+ *   The professional tab in Teams mode gains three new controls
+ *   next to the year input and the Show Inactive checkbox:
  *
- * RANKINGS PASSTHROUGH:
- *   The Rankings tab body is rendered by TeamRankingsView. This
- *   module's only role is to hand `pageVM.rankingsVM` through to
- *   it via renderRankingsContent(pageVM). The rankings VM is the
- *   ordered-list shape ({ year, rows, unrankedTeams,
- *   showInactive }); this module does not read `sortMode` or
- *   `sortDirection` and would not need to change if the rankings
- *   VM grew new fields.
+ *     #team-sort            Sort key <select>, options from
+ *                           filterVM.sortOptions. Values are
+ *                           'name' | 'period' | 'members'.
+ *     #team-sort-direction  Direction toggle. Shows ▲ for asc,
+ *                           ▼ for desc. The accessible label
+ *                           names the current direction and the
+ *                           one a click will switch to.
+ *     #team-specialisations-toggle
+ *                           Popover trigger. Reads
+ *                           "Specialisations" when no filter is
+ *                           active and "Specialisations (N)"
+ *                           otherwise. Carries .has-filter when
+ *                           active.
+ *     #team-specialisations-panel
+ *                           Hidden popover panel. One checkbox
+ *                           per filterVM.specialisationOptions
+ *                           entry. A "Clear" link at the bottom.
+ *                           TeamEvents owns open/close and the
+ *                           checkbox change handler; the renderer
+ *                           only emits the markup and the
+ *                           `hidden` attribute.
  *
- * DEPRECATED STATUS:
- *   A team whose status is 'deprecated' is styled and labelled
- *   distinctly in the list and card. The signal is
- *   `team.isDeprecated`, which the aggregator sets from
- *   normalizeTeamStatus.
+ *   The new controls live inside the `viewMode === 'teams'` branch
+ *   of renderFilterBar, so they appear only on the professional
+ *   tab in Teams mode. Pool, Timeline, and Rankings modes have
+ *   their own control surfaces and are unaffected.
  *
- * EXPANDED MEMBERS — MULTI-STINT DISPLAY:
- *   A member may have multiple stints on the same team (e.g.
- *   1901-1905, then returning 1910-present). The aggregator's
- *   buildMemberVM emits EVERY interval on the member, tagged with
- *   a per-interval `activeAtPeriod` boolean, plus an aggregate
- *   `activeAtPeriod` on the member as a whole.
- *
- *   The expanded-member view must not filter to the interval that
- *   contains the current period — that hides a re-joined member's
- *   earlier stints. Instead:
- *
- *     - A member is SHOWN when they have at least one active
- *       stint (the aggregate flag or any per-interval flag).
- *     - A shown member renders ALL of their intervals, with the
- *       active interval(s) marked.
+ * LIST HEADER SORT INDICATOR (this revision):
+ *   The list header row gains a small sort-indicator span next to
+ *   "Team Name". It shows the current sort key and direction as
+ *   "↑ Name" / "↑ Period" / "↓ Members". This makes the current
+ *   sort legible even when the filter bar is scrolled out of
+ *   view. The indicator is read-only display, not a control.
  *
  * DEPENDENCIES:
  *   - window.DomUtils
@@ -444,7 +411,7 @@
     }
 
     // ============================================================
-    // TEAM LIST
+    // LIST
     // ============================================================
 
     function renderList(teams, options) {
@@ -453,6 +420,18 @@
         var expandedTeamId = options.expandedTeamId || null;
         var expandedMembersVM = options.expandedMembersVM || null;
         var selectedIds = options.selectedIds || Object.create(null);
+
+        // Sort state, forwarded from the page VM. The header row
+        // shows a small indicator so the current sort is legible
+        // even when the filter bar is scrolled out of view.
+        // Defaults preserve existing behaviour for callers that
+        // do not pass these (the card and modal paths).
+        var sort = isNonEmptyString(options.sort)
+            ? options.sort
+            : 'name';
+        var sortDirection = options.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
 
         if (!Array.isArray(teams) || teams.length === 0) {
             var labels = {
@@ -469,7 +448,10 @@
 
         html += '<div class="list-header team-header">';
         html += '<span class="team-header-check"></span>';
-        html += '<span>Team Name</span>';
+        html += '<span class="team-header-name">' +
+                    'Team Name' +
+                    renderSortIndicator(sort, sortDirection) +
+                '</span>';
         html += '<span>Period</span>';
         html += '<span>Rank</span>';
         html += '<span>Members</span>';
@@ -557,6 +539,44 @@
         }
 
         return html;
+    }
+
+    /**
+     * Small read-only indicator next to the "Team Name" column
+     * label. Shows the current sort key and direction as
+     * "\u2191 Name" / "\u2193 Members" so the sort state is
+     * legible even when the filter bar is out of view.
+     *
+     * The arrow points at what a CLICK on the direction toggle
+     * would do, not the current direction alone — but here it
+     * is read-only display of the current state, so:
+     *   asc  -> \u2191 (up arrow, ascending)
+     *   desc -> \u2193 (down arrow, descending)
+     *
+     * Unknown sort keys emit no indicator.
+     */
+    function renderSortIndicator(sort, sortDirection) {
+        var labels = {
+            'name': 'Name',
+            'period': 'Period',
+            'members': 'Members'
+        };
+        var label = labels[sort];
+        if (!label) { return ''; }
+
+        var arrow = sortDirection === 'desc'
+            ? '\u2193'
+            : '\u2191';
+
+        return '<span class="team-header-sort-indicator" ' +
+                    'title="Sorted by ' + escapeAttribute(label) +
+                    ' (' +
+                    (sortDirection === 'desc'
+                        ? 'descending'
+                        : 'ascending') +
+                    ')">' +
+                    arrow + ' ' + escapeHtml(label) +
+                '</span>';
     }
 
     // ============================================================
@@ -976,7 +996,7 @@
     }
 
     // ============================================================
-    // RANKINGS (delegated — C6: pure passthrough)
+    // RANKINGS (delegated — pure passthrough)
     // ============================================================
     //
     // The rankings tab body is rendered by TeamRankingsView. The
@@ -1276,9 +1296,25 @@
     //
     //   Teams | Professional Pool | Timeline | Rankings
     //
-    // The year input and the Show Inactive checkbox appear only
-    // in Teams mode. The other modes have their own controls on
+    // The year input, the Show Inactive checkbox, the sort
+    // controls, and the specialisations popover appear only in
+    // Teams mode. The other modes have their own controls on
     // their own body.
+    //
+    // THE NEW CONTROLS (this revision):
+    //
+    //   #team-sort            <select> of { name, period, members }
+    //   #team-sort-direction  direction toggle button
+    //   #team-specialisations-toggle
+    //                         popover trigger button
+    //   #team-specialisations-panel
+    //                         hidden popover panel with one
+    //                         checkbox per specialisation id
+    //
+    // The popover's `hidden` attribute is the renderer's concern;
+    // TeamEvents owns opening and closing it. Emitting the panel
+    // with `hidden` means a fresh render always starts closed,
+    // which is the correct default.
 
     function renderFilterBar(filterVM) {
         if (!filterVM || !filterVM.tab) { return ''; }
@@ -1345,26 +1381,10 @@
             html += '</div>';
 
             if (viewMode === 'teams') {
-                html += '<div class="filter-group">';
-                html += '<label for="team-filter-year">' +
-                            escapeHtml(periodLabel) + ':' +
-                        '</label>';
-                html += '<input type="number" id="team-filter-year" ' +
-                            'value="' +
-                                escapeAttribute(safeString(yearValue)) +
-                            '" placeholder="All">';
-                html += '</div>';
-                
-                html += '<div class="filter-group">';
-                html += '<label for="' + escapeAttribute(tab) +
-                            '-show-inactive">Show Inactive:</label>';
-                html += '<input type="checkbox" id="' +
-                            escapeAttribute(tab) + '-show-inactive"' +
-                            (showInactive ? ' checked' : '') +
-                        '>';
-                html += '</div>';
-                html += '<button type="button" id="apply-filter-btn" ' +
-                            'class="small primary">Apply</button>';
+                html += renderTeamsModeFilterControls(
+                    tab, periodLabel, yearValue, showInactive,
+                    filterVM
+                );
             }
 
             html += '</div>';
@@ -1388,15 +1408,209 @@
         return html;
     }
 
+    /**
+     * The Teams-mode filter controls: year input, show-inactive,
+     * sort select, sort direction toggle, specialisations
+     * popover trigger + panel, and Apply. Split out from
+     * renderFilterBar so the professional branch stays readable.
+     */
+    function renderTeamsModeFilterControls(
+        tab, periodLabel, yearValue, showInactive, filterVM
+    ) {
+        var html = '';
+
+        // ---- Year ----
+        html += '<div class="filter-group">';
+        html += '<label for="team-filter-year">' +
+                    escapeHtml(periodLabel) + ':' +
+                '</label>';
+        html += '<input type="number" id="team-filter-year" ' +
+                    'value="' +
+                        escapeAttribute(safeString(yearValue)) +
+                    '" placeholder="All">';
+        html += '</div>';
+
+        // ---- Show Inactive ----
+        html += '<div class="filter-group">';
+        html += '<label for="' + escapeAttribute(tab) +
+                    '-show-inactive">Show Inactive:</label>';
+        html += '<input type="checkbox" id="' +
+                    escapeAttribute(tab) + '-show-inactive"' +
+                    (showInactive ? ' checked' : '') +
+                '>';
+        html += '</div>';
+
+        // ---- Sort key ----
+        html += '<div class="filter-group">';
+        html += '<label for="team-sort">Sort:</label>';
+        html += '<select id="team-sort" class="team-sort-select">';
+        var sortOptions = isArray(filterVM.sortOptions)
+            ? filterVM.sortOptions
+            : [
+                { id: 'name', label: 'Name' },
+                { id: 'period', label: 'Period' },
+                { id: 'members', label: 'Members' }
+            ];
+        var currentSort = isNonEmptyString(filterVM.sort)
+            ? filterVM.sort
+            : 'name';
+        for (var s = 0; s < sortOptions.length; s++) {
+            var opt = sortOptions[s];
+            if (!opt || !isNonEmptyString(opt.id)) { continue; }
+            var isSel = opt.id === currentSort;
+            html += '<option value="' +
+                        escapeAttribute(opt.id) + '"' +
+                        (isSel ? ' selected' : '') + '>' +
+                        escapeHtml(opt.label || opt.id) +
+                    '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // ---- Sort direction toggle ----
+        var sortDirection = filterVM.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
+        var arrow = sortDirection === 'desc'
+            ? '\u25bc'  // black down-pointing triangle
+            : '\u25b2'; // black up-pointing triangle
+        var nextDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+        var directionLabel = sortDirection === 'desc'
+            ? 'Sort descending (click to switch to ascending)'
+            : 'Sort ascending (click to switch to descending)';
+
+        html += '<div class="filter-group">';
+        html += '<label for="team-sort-direction">' +
+                    'Direction:' +
+                '</label>';
+        html += '<button type="button" ' +
+                    'id="team-sort-direction" ' +
+                    'class="small team-sort-direction-btn" ' +
+                    'data-direction="' +
+                        escapeAttribute(sortDirection) + '" ' +
+                    'data-next-direction="' +
+                        escapeAttribute(nextDirection) + '" ' +
+                    'title="' +
+                        escapeAttribute(directionLabel) + '" ' +
+                    'aria-label="' +
+                        escapeAttribute(directionLabel) + '">' +
+                    arrow +
+                '</button>';
+        html += '</div>';
+
+        // ---- Specialisations popover trigger + panel ----
+        //
+        // The trigger's label reflects the current selection
+        // count. The panel is rendered with the `hidden`
+        // attribute; TeamEvents owns opening and closing it.
+        var specCount = filterVM.selectedSpecialisationCount;
+        if (typeof specCount !== 'number' || !isFinite(specCount)) {
+            specCount = isArray(filterVM.specialisationIds)
+                ? filterVM.specialisationIds.length
+                : 0;
+        }
+        var hasFilter = specCount > 0;
+
+        html += '<div class="filter-group team-specialisations-group">';
+        html += '<label>Specialisations:</label>';
+        html += '<button type="button" ' +
+                    'id="team-specialisations-toggle" ' +
+                    'class="small team-specialisations-btn' +
+                        (hasFilter ? ' has-filter' : '') + '" ' +
+                    'aria-haspopup="true" ' +
+                    'aria-expanded="false" ' +
+                    'title="Filter by specialisation">' +
+                    'Specialisations' +
+                    (hasFilter ? ' (' + specCount + ')' : '') +
+                '</button>';
+        html += renderSpecialisationsPanel(filterVM);
+        html += '</div>';
+
+        // ---- Apply ----
+        html += '<button type="button" id="apply-filter-btn" ' +
+                    'class="small primary">Apply</button>';
+
+        return html;
+    }
+
+    /**
+     * The popover panel for the specialisations filter.
+     *
+     * Rendered with the `hidden` attribute so a fresh render
+     * always starts closed. Each entry is a checkbox whose value
+     * is the mission-type id; checked when the id appears in
+     * filterVM.specialisationIds. A "Clear" link at the bottom
+     * clears the selection (TeamEvents handles the click).
+     *
+     * When the vocabulary is empty (MissionConstants not loaded),
+     * the panel is not emitted at all; the trigger is still
+     * emitted, but clicking it will do nothing because there is
+     * no panel to open. That is the correct degradation: no
+     * vocabulary, no filter.
+     */
+    function renderSpecialisationsPanel(filterVM) {
+        var options = isArray(filterVM.specialisationOptions)
+            ? filterVM.specialisationOptions
+            : [];
+
+        if (options.length === 0) { return ''; }
+
+        var selectedIds = isArray(filterVM.specialisationIds)
+            ? filterVM.specialisationIds
+            : [];
+
+        var selectedSet = Object.create(null);
+        for (var i = 0; i < selectedIds.length; i++) {
+            if (isNonEmptyString(selectedIds[i])) {
+                selectedSet[selectedIds[i]] = true;
+            }
+        }
+
+        var html = '';
+        html += '<div id="team-specialisations-panel" ' +
+                    'class="team-specialisations-panel" ' +
+                    'role="dialog" ' +
+                    'aria-label="Filter by specialisation" ' +
+                    'hidden>';
+
+        html += '<div class="team-specialisations-panel-header">' +
+                    'Filter by specialisation' +
+                '</div>';
+
+        html += '<div class="team-specialisations-list">';
+        for (var j = 0; j < options.length; j++) {
+            var opt = options[j];
+            if (!opt || !isNonEmptyString(opt.id)) { continue; }
+            var isChecked =
+                selectedSet[opt.id] === true;
+            html += '<label class="team-specialisations-row">';
+            html += '<input type="checkbox" ' +
+                        'class="team-specialisation-checkbox" ' +
+                        'value="' +
+                            escapeAttribute(opt.id) + '"' +
+                        (isChecked ? ' checked' : '') + '>';
+            html += '<span class="team-specialisations-row-label">' +
+                        escapeHtml(opt.label || opt.id) +
+                    '</span>';
+            html += '</label>';
+        }
+        html += '</div>';
+
+        html += '<div class="team-specialisations-panel-footer">';
+        html += '<button type="button" ' +
+                    'id="team-specialisations-clear" ' +
+                    'class="small secondary team-specialisations-clear">' +
+                    'Clear' +
+                '</button>';
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
     // ============================================================
     // RANKING LIST (per-team modal)
     // ============================================================
-    //
-    // The per-team ranking modal. This is the single-team view.
-    // The Rankings tab is the cross-team view.
-    //
-    // Each explicit entry renders as one row, with a small line
-    // beneath it describing the range of years it governs.
 
     function renderRankingList(rankVM) {
         if (!rankVM ||
@@ -1471,21 +1685,6 @@
     // ============================================================
     // TEAM FORM
     // ============================================================
-    //
-    // The form carries the top-level team scalars (name, type,
-    // start, end, class, team number, status, associated mission)
-    // and the periods editor.
-    //
-    // The top-of-form name input:
-    //   It is a VIEW of periods[last].name, with a submit-time
-    //   rule: the field wins only if the user typed in it this
-    //   session. TeamEvents reads data-original-value to detect
-    //   that. If the field is untouched, the periods array — as
-    //   edited — wins.
-    //
-    // The top-level start / end inputs are NOT rendered: the
-    // team's start and end are derived from periods[0].start and
-    // periods[last].end. The periods editor owns them.
 
     function renderTeamForm(formVM) {
         if (!formVM) {
@@ -1638,25 +1837,8 @@
     }
 
     // ============================================================
-    // PERIODS EDITOR (D1: editable end on every row)
+    // PERIODS EDITOR
     // ============================================================
-    //
-    // One row per period. Each row carries:
-    //
-    //   name             text input
-    //   start            number input
-    //   end              number input (EDITABLE on EVERY row)
-    //   tacticalStyle    textarea
-    //   specialisations  chip list, with a select + Add button
-    //
-    // The row is keyed by data-period-index. TeamEvents reads
-    // every row's fields on submit. Chip add / remove are
-    // DOM-only edits within the row; nothing hits the store until
-    // submit.
-    //
-    // renderPeriodRow is public. TeamEvents delegates to it when
-    // appending a new row, so the append path cannot drift from
-    // the initial render.
 
     function renderPeriodsEditor(formVM) {
         var periods = isArray(formVM.periods)
@@ -1708,13 +1890,12 @@
      * buildNewPeriodRowHTML). Any change to the row's markup
      * belongs here, not in the append helper.
      *
-     * D1 (this revision):
-     *   The end input is EDITABLE on every row, including the
-     *   last. A blank end on the last row means the team is
-     *   still ongoing; a non-blank end means the team disbanded
-     *   at that year. The `isLast` parameter is preserved for
-     *   the caller's own use (TeamEvents passes it when
-     *   appending) but is not consulted by this function.
+     * The end input is EDITABLE on every row, including the
+     * last. A blank end on the last row means the team is
+     * still ongoing; a non-blank end means the team disbanded
+     * at that year. The `isLast` parameter is preserved for
+     * the caller's own use (TeamEvents passes it when
+     * appending) but is not consulted by this function.
      *
      * The row label is plain "Period N" for every row. The
      * "(current)" suffix is gone; the last row is identified by
@@ -2097,7 +2278,14 @@
     //   teams     the list, with the expanded team inline
     //   pool      the Professional Pool
     //   timeline  the year-by-year event timeline (delegated)
-    //   rankings  the ranking table (delegated — C6 passthrough)
+    //   rankings  the ranking table (delegated)
+    //
+    // SORT AND DIRECTION THREADING (this revision):
+    // pageVM carries sort and sortDirection from
+    // getTeamPageViewModel's options; renderList needs them so
+    // the header row can show the current sort indicator. The
+    // renderer does not recompute or re-sort; it just draws the
+    // header label from the state.
 
     function renderContainer(pageVM) {
         if (!pageVM) {
@@ -2120,6 +2308,14 @@
             Object.create(null);
         var teamSelectedIds = pageVM.teamSelectedIds ||
             Object.create(null);
+
+        // Sort state, threaded to the list header.
+        var sort = isNonEmptyString(pageVM.sort)
+            ? pageVM.sort
+            : 'name';
+        var sortDirection = pageVM.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
 
         var isPool = activeTab === 'professional' &&
             viewMode === 'pool';
@@ -2208,7 +2404,9 @@
                 type: activeTab,
                 expandedTeamId: expandedTeamId,
                 expandedMembersVM: expandedMembersVM,
-                selectedIds: teamSelectedIds
+                selectedIds: teamSelectedIds,
+                sort: sort,
+                sortDirection: sortDirection
             });
         }
 
