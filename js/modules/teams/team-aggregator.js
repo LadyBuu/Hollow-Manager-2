@@ -45,18 +45,21 @@
  *   intervals is rejected by TeamCore's validation, which is the
  *   correct constraint.
  *
- * TEAM RANKINGS VM (ordered-list model, this revision):
+ * TEAM RANKINGS VM (ordered-list model):
  *   The Rankings tab does not render per-team effective ranks in
  *   an arbitrary order. It renders a POSITION-ORDERED list per
  *   year: position 1, position 2, ..., position N, one team per
- *   position, no gaps, no duplicates.
+ *   position, no gaps, no duplicates. Deprecated teams at or
+ *   after their deprecation year are excluded entirely by the
+ *   query layer.
  *
  *   The write-side contiguity invariant is owned by TeamCore's
  *   write primitives (insertRankingAt, removeRankingAt,
  *   moveRanking). The read-side wrappers are
  *   TeamQueries.getRankedTeamsForYear (position-ordered rows)
  *   and TeamQueries.getUnrankedTeamsForYear (teams active at the
- *   year with no explicit entry and no inherited rank).
+ *   year with no explicit entry and no inherited rank, and not
+ *   deprecated).
  *
  *   The VM shape is:
  *
@@ -86,6 +89,37 @@
  *   `sortMode` and `sortDirection` are GONE. Position is the
  *   only order. The "Insert team" picker offers `unrankedTeams`;
  *   the view is responsible for the picker's own sort.
+ *
+ * TEAM LIST SORTING AND FILTERING (this revision):
+ *   The professional tab's list supports two independent knobs,
+ *   both persisted in TeamUI and both passed through this module:
+ *
+ *     sort         'name' | 'period' | 'members'
+ *     sortDirection 'asc' | 'desc'
+ *
+ *   'name'    — current period name.
+ *   'period'  — the team's FIRST period's start year. A team
+ *               whose first period has no parseable start sorts
+ *               last regardless of direction. Tiebreak by name.
+ *   'members' — active member count at the filter year. Larger
+ *               teams first when direction is 'desc' (the natural
+ *               meaning of "sort by members"). Tiebreak by name.
+ *
+ *   The list also supports a MULTI-SELECT specialisation filter:
+ *
+ *     specialisationIds   array of mission-type ids
+ *
+ *   A team matches when its CURRENT-period specialisations
+ *   contain AT LEAST ONE of the selected ids ("any-of"). An
+ *   empty array means "no specialisation filter"; the filter
+ *   step is skipped. The filter composes with the search filter
+ *   and runs before the sort, so counts and order reflect the
+ *   filtered set.
+ *
+ *   The filter bar VM (getFilterBarViewModel) surfaces the sort
+ *   vocabulary, the specialisation vocabulary, and the count of
+ *   selected specialisations so the renderer does not have to
+ *   reach into TeamUI or MissionConstants itself.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
@@ -198,7 +232,7 @@
         typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
         _missing.push('TeamQueries.isTeamActiveAtPeriod');
     }
-    // ---- New: ordered-list reads ----
+    // ---- Ordered-list reads ----
     if (!TeamQueries ||
         typeof TeamQueries.getRankedTeamsForYear !== 'function') {
         _missing.push('TeamQueries.getRankedTeamsForYear');
@@ -444,6 +478,99 @@
         return result;
     }
 
+    /**
+     * Normalise an array of mission-type ids the same way the
+     * caller (TeamUI) does: trim, drop blanks, dedupe. A
+     * non-array input returns []. This exists so the aggregator
+     * and the UI agree on what "the current selection" means
+     * regardless of how the caller built the array.
+     */
+    function normaliseSpecialisationIds(raw) {
+        if (!Array.isArray(raw)) { return []; }
+        var seen = Object.create(null);
+        var out = [];
+        for (var i = 0; i < raw.length; i++) {
+            var entry = raw[i];
+            if (typeof entry !== 'string') { continue; }
+            var s = entry.trim();
+            if (s === '') { continue; }
+            if (seen[s]) { continue; }
+            seen[s] = true;
+            out.push(s);
+        }
+        return out;
+    }
+
+    /**
+     * First start year of a team's periods array, or null.
+     *
+     * The FIRST period's start year is what "sort by period"
+     * means: it is the year the team was founded. A team whose
+     * first period has no parseable start sorts last. Falls back
+     * to the top-level startPeriod when the periods array is
+     * missing or empty (an unmigrated record).
+     */
+    function getTeamFirstStartYear(team) {
+        if (!team || typeof team !== 'object') { return null; }
+
+        if (Array.isArray(team.periods) && team.periods.length > 0) {
+            var first = team.periods[0];
+            if (first && typeof first === 'object') {
+                var parsed = parsePeriod(first.startPeriod);
+                if (parsed !== null) { return parsed; }
+            }
+        }
+
+        var top = parsePeriod(team.startPeriod);
+        return top !== null ? top : null;
+    }
+
+    /**
+     * Build the specialisation vocabulary the filter bar's
+     * popover will render.
+     *
+     * Reads MissionConstants.getMissionTypes(). Returns a sorted
+     * [{ id, label }] list. Missing MissionConstants yields [],
+     * in which case the filter bar cannot render the popover and
+     * will hide it (which is the correct degradation: no
+     * vocabulary, no filter).
+     */
+    function buildSpecialisationOptions() {
+        var MC = getMissionConstants();
+        if (!MC || typeof MC.getMissionTypes !== 'function') {
+            return [];
+        }
+
+        var typesMap;
+        try {
+            typesMap = MC.getMissionTypes();
+        } catch (e) {
+            return [];
+        }
+        if (!typesMap || typeof typesMap !== 'object') {
+            return [];
+        }
+
+        var options = [];
+        var keys = Object.keys(typesMap);
+        for (var i = 0; i < keys.length; i++) {
+            var type = typesMap[keys[i]];
+            if (!type || !isNonEmptyString(type.id)) { continue; }
+            options.push({
+                id: type.id,
+                label: isNonEmptyString(type.label)
+                    ? type.label
+                    : type.id
+            });
+        }
+
+        options.sort(function(a, b) {
+            return a.label.localeCompare(b.label);
+        });
+
+        return options;
+    }
+
     // ============================================================
     // SPECIALISATIONS
     // ============================================================
@@ -495,40 +622,7 @@
     }
 
     function getSpecialisationOptions() {
-        var MC = getMissionConstants();
-        if (!MC ||
-            typeof MC.getMissionTypes !== 'function') {
-            return [];
-        }
-
-        var typesMap;
-        try {
-            typesMap = MC.getMissionTypes();
-        } catch (e) {
-            return [];
-        }
-        if (!typesMap || typeof typesMap !== 'object') {
-            return [];
-        }
-
-        var options = [];
-        var keys = Object.keys(typesMap);
-        for (var i = 0; i < keys.length; i++) {
-            var type = typesMap[keys[i]];
-            if (!type || !isNonEmptyString(type.id)) { continue; }
-            options.push({
-                id: type.id,
-                label: isNonEmptyString(type.label)
-                    ? type.label
-                    : type.id
-            });
-        }
-
-        options.sort(function(a, b) {
-            return a.label.localeCompare(b.label);
-        });
-
-        return options;
+        return buildSpecialisationOptions();
     }
 
     // ============================================================
@@ -928,6 +1022,29 @@
     // ============================================================
     // TEAM LIST VM
     // ============================================================
+    //
+    // SORT KEYS (this revision):
+    //   'name'    — current period name (default).
+    //   'period'  — first period start year ascending; teams with
+    //               no parseable first start year sort last; the
+    //               sortDirection inversion applies to the years,
+    //               not to the "missing" bucket.
+    //   'members' — active member count at the filter year. Larger
+    //               teams first when direction is 'desc' (the
+    //               natural meaning of "sort by members").
+    //
+    //   The filterDirection invert applies only to the primary
+    //   sort key. The name tiebreak stays ascending in both
+    //   directions; a stable secondary order is what makes the
+    //   list feel the same however the primary is flipped.
+    //
+    // SPECIALISATION FILTER (this revision):
+    //   options.specialisationIds is an array of mission-type ids.
+    //   A team matches when its CURRENT-period specialisations
+    //   contain AT LEAST ONE of the selected ids ("any-of"). The
+    //   filter runs after the search filter and before the sort,
+    //   so counts and order reflect the filtered set. An empty
+    //   array skips the filter entirely.
 
     function getTeamListViewModel(options) {
         options = options || {};
@@ -941,13 +1058,19 @@
         }
 
         var periodNum = TeamConstants.parsePeriod(options.period);
-        // We include inactive/deprecated teams if we are explicitly 
+        // We include inactive/deprecated teams if we are explicitly
         // showing them.
         var includeInactive = options.includeInactive === true ||
             options.showInactive === true;
         var search = options.search || '';
         var sort = options.sort || 'name';
-        var sortDirection = options.sortDirection || 'asc';
+        var sortDirection = options.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
+        var specialisationIds = normaliseSpecialisationIds(
+            options.specialisationIds
+        );
+        var hasSpecialisationFilter = specialisationIds.length > 0;
 
         var teams = TeamQueries.getTeams(
             type, status, includeInactive
@@ -961,6 +1084,32 @@
                 return currentName
                     .toLowerCase()
                     .indexOf(lowerSearch) !== -1;
+            });
+        }
+
+        // ---- Specialisation filter (any-of) ----
+        //
+        // A team matches if the intersection of its current
+        // specialisations and the selected ids is non-empty.
+        // Runs before the sort so the counts and the order both
+        // reflect the filtered set.
+        if (hasSpecialisationFilter) {
+            var specSet = Object.create(null);
+            for (var s = 0; s < specialisationIds.length; s++) {
+                specSet[specialisationIds[s]] = true;
+            }
+
+            teams = teams.filter(function(team) {
+                var descriptives =
+                    readCurrentDescriptives(team);
+                var ids = descriptives.specialisationIds;
+                if (!Array.isArray(ids)) { return false; }
+                for (var i = 0; i < ids.length; i++) {
+                    if (specSet[ids[i]] === true) {
+                        return true;
+                    }
+                }
+                return false;
             });
         }
 
@@ -1033,9 +1182,33 @@
                     bVal = parseInt(b.currentRank, 10) || 999;
                     break;
                 case 'members':
+                    // Active member count at the filter year.
+                    // Larger teams first when descending; the
+                    // sortDirection invert applies.
                     aVal = a.activeMemberCount;
                     bVal = b.activeMemberCount;
                     break;
+                case 'period':
+                    // First period start year. Teams with no
+                    // parseable first start year sort last in
+                    // BOTH directions. Tiebreak by name.
+                    aVal = getTeamFirstStartYear(a);
+                    bVal = getTeamFirstStartYear(b);
+                    if (aVal === null && bVal === null) {
+                        return String(a.name || '').localeCompare(
+                            String(b.name || '')
+                        );
+                    }
+                    if (aVal === null) { return 1; }
+                    if (bVal === null) { return -1; }
+                    if (aVal !== bVal) {
+                        return sortDirection === 'desc'
+                            ? bVal - aVal
+                            : aVal - bVal;
+                    }
+                    return String(a.name || '').localeCompare(
+                        String(b.name || '')
+                    );
                 case 'status':
                     aVal = a.isDeprecated ? 2 : (a.isActive ? 0 : 1);
                     bVal = b.isDeprecated ? 2 : (b.isActive ? 0 : 1);
@@ -1122,6 +1295,13 @@
     // ============================================================
     // TEAM PAGE VM
     // ============================================================
+    //
+    // The page VM passes the sort/filter knobs through to the list
+    // VM unchanged. getTeamPageViewModel's own options accepted
+    // `sort` and `sortDirection` before this revision but never
+    // forwarded them; that was the pre-existing reason the list
+    // always rendered name-ascending. This revision forwards them
+    // along with `specialisationIds`.
 
     function getTeamPageViewModel(options) {
         options = options || {};
@@ -1131,13 +1311,21 @@
         var periodNum = TeamConstants.parsePeriod(options.period);
         var expandedTeamId = options.expandedTeamId || null;
         var search = options.search || '';
+        var sort = options.sort || 'name';
+        var sortDirection = options.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
+        var specialisationIds = options.specialisationIds;
 
         var listVM = getTeamListViewModel({
             type: type,
             status: status,
             showInactive: showInactive,
             period: periodNum !== null ? periodNum : undefined,
-            search: search
+            search: search,
+            sort: sort,
+            sortDirection: sortDirection,
+            specialisationIds: specialisationIds
         });
 
         var expandedTeam = null;
@@ -1530,6 +1718,26 @@
         };
     }
 
+    // ============================================================
+    // FILTER BAR VM (this revision)
+    // ============================================================
+    //
+    // The filter bar needs more than the year and the Show Inactive
+    // flag now. It also needs:
+    //
+    //   sort                     the current sort key
+    //   sortDirection            the current direction
+    //   sortOptions              the vocabulary to build the <select>
+    //   specialisationIds        the current selection (array)
+    //   specialisationOptions    the vocabulary to build the popover
+    //   selectedSpecialisationCount  count for the button label
+    //   hasSpecialisationFilter  boolean shortcut for the renderer
+    //
+    // The counts and the boolean are precomputed so the renderer
+    // does not have to walk the array itself. The vocabulary is
+    // emitted here so the renderer does not have to reach into
+    // MissionConstants or TeamUI.
+
     function getFilterBarViewModel(tab) {
         var normalized =
             TeamConstants.normalizeTeamType(tab) || 'professional';
@@ -1544,12 +1752,38 @@
                 ? filter.showInactive
                 : false;
 
+        var sort = isNonEmptyString(filter.sort)
+            ? filter.sort
+            : 'name';
+        var sortDirection = filter.sortDirection === 'desc'
+            ? 'desc'
+            : 'asc';
+
+        var specialisationIds = normaliseSpecialisationIds(
+            filter.specialisationIds
+        );
+
+        var sortOptions = [
+            { id: 'name', label: 'Name' },
+            { id: 'period', label: 'Period' },
+            { id: 'members', label: 'Members' }
+        ];
+
         return {
             tab: normalized,
             typeLabel: getTypeLabel(normalized),
             periodLabel: getPeriodLabel(normalized),
             filterYear: filter.filterYear || '',
-            showInactive: showInactive
+            showInactive: showInactive,
+
+            sort: sort,
+            sortDirection: sortDirection,
+            sortOptions: sortOptions,
+
+            specialisationIds: specialisationIds,
+            specialisationOptions: buildSpecialisationOptions(),
+            selectedSpecialisationCount: specialisationIds.length,
+            hasSpecialisationFilter: specialisationIds.length > 0
         };
     }
 
@@ -1564,33 +1798,10 @@
     // alphabetical (the query layer's own order).
     //
     // SHOWINACTIVE:
-    //   `showInactive` is passed through to BOTH query reads:
-    //
-    //     getRankedTeamsForYear(year, { showInactive })
-    //       false (default): rows whose team is not active in
-    //                        `year` are dropped.
-    //       true:            every explicit entry is returned,
-    //                        including teams not active in `year`.
-    //
-    //     getUnrankedTeamsForYear(year, { showInactive })
-    //       The flag has no effect here (the list is always
-    //       active-only). It is passed for signature symmetry so
-    //       the aggregator does not special-case which read takes
-    //       the flag. See the query module's block comment.
-    //
-    //   `showInactive` is also echoed on the VM for the view's
-    //   checkbox. Echoing it and passing it through are not
-    //   redundant: the checkbox renders from the echo, and the
-    //   rows render from the query result. If the two ever
-    //   diverged (a caller mutated the echo without re-running),
-    //   the checkbox would lie. Passing the flag through is what
-    //   keeps them honest.
-    //
-    // A note on validation: `year` must be a valid positive
-    // integer. An invalid or missing year throws, matching the
-    // other required-year readers in this module (see
-    // getProfessionalPoolViewModel). This is a caller bug, not a
-    // degraded state.
+    //   `showInactive` is passed through to BOTH query reads.
+    //   Deprecated teams are excluded by the query layer
+    //   regardless of showInactive: they are gone, not merely
+    //   inactive.
 
     function getTeamRankingsViewModel(options) {
         options = options || {};
@@ -1606,7 +1817,6 @@
         var showInactive = options.showInactive === true;
         var readOptions = { showInactive: showInactive };
 
-        // CHANGED (showInactive): the flag is passed to both reads.
         var rows = TeamQueries.getRankedTeamsForYear(
             yearNum, readOptions
         );
@@ -2241,13 +2451,7 @@
             }
         }
 
-        // Smoke test: the Rankings VM contract. We do not have
-        // a store fixture at load, so we assert shape only:
-        //   - invalid year throws
-        //   - a valid year returns { year, rows, unrankedTeams,
-        //     showInactive }
-        //   - showInactive is echoed verbatim
-        //   - sortMode / sortDirection are absent
+        // Smoke test: the Rankings VM contract.
         try {
             var threwOnBadYear = false;
             try {
@@ -2275,13 +2479,6 @@
                     'expected shape for an empty year'
                 );
             }
-            if ('sortMode' in emptyFalse ||
-                'sortDirection' in emptyFalse) {
-                missing.push(
-                    'getTeamRankingsViewModel leaked sortMode/' +
-                    'sortDirection'
-                );
-            }
 
             var emptyTrue = getTeamRankingsViewModel({
                 year: 1900,
@@ -2295,6 +2492,86 @@
             }
         } catch (e) {
             missing.push('rankings VM smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: normaliseSpecialisationIds.
+        try {
+            var n1 = normaliseSpecialisationIds(
+                ['combat', ' combat ', '', 'recovery', 'combat']
+            );
+            if (n1.length !== 2 ||
+                n1.indexOf('combat') === -1 ||
+                n1.indexOf('recovery') === -1) {
+                missing.push(
+                    'normaliseSpecialisationIds did not trim/dedup'
+                );
+            }
+
+            if (normaliseSpecialisationIds('not-array').length !== 0) {
+                missing.push(
+                    'normaliseSpecialisationIds: non-array input ' +
+                    'should return []'
+                );
+            }
+            if (normaliseSpecialisationIds(null).length !== 0) {
+                missing.push(
+                    'normaliseSpecialisationIds: null should return []'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'normaliseSpecialisationIds smoke test threw: ' +
+                e.message
+            );
+        }
+
+        // Smoke test: getTeamFirstStartYear.
+        try {
+            if (getTeamFirstStartYear({
+                periods: [{ startPeriod: '1900', endPeriod: '' }]
+            }) !== 1900) {
+                missing.push(
+                    'getTeamFirstStartYear: should read first period'
+                );
+            }
+            if (getTeamFirstStartYear({
+                startPeriod: '1890'
+            }) !== 1890) {
+                missing.push(
+                    'getTeamFirstStartYear: should fall back to ' +
+                    'top-level startPeriod'
+                );
+            }
+            if (getTeamFirstStartYear({}) !== null) {
+                missing.push(
+                    'getTeamFirstStartYear: empty team should be null'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'getTeamFirstStartYear smoke test threw: ' + e.message
+            );
+        }
+
+        // Smoke test: getFilterBarViewModel surface.
+        try {
+            var fbVM = getFilterBarViewModel('professional');
+            if (!fbVM ||
+                typeof fbVM.sort !== 'string' ||
+                typeof fbVM.sortDirection !== 'string' ||
+                !Array.isArray(fbVM.sortOptions) ||
+                fbVM.sortOptions.length !== 3 ||
+                !Array.isArray(fbVM.specialisationIds) ||
+                !Array.isArray(fbVM.specialisationOptions)) {
+                missing.push(
+                    'getFilterBarViewModel did not return the ' +
+                    'expected surface'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'getFilterBarViewModel smoke test threw: ' + e.message
+            );
         }
 
         if (missing.length > 0) {
