@@ -21,6 +21,9 @@
  *   - Open the team export picker and the candidate export.
  *   - Open the team verifier modal.
  *   - Open the kill-team modal.
+ *   - Own the filter bar's sort, direction, and specialisations
+ *     popover state (the popover's open/close is local; the
+ *     selection itself lives in TeamUI).
  *
  * WHAT THIS DOES NOT OWN:
  *   - Domain logic. TeamCore owns mutations; TeamQueries owns reads;
@@ -37,7 +40,53 @@
  *   - The periods shape. TeamCore owns the schema.
  *   - The rankings tab body. TeamRankingsView owns it.
  *
- * RANKINGS TAB (ordered-list model, this revision):
+ * FILTER BAR CONTROLS (this revision):
+ *   The professional Teams-mode filter bar carries three new
+ *   controls next to the year input and the Show Inactive
+ *   checkbox:
+ *
+ *     #team-sort            <select> of { name, period, members }
+ *                           Persisted in TeamUI under the
+ *                           'sort' filter key.
+ *     #team-sort-direction  Direction toggle button. Persisted
+ *                           in TeamUI under 'sortDirection'.
+ *     #team-specialisations-toggle
+ *                           Popover trigger. Clicking it toggles
+ *                           the panel's `hidden` attribute. The
+ *                           panel's OPEN state is NOT persisted;
+ *                           only the SELECTION is, via the
+ *                           'specialisationIds' filter key.
+ *     .team-specialisation-checkbox (in the panel)
+ *                           Each change rebuilds the selection
+ *                           array from every checked box and
+ *                           writes it through TeamUI.
+ *     #team-specialisations-clear
+ *                           Sets the selection to [].
+ *
+ *   All three persisted keys route through TeamUI.setFilter, then
+ *   refreshUI(). The open/close of the popover is handled inline
+ *   because it is transient state, not filter state.
+ *
+ *   OUTSIDE-CLICK CLOSE:
+ *   A click anywhere outside the .team-specialisations-group
+ *   closes the panel if it is open. This is a document-level
+ *   listener registered once per init and cleaned up via the
+ *   existing _eventListeners bookkeeping. A container-level
+ *   delegate would not fire on clicks in the page header or in
+ *   the list, which is why this one is on document.
+ *
+ *   OPEN-STATE SURVIVAL ACROSS REFRESH:
+ *   refreshUI re-renders the filter bar from a fresh VM. The
+ *   renderer always emits the panel with the `hidden` attribute,
+ *   so without a recovery step every tick of a checkbox would
+ *   snap the panel shut. refreshUI reads the pre-refresh
+ *   aria-expanded on the trigger and re-opens the panel after the
+ *   re-render if it was open. The popover therefore stays open
+ *   across a tick; it closes only on outside-click, on the toggle
+ *   itself, or on a mode/tab change (which reloads the container
+ *   anyway).
+ *
+ * RANKINGS TAB (ordered-list model):
  *   The Rankings tab renders a POSITION-ORDERED list per year.
  *   Rows are draggable; dragging a row onto another row inserts
  *   it at that position and shifts the tail down by one.
@@ -46,30 +95,17 @@
  *
  *     Drag a row onto another row
  *       TeamCore.moveRanking(teamId, year, newPosition).
- *       newPosition is the target row's position, adjusted for
- *       whether the drop was above or below the target row's
- *       midpoint. The controller reads the target row's
- *       data-position and the pointer's position within that
- *       row to compute newPosition.
  *
  *     Drag a row onto the empty area below the last row
- *       TeamCore.moveRanking(teamId, year, N) — append to the
- *       end. N is the row count plus one, read from the last
- *       row's data-position plus one.
+ *       TeamCore.moveRanking(teamId, year, N).
  *
  *     Insert button (#rankings-insert-btn)
  *       TeamCore.insertRankingAt(teamId, year, position).
- *       A blank position means append (currentRows + 1),
- *       read from the button's data-current-rows.
  *
  *     Clear button (.rankings-clear-rank)
  *       TeamCore.removeRankingAt(teamId, year). Idempotent.
- *       After removal, the team drops out of `rows` and (if
- *       still active with no inherited rank) reappears in
- *       `unrankedTeams`.
  *
- *     Year apply button (#rankings-apply-year-btn, Enter in
- *     #rankings-year-input)
+ *     Year apply button / Enter in #rankings-year-input
  *       Sets _rankingsYear; refreshes the tab.
  *
  *     Show Inactive toggle (#rankings-show-inactive)
@@ -81,7 +117,7 @@
  *   There is no click-to-edit rank input anymore. Position is
  *   a fact about the list, not a text field.
  *
- * PERIODS EDITOR (D2, this revision):
+ * PERIODS EDITOR (D2):
  *   The team form's periods editor is a DOM-only staging area.
  *   Rows can be added and removed by the user; chip lists
  *   within each row can be edited. Nothing hits the store
@@ -89,9 +125,7 @@
  *   back out.
  *
  *   The LAST period's end input is now a normal editable
- *   number input, not a read-only "present" placeholder. A
- *   blank end on the last row means the team is still ongoing;
- *   a non-blank end means the team disbanded at that year.
+ *   number input, not a read-only "present" placeholder.
  *
  *   Handlers:
  *
@@ -102,44 +136,9 @@
  *     .team-specialisation-remove  removes the chip it is inside
  *
  *   The add-row handler inherits the previous row's tactical
- *   style and specialisations, per the periods model. The new
- *   row's start year defaults to one greater than the previous
- *   row's start, or the application year if the previous start
- *   cannot be parsed. The previous row's end year is auto-set
- *   to (start - 1) unless the user has already given it an
- *   explicit end.
- *
- *   Removing a row no longer promotes the remaining last row
- *   to a special "current" state. Every row's end input is
- *   editable at all times; removing a row simply leaves the
- *   new last row's end as the user last set it.
- *
- *   All four handlers bind on the modal, not through the
- *   container delegation chain. The form is its own modal shell
- *   and is not a descendant of the teams container.
- *
- * TOP-OF-FORM NAME AND nameIsAuto:
- *   Unchanged from the previous revision. The top-of-form name
- *   input and the last period's name input can both edit the
- *   current period's name; the submit-time resolution uses the
- *   dirty-check on the top field plus the team's nameIsAuto flag.
- *
- * SPECIALISATION VOCABULARY:
- *   Unchanged from the previous revision. The form VM's
- *   specialisationOptions is stashed on the modal, and
- *   getSpecialisationOptions(form) reads from that stash.
- *
- * TIMELINE STATE:
- *   Unchanged from the previous revision.
- *
- * MATCHMAKING PLANNER:
- *   Unchanged from the previous revision.
- *
- * EXPORT BUTTONS:
- *   Unchanged from the previous revision.
- *
- * MODAL LIFECYCLE:
- *   Unchanged from the previous revision.
+ *   style and specialisations. The new row's start year defaults
+ *   to one greater than the previous row's start, or the
+ *   application year if the previous start cannot be parsed.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamCore
@@ -269,6 +268,9 @@
     }
     if (!TeamUI || typeof TeamUI.getExpandedTeamId !== 'function') {
         _missing.push('TeamUI.getExpandedTeamId');
+    }
+    if (!TeamUI || typeof TeamUI.setFilter !== 'function') {
+        _missing.push('TeamUI.setFilter');
     }
 
     if (!TeamRender ||
@@ -483,6 +485,12 @@
 
     var TIMELINE_MAX_SPAN = 200;
 
+    // Document-level outside-click listener reference, so it can
+    // be removed in destroy() without walking the whole
+    // _eventListeners array (which is normally populated for
+    // container-bound delegates).
+    var _documentClickHandler = null;
+
     // ============================================================
     // LISTENER BOOKKEEPING
     // ============================================================
@@ -492,13 +500,25 @@
             var item = _eventListeners[i];
             try {
                 item.element.removeEventListener(
-                    item.eventName, item.handler
+                    item.eventName, item.handler,
+                    item.options || false
                 );
             } catch (e) {
                 // Ignore.
             }
         }
         _eventListeners = [];
+
+        if (_documentClickHandler) {
+            try {
+                document.removeEventListener(
+                    'click', _documentClickHandler, true
+                );
+            } catch (e) {
+                // Ignore.
+            }
+            _documentClickHandler = null;
+        }
     }
 
     function delegate(selector, eventName, handler) {
@@ -566,6 +586,21 @@
         _rankDragTeamId = null;
         _rankDragYear = null;
 
+        // ---- Preserve the specialisations popover's open state
+        //      across the re-render. The renderer always emits
+        //      the panel with `hidden`; without this step, every
+        //      tick of a checkbox would snap the panel shut. The
+        //      state is read from the current DOM before the
+        //      container is replaced. ----
+        var popoverWasOpen = false;
+        var previousToggle = _container.querySelector(
+            '#team-specialisations-toggle'
+        );
+        if (previousToggle) {
+            popoverWasOpen =
+                previousToggle.getAttribute('aria-expanded') === 'true';
+        }
+
         var currentTab = TeamUI.getCurrentTab();
         var period = getCurrentPeriod(currentTab);
         var showInactive = getShowInactive(currentTab);
@@ -579,12 +614,32 @@
             _rankingsShowInactive = false;
         }
 
+        // Read the sort/filter knobs from TeamUI. They are the
+        // source of truth; the page VM is rebuilt from them on
+        // every refresh.
+        var filterForSort = TeamUI.getFilter(currentTab);
+        var sort = filterForSort && isNonEmptyString(filterForSort.sort)
+            ? filterForSort.sort
+            : 'name';
+        var sortDirection =
+            filterForSort && filterForSort.sortDirection === 'desc'
+                ? 'desc'
+                : 'asc';
+        var specialisationIds =
+            filterForSort &&
+            Array.isArray(filterForSort.specialisationIds)
+                ? filterForSort.specialisationIds.slice()
+                : [];
+
         var pageVM = TeamAggregator.getTeamPageViewModel({
             type: currentTab,
             period: period,
             showInactive: showInactive,
             expandedTeamId:
-                _viewMode === 'teams' ? expandedTeamId : null
+                _viewMode === 'teams' ? expandedTeamId : null,
+            sort: sort,
+            sortDirection: sortDirection,
+            specialisationIds: specialisationIds
         });
 
         if (_viewMode === 'teams' &&
@@ -594,6 +649,11 @@
 
         pageVM.viewMode = _viewMode;
         pageVM.teamSelectedIds = _teamSelectedIds;
+
+        // Thread sort state through so renderList can draw the
+        // header sort indicator.
+        pageVM.sort = sort;
+        pageVM.sortDirection = sortDirection;
 
         if (currentTab === 'professional' && _viewMode === 'pool') {
             if (period === null) {
@@ -655,6 +715,23 @@
             filterVM.viewMode = _viewMode;
             filterContainer.innerHTML =
                 TeamRender.renderFilterBar(filterVM);
+
+            // ---- Re-open the specialisations popover if it was
+            //      open before the re-render. The new panel was
+            //      emitted with `hidden`, so this step restores
+            //      the open state. ----
+            if (popoverWasOpen) {
+                var toggle = filterContainer.querySelector(
+                    '#team-specialisations-toggle'
+                );
+                var panel = filterContainer.querySelector(
+                    '#team-specialisations-panel'
+                );
+                if (toggle && panel) {
+                    panel.removeAttribute('hidden');
+                    toggle.setAttribute('aria-expanded', 'true');
+                }
+            }
         }
     }
 
@@ -1118,36 +1195,6 @@
     // The Rankings tab is now a position-ordered list with
     // draggable rows and an insert strip. There is no click-to-
     // edit rank input and no sort controls.
-    //
-    // Interactions wired here:
-    //
-    //   #rankings-apply-year-btn, Enter in #rankings-year-input
-    //     Commit the year.
-    //
-    //   #rankings-show-inactive (change)
-    //     Toggle inactive teams.
-    //
-    //   #rankings-export-year-btn
-    //     Export the year.
-    //
-    //   .rankings-clear-rank (click)
-    //     TeamCore.removeRankingAt(teamId, year).
-    //
-    //   #rankings-insert-btn (click)
-    //     TeamCore.insertRankingAt(teamId, year, position). Blank
-    //     position means append (currentRows + 1).
-    //
-    //   .rankings-table-row (dragstart, dragover, dragleave,
-    //                        drop, dragend)
-    //     Drag-to-reorder. A drop on row N before its midpoint
-    //     targets position N. A drop after its midpoint targets
-    //     position N+1 (which is equivalent to "insert after row
-    //     N", i.e. one position further down). The write is
-    //     TeamCore.moveRanking(teamId, year, newPosition).
-    //
-    //     Visual feedback: the row under the pointer carries
-    //     .drop-before or .drop-after (styled by teams.css).
-    //     The dragged row carries .is-dragging.
 
     function bindRankingsActions() {
         delegate('#rankings-apply-year-btn', 'click', function(e) {
@@ -1417,8 +1464,6 @@
         if (e.dataTransfer) {
             try {
                 e.dataTransfer.effectAllowed = 'move';
-                // Some browsers require a data payload for the
-                // drag to be considered valid.
                 e.dataTransfer.setData(
                     'text/plain', teamId
                 );
@@ -1433,7 +1478,6 @@
 
         var targetTeamId = row.dataset.teamId;
         if (targetTeamId === _rankDragTeamId) {
-            // Dropping on the dragged row itself is a no-op.
             return;
         }
 
@@ -1446,8 +1490,6 @@
             }
         }
 
-        // Decide before/after by pointer position within the
-        // row.
         var rect = row.getBoundingClientRect();
         var isAfter = (e.clientY - rect.top) > (rect.height / 2);
 
@@ -1465,8 +1507,6 @@
         var draggedTeamId = _rankDragTeamId;
         var year = _rankDragYear;
 
-        // Clear drag state immediately so a re-entrant event
-        // cannot act on stale ids.
         _rankDragTeamId = null;
         _rankDragYear = null;
 
@@ -1486,9 +1526,6 @@
         var targetPosition = parseInt(row.dataset.position, 10);
         if (isNaN(targetPosition)) { return; }
 
-        // Before-vs-after decision, recomputed at drop time (the
-        // dragover class is advisory; we do not trust it if the
-        // pointer moved between dragover and drop).
         var rect = row.getBoundingClientRect();
         var isAfter = (e.clientY - rect.top) > (rect.height / 2);
 
@@ -1713,22 +1750,6 @@
     // ============================================================
     // PERIODS EDITOR (D2: closed last period is now allowed)
     // ============================================================
-    //
-    // The periods editor is a DOM-only staging area. Appending a
-    // row adds a new period after the current last row; it does
-    // NOT auto-close the previous last row's end input unless the
-    // user left it blank (in which case it is set to newStart-1
-    // so the previous period has a coherent end).
-    //
-    // Removing a row no longer promotes the remaining last row.
-    // Every row's end input is editable at all times; removing
-    // a row simply leaves the new last row's end as the user last
-    // set it.
-    //
-    // collectPeriodsFromForm reads EVERY row's end input,
-    // including the last. A blank end on the last row means
-    // "still ongoing"; a non-blank end means the team disbanded
-    // at that year.
 
     function appendPeriodRow(form, modal) {
         var list = form.querySelector('#team-periods-list');
@@ -1782,12 +1803,6 @@
                 }
             }
 
-            // ---- If the previous last row's end is blank,
-            //      fill it with (newStart - 1) so the previous
-            //      period has a coherent end. If it already has
-            //      a non-blank end, leave it alone: the user
-            //      set it, and we do not overwrite explicit
-            //      values. ----
             var prevEndEl = lastRow.querySelector(
                 '.team-period-end'
             );
@@ -1934,9 +1949,6 @@
                 '.team-period-row-label'
             );
             if (label) {
-                // The "(current)" suffix is gone. Every row is
-                // just "Period N". The last row is identifiable
-                // by its position in the list, not by a label.
                 label.textContent = 'Period ' + (i + 1);
             }
 
@@ -2328,16 +2340,6 @@
         });
     }
 
-    /**
-     * Read every period row's fields, including the last row's
-     * end input. A blank end on any row means "unbounded on that
-     * side"; for the last row specifically, that means the team
-     * is still ongoing. A non-blank end on the last row means the
-     * team disbanded at that year.
-     *
-     * The previous revision skipped the last row's end; this one
-     * reads it. That is the whole point of D2.
-     */
     function collectPeriodsFromForm(form) {
         var list = form.querySelector('#team-periods-list');
         if (!list) {
@@ -2388,7 +2390,6 @@
                 return null;
             }
 
-            // ---- End is read on EVERY row, including the last. ----
             var endRaw = endEl
                 ? String(endEl.value || '').trim()
                 : '';
@@ -3510,6 +3511,28 @@
     // ============================================================
     // FILTERS
     // ============================================================
+    //
+    // The filter bar carries five interactive controls on the
+    // professional tab in Teams mode:
+    //
+    //   #team-filter-year               number input
+    //   #<tab>-show-inactive            checkbox
+    //   #team-sort                      <select> of sort keys
+    //   #team-sort-direction            direction toggle
+    //   #team-specialisations-toggle    popover trigger
+    //   .team-specialisation-checkbox   in the popover
+    //   #team-specialisations-clear     in the popover
+    //
+    // Year and Show Inactive are unchanged. The three new
+    // controls (sort, direction, specialisation selection) all
+    // route through TeamUI.setFilter and then refreshUI().
+    //
+    // The popover's OPEN state is inline DOM state, not TeamUI
+    // state. It survives a refresh because refreshUI reads the
+    // pre-refresh aria-expanded and re-opens the panel if it was
+    // open. Outside-click closes it: the document listener
+    // registered in bindFilters closes the panel when a click
+    // lands outside .team-specialisations-group.
 
     function bindFilters() {
         delegate('#apply-filter-btn', 'click', function(e) {
@@ -3533,6 +3556,172 @@
                 TeamUI.setFilter(tab, 'showInactive', target.checked);
                 refreshUI();
             }
+        );
+
+        // ---- Sort key ----
+        //
+        // Changing the sort is a filter-bar action; the same
+        // Apply button that commits year and show-inactive does
+        // NOT gate the sort. Picking a sort key is immediate —
+        // it is a pure presentation choice and gating it behind
+        // Apply would make the control feel broken.
+        delegate('#team-sort', 'change', function(e, target) {
+            e.preventDefault();
+            var tab = TeamUI.getCurrentTab();
+            if (tab !== 'professional') { return; }
+            var value = String(target.value || '');
+            if (value === '') { return; }
+            TeamUI.setFilter(tab, 'sort', value);
+            refreshUI();
+        });
+
+        // ---- Sort direction toggle ----
+        //
+        // The button carries data-direction (current) and
+        // data-next-direction (what a click switches to). Both
+        // are emitted by the renderer. The handler trusts
+        // data-next-direction so the flip is a single read, not
+        // a recomputation.
+        delegate('#team-sort-direction', 'click', function(e, target) {
+            e.preventDefault();
+            var tab = TeamUI.getCurrentTab();
+            if (tab !== 'professional') { return; }
+            var next = String(
+                target.dataset.nextDirection || 'asc'
+            );
+            if (next !== 'asc' && next !== 'desc') { return; }
+            TeamUI.setFilter(tab, 'sortDirection', next);
+            refreshUI();
+        });
+
+        // ---- Specialisations popover: open / close ----
+        //
+        // Clicking the trigger toggles the panel's `hidden`
+        // attribute and the trigger's aria-expanded. This is
+        // inline state; it is NOT persisted through TeamUI.
+        // refreshUI re-opens the panel after a re-render if
+        // aria-expanded was "true" pre-refresh, so a tick of a
+        // checkbox does not snap the panel shut.
+        delegate(
+            '#team-specialisations-toggle',
+            'click',
+            function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                var filterContainer = _container
+                    ? _container.querySelector('#filter-container')
+                    : null;
+                if (!filterContainer) { return; }
+
+                var panel = filterContainer.querySelector(
+                    '#team-specialisations-panel'
+                );
+                if (!panel) { return; }
+
+                var isOpen = !panel.hasAttribute('hidden');
+                if (isOpen) {
+                    panel.setAttribute('hidden', '');
+                    target.setAttribute('aria-expanded', 'false');
+                } else {
+                    panel.removeAttribute('hidden');
+                    target.setAttribute('aria-expanded', 'true');
+                }
+            }
+        );
+
+        // ---- Specialisations checkboxes ----
+        //
+        // Each change rebuilds the selection array from every
+        // checked box in the panel. Reading the whole panel is
+        // simpler than tracking per-checkbox state and means a
+        // future multi-panel case (not present today) would
+        // still work if every panel shared the same class.
+        delegate(
+            '.team-specialisation-checkbox',
+            'change',
+            function(e, target) {
+                e.preventDefault();
+                var tab = TeamUI.getCurrentTab();
+                if (tab !== 'professional') { return; }
+
+                var filterContainer = _container
+                    ? _container.querySelector('#filter-container')
+                    : null;
+                if (!filterContainer) { return; }
+
+                var boxes = filterContainer.querySelectorAll(
+                    '.team-specialisation-checkbox'
+                );
+                var ids = [];
+                for (var i = 0; i < boxes.length; i++) {
+                    if (boxes[i].checked) {
+                        var v = String(boxes[i].value || '');
+                        if (v !== '') { ids.push(v); }
+                    }
+                }
+
+                TeamUI.setFilter(tab, 'specialisationIds', ids);
+                refreshUI();
+            }
+        );
+
+        // ---- Specialisations clear ----
+        delegate(
+            '#team-specialisations-clear',
+            'click',
+            function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var tab = TeamUI.getCurrentTab();
+                if (tab !== 'professional') { return; }
+                TeamUI.setFilter(tab, 'specialisationIds', []);
+                refreshUI();
+            }
+        );
+
+        // ---- Document-level outside-click close ----
+        //
+        // The popover is anchored to the filter bar, not to a
+        // modal. A container-level delegate would not fire on
+        // clicks in the page header or in the list, so this one
+        // is on document, in the capture phase, to close the
+        // panel before the click's own handlers run.
+        //
+        // The listener is registered once per init and torn
+        // down in removeAllEventListeners.
+        _documentClickHandler = function(e) {
+            if (!_container) { return; }
+
+            var filterContainer = _container.querySelector(
+                '#filter-container'
+            );
+            if (!filterContainer) { return; }
+
+            var panel = filterContainer.querySelector(
+                '#team-specialisations-panel'
+            );
+            if (!panel) { return; }
+            if (panel.hasAttribute('hidden')) { return; }
+
+            var group = filterContainer.querySelector(
+                '.team-specialisations-group'
+            );
+            if (!group) { return; }
+
+            if (group.contains(e.target)) { return; }
+
+            panel.setAttribute('hidden', '');
+            var toggle = filterContainer.querySelector(
+                '#team-specialisations-toggle'
+            );
+            if (toggle) {
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+        };
+
+        document.addEventListener(
+            'click', _documentClickHandler, true
         );
     }
 
