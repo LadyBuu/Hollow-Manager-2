@@ -1,213 +1,213 @@
 /**
- * shared/queries/team-queries.js - Team Queries
- * Read-only team domain queries.
+ * modules/shared/queries/mission-queries.js - Mission Queries
+ * Read-only facade for mission data.
  *
- * Path: js/modules/teams/team-queries.js
+ * Path: js/modules/missions/mission-queries.js
  *
- * WHAT THIS OWNS:
- *   - Team lookup by id, type, class, period.
- *   - Membership predicates (interval, active, former).
- *   - Team-scoped membership reads.
- *   - Character membership reads (all-time, current).
- *   - Ranking queries, including the read-time inheritance
- *     model described below, AND the ordered-list reads that
- *     back the Rankings tab (this revision).
- *   - Period-scoped readers: getPeriods, getCurrentPeriod,
- *     getPeriodForYear, getActiveTeamMembersForPeriod,
- *     getRankingsForPeriod.
- *   - The half-open period overlap predicate
- *     (intervalOverlapsPeriod) used by every period-scoped read.
- *   - The professional personnel query:
- *     getProfessionalPersonnelAtPeriod.
- *   - Shortage history: getTeamShortagePeriods.
+ * RESPONSIBILITIES:
+ *   - Reading missions from window.data.missions.
+ *   - Filtering, searching, sorting missions.
+ *   - Aggregating statistics over missions.
  *
- * WHAT THIS DOES NOT OWN:
- *   - Mutations. TeamCore owns those.
- *   - Domain rules. TeamRules (where applicable) owns those.
- *   - Structural validation. TeamCore's schema block owns that.
- *   - The periods array itself. TeamCore writes it; this module
- *     reads it. The shape is documented in team-core.js.
+ * WHAT THIS MODULE DOES NOT OWN:
+ *   - Mutations. MissionCore owns those.
+ *   - Domain rules. MissionRules owns those.
+ *   - Structural validation. MissionSchema owns that.
+ *   - ID grammar. MissionId owns that. This module composes with
+ *     MissionId only for the derived-label materialisation used
+ *     by searchMissions.
+ *   - Cross-domain reads beyond the two-hop character→team
+ *     derivation. This module does NOT query characters or any
+ *     other domain directly.
  *
- * TYPE AND STATUS COMPARISONS:
- *   Every comparison of a team's `type` or `status` field routes
- *   through TeamConstants.normalizeTeamType / normalizeTeamStatus.
- *   A legacy 'temporary' or 'internship' record matches
- *   'professional' the moment it hits any query in this file; a
- *   stored 'Active' matches 'active'. There is no raw string
- *   comparison of either field in this module.
+ * ARCHIVED MISSIONS:
+ *   A mission with a non-null `archivedAt` is archived. Archived
+ *   missions are EXCLUDED by default from every collection read.
+ *   Pass { includeArchived: true } to include them.
  *
- *   The one exception is `isOperationalStatus`, which is an
- *   internal helper that classifies an already-normalised status
- *   into the {active, inactive} bucket. It normalises internally
- *   and is called only from getTeams and isTeamOperational.
+ *   getMission(id) does NOT filter — it returns the mission if it
+ *   exists, archived or not. Callers who need to check archive
+ *   state read `mission.archivedAt` or use `isArchived(mission)`.
  *
- * PERIOD PREDICATE OWNERSHIP:
- *   teamWindowContains(team, period)
- *   intervalContains(interval, period)
- *   windowContains(start, end, period)
+ * TEAM ASSIGNMENTS:
+ *   A mission may be assigned to any number of professional teams,
+ *   stored in `assignedTeamIds` (an array of team UUIDs).
  *
- * MEMBER PREDICATE OWNERSHIP:
- *   isMemberActive(member, period)
- *   isMemberFormer(member, period)
+ *   Legacy records carry a singular `assignedTeamId`. This module
+ *   transparently coerces that scalar into a single-element array
+ *   when reading, so a caller never has to know which shape the
+ *   stored record has.
  *
- * PERIODS MODEL:
- *   A team carries a `periods` array. Each entry is a self-
- *   contained description of what the team was during a range of
- *   years:
+ *   The canonical accessor is `getTeamIdsForMission(mission)`. It
+ *   returns a fresh array of normalised team ids. Every read in
+ *   this module that consults team assignment goes through it.
  *
- *     {
- *       startPeriod: '1900',
- *       endPeriod: '1905',       // '' means open-ended
- *       name: 'Rapid',
- *       tacticalStyle: '',
- *       specialisations: []
- *     }
+ * PARTICIPANTS:
+ *   A mission carries a `participants` array. Each entry is
+ *   { characterId, teamId, source } where source is 'team' or
+ *   'rookie'. teamId is a team UUID for a 'team' participant and
+ *   null for a 'rookie' participant.
  *
- *   The LAST entry is "the current period." Every reader that
- *   wants the team's display name, tactical style, or
- *   specialisations without a period context reads the last entry.
+ *   The canonical accessor is `getParticipantsForMission(mission)`.
+ *   It returns a fresh array of normalised participant records
+ *   (characterId, teamId, source), dropping any malformed entries.
  *
- *   Periods are ordered by startPeriod ascending. Only the last
- *   entry may carry an empty endPeriod. The canonicaliser and
- *   validator in team-core.js enforce both invariants; this
- *   module trusts the array and does not re-check.
+ *   `isParticipantInMission(mission, characterId, teamId)` answers
+ *   whether a given (characterId, teamId) pair appears in the
+ *   participant list. `teamId === null` is treated as the rookie
+ *   case and matches only rookie entries.
  *
- * PERIOD MEMBERSHIP RULE (the "half-open on the upper bound"
- * contract):
+ *   `getParticipatingMissionsForCharacter(characterId, options)`
+ *   returns every mission the character is a participant in.
+ *   Distinct from getMissionsForCharacter, which answers a
+ *   different question (see below).
  *
- *   A stint is included in a period iff:
+ * getMissionsForCharacter vs getParticipatingMissionsForCharacter:
+ *   These are two different questions and both are useful:
  *
- *     stint.join  <  period.end    (strict)
- *     stint.leave >= period.start  (inclusive)
+ *     getMissionsForCharacter(charId)
+ *       "What missions did the teams you were ever on run?"
+ *       Derived via character → teams → missions (the two-hop
+ *       team-assignment derivation). Includes missions the
+ *       character did not personally take part in.
  *
- *   Where a blank period.end means infinity, and a blank
- *   stint.leave means infinity. A blank stint.join is never
- *   legal in the data model — every stint has a join — but the
- *   predicate treats it as -Infinity defensively.
+ *     getParticipatingMissionsForCharacter(charId)
+ *       "What missions are you listed as a participant in?"
+ *       A direct read of the participants array. Precise to the
+ *       individual, not the team.
  *
- * RANKING STORAGE AND THE INHERITANCE MODEL:
- *   `rankingHistory` on each team holds EXPLICIT entries only —
- *   the values the user actually wrote:
+ *   A caller that wants "this character's history on missions"
+ *   almost always wants the second. A caller that wants "what was
+ *   happening around this character" wants the first.
  *
- *     { period: '1905', rank: 3 }
+ * RETURNS:
+ *   Every mission-returning function returns a DEEP CLONE. The
+ *   caller cannot mutate the live store through the returned
+ *   object. If cloning fails, the function throws; it never returns
+ *   the live reference as a fallback.
  *
- *   The rank in effect for a team at year Y is the rank of the
- *   most recent explicit entry at or before Y. If no entry is at
- *   or before Y, the rank is null.
+ * SORTING:
+ *   Collection reads sort by `createdAt` descending (newest first)
+ *   before returning. This is the canonical list ordering for the
+ *   mission domain. Callers that need a different order sort the
+ *   returned array themselves.
  *
- *   getRankAtPeriod returns the EFFECTIVE rank; it does not
- *   distinguish explicit from inherited. Callers that need the
- *   distinction use getEffectiveRanking, which returns
- *   { rank, explicit, sourcePeriod }.
+ * DERIVED LABEL:
+ *   The human-facing `missionId` label is not stored. When a caller
+ *   needs it, use `MissionId.derive(mission)`. This module does not
+ *   attach it to returned records; that composition belongs to
+ *   MissionAggregator.
  *
- * RANKINGS — CASCADING SNAPSHOT MODEL (this revision):
- *   The Rankings tab does not render per-team effective ranks in
- *   arbitrary order. It renders a POSITION-ORDERED list per
- *   year: position 1, position 2, ..., position N, one team per
- *   position, no gaps, no duplicates.
+ *   The only place the label is materialised inside this module is
+ *   searchMissions, which derives it per candidate to include it in
+ *   the free-text index. The materialisation is per-candidate and
+ *   transient; nothing is stored.
  *
- *   Three reads:
+ * TEAM DEPRECATION AND RANKINGS (this revision):
+ *   A team deprecates when its last member dies or leaves. The
+ *   first year the team has zero active members is its
+ *   DEPRECATION YEAR.
  *
- *     getExplicitRankingOrderForYear(year)
- *       Raw ordered list of explicit entries at the year.
+ *   From that year onward:
+ *     - the team has no effective rank, so it drops out of every
+ *       ranked read;
+ *     - the surviving teams' positions COMPACT upward to fill the
+ *       hole (a team at display position 4 rises to 3 when the
+ *       team at 3 deprecates, etc.). There are no gaps in the
+ *       lineup;
+ *     - the team does NOT appear in the unranked picker either —
+ *       it can never be re-ranked, because it is gone;
+ *     - its stored rankingHistory is UNTOUCHED for every year
+ *       before the deprecation year. Past years keep their
+ *       records. Only the stale tail at >= deprecationYear is
+ *       inert.
  *
- *     getRankedTeamsForYear(year, options)
- *       Display-facing list the Rankings tab consumes. It looks
- *       at the effective rank for every team, filters out anyone
- *       with no rank at all, and sorts by rank.
+ *   Stored ranks at years >= deprecationYear are left in
+ *   rankingHistory (nothing is deleted by a read), but the
+ *   effective-rank resolver ignores them. removeRankingAt
+ *   additionally prunes them inside its own transaction so the
+ *   stored shape and the displayed shape cannot drift after a
+ *   manual removal.
  *
- *     getUnrankedTeamsForYear(year, options)
- *       Teams active at the year that have NO explicit entry at
- *       the year and NO inherited effective rank from an earlier
- *       year.
+ *   The deprecation year is computed structurally, from the team
+ *   record, without any new field:
  *
- * SHORTAGE HISTORY:
- *   getTeamShortagePeriods(team, targetSize, toYear) walks every
- *   interval on every member entry of a team, builds a year-by-year
- *   population curve, and returns the runs where the active member
- *   count is strictly below targetSize.
+ *     deprecationYear = min(
+ *       endPeriod + 1                 // if endPeriod is set
+ *       max(leavePeriod) + 1          // if all stints are closed
+ *     )
  *
- * PROFESSIONAL PERSONNEL QUERY:
- *   getProfessionalPersonnelAtPeriod(period) returns domain facts
- *   about every character relevant to professional staffing.
+ *   A team with an open-ended endPeriod AND at least one
+ *   open-ended stint has no inferable deprecation year and its
+ *   inherited rank survives at every year (the user has not
+ *   closed anything). A team marked deprecated with a still-open
+ *   window and still-live stints is a data inconsistency; leaving
+ *   its rank in place is the least destructive behaviour, and the
+ *   user can resolve the state through the normal edit flow.
+ *
+ *   This rule is mirrored in team-core.js's
+ *   resolveEffectiveRankForTeam and isTeamInScopeForRanking. The
+ *   two layers must agree: the write path builds snapshots from
+ *   the same effective-rank set the read path displays, or the
+ *   displayed order and the stored order diverge.
  *
  * DEPENDENCIES (MANDATORY):
- *   - window.TeamConstants
  *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.MissionConstants
+ *   - window.MissionId            (MissionId.derive)
  *
- * DEPENDENCIES (MANDATORY AT CALL TIME):
- *   - window.CharacterQueries
- *   - window.CharacterConstants
- *   - window.EliminationQueries
+ * DEPENDENCIES (LAZY, resolved at call time):
+ *   - window.TeamQueries
+ *     Used by getMissionsForCharacter for the two-hop derivation
+ *     character → teams → missions. The mission domain owns the
+ *     assignment relationship, but the team lookup itself is
+ *     delegated to TeamQueries.
  */
 
 (function() {
     'use strict';
 
-    if (window.__teamQueriesLoaded) { return; }
+    if (window.__missionQueriesLoaded) {
+        return;
+    }
 
     // ============================================================
-    // DEPENDENCIES
+    // MANDATORY DEPENDENCIES
     // ============================================================
 
-    var TeamConstants = window.TeamConstants;
     var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var MissionConstants = window.MissionConstants;
+    var MissionId = window.MissionId;
 
     var _missing = [];
 
-    if (!TeamConstants ||
-        typeof TeamConstants.parsePeriod !== 'function') {
-        _missing.push('TeamConstants.parsePeriod');
-    }
-    if (!TeamConstants ||
-        typeof TeamConstants.isValidTeamStatus !== 'function') {
-        _missing.push('TeamConstants.isValidTeamStatus');
-    }
-    if (!TeamConstants ||
-        typeof TeamConstants.isValidTeamType !== 'function') {
-        _missing.push('TeamConstants.isValidTeamType');
-    }
-    if (!TeamConstants ||
-        typeof TeamConstants.normalizeTeamType !== 'function') {
-        _missing.push('TeamConstants.normalizeTeamType');
-    }
-    if (!TeamConstants ||
-        typeof TeamConstants.normalizeTeamStatus !== 'function') {
-        _missing.push('TeamConstants.normalizeTeamStatus');
-    }
-    if (!TeamConstants ||
-        typeof TeamConstants.getPeriodRange !== 'function') {
-        _missing.push('TeamConstants.getPeriodRange');
-    }
-    if (!ObjectUtils ||
-        typeof ObjectUtils.deepClone !== 'function') {
+    if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
         _missing.push('ObjectUtils.deepClone');
+    }
+    if (!IdUtils || typeof IdUtils.normaliseId !== 'function') {
+        _missing.push('IdUtils.normaliseId');
+    }
+    if (!MissionConstants || !Array.isArray(MissionConstants.VALID_STATUSES)) {
+        _missing.push('MissionConstants.VALID_STATUSES');
+    }
+    if (!MissionId || typeof MissionId.derive !== 'function') {
+        _missing.push('MissionId.derive');
     }
 
     if (_missing.length > 0) {
         throw new Error(
-            '[TeamQueries] Missing mandatory dependencies: ' +
+            '[MissionQueries] Missing mandatory dependencies: ' +
             _missing.join(', ')
         );
     }
 
-    window.__teamQueriesLoaded = true;
-
-    // ============================================================
-    // LAZY ACCESSORS
-    // ============================================================
-
-    function getCharacterQueries() { return window.CharacterQueries || null; }
-    function getCharacterConstants() { return window.CharacterConstants || null; }
-    function getEliminationQueries() { return window.EliminationQueries || null; }
+    window.__missionQueriesLoaded = true;
 
     // ============================================================
     // HELPERS
     // ============================================================
-
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
 
     function isPlainObject(value) {
         return value !== null &&
@@ -215,1779 +215,1025 @@
                !Array.isArray(value);
     }
 
-    function clone(value) {
-        if (value === null || value === undefined) { return value; }
-        if (typeof value !== 'object') { return value; }
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function normaliseId(value) {
+        return IdUtils.normaliseId(value);
+    }
+
+    /**
+     * Deep clone via ObjectUtils. Throws if cloning fails or if the
+     * clone aliases the input. The query layer must never hand back a
+     * live reference.
+     */
+    function deepClone(value) {
         var result = ObjectUtils.deepClone(value);
-        if (result === value) {
+        if (result === value &&
+            value !== null &&
+            typeof value === 'object') {
             throw new Error(
-                '[TeamQueries] ObjectUtils.deepClone returned the ' +
-                'original reference. Read safety is broken.'
+                '[MissionQueries] deepClone returned the original reference.'
             );
         }
         return result;
     }
 
-    function parsePeriod(value) {
-        return TeamConstants.parsePeriod(value);
-    }
-
-    function parseYear(value) {
-        if (value === undefined || value === null || value === '') {
+    /**
+     * Access the mission store.
+     *
+     * Returns null when window.data is unavailable or missions is not
+     * an array. Reads never create the store.
+     */
+    function getMissionStore() {
+        if (!window.data || typeof window.data !== 'object') {
             return null;
         }
+        if (!Array.isArray(window.data.missions)) {
+            return null;
+        }
+        return window.data.missions;
+    }
+
+    function isArchived(mission) {
+        if (!isPlainObject(mission)) {
+            return false;
+        }
+        return mission.archivedAt !== undefined &&
+               mission.archivedAt !== null &&
+               mission.archivedAt !== '';
+    }
+
+    /**
+     * Compare two ISO timestamp strings, newest first. Missing or
+     * malformed timestamps sort to the end.
+     */
+    function compareByCreatedAtDesc(a, b) {
+        var ta = isNonEmptyString(a && a.createdAt) ? a.createdAt : '';
+        var tb = isNonEmptyString(b && b.createdAt) ? b.createdAt : '';
+        if (ta === tb) { return 0; }
+        if (ta === '') { return 1; }
+        if (tb === '') { return -1; }
+        return tb.localeCompare(ta);
+    }
+
+    function readIncludeArchived(options) {
+        return isPlainObject(options) && options.includeArchived === true;
+    }
+
+    // ============================================================
+    // TEAM ID RESOLUTION
+    // ============================================================
+    //
+    // A mission carries its assigned teams as `assignedTeamIds` (an
+    // array). A record saved by an older version of the app may
+    // carry a singular `assignedTeamId` instead.
+    //
+    // getTeamIdsForMission is the single point through which every
+    // read in this module consults team assignment. It normalises
+    // every id, deduplicates, and drops blanks. It returns a fresh
+    // array; the caller cannot mutate the mission by mutating the
+    // result.
+    //
+    // When both fields are present, the array wins. When neither is
+    // present, the result is an empty array.
+
+    function getTeamIdsForMission(mission) {
+        if (!isPlainObject(mission)) { return []; }
+
+        var raw = null;
+
+        if (Array.isArray(mission.assignedTeamIds)) {
+            raw = mission.assignedTeamIds;
+        } else if (mission.assignedTeamId !== undefined &&
+                   mission.assignedTeamId !== null &&
+                   mission.assignedTeamId !== '') {
+            // Legacy singular. Treat as a single-element array.
+            raw = [mission.assignedTeamId];
+        }
+
+        if (!Array.isArray(raw) || raw.length === 0) {
+            return [];
+        }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var id = normaliseId(raw[i]);
+            if (id === null) { continue; }
+            if (seen[id]) { continue; }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return result;
+    }
+
+    /**
+     * Convenience: does the mission have the given team assigned?
+     * Uses getTeamIdsForMission, so it works against both shapes.
+     */
+    function isMissionAssignedToTeam(mission, teamId) {
+        if (!isPlainObject(mission)) { return false; }
+        var target = normaliseId(teamId);
+        if (target === null) { return false; }
+        var ids = getTeamIdsForMission(mission);
+        for (var i = 0; i < ids.length; i++) {
+            if (ids[i] === target) { return true; }
+        }
+        return false;
+    }
+
+    // ============================================================
+    // PARTICIPANT RESOLUTION
+    // ============================================================
+    //
+    // getParticipantsForMission normalises each participant record
+    // to { characterId, teamId, source }. Malformed entries are
+    // dropped from the returned array. Duplicates on
+    // (characterId, teamId) are also dropped; the schema forbids
+    // them at rest, but the query layer does not trust the store
+    // to be schema-clean.
+    //
+    // The returned array is freshly allocated. The caller cannot
+    // mutate the mission by mutating the result.
+
+    function getParticipantsForMission(mission) {
+        if (!isPlainObject(mission)) { return []; }
+        if (!Array.isArray(mission.participants)) { return []; }
+
+        var raw = mission.participants;
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < raw.length; i++) {
+            var p = raw[i];
+            if (!isPlainObject(p)) { continue; }
+
+            var cid = normaliseId(p.characterId);
+            if (cid === null) { continue; }
+
+            var tid = null;
+            if (p.teamId !== undefined && p.teamId !== null && p.teamId !== '') {
+                tid = normaliseId(p.teamId);
+                if (tid === null) { continue; }
+            }
+
+            var source = p.source;
+            if (source !== 'team' && source !== 'rookie') {
+                continue;
+            }
+
+            // Skip incoherent combinations rather than repairing
+            // them. A 'team' participant without a team and a
+            // 'rookie' participant with a team are both malformed.
+            if (source === 'team' && tid === null) { continue; }
+            if (source === 'rookie' && tid !== null) { continue; }
+
+            var key = cid + '::' + (tid === null ? '__null__' : tid);
+            if (seen[key]) { continue; }
+            seen[key] = true;
+
+            result.push({
+                characterId: cid,
+                teamId: tid,
+                source: source
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Does the mission list this character as a participant for the
+     * given team?
+     *
+     * teamId === null (or undefined, or '') matches ONLY rookie
+     * entries. A non-empty teamId matches only entries on that
+     * specific team. A character can be a participant under two
+     * teams without either query answering "yes" for the other.
+     */
+    function isParticipantInMission(mission, characterId, teamId) {
+        if (!isPlainObject(mission)) { return false; }
+        var cid = normaliseId(characterId);
+        if (cid === null) { return false; }
+
+        var tid = null;
+        if (teamId !== undefined && teamId !== null && teamId !== '') {
+            tid = normaliseId(teamId);
+            if (tid === null) { return false; }
+        }
+
+        var participants = getParticipantsForMission(mission);
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.characterId !== cid) { continue; }
+            if (p.teamId !== tid) { continue; }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Every distinct team id the character is a participant under,
+     * across the given mission. Rookie participation (teamId null)
+     * does not contribute a team id.
+     */
+    function getParticipantTeamIdsForCharacter(mission, characterId) {
+        if (!isPlainObject(mission)) { return []; }
+        var cid = normaliseId(characterId);
+        if (cid === null) { return []; }
+
+        var participants = getParticipantsForMission(mission);
+        var seen = Object.create(null);
+        var result = [];
+
+        for (var i = 0; i < participants.length; i++) {
+            var p = participants[i];
+            if (p.characterId !== cid) { continue; }
+            if (p.teamId === null) { continue; }
+            if (seen[p.teamId]) { continue; }
+            seen[p.teamId] = true;
+            result.push(p.teamId);
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // SINGLE MISSION READ
+    // ============================================================
+
+    /**
+     * Get a mission by its UUID.
+     *
+     * This is the ONLY lookup that accepts a UUID. The human-facing
+     * label (missionId) is not a lookup key; callers that have a
+     * label should search (see searchMissions) or derive the UUID
+     * elsewhere.
+     *
+     * Archived missions are returned. Callers that need to hide
+     * archived missions check `mission.archivedAt` or use
+     * `isArchived(mission)`.
+     *
+     * @param {string} missionUuid
+     * @returns {object|null} Deep clone, or null when not found
+     */
+    function getMission(missionUuid) {
+        if (!isNonEmptyString(missionUuid)) {
+            return null;
+        }
+
+        var target = normaliseId(missionUuid);
+        if (target === null) {
+            return null;
+        }
+
+        var store = getMissionStore();
+        if (!store) {
+            return null;
+        }
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (normaliseId(m.id) === target) {
+                return deepClone(m);
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // COLLECTION READS
+    // ============================================================
+
+    /**
+     * Get every mission, optionally filtered by status.
+     *
+     * @param {string|null} filter - 'active' | 'completed' |
+     *   'cancelled' | null/'all' for no status filter.
+     * @param {object} [options] - { includeArchived: boolean }
+     * @returns {array} Deep clones, sorted by createdAt desc
+     */
+    function getMissions(filter, options) {
+        var includeArchived = readIncludeArchived(options);
+        var store = getMissionStore();
+        if (!store) {
+            return [];
+        }
+
+        var wantStatus = null;
+        if (isNonEmptyString(filter) && filter !== 'all') {
+            wantStatus = filter;
+        }
+
+        var result = [];
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (!includeArchived && isArchived(m)) { continue; }
+            if (wantStatus !== null && m.status !== wantStatus) {
+                continue;
+            }
+            result.push(deepClone(m));
+        }
+
+        result.sort(compareByCreatedAtDesc);
+        return result;
+    }
+
+    function getActiveMissions(options) {
+        return getMissions('active', options);
+    }
+
+    function getCompletedMissions(options) {
+        return getMissions('completed', options);
+    }
+
+    function getCancelledMissions(options) {
+        return getMissions('cancelled', options);
+    }
+
+    /**
+     * Get every archived mission, regardless of status.
+     *
+     * @returns {array} Deep clones, sorted by createdAt desc
+     */
+    function getArchivedMissions() {
+        var store = getMissionStore();
+        if (!store) {
+            return [];
+        }
+
+        var result = [];
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+            if (!isArchived(m)) { continue; }
+            result.push(deepClone(m));
+        }
+
+        result.sort(compareByCreatedAtDesc);
+        return result;
+    }
+
+    // ============================================================
+    // RELATIONSHIP READS
+    // ============================================================
+
+    /**
+     * Get missions assigned to a specific team.
+     *
+     * A mission may be assigned to more than one team. This reads
+     * `assignedTeamIds` and matches the given team anywhere in that
+     * array. Legacy records that still carry a singular
+     * `assignedTeamId` are handled transparently.
+     *
+     * @param {string} teamId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsByTeam(teamId, options) {
+        if (!isNonEmptyString(teamId)) {
+            return [];
+        }
+
+        var target = normaliseId(teamId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (isMissionAssignedToTeam(m, target)) {
+                result.push(m);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get missions that list a specific character as support
+     * personnel.
+     *
+     * @param {string} characterId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsBySupportPersonnel(characterId, options) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
+
+        var target = normaliseId(characterId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            var support = Array.isArray(m.supportPersonnel)
+                ? m.supportPersonnel
+                : [];
+            for (var j = 0; j < support.length; j++) {
+                if (normaliseId(support[j]) === target) {
+                    result.push(m);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get missions that list a specific character as a participant.
+     *
+     * A mission matches when the character's id appears in the
+     * participants array at all — regardless of source ('team' or
+     * 'rookie') and regardless of which team the character was
+     * participating under. The mission is a mission the character
+     * took part in.
+     *
+     * @param {string} characterId
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones
+     */
+    function getMissionsByParticipant(characterId, options) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
+
+        var target = normaliseId(characterId);
+        if (target === null) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            var participants = getParticipantsForMission(m);
+            for (var j = 0; j < participants.length; j++) {
+                if (participants[j].characterId === target) {
+                    result.push(m);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Alias of getMissionsByParticipant. Symmetric with the naming
+     * used by MissionAggregator's participant VM builder.
+     *
+     * @param {string} characterId
+     * @param {object} [options]
+     * @returns {array}
+     */
+    function getParticipatingMissionsForCharacter(characterId, options) {
+        return getMissionsByParticipant(characterId, options);
+    }
+
+    /**
+     * Get every mission a character is connected to, via the teams
+     * they are or were members of.
+     *
+     * A mission is assigned to one or more teams (assignedTeamIds).
+     * A character is connected to a mission when they are or were a
+     * member of any of those teams. This is the "team-derived"
+     * connection, distinct from participation (see the file header
+     * for the distinction).
+     *
+     * TWO-HOP DERIVATION:
+     *   character → teams (via TeamQueries) → missions (via the
+     *   teams' assignedTeamIds).
+     *
+     * TEAM SET:
+     *   Every team the character has ever been a member of,
+     *   INCLUDING deprecated teams, via
+     *   TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated.
+     *   A deprecated team's missions still happened.
+     *
+     * MISSION SET:
+     *   Archived missions ARE included. A mission that was archived
+     *   still happened. The caller decides whether to display
+     *   archive state.
+     *
+     * DEDUPLICATION:
+     *   A character on two teams that both ran the same mission
+     *   appears once. The first team to claim the mission wins;
+     *   the team set is sorted by name, so the choice is
+     *   deterministic.
+     *
+     * RETURNS:
+     *   Array of { mission, teamId, teamName }, sorted by team name
+     *   ascending, then by mission createdAt descending.
+     *
+     * DEPENDENCY:
+     *   TeamQueries is resolved lazily at call time. When it is
+     *   unavailable, returns []. This is a read; an absent
+     *   dependency is "no answer", not a failure.
+     *
+     * @param {string} charId
+     * @returns {array}
+     */
+    function getMissionsForCharacter(charId) {
+        if (!isNonEmptyString(charId)) {
+            return [];
+        }
+
+        var TeamQueries = window.TeamQueries;
+        if (!TeamQueries ||
+            typeof TeamQueries.getTeamsForCharacterAllTimeIncludingDeprecated !==
+                'function') {
+            return [];
+        }
+
+        var target = String(charId);
+        var teams = [];
+
+        try {
+            teams = TeamQueries
+                .getTeamsForCharacterAllTimeIncludingDeprecated(target) || [];
+        } catch (e) {
+            console.warn(
+                '[MissionQueries] ' +
+                'getTeamsForCharacterAllTimeIncludingDeprecated ' +
+                'failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(teams) || teams.length === 0) {
+            return [];
+        }
+
+        var seenMissionIds = Object.create(null);
+        var result = [];
+
+        for (var t = 0; t < teams.length; t++) {
+            var team = teams[t];
+            if (!team || !team.id) { continue; }
+
+            var teamId = String(team.id);
+            var teamName = isNonEmptyString(team.name)
+                ? String(team.name)
+                : 'Unnamed Team';
+
+            var missions = getMissionsByTeam(teamId, {
+                includeArchived: true
+            });
+
+            for (var m = 0; m < missions.length; m++) {
+                var mission = missions[m];
+                if (!mission || !mission.id) { continue; }
+
+                var missionKey = normaliseId(mission.id);
+                if (missionKey === null) { continue; }
+                if (seenMissionIds[missionKey]) { continue; }
+                seenMissionIds[missionKey] = true;
+
+                result.push({
+                    mission: mission,
+                    teamId: teamId,
+                    teamName: teamName
+                });
+            }
+        }
+
+        result.sort(function(a, b) {
+            var teamCmp = a.teamName.localeCompare(b.teamName);
+            if (teamCmp !== 0) { return teamCmp; }
+
+            var ta = isNonEmptyString(a.mission.createdAt)
+                ? a.mission.createdAt
+                : '';
+            var tb = isNonEmptyString(b.mission.createdAt)
+                ? b.mission.createdAt
+                : '';
+            if (ta !== tb) { return tb.localeCompare(ta); }
+
+            return String(a.mission.id).localeCompare(
+                String(b.mission.id)
+            );
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // TYPE AND TAG READS
+    // ============================================================
+
+    /**
+     * Get missions whose primaryType or secondaryType matches.
+     */
+    function getMissionsByType(typeId, options) {
+        if (!isNonEmptyString(typeId)) {
+            return [];
+        }
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (m.primaryType === typeId || m.secondaryType === typeId) {
+                result.push(m);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get missions that carry a specific tag.
+     * Tag comparison is case-insensitive.
+     */
+    function getMissionsByTag(tag, options) {
+        if (!isNonEmptyString(tag)) {
+            return [];
+        }
+
+        var target = tag.trim().toLowerCase();
+
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (!Array.isArray(m.tags)) { continue; }
+            for (var j = 0; j < m.tags.length; j++) {
+                if (typeof m.tags[j] === 'string' &&
+                    m.tags[j].trim().toLowerCase() === target) {
+                    result.push(m);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // SEARCH
+    // ============================================================
+
+    /**
+     * Free-text search over a mission's title, description, notes,
+     * location, and derived label.
+     *
+     * The derived label is computed for each candidate mission via
+     * MissionId.derive. This is the only place in the query layer
+     * where the label is materialised, and it is per-candidate (not
+     * stored). The cost is negligible for realistic mission counts.
+     *
+     * @param {string} query
+     * @param {object} [options] - { filter, includeArchived }
+     * @returns {array} Deep clones matching the query
+     */
+    function searchMissions(query, options) {
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+
+        if (!isNonEmptyString(query)) {
+            return missions;
+        }
+
+        var term = query.trim().toLowerCase();
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            var label = MissionId.derive(m) || '';
+
+            var title = typeof m.title === 'string'
+                ? m.title.toLowerCase() : '';
+            var description = typeof m.description === 'string'
+                ? m.description.toLowerCase() : '';
+            var notes = typeof m.notes === 'string'
+                ? m.notes.toLowerCase() : '';
+            var location = typeof m.location === 'string'
+                ? m.location.toLowerCase() : '';
+            var labelLower = label.toLowerCase();
+
+            if (title.indexOf(term) !== -1 ||
+                description.indexOf(term) !== -1 ||
+                notes.indexOf(term) !== -1 ||
+                location.indexOf(term) !== -1 ||
+                labelLower.indexOf(term) !== -1) {
+                result.push(m);
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // STATISTICS
+    // ============================================================
+
+    /**
+     * Compute statistics across all non-archived missions.
+     *
+     * @returns {object} {
+     *   total, active, completed, cancelled, archived,
+     *   byPriority, byDifficulty
+     * }
+     */
+    function getStatistics() {
+        var store = getMissionStore();
+        var stats = {
+            total: 0,
+            active: 0,
+            completed: 0,
+            cancelled: 0,
+            archived: 0,
+            byPriority: {},
+            byDifficulty: {}
+        };
+
+        // Initialise the by-* maps with zeroes for every canonical key
+        // so callers can read any known key without a missing-key
+        // check.
+        var priorities = MissionConstants.VALID_PRIORITIES;
+        for (var p = 0; p < priorities.length; p++) {
+            stats.byPriority[priorities[p]] = 0;
+        }
+        var difficulties = MissionConstants.VALID_DIFFICULTIES;
+        for (var d = 0; d < difficulties.length; d++) {
+            stats.byDifficulty[difficulties[d]] = 0;
+        }
+
+        if (!store) {
+            return stats;
+        }
+
+        for (var i = 0; i < store.length; i++) {
+            var m = store[i];
+            if (!isPlainObject(m)) { continue; }
+
+            if (isArchived(m)) {
+                stats.archived++;
+                continue;
+            }
+
+            stats.total++;
+
+            if (m.status === 'active') { stats.active++; }
+            else if (m.status === 'completed') { stats.completed++; }
+            else if (m.status === 'cancelled') { stats.cancelled++; }
+
+            if (typeof m.priority === 'string' &&
+                Object.prototype.hasOwnProperty.call(
+                    stats.byPriority, m.priority
+                )) {
+                stats.byPriority[m.priority]++;
+            }
+            if (typeof m.difficulty === 'string' &&
+                Object.prototype.hasOwnProperty.call(
+                    stats.byDifficulty, m.difficulty
+                )) {
+                stats.byDifficulty[m.difficulty]++;
+            }
+        }
+
+        return stats;
+    }
+
+    // ============================================================
+    // UNIQUE TAGS
+    // ============================================================
+
+    /**
+     * Get every distinct tag across missions matching the filter.
+     * Tags are compared case-insensitively and returned in
+     * lowercase, sorted alphabetically.
+     */
+    function getUniqueTags(options) {
+        var filter = null;
+        if (isPlainObject(options) && isNonEmptyString(options.filter)) {
+            filter = options.filter;
+        }
+
+        var missions = getMissions(filter, options);
+        var seen = Object.create(null);
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (!Array.isArray(m.tags)) { continue; }
+            for (var j = 0; j < m.tags.length; j++) {
+                var tag = m.tags[j];
+                if (typeof tag === 'string' && tag.trim() !== '') {
+                    seen[tag.trim().toLowerCase()] = true;
+                }
+            }
+        }
+
+        var result = Object.keys(seen);
+        result.sort();
+        return result;
+    }
+
+    // ============================================================
+    // RANKINGS — team deprecation
+    // ============================================================
+    //
+    // A team deprecates when its last member dies or leaves. The
+    // first year it has ZERO ACTIVE MEMBERS is its DEPRECATION
+    // YEAR. See the file header for the full rule.
+    //
+    // The deprecation year is computed from the team record alone,
+    // with no new field. Two independent signals can close a team:
+    //
+    //   - the window closes at endPeriod (under the half-open
+    //     convention, the team is inactive from endPeriod + 1);
+    //   - every stint closes at some leavePeriod (a stint is active
+    //     THROUGH leavePeriod inclusive, so it is gone from
+    //     leavePeriod + 1).
+    //
+    // The deprecation year is the EARLIER of the two candidate
+    // signals, because the team is empty once EITHER condition
+    // holds. An open-ended endPeriod or an open-ended stint
+    // eliminates that signal from consideration.
+    //
+    // Both signals gone (no endPeriod, at least one open stint) is
+    // a team marked deprecated with a live roster: a data
+    // inconsistency. The function returns null in that case,
+    // leaving the inherited rank in place — the least destructive
+    // behaviour. The user resolves the state through the normal
+    // edit flow.
+    //
+    // A team that is NOT deprecated returns null and behaves
+    // exactly as before this revision.
+
+    function computeDeprecationYear(team) {
+        if (!isPlainObject(team)) { return null; }
+
+        var status = MissionConstants.normalizeTeamStatus
+            ? MissionConstants.normalizeTeamStatus(team.status)
+            : null;
+        if (status !== 'deprecated') { return null; }
+
+        var candidates = [];
+
+        // ---- Window close: endPeriod + 1 ----
+        var endRaw = team.endPeriod;
+        if (endRaw !== undefined && endRaw !== null &&
+            String(endRaw).trim() !== '') {
+            var endYear = parsePeriodLocal(endRaw);
+            if (endYear !== null) {
+                candidates.push(endYear + 1);
+            }
+        }
+
+        // ---- All stints closed: max(leavePeriod) + 1 ----
+        var anyOpenLeave = false;
+        var latestLeave = null;
+
+        if (Array.isArray(team.members)) {
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!isPlainObject(member)) { continue; }
+                if (!Array.isArray(member.intervals)) { continue; }
+
+                for (var i = 0; i < member.intervals.length; i++) {
+                    var iv = member.intervals[i];
+                    if (!isPlainObject(iv)) { continue; }
+
+                    var leaveRaw = iv.leavePeriod;
+                    if (leaveRaw === undefined ||
+                        leaveRaw === null ||
+                        String(leaveRaw).trim() === '') {
+                        anyOpenLeave = true;
+                        continue;
+                    }
+
+                    var n = parsePeriodLocal(leaveRaw);
+                    if (n === null) { continue; }
+                    if (latestLeave === null || n > latestLeave) {
+                        latestLeave = n;
+                    }
+                }
+            }
+        }
+
+        if (!anyOpenLeave && latestLeave !== null) {
+            candidates.push(latestLeave + 1);
+        }
+
+        if (candidates.length === 0) { return null; }
+
+        var earliest = candidates[0];
+        for (var c = 1; c < candidates.length; c++) {
+            if (candidates[c] < earliest) {
+                earliest = candidates[c];
+            }
+        }
+        return earliest;
+    }
+
+    /**
+     * Local parse of a period value. Uses the same integer rules
+     * as TeamConstants.parsePeriod, but is not lazy-bound to that
+     * module here — the query layer's public surface for period
+     * parsing is TeamConstants, and this is called only from
+     * computeDeprecationYear, which is itself a local helper.
+     *
+     * Matches TeamConstants.parsePeriod's behaviour:
+     *   - positive integer (number or pure-digit string) -> number
+     *   - blank, malformed, zero, negative -> null
+     */
+    function parsePeriodLocal(value) {
+        if (value === undefined || value === null) { return null; }
         if (typeof value === 'number') {
             if (!Number.isInteger(value) || value < 1) { return null; }
             return value;
         }
-        var trimmed = String(value).trim();
-        if (trimmed === '' || !/^\d+$/.test(trimmed)) { return null; }
-        var n = Number(trimmed);
-        if (!Number.isInteger(n) || n < 1) { return null; }
-        return n;
-    }
-
-    function isOperationalStatus(status) {
-        var normalized = TeamConstants.normalizeTeamStatus(status);
-        return normalized === 'active' || normalized === 'inactive';
-    }
-
-    function isActiveStatus(status) {
-        return TeamConstants.normalizeTeamStatus(status) === 'active';
-    }
-
-    function isInactiveStatus(status) {
-        return TeamConstants.normalizeTeamStatus(status) === 'inactive';
-    }
-
-    function isProfessionalType(type) {
-        return TeamConstants.normalizeTeamType(type) === 'professional';
-    }
-
-    function isAcademicType(type) {
-        return TeamConstants.normalizeTeamType(type) === 'academic';
-    }
-
-    function teamWindowContainsNum(team, periodNum) {
-        if (!team || typeof team !== 'object') { return false; }
-
-        var hasStart = team.startPeriod !== undefined &&
-                       team.startPeriod !== null &&
-                       team.startPeriod !== '';
-        var hasEnd = team.endPeriod !== undefined &&
-                     team.endPeriod !== null &&
-                     team.endPeriod !== '';
-
-        if (hasStart) {
-            var start = parsePeriod(team.startPeriod);
-            if (start === null) { return false; }
-            if (start > periodNum) { return false; }
-        }
-
-        if (hasEnd) {
-            var end = parsePeriod(team.endPeriod);
-            if (end === null) { return false; }
-            if (end < periodNum) { return false; }
-        }
-
-        return true;
-    }
-
-    function intervalContainsNum(interval, periodNum) {
-        if (!interval || typeof interval !== 'object') {
-            return false;
-        }
-
-        var hasJoin = interval.joinPeriod !== undefined &&
-                      interval.joinPeriod !== null &&
-                      interval.joinPeriod !== '';
-        var hasLeave = interval.leavePeriod !== undefined &&
-                       interval.leavePeriod !== null &&
-                       interval.leavePeriod !== '';
-
-        if (hasJoin) {
-            var join = parsePeriod(interval.joinPeriod);
-            if (join === null) { return false; }
-            if (join > periodNum) { return false; }
-        }
-
-        if (hasLeave) {
-            var leave = parsePeriod(interval.leavePeriod);
-            if (leave === null) { return false; }
-            if (leave < periodNum) { return false; }
-        }
-
-        return true;
-    }
-
-    function normaliseCareerStatusKey(status) {
-        if (status === undefined || status === null) { return ''; }
-        var raw = String(status).trim().toLowerCase();
-        if (raw === '') { return ''; }
-        var formerIdx = raw.indexOf(' (former)');
-        if (formerIdx !== -1) {
-            raw = raw.substring(0, formerIdx).trim();
-        }
-        return raw;
-    }
-
-    function getLatestCareerStatusKey(char) {
-        if (!char || !Array.isArray(char.careerStatus) ||
-            char.careerStatus.length === 0) {
-            return '';
-        }
-
-        var latestKey = '';
-        var latestYear = -Infinity;
-        var latestIndex = -1;
-
-        for (var i = 0; i < char.careerStatus.length; i++) {
-            var entry = char.careerStatus[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-
-            var key = normaliseCareerStatusKey(entry.status);
-            if (key === '') { continue; }
-
-            var year = parseInt(entry.startYear, 10);
-            if (isNaN(year)) { year = -Infinity; }
-
-            if (year > latestYear ||
-                (year === latestYear && i > latestIndex)) {
-                latestKey = key;
-                latestYear = year;
-                latestIndex = i;
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+                return null;
             }
-        }
-
-        return latestKey;
-    }
-
-    // ============================================================
-    // DATA ACCESS
-    // ============================================================
-
-    function getTeamArray() {
-        var data = window.data || {};
-        return Array.isArray(data.teams) ? data.teams : [];
-    }
-
-    function getTeamByIdInternal(teamId) {
-        if (!isNonEmptyString(teamId)) { return null; }
-        var target = String(teamId);
-        var teams = getTeamArray();
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' &&
-                String(team.id) === target) {
-                return team;
+            var parsed = Number(trimmed);
+            if (!Number.isSafeInteger(parsed) || parsed < 1) {
+                return null;
             }
+            return parsed;
         }
         return null;
-    }
-
-    // ============================================================
-    // PERIOD PREDICATES
-    // ============================================================
-
-    function teamWindowContains(team, period) {
-        if (!team || typeof team !== 'object') { return false; }
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-        return teamWindowContainsNum(team, periodNum);
-    }
-
-    function intervalContains(interval, period) {
-        if (!interval || typeof interval !== 'object') {
-            return false;
-        }
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-        return intervalContainsNum(interval, periodNum);
-    }
-
-    function windowContains(start, end, period) {
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-
-        var hasStart = start !== undefined &&
-                       start !== null &&
-                       start !== '';
-        var hasEnd = end !== undefined &&
-                     end !== null &&
-                     end !== '';
-
-        if (hasStart) {
-            var startNum = parsePeriod(start);
-            if (startNum === null) { return false; }
-            if (startNum > periodNum) { return false; }
-        }
-
-        if (hasEnd) {
-            var endNum = parsePeriod(end);
-            if (endNum === null) { return false; }
-            if (endNum < periodNum) { return false; }
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // PERIOD OVERLAP PREDICATE
-    // ============================================================
-
-    function intervalOverlapsPeriod(join, leave, start, end) {
-        var joinNum = parseYear(join);
-        var leaveNum = parseYear(leave);
-        var startNum = parseYear(start);
-        var endNum = parseYear(end);
-
-        var joinYear = joinNum === null ? -Infinity : joinNum;
-        var leaveYear = leaveNum === null ? Infinity : leaveNum;
-        var startYear = startNum === null ? -Infinity : startNum;
-        var endYear = endNum === null ? Infinity : endNum;
-
-        return joinYear < endYear && leaveYear >= startYear;
-    }
-
-    function rankingInPeriod(year, start, end) {
-        var yearNum = parseYear(year);
-        var startNum = parseYear(start);
-        var endNum = parseYear(end);
-
-        if (yearNum === null) { return false; }
-        if (startNum === null) { return false; }
-
-        var startYear = startNum;
-        var endYear = endNum === null ? Infinity : endNum;
-
-        return yearNum >= startYear && yearNum < endYear;
-    }
-
-    // ============================================================
-    // PERIODS MODEL READERS
-    // ============================================================
-
-    function getPeriods(team) {
-        if (!team || !Array.isArray(team.periods)) {
-            return [];
-        }
-        return team.periods.slice();
-    }
-
-    function getCurrentPeriod(team) {
-        if (!team || !Array.isArray(team.periods)) {
-            return null;
-        }
-        if (team.periods.length === 0) {
-            return null;
-        }
-        return clone(team.periods[team.periods.length - 1]);
-    }
-
-    function getCurrentTeamName(team) {
-        var period = getCurrentPeriod(team);
-        if (period && isNonEmptyString(period.name)) {
-            return String(period.name);
-        }
-        if (team && isNonEmptyString(team.name)) {
-            return String(team.name);
-        }
-        return 'Unknown Team';
-    }
-
-    function getPeriodForYear(team, year) {
-        if (!team || !Array.isArray(team.periods)) {
-            return null;
-        }
-        var yearNum = parseYear(year);
-        if (yearNum === null) { return null; }
-
-        for (var i = 0; i < team.periods.length; i++) {
-            var period = team.periods[i];
-            if (!period || typeof period !== 'object') { continue; }
-
-            var startNum = parseYear(period.startPeriod);
-            if (startNum === null) { continue; }
-
-            var endNum = parseYear(period.endPeriod);
-            var endYear = endNum === null ? Infinity : endNum;
-
-            if (yearNum >= startNum && yearNum < endYear) {
-                return clone(period);
-            }
-        }
-
-        return null;
-    }
-
-    function getActiveTeamMembersForPeriod(team, period) {
-        if (!team || !Array.isArray(team.members)) { return []; }
-        if (!period || typeof period !== 'object') { return []; }
-
-        var start = period.startPeriod;
-        var end = period.endPeriod;
-
-        var result = [];
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
-            if (!Array.isArray(member.intervals)) { continue; }
-
-            var included = false;
-            for (var j = 0; j < member.intervals.length; j++) {
-                var iv = member.intervals[j];
-                if (!iv || typeof iv !== 'object') { continue; }
-
-                if (intervalOverlapsPeriod(
-                    iv.joinPeriod,
-                    iv.leavePeriod,
-                    start,
-                    end
-                )) {
-                    included = true;
-                    break;
-                }
-            }
-
-            if (included) {
-                result.push(clone(member));
-            }
-        }
-
-        return result;
-    }
-
-    function getRankingsForPeriod(team, period) {
-        if (!team || !Array.isArray(team.rankingHistory)) {
-            return [];
-        }
-        if (!period || typeof period !== 'object') { return []; }
-
-        var start = period.startPeriod;
-        var end = period.endPeriod;
-
-        var result = [];
-        for (var i = 0; i < team.rankingHistory.length; i++) {
-            var entry = team.rankingHistory[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-
-            if (rankingInPeriod(entry.period, start, end)) {
-                result.push(clone(entry));
-            }
-        }
-
-        return result;
-    }
-
-    // ============================================================
-    // MEMBER PREDICATES
-    // ============================================================
-
-    function isMemberActive(member, period) {
-        if (!member || !Array.isArray(member.intervals)) {
-            return false;
-        }
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-
-        for (var i = 0; i < member.intervals.length; i++) {
-            if (intervalContainsNum(member.intervals[i], periodNum)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function isMemberFormer(member, period) {
-        if (!member || !Array.isArray(member.intervals)) {
-            return false;
-        }
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-
-        for (var i = 0; i < member.intervals.length; i++) {
-            if (intervalContainsNum(member.intervals[i], periodNum)) {
-                return false;
-            }
-        }
-
-        for (var j = 0; j < member.intervals.length; j++) {
-            var interval = member.intervals[j];
-            if (!interval || typeof interval !== 'object') {
-                continue;
-            }
-
-            var hasLeave = interval.leavePeriod !== undefined &&
-                           interval.leavePeriod !== null &&
-                           interval.leavePeriod !== '';
-            if (!hasLeave) { continue; }
-
-            var leave = parsePeriod(interval.leavePeriod);
-            if (leave === null) { continue; }
-
-            if (leave < periodNum) { return true; }
-        }
-
-        return false;
-    }
-
-    // ============================================================
-    // TEAM LOOKUP
-    // ============================================================
-
-    function getTeamById(teamId) {
-        var team = getTeamByIdInternal(teamId);
-        return team ? clone(team) : null;
-    }
-
-    function getTeamName(teamId) {
-        if (!isNonEmptyString(teamId)) { return 'Unassigned'; }
-        var team = getTeamByIdInternal(teamId);
-        if (!team) { return 'Unknown Team'; }
-        return getCurrentTeamName(team);
-    }
-
-    // ============================================================
-    // STATUS PREDICATES
-    // ============================================================
-
-    function isTeamOperational(team) {
-        if (!team || typeof team !== 'object') { return false; }
-        return isOperationalStatus(team.status);
-    }
-
-    function isTeamActive(team) {
-        if (!team || typeof team !== 'object') { return false; }
-        return isActiveStatus(team.status);
-    }
-
-    function isTeamActiveAtPeriod(team, period) {
-        if (!team || typeof team !== 'object') { return false; }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return false; }
-
-        var range = TeamConstants.getPeriodRange(team.type);
-        if (!range) { return false; }
-
-        if (periodNum < range.min || periodNum > range.max) {
-            return false;
-        }
-
-        return teamWindowContainsNum(team, periodNum);
-    }
-
-    // ============================================================
-    // TEAM LISTS
-    // ============================================================
-
-    function getTeams(type, status, includeDeprecated) {
-        var teams = getTeamArray();
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object') {
-                result.push(team);
-            }
-        }
-
-        if (type) {
-            var normalizedType =
-                TeamConstants.normalizeTeamType(type);
-            if (normalizedType === null) { return []; }
-            var typeFiltered = [];
-            for (var j = 0; j < result.length; j++) {
-                if (TeamConstants.normalizeTeamType(
-                    result[j].type
-                ) === normalizedType) {
-                    typeFiltered.push(result[j]);
-                }
-            }
-            result = typeFiltered;
-        }
-
-        if (status === 'active') {
-            result = result.filter(function(t) {
-                return isActiveStatus(t.status);
-            });
-        } else if (status === 'inactive') {
-            result = result.filter(function(t) {
-                return isInactiveStatus(t.status);
-            });
-        } else if (status === 'operational') {
-            result = result.filter(function(t) {
-                return isOperationalStatus(t.status);
-            });
-        } else if (status) {
-            return [];
-        }
-
-        if (!includeDeprecated) {
-            result = result.filter(function(t) {
-                var normalized =
-                    TeamConstants.normalizeTeamStatus(t.status);
-                return normalized !== 'deprecated';
-            });
-        }
-
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var out = [];
-        for (var k = 0; k < result.length; k++) {
-            out.push(clone(result[k]));
-        }
-        return out;
-    }
-
-    function getAllOperationalTeams() {
-        return getTeams(null, 'operational', false);
-    }
-
-    function getAllActiveTeams() {
-        return getTeams(null, 'active', false);
-    }
-
-    function getTeamsByType(type, status) {
-        return getTeams(type, status || 'operational', false);
-    }
-
-    function getTeamsByClass(classId, status) {
-        if (!isNonEmptyString(classId)) { return []; }
-
-        var teams = getTeams(null, status || 'operational', false);
-        var target = String(classId);
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && isAcademicType(team.type) &&
-                String(team.classId) === target) {
-                result.push(team);
-            }
-        }
-
-        return result;
-    }
-
-    function getTeamsByPeriod(type, period, status) {
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return []; }
-
-        var teams = getTeams(type, status, false);
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            if (isTeamActiveAtPeriod(teams[i], periodNum)) {
-                result.push(teams[i]);
-            }
-        }
-
-        return result;
-    }
-
-    // ============================================================
-    // TEAM-SCOPED MEMBERSHIP
-    // ============================================================
-
-    function getActiveTeamMembers(team, period) {
-        if (!team || !Array.isArray(team.members)) { return []; }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return []; }
-
-        var range = TeamConstants.getPeriodRange(team.type);
-        if (!range) { return []; }
-
-        if (periodNum < range.min || periodNum > range.max) {
-            return [];
-        }
-
-        if (!teamWindowContainsNum(team, periodNum)) {
-            return [];
-        }
-
-        var result = [];
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
-            if (isMemberActive(member, periodNum)) {
-                result.push(clone(member));
-            }
-        }
-
-        return result;
-    }
-
-    function getActiveTeamMemberCount(team, period) {
-        return getActiveTeamMembers(team, period).length;
-    }
-
-    function isCharacterInTeamAtPeriod(team, characterId, period) {
-        if (!team || !isNonEmptyString(characterId)) {
-            return false;
-        }
-        var members = getActiveTeamMembers(team, period);
-        var target = String(characterId);
-        for (var i = 0; i < members.length; i++) {
-            if (members[i] &&
-                String(members[i].characterId) === target) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function getTeamMember(team, characterId) {
-        if (!team || !Array.isArray(team.members) ||
-            !isNonEmptyString(characterId)) {
-            return null;
-        }
-        var target = String(characterId);
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (member && typeof member === 'object' &&
-                String(member.characterId) === target) {
-                return clone(member);
-            }
-        }
-        return null;
-    }
-
-    function getTeamMemberByMemberId(team, memberId) {
-        if (!team || !Array.isArray(team.members) ||
-            !isNonEmptyString(memberId)) {
-            return null;
-        }
-        var target = String(memberId);
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
-            if (member.memberId !== undefined &&
-                member.memberId !== null &&
-                String(member.memberId) === target) {
-                return clone(member);
-            }
-        }
-        return null;
-    }
-
-    function getTeamMemberByComposite(team, characterId, joinPeriod) {
-        if (!team || !Array.isArray(team.members) ||
-            !isNonEmptyString(characterId)) {
-            return null;
-        }
-        var targetChar = String(characterId);
-        var targetJoin = (joinPeriod === undefined ||
-                          joinPeriod === null)
-            ? ''
-            : String(joinPeriod);
-
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (!member || typeof member !== 'object') { continue; }
-            if (String(member.characterId) !== targetChar) {
-                continue;
-            }
-            if (!Array.isArray(member.intervals)) { continue; }
-
-            for (var j = 0; j < member.intervals.length; j++) {
-                var interval = member.intervals[j];
-                if (!interval || typeof interval !== 'object') {
-                    continue;
-                }
-                var intervalJoin =
-                    (interval.joinPeriod === undefined ||
-                     interval.joinPeriod === null)
-                        ? ''
-                        : String(interval.joinPeriod);
-                if (intervalJoin === targetJoin) {
-                    return clone(member);
-                }
-            }
-        }
-        return null;
-    }
-
-    function getAllTeamMemberRecords(team) {
-        if (!team || !Array.isArray(team.members)) { return []; }
-        var result = [];
-        for (var i = 0; i < team.members.length; i++) {
-            var member = team.members[i];
-            if (member && typeof member === 'object') {
-                result.push(clone(member));
-            }
-        }
-        return result;
-    }
-
-    // ============================================================
-    // CHARACTER-CENTRIC MEMBERSHIP
-    // ============================================================
-
-    function getTeamsForCharacter(characterId, period, teamType) {
-        if (!isNonEmptyString(characterId)) { return []; }
-
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) { return []; }
-
-        var normalizedFilter = null;
-        if (teamType !== undefined &&
-            teamType !== null &&
-            teamType !== '') {
-            normalizedFilter =
-                TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) { return []; }
-        }
-
-        var teams = getTeamArray();
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-            if (!isTeamOperational(team)) { continue; }
-
-            if (normalizedFilter !== null) {
-                if (TeamConstants.normalizeTeamType(team.type) !==
-                    normalizedFilter) {
-                    continue;
-                }
-            }
-
-            if (isCharacterInTeamAtPeriod(
-                team, characterId, periodNum
-            )) {
-                result.push(team);
-            }
-        }
-
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var out = [];
-        for (var k = 0; k < result.length; k++) {
-            out.push(clone(result[k]));
-        }
-        return out;
-    }
-
-    function getTeamsForCharacterAllTime(characterId, teamType) {
-        return _getTeamsForCharacterAllTime(
-            characterId, teamType, /* includeDeprecated */ false
-        );
-    }
-
-    function getTeamsForCharacterAllTimeIncludingDeprecated(
-        characterId,
-        teamType
-    ) {
-        return _getTeamsForCharacterAllTime(
-            characterId, teamType, /* includeDeprecated */ true
-        );
-    }
-
-    function _getTeamsForCharacterAllTime(
-        characterId,
-        teamType,
-        includeDeprecated
-    ) {
-        if (!isNonEmptyString(characterId)) { return []; }
-
-        var normalizedFilter = null;
-        if (teamType !== undefined &&
-            teamType !== null &&
-            teamType !== '') {
-            normalizedFilter =
-                TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) { return []; }
-        }
-
-        var teams = getTeamArray();
-        var target = String(characterId);
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-            if (!includeDeprecated && !isTeamOperational(team)) {
-                continue;
-            }
-
-            if (normalizedFilter !== null) {
-                if (TeamConstants.normalizeTeamType(team.type) !==
-                    normalizedFilter) {
-                    continue;
-                }
-            }
-
-            if (!Array.isArray(team.members)) { continue; }
-
-            for (var m = 0; m < team.members.length; m++) {
-                var member = team.members[m];
-                if (!member || typeof member !== 'object') {
-                    continue;
-                }
-                if (String(member.characterId) === target) {
-                    result.push(team);
-                    break;
-                }
-            }
-        }
-
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var out = [];
-        for (var k = 0; k < result.length; k++) {
-            out.push(clone(result[k]));
-        }
-        return out;
-    }
-
-    function hasCharacterBeenOnTeamAllTime(characterId, teamType) {
-        if (!isNonEmptyString(characterId)) { return false; }
-
-        var normalizedFilter = null;
-        if (teamType !== undefined &&
-            teamType !== null &&
-            teamType !== '') {
-            normalizedFilter =
-                TeamConstants.normalizeTeamType(teamType);
-            if (normalizedFilter === null) { return false; }
-        }
-
-        var teams = getTeamArray();
-        var target = String(characterId);
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-
-            if (normalizedFilter !== null) {
-                if (TeamConstants.normalizeTeamType(team.type) !==
-                    normalizedFilter) {
-                    continue;
-                }
-            }
-
-            if (!Array.isArray(team.members)) { continue; }
-
-            for (var m = 0; m < team.members.length; m++) {
-                var member = team.members[m];
-                if (!member || typeof member !== 'object') {
-                    continue;
-                }
-                if (String(member.characterId) === target) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    function getCharacterTeamMembership(teamId, characterId) {
-        var team = getTeamByIdInternal(teamId);
-        if (!team) { return null; }
-        return getTeamMember(team, characterId);
-    }
-
-    // ============================================================
-    // SHORTAGE HISTORY
-    // ============================================================
-
-    function getTeamShortagePeriods(team, targetSize, toYear) {
-        var periods = [];
-
-        if (!team || typeof team !== 'object') { return periods; }
-
-        var target = parsePeriod(targetSize);
-        if (target === null || target < 1) { return periods; }
-
-        var upper = parsePeriod(toYear);
-        if (upper === null) { return periods; }
-
-        // ---- Determine the lower scan bound. ----
-        var lower = parsePeriod(team.startPeriod);
-
-        if (lower === null) {
-            var earliest = null;
-            if (Array.isArray(team.members)) {
-                for (var m = 0; m < team.members.length; m++) {
-                    var member = team.members[m];
-                    if (!member ||
-                        !Array.isArray(member.intervals)) {
-                        continue;
-                    }
-                    for (var i = 0;
-                         i < member.intervals.length;
-                         i++) {
-                        var iv = member.intervals[i];
-                        if (!iv || typeof iv !== 'object') {
-                            continue;
-                        }
-                        var join = parsePeriod(iv.joinPeriod);
-                        if (join === null) { continue; }
-                        if (earliest === null || join < earliest) {
-                            earliest = join;
-                        }
-                    }
-                }
-            }
-            lower = earliest;
-        }
-
-        if (lower === null) { return periods; }
-
-        if (lower > upper) { return periods; }
-
-        if (!Array.isArray(team.members) || team.members.length === 0) {
-            return periods;
-        }
-
-        // ---- Precompute each member's interval bounds once. ----
-        var memberRanges = [];
-        for (var mr = 0; mr < team.members.length; mr++) {
-            var m2 = team.members[mr];
-            if (!m2 || !Array.isArray(m2.intervals)) { continue; }
-
-            var ranges = [];
-            for (var ri = 0; ri < m2.intervals.length; ri++) {
-                var raw = m2.intervals[ri];
-                if (!raw || typeof raw !== 'object') { continue; }
-
-                var joinNum = parsePeriod(raw.joinPeriod);
-                if (joinNum === null) { continue; }
-
-                var leaveNum = parsePeriod(raw.leavePeriod);
-                var endNum = leaveNum === null ? Infinity : leaveNum;
-
-                if (endNum < joinNum) { continue; }
-
-                ranges.push({ start: joinNum, end: endNum });
-            }
-
-            if (ranges.length > 0) {
-                memberRanges.push(ranges);
-            }
-        }
-
-        if (memberRanges.length === 0) { return periods; }
-
-        // ---- Walk year by year and slice out the runs. ----
-        var currentStart = null;
-
-        for (var y = lower; y <= upper; y++) {
-            var count = 0;
-
-            for (var n = 0; n < memberRanges.length; n++) {
-                var intervals = memberRanges[n];
-                var isActiveThisYear = false;
-
-                for (var k = 0; k < intervals.length; k++) {
-                    var r = intervals[k];
-                    if (y >= r.start && y <= r.end) {
-                        isActiveThisYear = true;
-                        break;
-                    }
-                }
-                if (isActiveThisYear) { count++; }
-            }
-
-            var isShort = count < target;
-
-            if (isShort && currentStart === null) {
-                currentStart = y;
-            } else if (!isShort && currentStart !== null) {
-                periods.push({
-                    from: currentStart,
-                    to: y - 1
-                });
-                currentStart = null;
-            }
-        }
-
-        // Close any run still open at upper.
-        if (currentStart !== null) {
-            periods.push({
-                from: currentStart,
-                to: upper
-            });
-        }
-
-        // ---- Mark the last period as open when it reaches
-        //      toYear. ----
-        if (periods.length > 0) {
-            var last = periods[periods.length - 1];
-            if (last.to === upper) {
-                last.to = null;
-            }
-        }
-
-        return periods;
-    }
-
-    // ============================================================
-    // PROFESSIONAL PERSONNEL QUERY
-    // ============================================================
-
-    function requirePersonnelDependencies() {
-        var CharacterQueries = getCharacterQueries();
-        var CharacterConstants = getCharacterConstants();
-        var EliminationQueries = getEliminationQueries();
-
-        var missing = [];
-
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getCharacters !== 'function') {
-            missing.push('CharacterQueries.getCharacters');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.getStatusAtYear !== 'function') {
-            missing.push('CharacterQueries.getStatusAtYear');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.isDeceased !== 'function') {
-            missing.push('CharacterQueries.isDeceased');
-        }
-        if (!CharacterQueries ||
-            typeof CharacterQueries.calculateAge !== 'function') {
-            missing.push('CharacterQueries.calculateAge');
-        }
-        if (!CharacterConstants ||
-            typeof CharacterConstants.classifyStatus !== 'function') {
-            missing.push('CharacterConstants.classifyStatus');
-        }
-        if (!EliminationQueries ||
-            typeof EliminationQueries.getEliminationWeek !==
-            'function') {
-            missing.push('EliminationQueries.getEliminationWeek');
-        }
-
-        if (missing.length > 0) {
-            throw new Error(
-                '[TeamQueries] getProfessionalPersonnelAtPeriod ' +
-                'requires: ' + missing.join(', ')
-            );
-        }
-
-        return {
-            CharacterQueries: CharacterQueries,
-            CharacterConstants: CharacterConstants,
-            EliminationQueries: EliminationQueries
-        };
-    }
-
-    function computeStudentWindow(char) {
-        var result = {
-            hasPhase: false,
-            from: null,
-            to: null
-        };
-
-        if (!char || !Array.isArray(char.careerStatus) ||
-            char.careerStatus.length === 0) {
-            return result;
-        }
-
-        var earliestStart = null;
-        var latestEnd = null;
-        var anyOpenEnded = false;
-
-        for (var i = 0; i < char.careerStatus.length; i++) {
-            var entry = char.careerStatus[i];
-            if (!entry || typeof entry !== 'object') { continue; }
-
-            var key = normaliseCareerStatusKey(entry.status);
-            if (key !== 'junior' && key !== 'senior') { continue; }
-
-            result.hasPhase = true;
-
-            var start = parseYear(entry.startYear);
-            if (start !== null) {
-                if (earliestStart === null ||
-                    start < earliestStart) {
-                    earliestStart = start;
-                }
-            }
-
-            var endRaw = entry.endYear;
-            if (endRaw === undefined ||
-                endRaw === null ||
-                String(endRaw).trim() === '') {
-                anyOpenEnded = true;
-            } else {
-                var end = parseYear(endRaw);
-                if (end !== null) {
-                    if (latestEnd === null || end > latestEnd) {
-                        latestEnd = end;
-                    }
-                }
-            }
-        }
-
-        result.from = earliestStart;
-        result.to = anyOpenEnded ? null : latestEnd;
-        return result;
-    }
-
-    function stintOverlapsStudentWindow(historyEntry, window) {
-        if (!historyEntry ||
-            !Array.isArray(historyEntry.teams)) {
-            return false;
-        }
-
-        var windowFrom = window.from;
-        var windowTo = window.to;
-
-        for (var i = 0; i < historyEntry.teams.length; i++) {
-            var member = historyEntry.teams[i].member;
-            if (!member || !Array.isArray(member.intervals)) {
-                continue;
-            }
-
-            for (var j = 0; j < member.intervals.length; j++) {
-                var interval = member.intervals[j];
-                if (!interval || typeof interval !== 'object') {
-                    continue;
-                }
-
-                var stintFrom = parsePeriod(interval.joinPeriod);
-                if (stintFrom === null) { stintFrom = 0; }
-
-                var stintTo = parsePeriod(interval.leavePeriod);
-                if (stintTo === null) { stintTo = Infinity; }
-
-                var windowFromEff =
-                    windowFrom === null ? -Infinity : windowFrom;
-                var windowToEff =
-                    windowTo === null ? Infinity : windowTo;
-
-                if (stintFrom <= windowToEff &&
-                    windowFromEff <= stintTo) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    function buildProfessionalHistoryIndex(periodNum) {
-        var teams = getTeamArray();
-        var index = Object.create(null);
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-            // Route through normalizeTeamType: a legacy 'temporary'
-            // or 'internship' record still counts as a professional
-            // team. Without this, a character with pre-v31 history
-            // looks like they have none, and re-enters the staffing
-            // pool.
-            if (!isProfessionalType(team.type)) { continue; }
-            if (!Array.isArray(team.members)) { continue; }
-
-            var teamId = String(team.id);
-
-            for (var m = 0; m < team.members.length; m++) {
-                var member = team.members[m];
-                if (!member || typeof member !== 'object') {
-                    continue;
-                }
-                if (!isNonEmptyString(member.characterId)) {
-                    continue;
-                }
-                var charId = String(member.characterId);
-
-                if (!index[charId]) {
-                    index[charId] = {
-                        hasAnyEntry: false,
-                        teams: [],
-                        activeAtPeriod: null,
-                        currentOpenStint: false,
-                        futureFrom: null,
-                        futureTeamId: null,
-                        formerTeams: []
-                    };
-                }
-
-                var entry = index[charId];
-                entry.hasAnyEntry = true;
-                entry.teams.push({ team: team, member: member });
-
-                var active = isMemberActive(member, periodNum);
-                var former = !active &&
-                    isMemberFormer(member, periodNum);
-
-                if (active) {
-                    entry.activeAtPeriod = teamId;
-                } else if (former) {
-                    if (entry.formerTeams.indexOf(teamId) === -1) {
-                        entry.formerTeams.push(teamId);
-                    }
-                }
-
-                if (!Array.isArray(member.intervals)) { continue; }
-
-                for (var iv = 0; iv < member.intervals.length; iv++) {
-                    var interval = member.intervals[iv];
-                    if (!interval ||
-                        typeof interval !== 'object') {
-                        continue;
-                    }
-
-                    var leaveRaw = interval.leavePeriod;
-                    var hasLeave = leaveRaw !== undefined &&
-                                   leaveRaw !== null &&
-                                   leaveRaw !== '';
-                    if (!hasLeave) {
-                        entry.currentOpenStint = true;
-                    }
-
-                    var joinNum = parsePeriod(interval.joinPeriod);
-                    if (joinNum === null) { continue; }
-                    if (joinNum <= periodNum) { continue; }
-
-                    if (entry.futureFrom === null ||
-                        joinNum < entry.futureFrom) {
-                        entry.futureFrom = joinNum;
-                        entry.futureTeamId = teamId;
-                    }
-                }
-            }
-        }
-
-        return index;
-    }
-
-    function buildPersonnelRecord(
-        char,
-        periodNum,
-        deps,
-        historyEntry,
-        studentWindow
-    ) {
-        var CharacterQueries = deps.CharacterQueries;
-
-        var charId = String(char.id);
-        var name = CharacterQueries.getDisplayName(char);
-        var age = CharacterQueries.calculateAge(char, periodNum);
-        var statusAtPeriod =
-            CharacterQueries.getStatusAtYear(char, periodNum);
-        var deceased =
-            CharacterQueries.isDeceased(char, periodNum) === true;
-
-        var juniorYear = null;
-        var seniorYear = null;
-        var supportYear = null;
-        var instructorYear = null;
-
-        if (typeof CharacterQueries.getJuniorYear === 'function') {
-            juniorYear = CharacterQueries.getJuniorYear(char);
-        }
-        if (typeof CharacterQueries.getSeniorYear === 'function') {
-            seniorYear = CharacterQueries.getSeniorYear(char);
-        }
-        if (typeof CharacterQueries.getSupportYear === 'function') {
-            supportYear = CharacterQueries.getSupportYear(char);
-        }
-        if (typeof CharacterQueries.getInstructorYear === 'function') {
-            instructorYear =
-                CharacterQueries.getInstructorYear(char);
-        }
-
-        var hasProfessionalHistory = historyEntry &&
-            historyEntry.hasAnyEntry === true;
-
-        var isRetired =
-            getLatestCareerStatusKey(char) === 'retired';
-
-        var assignmentStatus = 'available';
-        var currentTeamId = null;
-        var currentTeamName = null;
-        var nextTeamId = null;
-        var nextTeamName = null;
-        var nextJoinYear = null;
-
-        if (historyEntry) {
-            if (historyEntry.activeAtPeriod) {
-                assignmentStatus = 'active';
-                currentTeamId = historyEntry.activeAtPeriod;
-                var activeTeam = getTeamByIdInternal(currentTeamId);
-                if (activeTeam) {
-                    currentTeamName =
-                        getCurrentTeamName(activeTeam);
-                }
-            } else if (historyEntry.futureFrom !== null) {
-                assignmentStatus = 'future';
-                nextTeamId = historyEntry.futureTeamId;
-                nextJoinYear = historyEntry.futureFrom;
-                var futureTeam = getTeamByIdInternal(nextTeamId);
-                if (futureTeam) {
-                    nextTeamName =
-                        getCurrentTeamName(futureTeam);
-                }
-            }
-        }
-
-        return {
-            characterId: charId,
-            name: name,
-            age: age,
-            statusAtPeriod: statusAtPeriod,
-
-            deceased: deceased,
-            retired: isRetired,
-
-            assignment: {
-                status: assignmentStatus,
-                currentTeamId: currentTeamId,
-                currentTeamName: currentTeamName,
-                nextTeamId: nextTeamId,
-                nextTeamName: nextTeamName,
-                nextJoinYear: nextJoinYear
-            },
-
-            availability: {
-                from: studentWindow ? studentWindow.from : null,
-                to: studentWindow ? studentWindow.to : null
-            },
-
-            career: {
-                juniorYear: juniorYear,
-                seniorYear: seniorYear,
-                supportYear: supportYear,
-                instructorYear: instructorYear
-            },
-
-            history: {
-                hasProfessionalHistory: hasProfessionalHistory,
-                formerTeamCount: historyEntry
-                    ? historyEntry.formerTeams.length
-                    : 0
-            }
-        };
-    }
-
-    function getProfessionalPersonnelAtPeriod(period) {
-        var periodNum = parsePeriod(period);
-        if (periodNum === null) {
-            throw new Error(
-                '[TeamQueries] getProfessionalPersonnelAtPeriod ' +
-                'requires a valid period.'
-            );
-        }
-
-        var deps = requirePersonnelDependencies();
-        var CharacterQueries = deps.CharacterQueries;
-        var EliminationQueries = deps.EliminationQueries;
-
-        var allChars = CharacterQueries.getCharacters() || [];
-        var historyIndex =
-            buildProfessionalHistoryIndex(periodNum);
-
-        var records = [];
-
-        for (var i = 0; i < allChars.length; i++) {
-            var char = allChars[i];
-            if (!char || !char.id) { continue; }
-
-            var charId = String(char.id);
-
-            // ---- 1. Deceased at period: exclude. ----
-            var deceased = false;
-            try {
-                deceased =
-                    CharacterQueries.isDeceased(char, periodNum) ===
-                    true;
-            } catch (e) {
-                deceased = char.deceased === true;
-            }
-            if (deceased) { continue; }
-
-            // ---- 2. Eliminated: exclude (presence-based). ----
-            var elimWeek = null;
-            try {
-                elimWeek =
-                    EliminationQueries.getEliminationWeek(charId);
-            } catch (e) {
-                throw new Error(
-                    '[TeamQueries] getEliminationWeek failed for ' +
-                    charId + ': ' + e.message
-                );
-            }
-            if (elimWeek !== null && elimWeek !== undefined) {
-                continue;
-            }
-
-            // ---- 3. Retired: exclude. ----
-            if (getLatestCareerStatusKey(char) === 'retired') {
-                continue;
-            }
-
-            // ---- 4. Student phase must exist. ----
-            var studentWindow = computeStudentWindow(char);
-            if (!studentWindow.hasPhase) { continue; }
-
-            // ---- 5. Student window must not overlap any
-            //         professional stint. ----
-            var historyEntry = historyIndex[charId] || null;
-            if (stintOverlapsStudentWindow(
-                historyEntry, studentWindow
-            )) {
-                continue;
-            }
-
-            records.push(
-                buildPersonnelRecord(
-                    char,
-                    periodNum,
-                    deps,
-                    historyEntry,
-                    studentWindow
-                )
-            );
-        }
-
-        records.sort(function(a, b) {
-            var aFrom = a.availability
-                ? a.availability.from
-                : null;
-            var bFrom = b.availability
-                ? b.availability.from
-                : null;
-
-            if (aFrom === null && bFrom === null) {
-                return a.name.localeCompare(b.name);
-            }
-            if (aFrom === null) { return 1; }
-            if (bFrom === null) { return -1; }
-            if (aFrom !== bFrom) { return aFrom - bFrom; }
-            return a.name.localeCompare(b.name);
-        });
-
-        return records;
-    }
-
-    // ============================================================
-    // RANKINGS — ORDERED-LIST READS (this revision)
-    // ============================================================
-    //
-    // The write path (TeamCore.insertRankingAt / moveRanking)
-    // writes a FULL SNAPSHOT for any year that is edited. If you
-    // drag and drop in 1920, every team in the list gets a 1920
-    // entry. If you do not touch 1945, 1944's exact order
-    // cascades into 1945. If you reorder in 1945, a new snapshot
-    // is written for 1945.
-    //
-    // The reads below consume that guarantee by looking at the
-    // EFFECTIVE rank for every team at or before the target year.
-    //
-    // Three reads:
-    //
-    //   getExplicitRankingOrderForYear(year)
-    //     Raw ordered list. [{ teamId, team, rank }], sorted
-    //     ascending by rank.
-    //
-    //   getRankedTeamsForYear(year, options)
-    //     Display-facing. Determines the effective rank for
-    //     every team, filters out anyone with no rank at all,
-    //     and sorts by rank.
-    //
-    //     SHOWINACTIVE:
-    //       options.showInactive gates whether rows whose team
-    //       is NOT active in that year are returned.
-    //
-    //   getUnrankedTeamsForYear(year, options)
-    //     Candidates a "fill a slot" picker offers: teams
-    //     active at the year with no explicit entry at the year
-    //     and no inherited effective rank from an earlier year.
-
-    function collectExplicitEntriesAtYearInternal(targetYear) {
-        var targetStr = String(parseInt(targetYear, 10));
-        var teams = getTeamArray();
-        var entries = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-            if (!Array.isArray(team.rankingHistory)) { continue; }
-
-            for (var j = 0; j < team.rankingHistory.length; j++) {
-                var entry = team.rankingHistory[j];
-                if (!entry || typeof entry !== 'object') { continue; }
-
-                var entryYear = parsePeriod(entry.period);
-                if (entryYear === null) { continue; }
-                if (String(entryYear) !== targetStr) { continue; }
-
-                var rank = parsePeriod(entry.rank);
-                if (rank === null) { continue; }
-
-                entries.push({
-                    teamId: String(team.id),
-                    team: team,
-                    rank: rank
-                });
-            }
-        }
-
-        entries.sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-
-        return entries;
     }
 
     /**
-     * The raw ordered list of explicit entries at a year.
+     * Is this team deprecated AND empty at the given year?
      *
-     * @param {string|number} year
-     * @returns {array} [{ teamId, team, rank }]
+     * Returns true when:
+     *   - the team is deprecated, AND
+     *   - the team has zero active members at `periodNum`.
+     *
+     * "Active member" is answered by getActiveTeamMemberCount,
+     * which already applies the team-window check and the
+     * interval bounds. A team marked deprecated with a live roster
+     * returns false (its state is inconsistent; leaving it alone
+     * is the least destructive behaviour).
      */
-    function getExplicitRankingOrderForYear(year) {
-        var yearNum = parsePeriod(year);
-        if (yearNum === null) { return []; }
-        return collectExplicitEntriesAtYearInternal(yearNum);
-    }
-
-    /**
-     * Display-facing ordered list for the Rankings tab.
-     *
-     * Uses getEffectiveRanking for every team. If a team has an
-     * explicit entry at year Y, that is their rank. If they do
-     * not, their rank is inherited from the most recent explicit
-     * entry before Y. Sorts all teams with a non-null rank.
-     *
-     * Each entry:
-     *
-     *   {
-     *     position:      integer 1..N, the display position
-     *     teamId:        string
-     *     name:          string (resolved via getCurrentTeamName)
-     *     rank:          integer (same as position)
-     *     explicit:      boolean
-     *     sourcePeriod:  String  (the year the rank was written)
-     *     periodDisplay: string  ('1900-1904', 'From 1900', ...)
-     *     memberCount:   integer (active members at `year`)
-     *     status:        raw stored status
-     *     activeAtYear:  boolean
-     *   }
-     *
-     * SHOWINACTIVE:
-     *   When options.showInactive !== true, inactive rows are dropped.
-     *
-     * Returns [] when no team has a rank at the year.
-     *
-     * @param {string|number} year
-     * @param {object} [options] - { showInactive: boolean }
-     * @returns {array}
-     */
-    function getRankedTeamsForYear(year, options) {
-        options = options || {};
-        var showInactive = options.showInactive === true;
-
-        var yearNum = parsePeriod(year);
-        if (yearNum === null) { return []; }
-
-        var teams = getTeamArray();
-        var effectiveRanks = [];
-        var seenRanks = Object.create(null);
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || !team.id) { continue; }
-            
-            // getEffectiveRanking looks at the explicit entry at this year, 
-            // or inherits from the most recent explicit entry before it.
-            var effective = getEffectiveRanking(team, yearNum);
-            if (effective.rank === null) { continue; }
-
-            var activeAtYear = isTeamActiveAtPeriod(team, yearNum);
-            if (!showInactive && !activeAtYear) { continue; }
-
-            // Ensure uniqueness (if two teams tie, take the more recent source)
-            var rankKey = String(effective.rank);
-            if (seenRanks[rankKey]) {
-                var existing = seenRanks[rankKey];
-                if (effective.sourcePeriod > existing.effective.sourcePeriod) {
-                    existing.team = team;
-                    existing.effective = effective;
-                    existing.activeAtYear = activeAtYear;
-                }
-            } else {
-                seenRanks[rankKey] = {
-                    team: team,
-                    effective: effective,
-                    activeAtYear: activeAtYear
-                };
-            }
-        }
-
-        var result = [];
-        var rankKeys = Object.keys(seenRanks);
-        for (var k = 0; k < rankKeys.length; k++) {
-            var item = seenRanks[rankKeys[k]];
-            var t = item.team;
-            var e = item.effective;
-            
-            var memberCount = 0;
-            try {
-                memberCount = getActiveTeamMemberCount(t, yearNum);
-            } catch (err) {
-                memberCount = 0;
-            }
-
-            result.push({
-                position: e.rank,
-                teamId: String(t.id),
-                name: getCurrentTeamName(t),
-                rank: e.rank,
-                explicit: e.explicit,
-                sourcePeriod: e.sourcePeriod,
-                periodDisplay: buildTeamPeriodDisplay(t),
-                memberCount: memberCount,
-                status: t.status || 'active',
-                activeAtYear: item.activeAtYear
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.position - b.position;
-        });
-
-        return result;
-    }
-
-    /**
-     * Teams active at `year` that have no explicit entry at the
-     * year and no inherited effective rank from an earlier year.
-     *
-     * These are the candidates a "fill a slot" picker offers, and
-     * what a drag-to-empty-position drop would target. A team
-     * with an inherited rank is excluded: including them would
-     * double-rank them.
-     *
-     * Only professional teams are considered. Academic and
-     * civilian teams never carry a mission-style ranking.
-     *
-     * SHOWINACTIVE:
-     *   The options object is accepted for signature symmetry
-     *   with getRankedTeamsForYear, but showInactive has NO
-     *   effect here. This list is always active-only. See the
-     *   section header comment.
-     *
-     * @param {string|number} year
-     * @param {object} [options] - accepted for symmetry; unused.
-     * @returns {array} [{ teamId, name, status, activeAtYear }]
-     */
-    function getUnrankedTeamsForYear(year, options) {
-        // options is intentionally unused. The signature accepts
-        // it so the aggregator can pass the same options object
-        // to both reads without a special case.
-        void options;
-
-        var yearNum = parsePeriod(year);
-        if (yearNum === null) { return []; }
-
-        // Which teams already have an explicit entry at the year?
-        var explicitSet = Object.create(null);
-        var raw = collectExplicitEntriesAtYearInternal(yearNum);
-        for (var r = 0; r < raw.length; r++) {
-            explicitSet[raw[r].teamId] = true;
-        }
-
-        var teams = getTeamArray();
-        var result = [];
-
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team || typeof team !== 'object') { continue; }
-            if (!team.id) { continue; }
-            if (!isProfessionalType(team.type)) { continue; }
-
-            var teamId = String(team.id);
-            if (explicitSet[teamId]) { continue; }
-
-            // A team that has an inherited rank at the year is
-            // already in the display list implicitly; the user
-            // should not be offered it for double-ranking.
-            var effective = getEffectiveRanking(team, yearNum);
-            if (effective.rank !== null) { continue; }
-
-            // Only include teams that were actually active at the
-            // year. A disbanded team cannot take a new position.
-            var activeAtYear = false;
-            try {
-                activeAtYear = isTeamActiveAtPeriod(team, yearNum);
-            } catch (e) {
-                activeAtYear = false;
-            }
-            if (!activeAtYear) { continue; }
-
-            result.push({
-                teamId: teamId,
-                name: getCurrentTeamName(team),
-                status: team.status || 'active',
-                activeAtYear: true
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
+    function isTeamDeprecatedAndEmptyAtPeriod(team, periodNum) {
+        if (!isPlainObject(team)) { return false; }
+        var status = MissionConstants.normalizeTeamStatus
+            ? MissionConstants.normalizeTeamStatus(team.status)
+            : null;
+        if (status !== 'deprecated') { return false; }
+        return getActiveTeamMemberCount(team, periodNum) === 0;
     }
 
     // ============================================================
-    // PERIOD DISPLAY (internal helper for the rankings reads)
-    // ============================================================
-    //
-    // Mirrors TeamAggregator.getTeamPeriodDisplay. It lives here
-    // because getRankedTeamsForYear needs a period display and it
-    // would be wrong for the query layer to depend on the
-    // aggregator. The aggregator still owns its own copy; the two
-    // are kept in sync by convention. If they ever diverge, this
-    // one wins for the rankings tab (it is the one the rankings
-    // VM reads from).
-
-    function buildTeamPeriodDisplay(team) {
-        if (!team || typeof team !== 'object') { return '-'; }
-
-        var normalizedType = TeamConstants.normalizeTeamType(
-            team.type
-        );
-        var start = team.startPeriod || '';
-        var end = team.endPeriod || '';
-
-        if (normalizedType === 'academic') {
-            if (start && end) {
-                return 'Wk ' + start + ' - Wk ' + end;
-            }
-            if (start) { return 'From Wk ' + start; }
-            if (end) { return 'Until Wk ' + end; }
-            return '-';
-        }
-
-        if (start && end) { return start + ' - ' + end; }
-        if (start) { return 'From ' + start; }
-        if (end) { return 'Until ' + end; }
-        return '-';
-    }
-
-    // ============================================================
-    // RANKINGS — INHERITANCE MODEL (unchanged)
+    // RANKINGS — effective rank resolver
     // ============================================================
     //
     // RANKING MODEL:
@@ -2025,25 +1271,19 @@
     //   The 1904 entry survives untouched; it just stops governing
     //   1905.
     //
-    // getRankAtPeriod RETURNS THE EFFECTIVE RANK. It does not
-    // distinguish explicit from inherited. Callers that need the
-    // distinction use getEffectiveRanking.
-
-    /**
-     * Get the rank in effect for a team at a given year.
-     *
-     * Read-time inheritance: returns the most recent entry at
-     * or before `year`. Returns null when the team has no entry
-     * at or before the year, or when the year is invalid.
-     *
-     * @param {object} team
-     * @param {string|number} period
-     * @returns {number|null}
-     */
-    function getRankAtPeriod(team, period) {
-        var effective = getEffectiveRanking(team, period);
-        return effective.rank;
-    }
+    // DEPRECATION OVERRIDE:
+    //   A team that is deprecated at Y has no effective rank at Y,
+    //   regardless of what its rankingHistory holds. The
+    //   deprecation year (see computeDeprecationYear) is the first
+    //   year with zero active members; from that year onward the
+    //   team's rank is inert. Stored entries at years BEFORE the
+    //   deprecation year still govern those years, which is what
+    //   "keep previous records" means.
+    //
+    //   The read is a shadow, not a deletion: getEffectiveRanking
+    //   never mutates the team. removeRankingAt prunes the stale
+    //   tail in its own transaction so the stored shape and the
+    //   displayed shape cannot drift after a manual removal.
 
     /**
      * Get the effective ranking at a year, with the provenance
@@ -2068,8 +1308,17 @@
             return result;
         }
 
-        var periodNum = parsePeriod(period);
+        var periodNum = parsePeriodLocal(period);
         if (periodNum === null) {
+            return result;
+        }
+
+        // ---- Deprecation override ----
+        //
+        // A team deprecated at or before `periodNum` has no
+        // effective rank. See the block comment above.
+        var deprecationYear = computeDeprecationYear(team);
+        if (deprecationYear !== null && periodNum >= deprecationYear) {
             return result;
         }
 
@@ -2078,13 +1327,13 @@
 
         for (var i = 0; i < team.rankingHistory.length; i++) {
             var entry = team.rankingHistory[i];
-            if (!entry || typeof entry !== 'object') { continue; }
+            if (!isPlainObject(entry)) { continue; }
 
-            var entryPeriod = parsePeriod(entry.period);
+            var entryPeriod = parsePeriodLocal(entry.period);
             if (entryPeriod === null) { continue; }
             if (entryPeriod > periodNum) { continue; }
 
-            var rank = parsePeriod(entry.rank);
+            var rank = parsePeriodLocal(entry.rank);
             if (rank === null) { continue; }
 
             if (entryPeriod > bestYear) {
@@ -2105,7 +1354,29 @@
     }
 
     /**
-     * Does the team have an explicit entry at exactly this year?
+     * Get the rank in effect for a team at a given year.
+     *
+     * Read-time inheritance: returns the most recent entry at
+     * or before `year`. Returns null when the team has no entry
+     * at or before the year, or when the team is deprecated at or
+     * before the year.
+     *
+     * @param {object} team
+     * @param {string|number} period
+     * @returns {number|null}
+     */
+    function getRankAtPeriod(team, period) {
+        var effective = getEffectiveRanking(team, period);
+        return effective.rank;
+    }
+
+    /**
+     * Does the team have an explicit entry at exactly this year
+     * that is EFFECTIVE?
+     *
+     * A stored entry at or after the deprecation year is inert
+     * (see the deprecation override above), so this returns false
+     * for such entries even though they exist in the array.
      *
      * @param {object} team
      * @param {string|number} period
@@ -2123,6 +1394,11 @@
      * The last entry's range extends to Infinity. This is the
      * same half-open rule the periods model uses.
      *
+     * The returned ranges do NOT account for the deprecation
+     * override: they describe the STORED record, not the
+     * displayed effective rank. Callers that need the effective
+     * rank for a given year use getEffectiveRanking.
+     *
      * @param {object} team
      * @returns {array} [ { period, rank, governsFrom, governsTo } ]
      */
@@ -2136,12 +1412,12 @@
 
         for (var i = 0; i < team.rankingHistory.length; i++) {
             var entry = team.rankingHistory[i];
-            if (!entry || typeof entry !== 'object') { continue; }
+            if (!isPlainObject(entry)) { continue; }
 
-            var year = parsePeriod(entry.period);
+            var year = parsePeriodLocal(entry.period);
             if (year === null) { continue; }
 
-            var rank = parsePeriod(entry.rank);
+            var rank = parsePeriodLocal(entry.rank);
             if (rank === null) { continue; }
 
             if (seenYears[year]) { continue; }
@@ -2186,12 +1462,12 @@
         var history = [];
         for (var i = 0; i < team.rankingHistory.length; i++) {
             var entry = team.rankingHistory[i];
-            if (!entry || typeof entry !== 'object') { continue; }
+            if (!isPlainObject(entry)) { continue; }
 
-            var periodNum = parsePeriod(entry.period);
+            var periodNum = parsePeriodLocal(entry.period);
             if (periodNum === null) { continue; }
 
-            var rank = parsePeriod(entry.rank);
+            var rank = parsePeriodLocal(entry.rank);
             if (rank === null) { continue; }
 
             history.push({
@@ -2262,138 +1538,544 @@
     }
 
     // ============================================================
-    // STAFF CLASSIFICATION
+    // RANKINGS — explicit entries at a year
     // ============================================================
 
-    function isCharacterStaffAtYear(char, yearNum) {
-        var info = getStaffInfoAtYear(char, yearNum);
-        return info.role !== null;
-    }
+    function collectExplicitEntriesAtYearInternal(targetYear) {
+        var targetStr = String(parsePeriodLocal(targetYear));
+        var teams = getTeamStore();
+        var entries = [];
 
-    function getStaffInfoAtYear(char, yearNum) {
-        var result = { role: null, since: null };
-        if (!char || typeof char !== 'object') { return result; }
+        if (!Array.isArray(teams)) { return entries; }
 
-        var CharacterQueries = getCharacterQueries();
-        var CharacterConstants = getCharacterConstants();
-        if (!CharacterQueries ||
-            !CharacterConstants) {
-            return result;
-        }
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!isPlainObject(team)) { continue; }
+            if (!Array.isArray(team.rankingHistory)) { continue; }
 
-        var statusAtYear = null;
-        try {
-            statusAtYear = CharacterQueries.getStatusAtYear(
-                char, yearNum
-            );
-        } catch (e) {
-            return result;
-        }
+            for (var j = 0; j < team.rankingHistory.length; j++) {
+                var entry = team.rankingHistory[j];
+                if (!isPlainObject(entry)) { continue; }
 
-        if (typeof statusAtYear !== 'string' ||
-            statusAtYear.trim() === '') {
-            return result;
-        }
+                var entryYear = parsePeriodLocal(entry.period);
+                if (entryYear === null) { continue; }
+                if (String(entryYear) !== targetStr) { continue; }
 
-        var tier = null;
-        try {
-            tier = CharacterConstants.classifyStatus(statusAtYear);
-        } catch (e) {
-            tier = null;
-        }
+                var rank = parsePeriodLocal(entry.rank);
+                if (rank === null) { continue; }
 
-        if (tier !== 'instructor' && tier !== 'support') {
-            return result;
-        }
-
-        result.role = tier;
-
-        if (typeof CharacterQueries.getCareerStatusYear ===
-            'function') {
-            var statusName = tier === 'instructor'
-                ? 'instructor'
-                : 'support';
-            try {
-                var since = CharacterQueries.getCareerStatusYear(
-                    char, statusName
-                );
-                if (since !== null && since !== undefined) {
-                    result.since = since;
-                }
-            } catch (e) {
-                // Leave since null.
+                entries.push({
+                    teamId: String(team.id),
+                    team: team,
+                    rank: rank
+                });
             }
         }
 
+        entries.sort(function(a, b) {
+            return a.rank - b.rank;
+        });
+
+        return entries;
+    }
+
+    /**
+     * The raw ordered list of explicit entries at a year.
+     *
+     * @param {string|number} year
+     * @returns {array} [{ teamId, team, rank }]
+     */
+    function getExplicitRankingOrderForYear(year) {
+        var yearNum = parsePeriodLocal(year);
+        if (yearNum === null) { return []; }
+        return collectExplicitEntriesAtYearInternal(yearNum);
+    }
+
+    // ============================================================
+    // RANKINGS — display-facing ordered list (this revision)
+    // ============================================================
+    //
+    // The Rankings tab does not render per-team effective ranks in
+    // arbitrary order. It renders a POSITION-ORDERED list per
+    // year: position 1, position 2, ..., position N, one team per
+    // position, no gaps, no duplicates.
+    //
+    // Three reads:
+    //
+    //   getExplicitRankingOrderForYear(year)
+    //     Raw ordered list of explicit entries at the year.
+    //     Used only by callers that need the stored shape.
+    //
+    //   getRankedTeamsForYear(year, options)
+    //     Display-facing list the Rankings tab consumes. It looks
+    //     at the effective rank for every team, filters out anyone
+    //     with no rank (including deprecated teams at or after
+    //     their deprecation year), sorts by rank, then COMPACTS
+    //     the surviving positions to dense 1..N.
+    //
+    //   getUnrankedTeamsForYear(year, options)
+    //     Teams active at the year that have NO explicit entry at
+    //     the year and NO inherited effective rank. Deprecated
+    //     teams are excluded outright: they cannot be re-ranked.
+    //
+    // COMPACTION (this revision):
+    //   After the deprecated-and-empty teams are dropped from the
+    //   effective-rank set, the survivors may have been stored at
+    //   non-contiguous ranks (e.g. 1, 2, 4, 5 if a team at 3 was
+    //   inherited by the deprecated team). The read compacts them
+    //   to 1, 2, 3, 4: the hole left by the deprecated team is
+    //   filled, no gaps remain. This is the "no gaps in the
+    //   lineup" rule.
+    //
+    //   The `explicit` and `sourcePeriod` fields on each row still
+    //   describe where the value came from; only `position` and
+    //   `rank` are compacted, and those two are always equal by
+    //   contract.
+    //
+    // SHOWINACTIVE:
+    //   options.showInactive gates whether rows whose team is not
+    //   active in that year are returned. Deprecated teams are
+    //   excluded regardless of showInactive: they are gone, not
+    //   merely inactive. Non-deprecated inactive teams obey the
+    //   flag as before.
+
+    /**
+     * Display-facing ordered list for the Rankings tab.
+     *
+     * @param {string|number} year
+     * @param {object} [options] - { showInactive: boolean }
+     * @returns {array}
+     */
+    function getRankedTeamsForYear(year, options) {
+        options = options || {};
+        var showInactive = options.showInactive === true;
+
+        var yearNum = parsePeriodLocal(year);
+        if (yearNum === null) { return []; }
+
+        var teams = getTeamStore();
+        var effectiveRanks = [];
+        var seenRanks = Object.create(null);
+
+        if (!Array.isArray(teams)) { return []; }
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+
+            // getEffectiveRanking looks at the explicit entry at
+            // this year, or inherits from the most recent explicit
+            // entry before it, and returns null when the team is
+            // deprecated at or before this year.
+            var effective = getEffectiveRanking(team, yearNum);
+            if (effective.rank === null) { continue; }
+
+            var activeAtYear = isTeamActiveAtPeriod(team, yearNum);
+            if (!showInactive && !activeAtYear) { continue; }
+
+            // Ensure uniqueness (if two teams tie, take the more
+            // recent source).
+            var rankKey = String(effective.rank);
+            if (seenRanks[rankKey]) {
+                var existing = seenRanks[rankKey];
+                if (effective.sourcePeriod >
+                    existing.effective.sourcePeriod) {
+                    existing.team = team;
+                    existing.effective = effective;
+                    existing.activeAtYear = activeAtYear;
+                }
+            } else {
+                seenRanks[rankKey] = {
+                    team: team,
+                    effective: effective,
+                    activeAtYear: activeAtYear
+                };
+            }
+        }
+
+        var result = [];
+        var rankKeys = Object.keys(seenRanks);
+        for (var k = 0; k < rankKeys.length; k++) {
+            var item = seenRanks[rankKeys[k]];
+            var t = item.team;
+            var e = item.effective;
+
+            var memberCount = 0;
+            try {
+                memberCount = getActiveTeamMemberCount(t, yearNum);
+            } catch (err) {
+                memberCount = 0;
+            }
+
+            result.push({
+                position: e.rank,        // provisional; compacted below
+                teamId: String(t.id),
+                name: getCurrentTeamName(t),
+                rank: e.rank,            // provisional; compacted below
+                explicit: e.explicit,
+                sourcePeriod: e.sourcePeriod,
+                periodDisplay: buildTeamPeriodDisplay(t),
+                memberCount: memberCount,
+                status: t.status || 'active',
+                activeAtYear: item.activeAtYear
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.position - b.position;
+        });
+
+        // ---- Compaction ----
+        //
+        // After the deprecated-and-empty teams have been filtered
+        // out by the effective-rank resolver, the survivors'
+        // stored ranks may be non-contiguous (e.g. 1, 2, 4, 5).
+        // Renumber them densely to 1..N so there are no gaps in
+        // the lineup. This is the "#4 rises to #3 when #3
+        // deprecates" rule.
+        //
+        // The `explicit` and `sourcePeriod` fields are NOT
+        // compacted: they describe the stored value's provenance,
+        // which callers may want to surface. Only the displayed
+        // position and rank are compacted.
+        for (var p = 0; p < result.length; p++) {
+            result[p].position = p + 1;
+            result[p].rank = p + 1;
+        }
+
         return result;
+    }
+
+    /**
+     * Teams active at `year` that have no explicit entry at the
+     * year and no inherited effective rank from an earlier year.
+     *
+     * These are the candidates a "fill a slot" picker offers, and
+     * what a drag-to-empty-position drop would target. A team
+     * with an inherited rank is excluded: including them would
+     * double-rank them.
+     *
+     * DEPRECATED TEAMS ARE EXCLUDED OUTRIGHT. A team that has
+     * been deprecated cannot be re-ranked, regardless of whether
+     * its member count is currently zero. Offering it in the
+     * picker would let the user re-rank a team that no longer
+     * exists.
+     *
+     * Only professional teams are considered. Academic and
+     * civilian teams never carry a mission-style ranking.
+     *
+     * SHOWINACTIVE:
+     *   The options object is accepted for signature symmetry
+     *   with getRankedTeamsForYear, but showInactive has NO
+     *   effect here. This list is always active-only. See the
+     *   section header comment.
+     *
+     * @param {string|number} year
+     * @param {object} [options] - accepted for symmetry; unused.
+     * @returns {array} [{ teamId, name, status, activeAtYear }]
+     */
+    function getUnrankedTeamsForYear(year, options) {
+        // options is intentionally unused. The signature accepts
+        // it so the aggregator can pass the same options object
+        // to both reads without a special case.
+        void options;
+
+        var yearNum = parsePeriodLocal(year);
+        if (yearNum === null) { return []; }
+
+        // Which teams already have an explicit entry at the year?
+        var explicitSet = Object.create(null);
+        var raw = collectExplicitEntriesAtYearInternal(yearNum);
+        for (var r = 0; r < raw.length; r++) {
+            explicitSet[raw[r].teamId] = true;
+        }
+
+        var teams = getTeamStore();
+        var result = [];
+
+        if (!Array.isArray(teams)) { return []; }
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!isPlainObject(team)) { continue; }
+            if (!team.id) { continue; }
+            if (!isProfessionalType(team.type)) { continue; }
+
+            // Deprecated teams cannot be re-ranked.
+            var statusNorm = MissionConstants.normalizeTeamStatus
+                ? MissionConstants.normalizeTeamStatus(team.status)
+                : null;
+            if (statusNorm === 'deprecated') { continue; }
+
+            var teamId = String(team.id);
+            if (explicitSet[teamId]) { continue; }
+
+            // A team that has an inherited rank at the year is
+            // already in the display list implicitly; the user
+            // should not be offered it for double-ranking.
+            var effective = getEffectiveRanking(team, yearNum);
+            if (effective.rank !== null) { continue; }
+
+            // Only include teams that were actually active at the
+            // year. A disbanded team cannot take a new position.
+            var activeAtYear = false;
+            try {
+                activeAtYear = isTeamActiveAtPeriod(team, yearNum);
+            } catch (e) {
+                activeAtYear = false;
+            }
+            if (!activeAtYear) { continue; }
+
+            result.push({
+                teamId: teamId,
+                name: getCurrentTeamName(team),
+                status: team.status || 'active',
+                activeAtYear: true
+            });
+        }
+
+        result.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // PERIOD DISPLAY (internal helper for the rankings reads)
+    // ============================================================
+    //
+    // Mirrors TeamAggregator.getTeamPeriodDisplay. It lives here
+    // because getRankedTeamsForYear needs a period display and it
+    // would be wrong for the query layer to depend on the
+    // aggregator. The aggregator still owns its own copy; the two
+    // are kept in sync by convention. If they ever diverge, this
+    // one wins for the rankings tab (it is the one the rankings
+    // VM reads from).
+
+    function buildTeamPeriodDisplay(team) {
+        if (!team || typeof team !== 'object') { return '-'; }
+
+        var normalizedType = MissionConstants.normalizeTeamStatus
+            ? null
+            : null;
+        // The type normalisation is on TeamConstants, not
+        // MissionConstants; this module does not import
+        // TeamConstants directly. Read the raw type and rely on
+        // the caller having canonicalised it, or on the shape
+        // itself being self-describing.
+        var t = team.type;
+        var isAcademic = (typeof t === 'string' &&
+                          t.trim().toLowerCase() === 'academic');
+
+        var start = team.startPeriod || '';
+        var end = team.endPeriod || '';
+
+        if (isAcademic) {
+            if (start && end) {
+                return 'Wk ' + start + ' - Wk ' + end;
+            }
+            if (start) { return 'From Wk ' + start; }
+            if (end) { return 'Until Wk ' + end; }
+            return '-';
+        }
+
+        if (start && end) { return start + ' - ' + end; }
+        if (start) { return 'From ' + start; }
+        if (end) { return 'Until ' + end; }
+        return '-';
+    }
+
+    // ============================================================
+    // TEAM STORE ACCESS (internal, for ranking reads)
+    // ============================================================
+
+    function getTeamStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        if (!Array.isArray(window.data.teams)) {
+            return null;
+        }
+        return window.data.teams;
+    }
+
+    // ============================================================
+    // PERIOD PREDICATES (used by the ranking reads above)
+    // ============================================================
+    //
+    // These mirror the corresponding predicates in the team
+    // module. The mission module does not import TeamQueries
+    // directly (that would couple the mission read layer to the
+    // team read layer), but the ranking reads need to know whether
+    // a team is active at a year. The duplication is intentional
+    // and small; the two implementations are kept in sync by
+    // convention, exactly like buildTeamPeriodDisplay.
+
+    function isTeamActiveAtPeriod(team, period) {
+        if (!team || typeof team !== 'object') { return false; }
+
+        var periodNum = parsePeriodLocal(period);
+        if (periodNum === null) { return false; }
+
+        return teamWindowContainsNum(team, periodNum);
+    }
+
+    function teamWindowContainsNum(team, periodNum) {
+        if (!team || typeof team !== 'object') { return false; }
+
+        var hasStart = team.startPeriod !== undefined &&
+                       team.startPeriod !== null &&
+                       team.startPeriod !== '';
+        var hasEnd = team.endPeriod !== undefined &&
+                     team.endPeriod !== null &&
+                     team.endPeriod !== '';
+
+        if (hasStart) {
+            var start = parsePeriodLocal(team.startPeriod);
+            if (start === null) { return false; }
+            if (start > periodNum) { return false; }
+        }
+
+        if (hasEnd) {
+            var end = parsePeriodLocal(team.endPeriod);
+            if (end === null) { return false; }
+            if (end < periodNum) { return false; }
+        }
+
+        return true;
+    }
+
+    function getActiveTeamMemberCount(team, period) {
+        if (!team || !Array.isArray(team.members)) { return 0; }
+
+        var periodNum = parsePeriodLocal(period);
+        if (periodNum === null) { return 0; }
+
+        if (!teamWindowContainsNum(team, periodNum)) { return 0; }
+
+        var count = 0;
+        for (var i = 0; i < team.members.length; i++) {
+            var member = team.members[i];
+            if (!member || !Array.isArray(member.intervals)) { continue; }
+            for (var j = 0; j < member.intervals.length; j++) {
+                if (intervalContainsNumLocal(member.intervals[j], periodNum)) {
+                    count++;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+
+    function intervalContainsNumLocal(interval, periodNum) {
+        if (!interval || typeof interval !== 'object') { return false; }
+
+        var hasJoin = interval.joinPeriod !== undefined &&
+                      interval.joinPeriod !== null &&
+                      interval.joinPeriod !== '';
+        var hasLeave = interval.leavePeriod !== undefined &&
+                       interval.leavePeriod !== null &&
+                       interval.leavePeriod !== '';
+
+        if (hasJoin) {
+            var join = parsePeriodLocal(interval.joinPeriod);
+            if (join === null) { return false; }
+            if (join > periodNum) { return false; }
+        }
+
+        if (hasLeave) {
+            var leave = parsePeriodLocal(interval.leavePeriod);
+            if (leave === null) { return false; }
+            if (leave < periodNum) { return false; }
+        }
+
+        return true;
+    }
+
+    function isProfessionalType(type) {
+        if (typeof type !== 'string') { return false; }
+        var normalized = type.trim().toLowerCase();
+        if (normalized === 'professional') { return true; }
+        // Legacy aliases, matching TeamConstants.normalizeTeamType.
+        if (normalized === 'internship') { return true; }
+        if (normalized === 'temporary') { return true; }
+        return false;
+    }
+
+    function getCurrentTeamName(team) {
+        if (!team || typeof team !== 'object') {
+            return 'Unknown Team';
+        }
+        var periods = Array.isArray(team.periods) ? team.periods : null;
+        if (periods && periods.length > 0) {
+            var last = periods[periods.length - 1];
+            if (last && isNonEmptyString(last.name)) {
+                return String(last.name);
+            }
+        }
+        if (isNonEmptyString(team.name)) {
+            return String(team.name);
+        }
+        return 'Unknown Team';
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.TeamQueries = Object.freeze({
-        getTeamById: getTeamById,
-        getTeamName: getTeamName,
+    window.MissionQueries = Object.freeze({
+        // Single-mission read
+        getMission: getMission,
 
-        isTeamOperational: isTeamOperational,
-        isTeamActive: isTeamActive,
-        isTeamActiveAtPeriod: isTeamActiveAtPeriod,
+        // Collection reads
+        getMissions: getMissions,
+        getActiveMissions: getActiveMissions,
+        getCompletedMissions: getCompletedMissions,
+        getCancelledMissions: getCancelledMissions,
+        getArchivedMissions: getArchivedMissions,
 
-        teamWindowContains: teamWindowContains,
-        intervalContains: intervalContains,
-        windowContains: windowContains,
+        // Relationship reads
+        getMissionsByTeam: getMissionsByTeam,
+        getMissionsBySupportPersonnel: getMissionsBySupportPersonnel,
+        getMissionsByParticipant: getMissionsByParticipant,
+        getParticipatingMissionsForCharacter:
+            getParticipatingMissionsForCharacter,
+        getMissionsForCharacter: getMissionsForCharacter,
 
-        isMemberActive: isMemberActive,
-        isMemberFormer: isMemberFormer,
+        // Type and tag reads
+        getMissionsByType: getMissionsByType,
+        getMissionsByTag: getMissionsByTag,
 
-        getTeams: getTeams,
-        getAllOperationalTeams: getAllOperationalTeams,
-        getAllActiveTeams: getAllActiveTeams,
-        getTeamsByType: getTeamsByType,
-        getTeamsByClass: getTeamsByClass,
-        getTeamsByPeriod: getTeamsByPeriod,
+        // Search
+        searchMissions: searchMissions,
 
-        getActiveTeamMembers: getActiveTeamMembers,
-        getActiveTeamMemberCount: getActiveTeamMemberCount,
-        isCharacterInTeamAtPeriod: isCharacterInTeamAtPeriod,
-        getTeamMember: getTeamMember,
-        getTeamMemberByMemberId: getTeamMemberByMemberId,
-        getTeamMemberByComposite: getTeamMemberByComposite,
-        getAllTeamMemberRecords: getAllTeamMemberRecords,
-        getTeamsForCharacter: getTeamsForCharacter,
-        getTeamsForCharacterAllTime: getTeamsForCharacterAllTime,
-        getTeamsForCharacterAllTimeIncludingDeprecated:
-            getTeamsForCharacterAllTimeIncludingDeprecated,
-        hasCharacterBeenOnTeamAllTime:
-            hasCharacterBeenOnTeamAllTime,
-        getCharacterTeamMembership: getCharacterTeamMembership,
+        // Statistics
+        getStatistics: getStatistics,
 
-        // ---- Periods model ----
-        getPeriods: getPeriods,
-        getCurrentPeriod: getCurrentPeriod,
-        getCurrentTeamName: getCurrentTeamName,
-        getPeriodForYear: getPeriodForYear,
-        getActiveTeamMembersForPeriod: getActiveTeamMembersForPeriod,
-        getRankingsForPeriod: getRankingsForPeriod,
-        intervalOverlapsPeriod: intervalOverlapsPeriod,
-        rankingInPeriod: rankingInPeriod,
+        // Tags
+        getUniqueTags: getUniqueTags,
 
-        getTeamShortagePeriods: getTeamShortagePeriods,
+        // Archive-state helper
+        isArchived: isArchived,
 
-        getProfessionalPersonnelAtPeriod:
-            getProfessionalPersonnelAtPeriod,
+        // Team-assignment helpers
+        getTeamIdsForMission: getTeamIdsForMission,
+        isMissionAssignedToTeam: isMissionAssignedToTeam,
 
-        isCharacterStaffAtYear: isCharacterStaffAtYear,
-        getStaffInfoAtYear: getStaffInfoAtYear,
+        // Participant helpers
+        getParticipantsForMission: getParticipantsForMission,
+        isParticipantInMission: isParticipantInMission,
+        getParticipantTeamIdsForCharacter:
+            getParticipantTeamIdsForCharacter,
 
-        // ---- Rankings — ordered-list model (this revision) ----
+        // ---- Rankings — ordered-list model ----
         getExplicitRankingOrderForYear:
             getExplicitRankingOrderForYear,
         getRankedTeamsForYear: getRankedTeamsForYear,
         getUnrankedTeamsForYear: getUnrankedTeamsForYear,
 
-        // ---- Rankings — inheritance model (unchanged) ----
+        // ---- Rankings — inheritance model ----
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
@@ -2412,36 +2094,25 @@
     // ============================================================
 
     (function verify() {
-        var exports = window.TeamQueries;
+        var exports = window.MissionQueries;
         var missing = [];
 
         var required = [
-            'getTeamById', 'getTeamName',
-            'isTeamOperational', 'isTeamActive', 'isTeamActiveAtPeriod',
-            'teamWindowContains', 'intervalContains', 'windowContains',
-            'isMemberActive', 'isMemberFormer',
-            'getTeams', 'getAllOperationalTeams', 'getAllActiveTeams',
-            'getTeamsByType', 'getTeamsByClass', 'getTeamsByPeriod',
-            'getActiveTeamMembers', 'getActiveTeamMemberCount',
-            'isCharacterInTeamAtPeriod', 'getTeamMember',
-            'getTeamMemberByMemberId', 'getTeamMemberByComposite',
-            'getAllTeamMemberRecords',
-            'getTeamsForCharacter', 'getTeamsForCharacterAllTime',
-            'getTeamsForCharacterAllTimeIncludingDeprecated',
-            'hasCharacterBeenOnTeamAllTime',
-            'getCharacterTeamMembership',
-            'getPeriods', 'getCurrentPeriod', 'getCurrentTeamName',
-            'getPeriodForYear', 'getActiveTeamMembersForPeriod',
-            'getRankingsForPeriod',
-            'intervalOverlapsPeriod', 'rankingInPeriod',
-            'getTeamShortagePeriods',
-            'getProfessionalPersonnelAtPeriod',
-            'isCharacterStaffAtYear', 'getStaffInfoAtYear',
+            'getMission', 'getMissions', 'getActiveMissions',
+            'getCompletedMissions', 'getCancelledMissions',
+            'getArchivedMissions', 'getMissionsByTeam',
+            'getMissionsBySupportPersonnel', 'getMissionsByParticipant',
+            'getParticipatingMissionsForCharacter',
+            'getMissionsForCharacter', 'getMissionsByType',
+            'getMissionsByTag', 'searchMissions', 'getStatistics',
+            'getUniqueTags', 'isArchived', 'getTeamIdsForMission',
+            'isMissionAssignedToTeam', 'getParticipantsForMission',
+            'isParticipantInMission',
+            'getParticipantTeamIdsForCharacter',
             'getExplicitRankingOrderForYear', 'getRankedTeamsForYear',
-            'getUnrankedTeamsForYear',
-            'getSortedRankings', 'getMostRecentRanking',
-            'getCurrentRank', 'getRankAtPeriod', 'hasRankings',
-            'getRankingSummary',
+            'getUnrankedTeamsForYear', 'getSortedRankings',
+            'getMostRecentRanking', 'getCurrentRank',
+            'getRankAtPeriod', 'hasRankings', 'getRankingSummary',
             'getEffectiveRanking', 'hasExplicitRankingAt',
             'getRankingHistoryWithRanges'
         ];
@@ -2452,277 +2123,213 @@
             }
         }
 
+        // Smoke test: participant helpers against an in-memory
+        // mission object. Uses no store, so it runs at load.
         try {
-            var RAPID_START = '1900';
-            var RAPID_END = '1905';
-            var RII_START = '1905';
-            var RII_END = '';
-
-            if (!intervalOverlapsPeriod(
-                '1898', '', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1898–present should be in Rapid'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1898', '', RII_START, RII_END
-            )) {
-                missing.push(
-                    'predicate: 1898–present should be in Rapid II'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1900', '1904', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1900–1904 should be in Rapid'
-                );
-            }
-            if (intervalOverlapsPeriod(
-                '1900', '1904', RII_START, RII_END
-            )) {
-                missing.push(
-                    'predicate: 1900–1904 should NOT be in Rapid II'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1904', '1908', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1904–1908 should be in Rapid'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1904', '1908', RII_START, RII_END
-            )) {
-                missing.push(
-                    'predicate: 1904–1908 should be in Rapid II'
-                );
-            }
-            if (intervalOverlapsPeriod(
-                '1905', '', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1905–present should NOT be in Rapid'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1905', '', RII_START, RII_END
-            )) {
-                missing.push(
-                    'predicate: 1905–present should be in Rapid II'
-                );
-            }
-            if (intervalOverlapsPeriod(
-                '1906', '1910', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1906–1910 should NOT be in Rapid'
-                );
-            }
-            if (!intervalOverlapsPeriod(
-                '1906', '1910', RII_START, RII_END
-            )) {
-                missing.push(
-                    'predicate: 1906–1910 should be in Rapid II'
-                );
-            }
-            if (intervalOverlapsPeriod(
-                '1898', '1899', RAPID_START, RAPID_END
-            )) {
-                missing.push(
-                    'predicate: 1898–1899 should NOT be in Rapid'
-                );
-            }
-
-            if (rankingInPeriod('1904', RAPID_START, RAPID_END) !== true) {
-                missing.push(
-                    'ranking: 1904 should be in Rapid'
-                );
-            }
-            if (rankingInPeriod('1905', RAPID_START, RAPID_END) !== false) {
-                missing.push(
-                    'ranking: 1905 should NOT be in Rapid'
-                );
-            }
-            if (rankingInPeriod('1905', RII_START, RII_END) !== true) {
-                missing.push(
-                    'ranking: 1905 should be in Rapid II'
-                );
-            }
-            if (rankingInPeriod('1904', RII_START, RII_END) !== false) {
-                missing.push(
-                    'ranking: 1904 should NOT be in Rapid II'
-                );
-            }
-
-            var mockTeam = {
-                rankingHistory: [
-                    { period: '1904', rank: 3 },
-                    { period: '1907', rank: 5 }
+            var sample = {
+                id: 'm1',
+                participants: [
+                    { characterId: 'c1', teamId: 't1',  source: 'team' },
+                    { characterId: 'c1', teamId: 't2',  source: 'team' },
+                    { characterId: 'c1', teamId: null,  source: 'rookie' },
+                    { characterId: 'c2', teamId: 't1',  source: 'team' },
+                    // Malformed: source/teamId mismatch, should be
+                    // dropped by getParticipantsForMission.
+                    { characterId: 'c3', teamId: 't1',  source: 'rookie' },
+                    // Malformed: missing characterId, dropped.
+                    { characterId: '',   teamId: 't1',  source: 'team' }
                 ]
             };
 
-            var e1903 = getEffectiveRanking(mockTeam, '1903');
-            if (e1903.rank !== null) {
+            var parsed = getParticipantsForMission(sample);
+            if (parsed.length !== 4) {
                 missing.push(
-                    'inheritance: 1903 should be null, got ' +
-                    e1903.rank
+                    'getParticipantsForMission: expected 4 valid ' +
+                    'entries, got ' + parsed.length
                 );
             }
 
-            var e1904 = getEffectiveRanking(mockTeam, '1904');
-            if (e1904.rank !== 3 || e1904.explicit !== true) {
+            if (isParticipantInMission(sample, 'c1', 't1') !== true) {
                 missing.push(
-                    'inheritance: 1904 should be explicit #3'
+                    'isParticipantInMission: c1/t1 should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', 't2') !== true) {
+                missing.push(
+                    'isParticipantInMission: c1/t2 should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', null) !== true) {
+                missing.push(
+                    'isParticipantInMission: c1/rookie should be true'
+                );
+            }
+            if (isParticipantInMission(sample, 'c1', 't3') !== false) {
+                missing.push(
+                    'isParticipantInMission: c1/t3 should be false'
+                );
+            }
+            if (isParticipantInMission(sample, 'c2', null) !== false) {
+                missing.push(
+                    'isParticipantInMission: c2/rookie should be false'
                 );
             }
 
-            var e1905 = getEffectiveRanking(mockTeam, '1905');
-            if (e1905.rank !== 3 || e1905.explicit !== false) {
+            var teams = getParticipantTeamIdsForCharacter(sample, 'c1');
+            if (teams.length !== 2 ||
+                teams.indexOf('t1') === -1 ||
+                teams.indexOf('t2') === -1) {
                 missing.push(
-                    'inheritance: 1905 should inherit #3'
-                );
-            }
-
-            if (getEffectiveRanking(mockTeam, '1906').rank !== 3) {
-                missing.push(
-                    'inheritance: 1906 should inherit #3'
-                );
-            }
-
-            var e1907 = getEffectiveRanking(mockTeam, '1907');
-            if (e1907.rank !== 5 || e1907.explicit !== true) {
-                missing.push(
-                    'inheritance: 1907 should be explicit #5'
-                );
-            }
-
-            if (getEffectiveRanking(mockTeam, '1908').rank !== 5) {
-                missing.push(
-                    'inheritance: 1908 should inherit #5'
-                );
-            }
-
-            if (getRankAtPeriod(mockTeam, '1905') !== 3) {
-                missing.push(
-                    'getRankAtPeriod(1905) should be 3'
-                );
-            }
-            if (getRankAtPeriod(mockTeam, '1907') !== 5) {
-                missing.push(
-                    'getRankAtPeriod(1907) should be 5'
-                );
-            }
-
-            if (hasExplicitRankingAt(mockTeam, '1904') !== true) {
-                missing.push(
-                    'hasExplicitRankingAt(1904) should be true'
-                );
-            }
-            if (hasExplicitRankingAt(mockTeam, '1905') !== false) {
-                missing.push(
-                    'hasExplicitRankingAt(1905) should be false'
-                );
-            }
-
-            var ranges = getRankingHistoryWithRanges(mockTeam);
-            if (ranges.length !== 2 ||
-                ranges[0].governsFrom !== 1904 ||
-                ranges[0].governsTo !== 1907 ||
-                ranges[1].governsFrom !== 1907 ||
-                ranges[1].governsTo !== null) {
-                missing.push(
-                    'ranking ranges: expected [1904->1907, ' +
-                    '1907->null], got ' + JSON.stringify(ranges)
-                );
-            }
-
-            // ---- Ordered-list smoke test: empty year. ----
-            var emptyOrder = getExplicitRankingOrderForYear('1999');
-            if (!Array.isArray(emptyOrder) || emptyOrder.length !== 0) {
-                missing.push(
-                    'getExplicitRankingOrderForYear: empty year ' +
-                    'should return []'
-                );
-            }
-
-            var emptyRanked = getRankedTeamsForYear('1999');
-            if (!Array.isArray(emptyRanked) || emptyRanked.length !== 0) {
-                missing.push(
-                    'getRankedTeamsForYear: empty year should ' +
-                    'return []'
-                );
-            }
-
-            var emptyUnranked = getUnrankedTeamsForYear('1999');
-            if (!Array.isArray(emptyUnranked)) {
-                missing.push(
-                    'getUnrankedTeamsForYear: should return an array'
-                );
-            }
-
-            // ---- Ordered-list smoke test: invalid year. ----
-            var badOrder = getExplicitRankingOrderForYear('not-a-year');
-            if (!Array.isArray(badOrder) || badOrder.length !== 0) {
-                missing.push(
-                    'getExplicitRankingOrderForYear: invalid year ' +
-                    'should return []'
-                );
-            }
-
-            var badRanked = getRankedTeamsForYear(null);
-            if (!Array.isArray(badRanked) || badRanked.length !== 0) {
-                missing.push(
-                    'getRankedTeamsForYear: null year should ' +
-                    'return []'
-                );
-            }
-
-            var badUnranked = getUnrankedTeamsForYear(undefined);
-            if (!Array.isArray(badUnranked) || badUnranked.length !== 0) {
-                missing.push(
-                    'getUnrankedTeamsForYear: undefined year ' +
-                    'should return []'
-                );
-            }
-
-            // ---- showInactive smoke test (this revision). ----
-            try {
-                // Accepts options without throwing.
-                var withOpts = getRankedTeamsForYear('1999', {
-                    showInactive: true
-                });
-                if (!Array.isArray(withOpts)) {
-                    missing.push(
-                        'getRankedTeamsForYear: options arg broke ' +
-                        'the return type'
-                    );
-                }
-
-                var unrankedWithOpts = getUnrankedTeamsForYear(
-                    '1999', { showInactive: true }
-                );
-                if (!Array.isArray(unrankedWithOpts)) {
-                    missing.push(
-                        'getUnrankedTeamsForYear: options arg broke ' +
-                        'the return type'
-                    );
-                }
-            } catch (e) {
-                missing.push(
-                    'showInactive smoke test threw: ' + e.message
+                    'getParticipantTeamIdsForCharacter: expected ' +
+                    '[t1, t2], got ' + JSON.stringify(teams)
                 );
             }
         } catch (e) {
-            missing.push('predicate smoke test threw: ' + e.message);
+            missing.push('smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: deprecation-year computation.
+        try {
+            // Team with endPeriod 1920 and all stints closed at 1918.
+            // min(1920 + 1, max(1918) + 1) = min(1921, 1919) = 1919.
+            var t1 = {
+                status: 'deprecated',
+                startPeriod: '1900',
+                endPeriod: '1920',
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '1918' }] }
+                ]
+            };
+            if (computeDeprecationYear(t1) !== 1919) {
+                missing.push(
+                    'computeDeprecationYear: closed stints should win, ' +
+                    'expected 1919, got ' +
+                    computeDeprecationYear(t1)
+                );
+            }
+
+            // Same team but stints open: endPeriod + 1 = 1921.
+            var t2 = {
+                status: 'deprecated',
+                startPeriod: '1900',
+                endPeriod: '1920',
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '' }] }
+                ]
+            };
+            if (computeDeprecationYear(t2) !== 1921) {
+                missing.push(
+                    'computeDeprecationYear: open stints + endPeriod ' +
+                    'should use endPeriod + 1, expected 1921, got ' +
+                    computeDeprecationYear(t2)
+                );
+            }
+
+            // No endPeriod, all stints closed: max(leave) + 1.
+            var t3 = {
+                status: 'deprecated',
+                startPeriod: '1900',
+                endPeriod: '',
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '1905' }] },
+                    { intervals: [{ joinPeriod: '1906', leavePeriod: '1918' }] }
+                ]
+            };
+            if (computeDeprecationYear(t3) !== 1919) {
+                missing.push(
+                    'computeDeprecationYear: closed stints only, ' +
+                    'expected 1919, got ' +
+                    computeDeprecationYear(t3)
+                );
+            }
+
+            // No endPeriod, one open stint: no inferable year.
+            var t4 = {
+                status: 'deprecated',
+                startPeriod: '1900',
+                endPeriod: '',
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '' }] }
+                ]
+            };
+            if (computeDeprecationYear(t4) !== null) {
+                missing.push(
+                    'computeDeprecationYear: open-ended team should ' +
+                    'return null, got ' +
+                    computeDeprecationYear(t4)
+                );
+            }
+
+            // Non-deprecated team: null.
+            var t5 = {
+                status: 'active',
+                startPeriod: '1900',
+                endPeriod: '1920',
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '1918' }] }
+                ]
+            };
+            if (computeDeprecationYear(t5) !== null) {
+                missing.push(
+                    'computeDeprecationYear: non-deprecated team ' +
+                    'should return null'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'deprecation-year smoke test threw: ' + e.message
+            );
+        }
+
+        // Smoke test: effective rank + deprecation override.
+        try {
+            var rankedTeam = {
+                id: 'tr',
+                status: 'deprecated',
+                startPeriod: '1900',
+                endPeriod: '',
+                rankingHistory: [
+                    { period: '1900', rank: 1 },
+                    { period: '1910', rank: 2 }
+                ],
+                members: [
+                    { intervals: [{ joinPeriod: '1900', leavePeriod: '1918' }] }
+                ]
+            };
+
+            // 1915: not yet deprecated (deprecation is 1919). Rank 2.
+            if (getEffectiveRanking(rankedTeam, 1915).rank !== 2) {
+                missing.push(
+                    'getEffectiveRanking: year before deprecation ' +
+                    'should inherit rank 2'
+                );
+            }
+
+            // 1920: at/after deprecation. Null.
+            if (getEffectiveRanking(rankedTeam, 1920).rank !== null) {
+                missing.push(
+                    'getEffectiveRanking: year after deprecation ' +
+                    'should return null'
+                );
+            }
+
+            // 1918: last active year. Rank 2.
+            if (getEffectiveRanking(rankedTeam, 1918).rank !== 2) {
+                missing.push(
+                    'getEffectiveRanking: final active year ' +
+                    'should still inherit rank 2'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'effective-rank smoke test threw: ' + e.message
+            );
         }
 
         if (missing.length > 0) {
             console.warn(
-                '[TeamQueries] Verification — some exports may be ' +
-                'missing or broken:', missing.join(', ')
+                '[MissionQueries] Verification failed:',
+                missing.join(', ')
             );
         }
     })();
