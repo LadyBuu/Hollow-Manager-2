@@ -56,7 +56,7 @@
  *   works on a "snapshot" model. When you reorder the rankings
  *   for a specific year (via drag-and-drop or insert), this
  *   module calculates the FULL new order for that year and
- *   writes an EXPLICIT entry for EVERY team at that year. 
+ *   writes an EXPLICIT entry for EVERY team at that year.
  *
  *   This means the read path simply looks at the most recent
  *   explicit entry at or before the requested year. If you
@@ -65,22 +65,56 @@
  *   you reorder in 1945, a new snapshot is written for 1945,
  *   overriding the inherited 1944 order.
  *
+ *   CRITICAL — EFFECTIVE-RANK LIST BUILDING (this revision):
+ *   Before this revision, both write primitives built their
+ *   working list from EXPLICIT entries at the target year only:
+ *
+ *     collectExplicitEntriesAtYear(snapshot.teams, periodNum)
+ *
+ *   That dropped every team whose rank was INHERITED from an
+ *   earlier year (it had no explicit entry at the target year).
+ *   Inserting a team at #1 in 1920 would fail to include the
+ *   inherited #1 team in the new snapshot, so that team then had
+ *   no explicit 1920 entry and still inherited #1 from an
+ *   earlier year. The read path's de-dupe (seenRanks keyed by
+ *   rank) then dropped one of the two #1 teams from the display
+ *   list, AND getUnrankedTeamsForYear excluded it (because its
+ *   effective rank was non-null), so it vanished from the UI
+ *   entirely.
+ *
+ *   The fix is to build the working list from EFFECTIVE ranks
+ *   (explicit-at-or-before the year) for every active team, not
+ *   from explicit-at-the-year entries. Both insertRankingAt and
+ *   moveRanking now call collectRankedListForYear, which:
+ *
+ *     1. Walks every team in the store.
+ *     2. Includes it when it is active at `year` OR has a
+ *        non-null effective rank at `year` (so an inactive team
+ *        that is still ranked is preserved in the snapshot,
+ *        matching getRankedTeamsForYear's showInactive policy).
+ *     3. Sorts by effective rank ascending (null last, stably
+ *        by name).
+ *
+ *   The resulting snapshot writes an explicit entry for every
+ *   team in that list — including previously-inherited teams —
+ *   so nothing is orphaned.
+ *
  *   WRITE PRIMITIVES:
  *
  *     insertRankingAt(teamId, year, position)
  *       Insert the team at `position`; calculates the full
- *       ordered list for `year` and writes an explicit entry for
- *       EVERY team in that list at `year`.
+ *       ordered list for `year` from effective ranks and writes
+ *       an explicit entry for EVERY team in that list at `year`.
  *
  *     moveRanking(teamId, year, newPosition)
- *       Remove the team from the list and insert at `newPosition`.
- *       Calculates the full ordered list for `year` and writes
- *       an explicit entry for EVERY team at `year`.
+ *       Remove the team from the effective-rank list and insert
+ *       at `newPosition`; writes an explicit entry for EVERY
+ *       team at `year`.
  *
  *     removeRankingAt(teamId, year)
  *       Remove the team's explicit entry; every explicit entry at
  *       `year` whose rank was > the removed rank shifts up by
- *       one. (Used mostly for cleanup).
+ *       one. (Used mostly for cleanup.)
  *
  *   The storage shape is UNCHANGED: `rankingHistory` on each
  *   team, holding `{ period, rank }` entries.
@@ -4032,11 +4066,24 @@
     //
     // The read counterpart is TeamQueries.getRankedTeamsForYear.
     //
+    // EFFECTIVE-RANK LIST BUILDING (this revision):
+    //   collectRankedListForYear builds the working list from
+    //   each team's EFFECTIVE rank at `year` (explicit-at-or-
+    //   before, via resolveEffectiveRankForTeam), NOT from the
+    //   explicit-at-the-year entries. This is what makes the
+    //   snapshot preserve inherited teams.
+    //
     // COLLECT / SHIFT HELPERS:
-    //   collectExplicitEntriesAtYear(missions, year)
+    //   collectExplicitEntriesAtYear(teams, year)
     //     Walks every team's rankingHistory, keeps entries whose
     //     period === year (explicit only), sorts by rank asc.
-    //     Returns [{ teamId, rank }].
+    //     Used by removeRankingAt (which operates on explicit
+    //     entries only) and by the effective-rank resolver.
+    //
+    //   resolveEffectiveRankForTeam(team, year)
+    //     Local duplicate of TeamQueries.getEffectiveRanking,
+    //     kept here to avoid a read-layer import. Returns
+    //     { rank, explicit, sourcePeriod }.
 
     function collectExplicitEntriesAtYear(missions, year) {
         var targetYear = String(parseInt(year, 10));
@@ -4073,6 +4120,196 @@
         });
 
         return entries;
+    }
+
+    /**
+     * Local effective-rank resolver.
+     *
+     * Mirrors TeamQueries.getEffectiveRanking. The team-core
+     * module deliberately does not import TeamQueries (reads live
+     * in team-queries.js); this helper exists so the ranking
+     * write primitives can resolve inherited ranks without
+     * crossing that boundary.
+     *
+     * Returns { rank: number|null, explicit: boolean,
+     *           sourcePeriod: string|null }.
+     */
+    function resolveEffectiveRankForTeam(team, year) {
+        var result = {
+            rank: null,
+            explicit: false,
+            sourcePeriod: null
+        };
+
+        if (!team || !Array.isArray(team.rankingHistory)) {
+            return result;
+        }
+
+        var periodNum = parsePeriod(year);
+        if (periodNum === null) { return result; }
+
+        var bestYear = -Infinity;
+        var bestRank = null;
+
+        for (var i = 0; i < team.rankingHistory.length; i++) {
+            var entry = team.rankingHistory[i];
+            if (!isObject(entry)) { continue; }
+
+            var entryPeriod = parsePeriod(entry.period);
+            if (entryPeriod === null) { continue; }
+            if (entryPeriod > periodNum) { continue; }
+
+            var rank = parsePeriod(entry.rank);
+            if (rank === null) { continue; }
+
+            if (entryPeriod > bestYear) {
+                bestYear = entryPeriod;
+                bestRank = rank;
+            }
+        }
+
+        if (bestRank === null) { return result; }
+
+        result.rank = bestRank;
+        result.sourcePeriod = String(bestYear);
+        result.explicit = (bestYear === periodNum);
+        return result;
+    }
+
+    /**
+     * Is a team "in scope" for the ranking snapshot at `year`?
+     *
+     * A team is in scope when it is active at `year` OR when it
+     * has a non-null effective rank at `year`. The second clause
+     * preserves inactive teams that are still ranked, matching
+     * getRankedTeamsForYear({showInactive:true})'s policy. An
+     * inactive, unranked team is out of scope and does not
+     * consume a snapshot slot.
+     *
+     * This is a LOCAL helper. It duplicates the active-window
+     * predicate from team-queries.js (teamWindowContainsNum +
+     * range check) rather than importing the read layer.
+     */
+    function isTeamInScopeForRanking(team, year) {
+        if (!team || typeof team !== 'object') { return false; }
+        if (!team.id) { return false; }
+
+        var periodNum = parsePeriod(year);
+        if (periodNum === null) { return false; }
+
+        var range = TeamConstants.getPeriodRange(team.type);
+        if (!range) {
+            // Unknown type: fall back to "has an effective rank".
+            return resolveEffectiveRankForTeam(team, periodNum)
+                .rank !== null;
+        }
+        if (periodNum < range.min || periodNum > range.max) {
+            return false;
+        }
+
+        // Active window check (local duplicate of
+        // team-queries.js's teamWindowContainsNum).
+        var hasStart = team.startPeriod !== undefined &&
+                       team.startPeriod !== null &&
+                       team.startPeriod !== '';
+        var hasEnd = team.endPeriod !== undefined &&
+                     team.endPeriod !== null &&
+                     team.endPeriod !== '';
+
+        var activeAtYear = true;
+
+        if (hasStart) {
+            var start = parsePeriod(team.startPeriod);
+            if (start === null) {
+                activeAtYear = false;
+            } else if (start > periodNum) {
+                activeAtYear = false;
+            }
+        }
+
+        if (activeAtYear && hasEnd) {
+            var end = parsePeriod(team.endPeriod);
+            if (end === null) {
+                activeAtYear = false;
+            } else if (end < periodNum) {
+                activeAtYear = false;
+            }
+        }
+
+        if (activeAtYear) { return true; }
+
+        // Not active at `year`, but still ranked?
+        return resolveEffectiveRankForTeam(team, periodNum)
+            .rank !== null;
+    }
+
+    /**
+     * Build the ordered working list for `year`.
+     *
+     * Includes every team in scope (active at the year, or with
+     * a non-null effective rank), sorted by effective rank
+     * ascending. Teams with a null rank sort after every ranked
+     * team, stably by name.
+     *
+     * This is the FIX for the disappearing-team bug. Before this
+     * revision, the write primitives called
+     * collectExplicitEntriesAtYear, which dropped every team
+     * whose rank was inherited rather than explicit at the year.
+     *
+     * Each entry: { teamId, team, rank (number|null) }.
+     */
+    function collectRankedListForYear(teams, year) {
+        var periodNum = parsePeriod(year);
+        if (periodNum === null) { return []; }
+
+        var list = [];
+
+        if (!Array.isArray(teams)) { return list; }
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!isObject(team)) { continue; }
+            if (!team.id) { continue; }
+
+            if (!isTeamInScopeForRanking(team, periodNum)) {
+                continue;
+            }
+
+            var effective = resolveEffectiveRankForTeam(
+                team, periodNum
+            );
+
+            list.push({
+                teamId: String(team.id),
+                team: team,
+                rank: effective.rank
+            });
+        }
+
+        list.sort(function(a, b) {
+            var aRank = a.rank;
+            var bRank = b.rank;
+
+            // Ranked teams sort before unranked teams.
+            if (aRank === null && bRank === null) {
+                return sortByName(a.team, b.team);
+            }
+            if (aRank === null) { return 1; }
+            if (bRank === null) { return -1; }
+            if (aRank !== bRank) { return aRank - bRank; }
+
+            // Tie on rank (should not happen after de-dupe, but
+            // be deterministic): sort by name.
+            return sortByName(a.team, b.team);
+        });
+
+        return list;
+    }
+
+    function sortByName(a, b) {
+        var aName = (a && a.name) || '';
+        var bName = (b && b.name) || '';
+        return String(aName).localeCompare(String(bName));
     }
 
     function shiftExplicitRanksAtYear(missions, year, fromRank, delta) {
@@ -4233,13 +4470,57 @@
     }
 
     /**
+     * Write a full explicit snapshot for `year`.
+     *
+     * Given an already-ordered list of { team, teamId } entries,
+     * removes any existing explicit entry at `year` on every
+     * team and writes a fresh `{ period, rank: i+1 }` entry.
+     *
+     * Runs inside the caller's transaction; does not validate.
+     */
+    function writeRankingSnapshot(order, yearStr) {
+        for (var i = 0; i < order.length; i++) {
+            var t = order[i].team;
+            if (!t) { continue; }
+            if (!Array.isArray(t.rankingHistory)) {
+                t.rankingHistory = [];
+            }
+
+            t.rankingHistory = t.rankingHistory.filter(
+                function(entry) {
+                    if (!isObject(entry)) { return true; }
+                    var eYear = parsePeriod(entry.period);
+                    if (eYear === null) { return true; }
+                    return String(eYear) !== yearStr;
+                }
+            );
+
+            t.rankingHistory.push({
+                period: yearStr,
+                rank: i + 1
+            });
+
+            t.rankingHistory.sort(function(a, b) {
+                var ap = parsePeriod(a.period) || 0;
+                var bp = parsePeriod(b.period) || 0;
+                return bp - ap;
+            });
+
+            t.updatedAt = new Date().toISOString();
+        }
+    }
+
+    /**
      * Insert the team at `position` in the ordered list for `year`.
-     * 
-     * CASCADE LOGIC: 
-     * Because we want rankings to propagate forward until changed, 
-     * inserting/moving a team at year Y creates a FULL SNAPSHOT 
-     * of the new order at year Y. This overrides any inherited 
-     * rankings from previous years.
+     *
+     * CASCADE LOGIC (this revision):
+     * The working list is built from EFFECTIVE ranks (see
+     * collectRankedListForYear), not from explicit-at-the-year
+     * entries. That means every team currently ranked at `year`
+     * — whether explicitly or by inheritance — is in the list
+     * before we splice the target in. The snapshot then writes
+     * an explicit entry for every team in the list, so no
+     * inherited team is orphaned.
      */
     function insertRankingAt(teamId, year, position) {
         if (failIfMissing(
@@ -4296,58 +4577,39 @@
                     );
                 }
 
-                if (!Array.isArray(target.rankingHistory)) {
-                    target.rankingHistory = [];
-                }
                 if (!Array.isArray(snapshot.teams)) {
                     throw new Error('Team store is malformed.');
                 }
 
-                // 1. Get the *inherited* ordered list for this year
-                var currentList = collectExplicitEntriesAtYear(snapshot.teams, periodNum);
-                
-                // 2. Remove the target team from the list if they were already in it
-                currentList = currentList.filter(function(e) { return e.teamId !== targetId; });
-                
-                // 3. Clamp the insert position
+                // 1. Build the working list from effective ranks
+                //    (explicit-at-or-before the year) for every
+                //    in-scope team. Inherited teams are included.
+                var currentList = collectRankedListForYear(
+                    snapshot.teams, periodNum
+                );
+
+                // 2. Remove the target team if it was already in
+                //    the list.
+                currentList = currentList.filter(function(e) {
+                    return e.teamId !== targetId;
+                });
+
+                // 3. Clamp the insert position.
                 var insertAt = positionNum - 1;
-                if (insertAt > currentList.length) { insertAt = currentList.length; }
+                if (insertAt > currentList.length) {
+                    insertAt = currentList.length;
+                }
                 if (insertAt < 0) { insertAt = 0; }
-                
-                // 4. Insert the target team
+
+                // 4. Insert the target team.
                 currentList.splice(insertAt, 0, {
                     teamId: targetId,
                     team: target
                 });
 
-                // 5. Create a full snapshot. 
-                // Write an explicit entry for EVERY team at this year to lock it in.
-                for (var i = 0; i < currentList.length; i++) {
-                    var t = currentList[i].team;
-                    if (!Array.isArray(t.rankingHistory)) { t.rankingHistory = []; }
-                    
-                    // Remove any existing entry for this year
-                    t.rankingHistory = t.rankingHistory.filter(function(entry) {
-                        if (!isObject(entry)) { return true; }
-                        var eYear = parsePeriod(entry.period);
-                        return String(eYear) !== periodStr;
-                    });
-
-                    // Write the new explicit entry
-                    t.rankingHistory.push({
-                        period: periodStr,
-                        rank: i + 1
-                    });
-
-                    // Sort descending
-                    t.rankingHistory.sort(function(a, b) {
-                        var ap = parsePeriod(a.period) || 0;
-                        var bp = parsePeriod(b.period) || 0;
-                        return bp - ap;
-                    });
-                    
-                    t.updatedAt = new Date().toISOString();
-                }
+                // 5. Write a full explicit snapshot for every team
+                //    in the list.
+                writeRankingSnapshot(currentList, periodStr);
 
                 return {
                     period: periodStr,
@@ -4356,7 +4618,8 @@
                 };
             },
 
-            logMessage: 'Set rankings for ' + periodStr + ' (cascading forward)',
+            logMessage: 'Set rankings for ' + periodStr +
+                ' (cascading forward)',
             successMessage: 'Rankings updated successfully!',
             failureMessage: 'Failed to update rankings.'
         });
@@ -4364,8 +4627,15 @@
 
     /**
      * Move a team to a new position in the ordered list for a
-     * year. Composes remove-at-old and insert-at-new in one
-     * transaction.
+     * year.
+     *
+     * CASCADE LOGIC (this revision):
+     * Same as insertRankingAt: the working list is built from
+     * EFFECTIVE ranks, so inherited teams are preserved in the
+     * new snapshot.
+     *
+     * Because remove-and-insert is composed in one transaction,
+     * a move is a single ordered-list rewrite.
      */
     function moveRanking(teamId, year, newPosition) {
         if (failIfMissing(
@@ -4426,47 +4696,32 @@
                     throw new Error('Team store is malformed.');
                 }
 
-                // 1. Get the current inherited list for this year
-                var currentList = collectExplicitEntriesAtYear(snapshot.teams, periodNum);
-                
-                // 2. Remove target from the list
-                currentList = currentList.filter(function(e) { return e.teamId !== targetId; });
+                // 1. Build the working list from effective ranks.
+                var currentList = collectRankedListForYear(
+                    snapshot.teams, periodNum
+                );
 
-                // 3. Clamp insert position
+                // 2. Remove the target team from the list.
+                currentList = currentList.filter(function(e) {
+                    return e.teamId !== targetId;
+                });
+
+                // 3. Clamp the insert position.
                 var insertAt = positionNum - 1;
-                if (insertAt > currentList.length) { insertAt = currentList.length; }
+                if (insertAt > currentList.length) {
+                    insertAt = currentList.length;
+                }
                 if (insertAt < 0) { insertAt = 0; }
 
-                // 4. Insert target
+                // 4. Insert the target team.
                 currentList.splice(insertAt, 0, {
                     teamId: targetId,
                     team: target
                 });
 
-                // 5. Write the full snapshot to all teams for this year
-                for (var i = 0; i < currentList.length; i++) {
-                    var t = currentList[i].team;
-                    if (!Array.isArray(t.rankingHistory)) { t.rankingHistory = []; }
-                    
-                    t.rankingHistory = t.rankingHistory.filter(function(entry) {
-                        if (!isObject(entry)) { return true; }
-                        var eYear = parsePeriod(entry.period);
-                        return String(eYear) !== periodStr;
-                    });
-
-                    t.rankingHistory.push({
-                        period: periodStr,
-                        rank: i + 1
-                    });
-
-                    t.rankingHistory.sort(function(a, b) {
-                        var ap = parsePeriod(a.period) || 0;
-                        var bp = parsePeriod(b.period) || 0;
-                        return bp - ap;
-                    });
-                    
-                    t.updatedAt = new Date().toISOString();
-                }
+                // 5. Write a full explicit snapshot for every team
+                //    in the list.
+                writeRankingSnapshot(currentList, periodStr);
 
                 return {
                     period: periodStr,
@@ -4475,7 +4730,9 @@
                 };
             },
 
-            logMessage: 'Moved ranking for team: ' + (current.name || targetId) + ' to position ' + positionNum,
+            logMessage: 'Moved ranking for team: ' +
+                (current.name || targetId) + ' to position ' +
+                positionNum,
             successMessage: 'Rankings updated successfully!',
             failureMessage: 'Failed to move ranking.'
         });
