@@ -28,6 +28,9 @@
  *     This is what the form uses on CREATE (where there is no
  *     stored mission yet) and after every team-chip or year-field
  *     edit on EDIT (where the stored record is stale until save).
+ *   - Sorting the team options in the form's "Assign Team" select
+ *     so that teams whose current specialisations overlap the
+ *     mission's type appear first. See TEAM OPTION SORTING below.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Reads, mutations, structural validation, domain rules, or
@@ -173,6 +176,31 @@
  *   The candidate list is small (rookies are a bounded slice of
  *   the character store) and the VM is rebuilt on every open of
  *   the form.
+ *
+ * TEAM OPTION SORTING (this revision):
+ *   The form's "Assign Team" select is a flat list of eligible
+ *   teams. Its order is: teams whose CURRENT (last-period)
+ *   specialisations overlap the mission's type come first,
+ *   ordered by descending overlap count; teams with no overlap
+ *   come after. Within each group, alphabetical by name.
+ *
+ *   "Overlap" is the number of distinct mission-type ids the team
+ *   carries that are the mission's primaryType or secondaryType.
+ *   A team with both the primary and secondary type ranks above a
+ *   team with only one of them.
+ *
+ *   The match is against the team's CURRENT specialisations only —
+ *   the last period's specialisations, resolved through
+ *   TeamQueries.getCurrentPeriod. A team whose historical
+ *   specialisations once matched but whose current ones do not
+ *   does not get prioritised. That is deliberate: the user is
+ *   assigning a team to a mission right now, and a team that no
+ *   longer specialises in the mission's type is a poor match.
+ *
+ *   The priority ordering is a PRESENTATION hint. The select is
+ *   not filtered; every eligible team remains selectable. The
+ *   ordering surfaces the likely choices first without removing
+ *   the option to pick a different one.
  *
  * DATE DEFAULTS:
  *   The form VM's date defaults are (applicationYear, 1, 1).
@@ -1623,6 +1651,20 @@
      *   the renderer is expected to filter the current assignment
      *   out of the addable list.
      *
+     *   TEAM ORDERING (this revision):
+     *   Teams whose CURRENT specialisations overlap the mission's
+     *   type come first, ordered by descending overlap count, then
+     *   alphabetically. Teams with no overlap follow, alphabetically.
+     *   See "TEAM OPTION SORTING" in the file header. The ordering
+     *   is a presentation hint; every eligible team remains in the
+     *   list and remains selectable.
+     *
+     *   Each team option carries a `specialisationLabels` array so
+     *   the renderer can render the "(Combat, Recovery)" suffix
+     *   alongside the team name in the select. That is what makes
+     *   the priority ordering legible: the user can see WHY a team
+     *   is at the top.
+     *
      * DATE DEFAULTS:
      *   `defaults.year` is the APPLICATION year (window.data
      *   .currentYear), falling back to the calendar year only when
@@ -1646,21 +1688,31 @@
 
         var isEdit = mission !== null;
 
+        // ---- Team options ----
+        //
+        // Base list: every eligible team. Ordering hint: teams
+        // whose current specialisations overlap the mission's
+        // primaryType / secondaryType come first. The mission's
+        // type comes from the STORED record on edit and from the
+        // form's own live state on create (the renderer re-sorts
+        // nothing; the ordering is advisory and points at the
+        // starting mission type).
         var teams = MissionRules.filterEligibleTeams(
             TeamQueries.getTeams ? TeamQueries.getTeams() : []
         );
 
-        var teamOptions = teams.map(function(t) {
-            return {
-                id: t.id,
-                name: isNonEmptyString(t.name)
-                    ? t.name : 'Unnamed Team'
-            };
-        });
-        teamOptions.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
+        var missionPrimaryType = isEdit
+            ? (mission.primaryType || '')
+            : '';
+        var missionSecondaryType = isEdit
+            ? (mission.secondaryType || '')
+            : '';
 
+        var teamOptions = buildTeamOptionsSorted(
+            teams, missionPrimaryType, missionSecondaryType
+        );
+
+        // ---- Character options ----
         var charactersRaw = CharacterQueries.getCharacters
             ? CharacterQueries.getCharacters()
             : [];
@@ -1752,6 +1804,142 @@
                 day: 1
             }
         };
+    }
+
+    /**
+     * Build the sorted, annotated team options list.
+     *
+     * The base list is every eligible team. Each option carries:
+     *
+     *   id                    team UUID
+     *   name                  current display name
+     *   specialisationIds     the CURRENT (last-period) specialisation ids
+     *   specialisationLabels  the same ids resolved to human labels,
+     *                         for the renderer's "(...)" suffix
+     *   overlapCount          how many of the mission's types appear
+     *                         in this team's current specialisations
+     *
+     * Sort order: descending overlapCount, then alphabetical by name.
+     * Teams with overlapCount 0 sort after all matching teams but
+     * are still present and selectable.
+     *
+     * The match set is { primaryType, secondaryType } minus empties.
+     * A team that carries BOTH the primary and secondary type has
+     * overlapCount 2 and sorts above a team that carries only one.
+     *
+     * "Current" means the last period of the team's periods array,
+     * read via TeamQueries.getCurrentPeriod. A team whose historical
+     * specialisations matched but whose current ones do not is not
+     * prioritised. That is deliberate: the form is assigning a team
+     * to a mission right now, and historical affinity is not a good
+     * predictor of current fitness.
+     */
+    function buildTeamOptionsSorted(
+        teams, missionPrimaryType, missionSecondaryType
+    ) {
+        if (!Array.isArray(teams)) { return []; }
+
+        // Build the mission's match set. An empty type contributes
+        // nothing; on create both are empty and every team has
+        // overlapCount 0, so the list degrades to alphabetical.
+        var matchSet = Object.create(null);
+        if (isNonEmptyString(missionPrimaryType)) {
+            matchSet[String(missionPrimaryType)] = true;
+        }
+        if (isNonEmptyString(missionSecondaryType)) {
+            matchSet[String(missionSecondaryType)] = true;
+        }
+        var matchCount = 0;
+        var k;
+        for (k in matchSet) {
+            if (Object.prototype.hasOwnProperty.call(matchSet, k)) {
+                matchCount++;
+            }
+        }
+
+        var options = [];
+
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+
+            var teamName = isNonEmptyString(team.name)
+                ? team.name
+                : 'Unnamed Team';
+
+            // Resolve the team's current period. A team with no
+            // periods has no current specialisations and gets
+            // overlapCount 0.
+            var currentPeriod = null;
+            try {
+                currentPeriod = TeamQueries.getCurrentPeriod
+                    ? TeamQueries.getCurrentPeriod(team)
+                    : null;
+            } catch (e) {
+                currentPeriod = null;
+            }
+
+            var rawSpecs = (currentPeriod &&
+                            Array.isArray(currentPeriod.specialisations))
+                ? currentPeriod.specialisations
+                : [];
+
+            var specIds = [];
+            var specLabels = [];
+            var seenSpec = Object.create(null);
+
+            for (var s = 0; s < rawSpecs.length; s++) {
+                var raw = rawSpecs[s];
+                if (!isNonEmptyString(raw)) { continue; }
+                var id = String(raw).trim();
+                if (id === '') { continue; }
+                if (seenSpec[id]) { continue; }
+                seenSpec[id] = true;
+                specIds.push(id);
+
+                var label = id;
+                if (typeof MissionConstants.getMissionTypeLabel ===
+                    'function') {
+                    var resolved = MissionConstants
+                        .getMissionTypeLabel(id);
+                    if (isNonEmptyString(resolved)) {
+                        label = resolved;
+                    }
+                }
+                specLabels.push(label);
+            }
+
+            // Count overlap with the mission's type set.
+            var overlapCount = 0;
+            if (matchCount > 0) {
+                for (var o = 0; o < specIds.length; o++) {
+                    if (matchSet[specIds[o]] === true) {
+                        overlapCount++;
+                    }
+                }
+            }
+
+            options.push({
+                id: team.id,
+                name: teamName,
+                specialisationIds: specIds,
+                specialisationLabels: specLabels,
+                overlapCount: overlapCount
+            });
+        }
+
+        // Descending overlap count, then alphabetical. The
+        // alphabetical tiebreak inside the match group keeps the
+        // list stable across renders, which matters because the
+        // renderer emits one <option> per entry.
+        options.sort(function(a, b) {
+            if (a.overlapCount !== b.overlapCount) {
+                return b.overlapCount - a.overlapCount;
+            }
+            return a.name.localeCompare(b.name);
+        });
+
+        return options;
     }
 
     function buildFormMissionFields(mission) {
@@ -2549,6 +2737,126 @@
         } catch (e) {
             missing.push(
                 'date-display smoke test threw: ' + e.message
+            );
+        }
+
+        // Smoke test: team-option sorting.
+        try {
+            // Two teams: one matches both primary and secondary
+            // type, one matches only the primary, one matches
+            // neither. Order must be: both, primary, neither;
+            // alphabetical within the tie groups.
+            var sorted = buildTeamOptionsSorted(
+                [
+                    {
+                        id: 't_c',
+                        name: 'Charlie',
+                        periods: [{
+                            startPeriod: '1900',
+                            endPeriod: '',
+                            name: 'Charlie',
+                            tacticalStyle: '',
+                            specialisations: []
+                        }]
+                    },
+                    {
+                        id: 't_b',
+                        name: 'Bravo',
+                        periods: [{
+                            startPeriod: '1900',
+                            endPeriod: '',
+                            name: 'Bravo',
+                            tacticalStyle: '',
+                            specialisations: ['combat']
+                        }]
+                    },
+                    {
+                        id: 't_a',
+                        name: 'Alpha',
+                        periods: [{
+                            startPeriod: '1900',
+                            endPeriod: '',
+                            name: 'Alpha',
+                            tacticalStyle: '',
+                            specialisations: ['combat', 'recovery']
+                        }]
+                    }
+                ],
+                'combat',
+                'recovery'
+            );
+
+            if (sorted.length !== 3 ||
+                sorted[0].id !== 't_a' ||
+                sorted[0].overlapCount !== 2 ||
+                sorted[1].id !== 't_b' ||
+                sorted[1].overlapCount !== 1 ||
+                sorted[2].id !== 't_c' ||
+                sorted[2].overlapCount !== 0) {
+                missing.push(
+                    'buildTeamOptionsSorted: expected [t_a(2), t_b(1), ' +
+                    't_c(0)], got ' +
+                    JSON.stringify(sorted.map(function(o) {
+                        return { id: o.id, overlap: o.overlapCount };
+                    }))
+                );
+            }
+
+            // Alphabetical tiebreak within the 0-overlap group.
+            var sortedAlpha = buildTeamOptionsSorted(
+                [
+                    {
+                        id: 'z',
+                        name: 'Zulu',
+                        periods: [{
+                            startPeriod: '1900',
+                            endPeriod: '',
+                            name: 'Zulu',
+                            tacticalStyle: '',
+                            specialisations: []
+                        }]
+                    },
+                    {
+                        id: 'a',
+                        name: 'Aardvark',
+                        periods: [{
+                            startPeriod: '1900',
+                            endPeriod: '',
+                            name: 'Aardvark',
+                            tacticalStyle: '',
+                            specialisations: []
+                        }]
+                    }
+                ],
+                '',
+                ''
+            );
+            if (sortedAlpha.length !== 2 ||
+                sortedAlpha[0].id !== 'a' ||
+                sortedAlpha[1].id !== 'z') {
+                missing.push(
+                    'buildTeamOptionsSorted: alphabetical tiebreak ' +
+                    'failed on empty mission types'
+                );
+            }
+
+            // A team with no periods degrades to overlapCount 0
+            // and stays in the list.
+            var sortedNoPeriods = buildTeamOptionsSorted(
+                [{ id: 'q', name: 'Quiet', periods: [] }],
+                'combat',
+                ''
+            );
+            if (sortedNoPeriods.length !== 1 ||
+                sortedNoPeriods[0].overlapCount !== 0) {
+                missing.push(
+                    'buildTeamOptionsSorted: team with no periods ' +
+                    'should have overlapCount 0 and remain in list'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'team-option sorting smoke test threw: ' + e.message
             );
         }
 
