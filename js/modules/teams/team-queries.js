@@ -114,12 +114,61 @@
  *     getRankedTeamsForYear(year, options)
  *       Display-facing list the Rankings tab consumes. It looks
  *       at the effective rank for every team, filters out anyone
- *       with no rank at all, and sorts by rank.
+ *       with no rank at all, sorts by rank, then COMPACTS the
+ *       surviving positions to dense 1..N.
  *
  *     getUnrankedTeamsForYear(year, options)
  *       Teams active at the year that have NO explicit entry at
  *       the year and NO inherited effective rank from an earlier
- *       year.
+ *       year. Deprecated teams are excluded outright: they
+ *       cannot be re-ranked.
+ *
+ * TEAM DEPRECATION AND RANKINGS (this revision):
+ *   A team deprecates when its last member dies or leaves. The
+ *   first year it has ZERO ACTIVE MEMBERS is its DEPRECATION
+ *   YEAR. From that year onward:
+ *
+ *     - the team has no effective rank, so it drops out of every
+ *       ranked read;
+ *     - the surviving teams' positions COMPACT upward to fill the
+ *       hole (a team at display position 4 rises to 3 when the
+ *       team at 3 deprecates, etc.). There are no gaps in the
+ *       lineup;
+ *     - the team does NOT appear in the unranked picker either —
+ *       it can never be re-ranked, because it is gone;
+ *     - its stored rankingHistory is UNTOUCHED for every year
+ *       before the deprecation year. Past years keep their
+ *       records. Only the stale tail at >= deprecationYear is
+ *       inert.
+ *
+ *   Stored ranks at years >= deprecationYear are left in
+ *   rankingHistory (nothing is deleted by a read), but the
+ *   effective-rank resolver ignores them. removeRankingAt in
+ *   team-core.js additionally prunes them inside its own
+ *   transaction so the stored shape and the displayed shape
+ *   cannot drift after a manual removal.
+ *
+ *   The deprecation year is computed structurally, from the team
+ *   record, without any new field:
+ *
+ *     deprecationYear = min(
+ *       endPeriod + 1                 // if endPeriod is set
+ *       max(leavePeriod) + 1          // if all stints are closed
+ *     )
+ *
+ *   A team with an open-ended endPeriod AND at least one
+ *   open-ended stint has no inferable deprecation year and its
+ *   inherited rank survives at every year (the user has not
+ *   closed anything). A team marked deprecated with a still-open
+ *   window and still-live stints is a data inconsistency; leaving
+ *   its rank in place is the least destructive behaviour, and the
+ *   user can resolve the state through the normal edit flow.
+ *
+ *   This rule is mirrored in team-core.js's
+ *   resolveEffectiveRankForTeam and isTeamInScopeForRanking. The
+ *   two layers must agree: the write path builds snapshots from
+ *   the same effective-rank set the read path displays, or the
+ *   displayed order and the stored order diverge.
  *
  * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
@@ -1702,16 +1751,14 @@
     //   getRankedTeamsForYear(year, options)
     //     Display-facing. Determines the effective rank for
     //     every team, filters out anyone with no rank at all,
-    //     and sorts by rank.
-    //
-    //     SHOWINACTIVE:
-    //       options.showInactive gates whether rows whose team
-    //       is NOT active in that year are returned.
+    //     sorts by rank, and COMPACTS the surviving positions
+    //     to dense 1..N.
     //
     //   getUnrankedTeamsForYear(year, options)
     //     Candidates a "fill a slot" picker offers: teams
     //     active at the year with no explicit entry at the year
     //     and no inherited effective rank from an earlier year.
+    //     Deprecated teams are excluded outright.
 
     function collectExplicitEntriesAtYearInternal(targetYear) {
         var targetStr = String(parseInt(targetYear, 10));
@@ -1767,15 +1814,21 @@
      * Uses getEffectiveRanking for every team. If a team has an
      * explicit entry at year Y, that is their rank. If they do
      * not, their rank is inherited from the most recent explicit
-     * entry before Y. Sorts all teams with a non-null rank.
+     * entry before Y. Deprecated teams have no effective rank at
+     * or after their deprecation year. Sorts survivors by rank,
+     * then COMPACTS the survivors' positions to dense 1..N: the
+     * hole left by a deprecated team is filled, so there are no
+     * gaps in the lineup.
      *
      * Each entry:
      *
      *   {
-     *     position:      integer 1..N, the display position
+     *     position:      integer 1..N, the DISPLAY position
+     *                    (compacted; may differ from `rank` for
+     *                    years after a team has deprecated)
      *     teamId:        string
      *     name:          string (resolved via getCurrentTeamName)
-     *     rank:          integer (same as position)
+     *     rank:          integer (same as position after compaction)
      *     explicit:      boolean
      *     sourcePeriod:  String  (the year the rank was written)
      *     periodDisplay: string  ('1900-1904', 'From 1900', ...)
@@ -1785,7 +1838,9 @@
      *   }
      *
      * SHOWINACTIVE:
-     *   When options.showInactive !== true, inactive rows are dropped.
+     *   When options.showInactive !== true, inactive rows are
+     *   dropped. Deprecated teams are dropped regardless of the
+     *   flag: they are gone, not merely inactive.
      *
      * Returns [] when no team has a rank at the year.
      *
@@ -1807,20 +1862,24 @@
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             if (!team || !team.id) { continue; }
-            
-            // getEffectiveRanking looks at the explicit entry at this year, 
-            // or inherits from the most recent explicit entry before it.
+
+            // getEffectiveRanking looks at the explicit entry at
+            // this year, or inherits from the most recent explicit
+            // entry before it, and returns null when the team is
+            // deprecated at or before this year.
             var effective = getEffectiveRanking(team, yearNum);
             if (effective.rank === null) { continue; }
 
             var activeAtYear = isTeamActiveAtPeriod(team, yearNum);
             if (!showInactive && !activeAtYear) { continue; }
 
-            // Ensure uniqueness (if two teams tie, take the more recent source)
+            // Ensure uniqueness (if two teams tie, take the more
+            // recent source)
             var rankKey = String(effective.rank);
             if (seenRanks[rankKey]) {
                 var existing = seenRanks[rankKey];
-                if (effective.sourcePeriod > existing.effective.sourcePeriod) {
+                if (effective.sourcePeriod >
+                    existing.effective.sourcePeriod) {
                     existing.team = team;
                     existing.effective = effective;
                     existing.activeAtYear = activeAtYear;
@@ -1840,7 +1899,7 @@
             var item = seenRanks[rankKeys[k]];
             var t = item.team;
             var e = item.effective;
-            
+
             var memberCount = 0;
             try {
                 memberCount = getActiveTeamMemberCount(t, yearNum);
@@ -1849,10 +1908,10 @@
             }
 
             result.push({
-                position: e.rank,
+                position: e.rank,        // provisional; compacted below
                 teamId: String(t.id),
                 name: getCurrentTeamName(t),
-                rank: e.rank,
+                rank: e.rank,            // provisional; compacted below
                 explicit: e.explicit,
                 sourcePeriod: e.sourcePeriod,
                 periodDisplay: buildTeamPeriodDisplay(t),
@@ -1866,6 +1925,24 @@
             return a.position - b.position;
         });
 
+        // ---- Compaction ----
+        //
+        // After the deprecated-and-empty teams have been filtered
+        // out by the effective-rank resolver, the survivors'
+        // stored ranks may be non-contiguous (e.g. 1, 2, 4, 5).
+        // Renumber them densely to 1..N so there are no gaps in
+        // the lineup. This is the "#4 rises to #3 when #3
+        // deprecates" rule.
+        //
+        // `explicit` and `sourcePeriod` are NOT compacted: they
+        // describe the stored value's provenance, which callers
+        // may want to surface. Only the displayed position and
+        // rank are compacted.
+        for (var p = 0; p < result.length; p++) {
+            result[p].position = p + 1;
+            result[p].rank = p + 1;
+        }
+
         return result;
     }
 
@@ -1877,6 +1954,12 @@
      * what a drag-to-empty-position drop would target. A team
      * with an inherited rank is excluded: including them would
      * double-rank them.
+     *
+     * DEPRECATED TEAMS ARE EXCLUDED OUTRIGHT. A team that has
+     * been deprecated cannot be re-ranked, regardless of whether
+     * its member count is currently zero. Offering it in the
+     * picker would let the user re-rank a team that no longer
+     * exists.
      *
      * Only professional teams are considered. Academic and
      * civilian teams never carry a mission-style ranking.
@@ -1915,6 +1998,12 @@
             if (!team || typeof team !== 'object') { continue; }
             if (!team.id) { continue; }
             if (!isProfessionalType(team.type)) { continue; }
+
+            // Deprecated teams cannot be re-ranked.
+            if (TeamConstants.normalizeTeamStatus(team.status) ===
+                'deprecated') {
+                continue;
+            }
 
             var teamId = String(team.id);
             if (explicitSet[teamId]) { continue; }
@@ -1987,67 +2076,127 @@
     }
 
     // ============================================================
-    // RANKINGS — INHERITANCE MODEL (unchanged)
+    // RANKINGS — DEPRECATION-AWARE EFFECTIVE RANK
     // ============================================================
     //
-    // RANKING MODEL:
-    //   A team carries a `rankingHistory` array of EXPLICIT
-    //   entries — the values the user actually wrote:
+    // A team deprecates when its last member dies or leaves. The
+    // first year it has ZERO ACTIVE MEMBERS is its DEPRECATION
+    // YEAR. From that year onward the team has no effective rank.
     //
-    //     { period: '1905', rank: 3 }
+    // The deprecation year is computed structurally, from the
+    // team record alone, with no new field. Two independent
+    // signals can close a team:
     //
-    //   The array describes the years on which the user acted,
-    //   not every year.
+    //   - the window closes at endPeriod (under the half-open
+    //     convention, the team is inactive from endPeriod + 1);
+    //   - every stint closes at some leavePeriod (a stint is
+    //     active THROUGH leavePeriod inclusive, so it is gone
+    //     from leavePeriod + 1).
     //
-    // READ-TIME INHERITANCE:
-    //   The rank in effect for a team at year Y is the rank of
-    //   the most recent explicit entry at or before Y. If no
-    //   entry is at or before Y, the rank is null.
+    // The deprecation year is the EARLIER of the two candidate
+    // signals, because the team is empty once EITHER condition
+    // holds. An open-ended endPeriod or an open-ended stint
+    // eliminates that signal from consideration.
     //
-    //   A team ranked #3 at 1904 and #5 at 1907 reads:
+    // Both signals gone (no endPeriod, at least one open stint)
+    // is a team marked deprecated with a live roster: a data
+    // inconsistency. The function returns null in that case,
+    // leaving the inherited rank in place — the least destructive
+    // behaviour. The user resolves the state through the normal
+    // edit flow.
     //
-    //     1903  null      (no entry at or before 1903)
-    //     1904  #3        (explicit)
-    //     1905  #3        (inherited from 1904)
-    //     1906  #3        (inherited from 1904)
-    //     1907  #5        (explicit)
-    //     1908  #5        (inherited from 1907)
-    //
-    //   Writing a new entry at 1905 (#4, say) shadows 1904 for
-    //   1905–1906 without touching 1907:
-    //
-    //     1904  #3        (explicit)
-    //     1905  #4        (explicit, written)
-    //     1906  #4        (inherited from 1905)
-    //     1907  #5        (explicit)
-    //
-    //   That is "change it in time and keep the previous records."
-    //   The 1904 entry survives untouched; it just stops governing
-    //   1905.
-    //
-    // getRankAtPeriod RETURNS THE EFFECTIVE RANK. It does not
-    // distinguish explicit from inherited. Callers that need the
-    // distinction use getEffectiveRanking.
+    // A team that is NOT deprecated returns null and behaves
+    // exactly as before this revision.
 
     /**
-     * Get the rank in effect for a team at a given year.
+     * Compute the first year a team has zero active members.
      *
-     * Read-time inheritance: returns the most recent entry at
-     * or before `year`. Returns null when the team has no entry
-     * at or before the year, or when the year is invalid.
+     * Returns null when:
+     *   - the team is not deprecated, OR
+     *   - neither endPeriod nor "all stints closed" is available
+     *     (a deprecated-with-live-roster data inconsistency).
+     *
+     * The value is min(endPeriod + 1, max(leavePeriod) + 1),
+     * filtered by the open-end guards described above.
      *
      * @param {object} team
-     * @param {string|number} period
      * @returns {number|null}
      */
-    function getRankAtPeriod(team, period) {
-        var effective = getEffectiveRanking(team, period);
-        return effective.rank;
+    function computeDeprecationYear(team) {
+        if (!isPlainObject(team)) { return null; }
+
+        if (TeamConstants.normalizeTeamStatus(team.status) !==
+            'deprecated') {
+            return null;
+        }
+
+        var candidates = [];
+
+        // ---- Window close: endPeriod + 1 ----
+        var endRaw = team.endPeriod;
+        if (endRaw !== undefined && endRaw !== null &&
+            String(endRaw).trim() !== '') {
+            var endYear = parsePeriod(endRaw);
+            if (endYear !== null) {
+                candidates.push(endYear + 1);
+            }
+        }
+
+        // ---- All stints closed: max(leavePeriod) + 1 ----
+        var anyOpenLeave = false;
+        var latestLeave = null;
+
+        if (Array.isArray(team.members)) {
+            for (var m = 0; m < team.members.length; m++) {
+                var member = team.members[m];
+                if (!isPlainObject(member)) { continue; }
+                if (!Array.isArray(member.intervals)) { continue; }
+
+                for (var i = 0; i < member.intervals.length; i++) {
+                    var iv = member.intervals[i];
+                    if (!isPlainObject(iv)) { continue; }
+
+                    var leaveRaw = iv.leavePeriod;
+                    if (leaveRaw === undefined ||
+                        leaveRaw === null ||
+                        String(leaveRaw).trim() === '') {
+                        anyOpenLeave = true;
+                        continue;
+                    }
+
+                    var n = parsePeriod(leaveRaw);
+                    if (n === null) { continue; }
+                    if (latestLeave === null || n > latestLeave) {
+                        latestLeave = n;
+                    }
+                }
+            }
+        }
+
+        if (!anyOpenLeave && latestLeave !== null) {
+            candidates.push(latestLeave + 1);
+        }
+
+        if (candidates.length === 0) { return null; }
+
+        var earliest = candidates[0];
+        for (var c = 1; c < candidates.length; c++) {
+            if (candidates[c] < earliest) {
+                earliest = candidates[c];
+            }
+        }
+        return earliest;
     }
 
     /**
      * Get the effective ranking at a year, with the provenance
      * of the value.
+     *
+     * DEPRECATION OVERRIDE:
+     *   A team deprecated at or before `period` has no effective
+     *   rank. The stored rankingHistory entries at years at or
+     *   after the deprecation year are inert; entries before it
+     *   still govern their years.
      *
      * @param {object} team
      * @param {string|number} period
@@ -2070,6 +2219,12 @@
 
         var periodNum = parsePeriod(period);
         if (periodNum === null) {
+            return result;
+        }
+
+        // ---- Deprecation override ----
+        var deprecationYear = computeDeprecationYear(team);
+        if (deprecationYear !== null && periodNum >= deprecationYear) {
             return result;
         }
 
@@ -2105,7 +2260,12 @@
     }
 
     /**
-     * Does the team have an explicit entry at exactly this year?
+     * Does the team have an explicit entry at exactly this year
+     * that is EFFECTIVE?
+     *
+     * A stored entry at or after the deprecation year is inert
+     * (see getEffectiveRanking), so this returns false for such
+     * entries even though they exist in the array.
      *
      * @param {object} team
      * @param {string|number} period
@@ -2122,6 +2282,10 @@
      * The range of an entry is [entry.period, nextEntry.period).
      * The last entry's range extends to Infinity. This is the
      * same half-open rule the periods model uses.
+     *
+     * The returned ranges describe the STORED record, not the
+     * displayed effective rank. Callers that need the effective
+     * rank for a given year use getEffectiveRanking.
      *
      * @param {object} team
      * @returns {array} [ { period, rank, governsFrom, governsTo } ]
@@ -2262,6 +2426,15 @@
     }
 
     // ============================================================
+    // RANKINGS — INHERITANCE MODEL (rest of)
+    // ============================================================
+
+    function getRankAtPeriod(team, period) {
+        var effective = getEffectiveRanking(team, period);
+        return effective.rank;
+    }
+
+    // ============================================================
     // STAFF CLASSIFICATION
     // ============================================================
 
@@ -2393,7 +2566,7 @@
         getRankedTeamsForYear: getRankedTeamsForYear,
         getUnrankedTeamsForYear: getUnrankedTeamsForYear,
 
-        // ---- Rankings — inheritance model (unchanged) ----
+        // ---- Rankings — inheritance model ----
         getSortedRankings: getSortedRankings,
         getMostRecentRanking: getMostRecentRanking,
         getCurrentRank: getCurrentRank,
@@ -2688,9 +2861,8 @@
                 );
             }
 
-            // ---- showInactive smoke test (this revision). ----
+            // ---- showInactive smoke test. ----
             try {
-                // Accepts options without throwing.
                 var withOpts = getRankedTeamsForYear('1999', {
                     showInactive: true
                 });
@@ -2713,6 +2885,101 @@
             } catch (e) {
                 missing.push(
                     'showInactive smoke test threw: ' + e.message
+                );
+            }
+
+            // ---- Deprecation smoke test. ----
+            try {
+                // Deprecated team with closed window AND closed
+                // stints: deprecation year is the earlier of the
+                // two close signals.
+                var depTeam = {
+                    id: 'tr',
+                    status: 'deprecated',
+                    startPeriod: '1900',
+                    endPeriod: '1920',
+                    rankingHistory: [
+                        { period: '1900', rank: 1 },
+                        { period: '1910', rank: 2 }
+                    ],
+                    members: [
+                        { intervals: [{ joinPeriod: '1900', leavePeriod: '1918' }] }
+                    ]
+                };
+                if (computeDeprecationYear(depTeam) !== 1919) {
+                    missing.push(
+                        'computeDeprecationYear: closed stints should ' +
+                        'win over endPeriod, expected 1919, got ' +
+                        computeDeprecationYear(depTeam)
+                    );
+                }
+                // Before deprecation: inherited rank preserved.
+                if (getEffectiveRanking(depTeam, 1918).rank !== 2) {
+                    missing.push(
+                        'getEffectiveRanking: 1918 should still inherit #2'
+                    );
+                }
+                // At and after deprecation: null.
+                if (getEffectiveRanking(depTeam, 1919).rank !== null) {
+                    missing.push(
+                        'getEffectiveRanking: 1919 should be null'
+                    );
+                }
+                if (getEffectiveRanking(depTeam, 1920).rank !== null) {
+                    missing.push(
+                        'getEffectiveRanking: 1920 should be null'
+                    );
+                }
+
+                // Non-deprecated team: unchanged.
+                var liveTeam = {
+                    id: 'tl',
+                    status: 'active',
+                    startPeriod: '1900',
+                    endPeriod: '',
+                    rankingHistory: [
+                        { period: '1900', rank: 1 }
+                    ],
+                    members: [
+                        { intervals: [{ joinPeriod: '1900', leavePeriod: '' }] }
+                    ]
+                };
+                if (computeDeprecationYear(liveTeam) !== null) {
+                    missing.push(
+                        'computeDeprecationYear: non-deprecated team ' +
+                        'should be null'
+                    );
+                }
+                if (getEffectiveRanking(liveTeam, 1920).rank !== 1) {
+                    missing.push(
+                        'getEffectiveRanking: live team should ' +
+                        'still inherit #1 at 1920'
+                    );
+                }
+
+                // Deprecated with live roster AND open window:
+                // no inferable year, rank survives.
+                var inconsistent = {
+                    id: 'ti',
+                    status: 'deprecated',
+                    startPeriod: '1900',
+                    endPeriod: '',
+                    rankingHistory: [
+                        { period: '1900', rank: 1 }
+                    ],
+                    members: [
+                        { intervals: [{ joinPeriod: '1900', leavePeriod: '' }] }
+                    ]
+                };
+                if (computeDeprecationYear(inconsistent) !== null) {
+                    missing.push(
+                        'computeDeprecationYear: deprecated-with-live-roster ' +
+                        'should return null'
+                    );
+                }
+            } catch (e) {
+                missing.push(
+                    'deprecation smoke test threw: ' + e.message
                 );
             }
         } catch (e) {
