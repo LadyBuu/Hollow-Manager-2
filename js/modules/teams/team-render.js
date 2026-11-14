@@ -1289,7 +1289,7 @@
                         filterVM.filterYear !== null
             ? filterVM.filterYear
             : '';
-        var status = filterVM.filterStatus || 'active';
+        var showInactive = filterVM.showInactive === true;
 
         var html = '';
 
@@ -1354,12 +1354,13 @@
                                 escapeAttribute(safeString(yearValue)) +
                             '" placeholder="All">';
                 html += '</div>';
+                
                 html += '<div class="filter-group">';
                 html += '<label for="' + escapeAttribute(tab) +
                             '-show-inactive">Show Inactive:</label>';
                 html += '<input type="checkbox" id="' +
                             escapeAttribute(tab) + '-show-inactive"' +
-                            (status === 'inactive' ? ' checked' : '') +
+                            (showInactive ? ' checked' : '') +
                         '>';
                 html += '</div>';
                 html += '<button type="button" id="apply-filter-btn" ' +
@@ -1377,7 +1378,7 @@
                 '</label>';
         html += '<input type="checkbox" ' +
                     'id="civilian-show-inactive"' +
-                    (status === 'inactive' ? ' checked' : '') +
+                    (showInactive ? ' checked' : '') +
                 '>';
         html += '</div>';
         html += '<button type="button" id="apply-filter-btn" ' +
