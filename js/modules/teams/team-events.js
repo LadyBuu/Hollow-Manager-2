@@ -3527,8 +3527,11 @@
         delegate(
             '#professional-show-inactive, #civilian-show-inactive',
             'change',
-            function() {
-                applyFilters();
+            function(e, target) {
+                e.preventDefault();
+                var tab = TeamUI.getCurrentTab();
+                TeamUI.setFilter(tab, 'showInactive', target.checked);
+                refreshUI();
             }
         );
     }
