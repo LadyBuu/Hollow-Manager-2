@@ -41,6 +41,29 @@
  *     When CalendarConfig is not loaded, the date fields fall
  *     back to Gregorian in-line, so the form keeps working.
  *
+ * TEAM OPTIONS (this revision):
+ *   The form's "Assign Team" select renders one <option> per
+ *   eligible team, in the order the aggregator produced. The
+ *   aggregator's buildTeamOptionsSorted puts teams whose current
+ *   specialisations overlap the mission's type FIRST, ordered by
+ *   descending overlap count, then alphabetically. Each option
+ *   carries `specialisationLabels` (the human labels for the
+ *   team's current specialisations), and this renderer appends
+ *   them to the option text in parentheses:
+ *
+ *     Alpha (Combat, Recovery)
+ *     Bravo (Combat)
+ *     Charlie
+ *
+ *   That suffix is what makes the priority ordering legible: the
+ *   user can see WHY a team is at the top of the list. The suffix
+ *   is emitted only when the team has at least one current
+ *   specialisation; a team with none renders as just its name.
+ *
+ *   The suffix is escaped with the same escapeHtml used for the
+ *   team name; the labels come from MissionConstants and are not
+ *   trusted to be plain text (defence in depth).
+ *
  * DATE FIELDS:
  *   The three date inputs are:
  *
@@ -1390,6 +1413,24 @@
     // ============================================================
     // TEAMS EDITOR
     // ============================================================
+    //
+    // The "Assign Team" select renders one <option> per eligible
+    // team in the order the aggregator produced. The aggregator's
+    // buildTeamOptionsSorted puts teams whose current
+    // specialisations overlap the mission's type first, ordered by
+    // descending overlap count, then alphabetically. Each option
+    // carries `specialisationLabels`, and this renderer appends
+    // them to the option text in parentheses so the user can see
+    // WHY a team is at the top of the list:
+    //
+    //   Alpha (Combat, Recovery)
+    //   Bravo (Combat)
+    //   Charlie
+    //
+    // A team with no current specialisations renders as just its
+    // name; the suffix is emitted only when the labels array is
+    // non-empty. The labels are escaped with escapeHtml, not
+    // trusted as plain text.
 
     function renderTeamsEditor(vm, mission) {
         var teamOptions = isArray(vm.teams) ? vm.teams : [];
@@ -1441,7 +1482,9 @@
                 var pt2 = pickable[pk];
                 html += '<option value="' +
                             escapeAttribute(pt2.id) + '">' +
-                            escapeHtml(pt2.name || pt2.id) +
+                            escapeHtml(
+                                buildTeamOptionLabel(pt2)
+                            ) +
                         '</option>';
             }
         }
@@ -1490,6 +1533,47 @@
         html += '</div>'; // form-group full-width
 
         return html;
+    }
+
+    /**
+     * Compose the <option> text for a team.
+     *
+     * Returns "Name" when the team has no current specialisations,
+     * or "Name (Label A, Label B)" otherwise. Labels are the human
+     * strings the aggregator resolved from the team's current
+     * period. They are NOT trusted as plain text; the caller runs
+     * the whole result through escapeHtml.
+     *
+     * This is the piece that makes the aggregator's priority
+     * ordering legible: the user sees why a team is at the top.
+     */
+    function buildTeamOptionLabel(teamOption) {
+        if (!teamOption || !teamOption.id) { return ''; }
+
+        var name = isNonEmptyString(teamOption.name)
+            ? teamOption.name
+            : teamOption.id;
+
+        var labels = isArray(teamOption.specialisationLabels)
+            ? teamOption.specialisationLabels
+            : [];
+
+        if (labels.length === 0) {
+            return name;
+        }
+
+        var parts = [];
+        for (var i = 0; i < labels.length; i++) {
+            var label = labels[i];
+            if (!isNonEmptyString(label)) { continue; }
+            parts.push(String(label));
+        }
+
+        if (parts.length === 0) {
+            return name;
+        }
+
+        return name + ' (' + parts.join(', ') + ')';
     }
 
     // ============================================================
@@ -2180,6 +2264,70 @@
             }
         } catch (e) {
             missing.push('form smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: team option label rendering.
+        try {
+            // Team with no current specialisations: name only.
+            if (buildTeamOptionLabel({
+                id: 't1',
+                name: 'Alpha',
+                specialisationIds: [],
+                specialisationLabels: []
+            }) !== 'Alpha') {
+                missing.push(
+                    'buildTeamOptionLabel: team with no specialisations ' +
+                    'should render as just the name'
+                );
+            }
+
+            // Team with one specialisation: name + one label.
+            if (buildTeamOptionLabel({
+                id: 't2',
+                name: 'Bravo',
+                specialisationIds: ['combat'],
+                specialisationLabels: ['Combat']
+            }) !== 'Bravo (Combat)') {
+                missing.push(
+                    'buildTeamOptionLabel: single-specialisation team ' +
+                    'should render "Name (Label)"'
+                );
+            }
+
+            // Team with two specialisations: name + comma-joined labels.
+            if (buildTeamOptionLabel({
+                id: 't3',
+                name: 'Charlie',
+                specialisationIds: ['combat', 'recovery'],
+                specialisationLabels: ['Combat', 'Recovery']
+            }) !== 'Charlie (Combat, Recovery)') {
+                missing.push(
+                    'buildTeamOptionLabel: multi-specialisation team ' +
+                    'should render "Name (LabelA, LabelB)"'
+                );
+            }
+
+            // Labels array with only non-empty entries are used.
+            if (buildTeamOptionLabel({
+                id: 't4',
+                name: 'Delta',
+                specialisationIds: ['combat'],
+                specialisationLabels: ['Combat', '', null]
+            }) !== 'Delta (Combat)') {
+                missing.push(
+                    'buildTeamOptionLabel: empty labels should be ' +
+                    'skipped'
+                );
+            }
+
+            // Defensive: undefined teamOption.
+            if (buildTeamOptionLabel(null) !== '') {
+                missing.push(
+                    'buildTeamOptionLabel: null input should return ""'
+                );
+            }
+        } catch (e) {
+            missing.push('team option label smoke test threw: ' + e.message);
         }
 
         // Smoke test: report form modal.
