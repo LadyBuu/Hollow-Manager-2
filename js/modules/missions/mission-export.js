@@ -4,11 +4,14 @@
  * Path: js/modules/missions/mission-export.js
  *
  * Full textual dump of a single mission, plus a JSON dump of the
- * same mission.
+ * same mission, plus a bulk export of many missions.
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one mission.
  *   - Building a JSON blob for one mission.
+ *   - Building a plain-text report for many missions (bulk).
+ *   - Building a JSON array of full records for many missions
+ *     (bulk, round-trips through MissionImport.importFromJson).
  *   - Handing either payload to ExportUtils.downloadBlob.
  *
  * WHAT THIS DOES NOT OWN:
@@ -18,36 +21,48 @@
  *     resolves cross-domain names as it goes. It does not go through
  *     MissionAggregator; the VM is shaped for the UI, not for a text
  *     dump.
- *   - UI. MissionEvents / MissionUI triggers the export; this module
- *     returns a result object.
- *   - Format selection. Two formats, but the caller picks one by
- *     calling the appropriate function. This module does not decide.
+ *   - UI. MissionUI triggers the export; this module returns a
+ *     result object.
+ *   - Format selection. Two formats per mission (text, JSON), and
+ *     the same two per bulk set. The caller picks one by calling
+ *     the appropriate function. This module does not decide.
  *   - Download mechanics. ExportUtils.downloadBlob owns the anchor,
  *     the blob URL, and the filename uniquification. This module
  *     supplies a base filename and hands over the payload.
  *
  * FORMATS:
- *   Text   - human-readable, plain text. The default. Built by
- *            exportMissionText. A full report with sections:
- *            header, classification, timing, assignment,
- *            description, objectives, participants, support
- *            personnel, reports, activity log, notes and tags.
+ *   Single mission:
+ *     Text   - human-readable, plain text. Built by
+ *              exportMissionText. Full report with sections:
+ *              header, classification, timing, assignment,
+ *              description, objectives, participants, support
+ *              personnel, reports, activity log, notes and tags.
+ *     JSON   - the full mission record, verbatim. Built by
+ *              exportMissionJson. Not wrapped in an envelope, not
+ *              projected, not stripped. Every field the store
+ *              carries is present.
  *
- *   JSON   - the full mission record, verbatim. Built by
- *            exportMissionJson. Not wrapped in an envelope, not
- *            projected, not stripped. Every field the store
- *            carries is present. The record is deep-cloned before
- *            serialisation so the caller cannot mutate the store
- *            through the exported object.
+ *   Bulk (this revision):
+ *     Text   - one file, one full report per selected mission,
+ *              separated by a bulk banner + double newlines.
+ *              Built by exportMissionsText. Matches the shape of
+ *              TeamExport.exportTeamsText: a bulk banner, then
+ *              each unit's full report, joined by '\n\n'.
+ *     JSON   - one file, a JSON ARRAY of full mission records
+ *              (deep-cloned, verbatim). Built by
+ *              exportMissionsJson. The array shape is exactly what
+ *              MissionImport.importFromJson accepts, so a bulk
+ *              JSON export round-trips through the import path
+ *              without further transformation.
  *
  * MULTIPLE TEAMS:
  *   The mission's assigned teams are read via
  *   MissionQueries.getTeamIdsForMission, which handles the legacy
  *   singular assignedTeamId transparently. The text report prints
- *   one line per team. The JSON export is verbatim, so whatever
+ *   one line per team. The JSON exports are verbatim, so whatever
  *   the record carries is what gets written.
  *
- * PARTICIPANTS (this revision):
+ * PARTICIPANTS:
  *   The text report prints a PARTICIPANTS section. Participants
  *   are grouped by source:
  *
@@ -63,27 +78,21 @@
  *
  *   Participant names are resolved via CharacterQueries; a
  *   deceased character is annotated with a dagger marker, matching
- *   the UI convention. The JSON export carries the participants
+ *   the UI convention. The JSON exports carry the participants
  *   array verbatim — no resolution, no filtering.
  *
  *   The section is ordered to match the UI: team blocks first
  *   (sorted by team name), then the rookie block (sorted by
  *   character name within it).
  *
- * DATE DISPLAY (this revision):
+ * DATE DISPLAY:
  *   The text report's timing section prints the mission's date in
  *   the same shape the detail panel uses: "<Month Name> <day>,
  *   <year>". The month name comes from
- *   CalendarConfig.getMonthName(year, month), so a custom calendar
- *   prints "Twelfth Moon" where the detail panel prints "Twelfth
- *   Moon" — one lookup, one answer. When the year or month is out
- *   of range for the active calendar (e.g. a legacy record with
- *   month 13 in a non-leap year), the date prints numerically
- *   ("8/13/1920") instead of " , 1920".
+ *   CalendarConfig.getMonthName(year, month).
  *
  * SECTIONS COLLAPSE when empty. A mission with no reports shows
- * "(none)" under REPORTS rather than an empty section. The reader
- * always sees what is present and what is not.
+ * "(none)" under REPORTS rather than an empty section.
  *
  * LABEL:
  *   The mission label (YEAR-SEQ-DIFFICULTY) is a derived value.
@@ -97,11 +106,15 @@
  *   participant) is skipped with a visible marker. The report
  *   never fabricates content. If the mission itself does not
  *   resolve, the export returns { error } rather than an empty
- *   file.
+ *   file. In the bulk path, a mission that fails to build is
+ *   SKIPPED and counted in `skipped`; it does not abort the
+ *   export.
  *
  * DOWNLOAD FILENAMES:
- *   Text export base filename: "mission_<slug>_<id>_<timestamp>.txt".
- *   JSON export base filename: "mission_<slug>_<id>_<timestamp>.json".
+ *   Single text  : "mission_<slug>_<id>_<timestamp>.txt"
+ *   Single JSON  : "mission_<slug>_<id>_<timestamp>.json"
+ *   Bulk text    : "missions-export-<count>.txt"
+ *   Bulk JSON    : "missions-export-<count>.json"
  *
  *   ExportUtils.downloadBlob inserts its own local-time timestamp
  *   before the extension, so a second export of the same mission
@@ -463,24 +476,6 @@
     // ============================================================
     // DATE DISPLAY
     // ============================================================
-    //
-    // The text report prints the mission's date in the same shape
-    // the detail panel uses: "<Month Name> <day>, <year>".
-    //
-    // The month name comes from CalendarConfig.getMonthName(year,
-    // month), so a custom calendar prints "Twelfth Moon" where the
-    // detail panel prints "Twelfth Moon" — one lookup, one answer.
-    //
-    // CalendarConfig is resolved LAZILY. When it is absent, the
-    // Gregorian fallback runs. When the month is out of range for
-    // the active calendar, the date prints numerically
-    // ("8/13/1920"), never " , 1920".
-    //
-    // SHAPE:
-    //   year + month + day   "December 8, 1920"  or  "Twelfth Moon 8, 1920"
-    //   year + month only    "December 1920"     or  "Twelfth Moon 1920"
-    //   year only            "1920"
-    //   nothing              ''
 
     function buildDateDisplay(mission) {
         var hasYear = mission.year !== undefined && mission.year !== null;
@@ -490,7 +485,6 @@
         if (hasYear && hasMonth && hasDay) {
             var monthName = resolveMonthName(mission.year, mission.month);
             if (monthName === '') {
-                // Out-of-range month for the active calendar.
                 return String(mission.day) + '/' +
                        String(mission.month) + '/' +
                        String(mission.year);
@@ -516,18 +510,6 @@
         return '';
     }
 
-    /**
-     * Resolve a month name through CalendarConfig, with an inline
-     * Gregorian fallback for a stripped build.
-     *
-     * Identical in shape to the helper in mission-aggregator.js.
-     * Kept local rather than shared so the two files stay
-     * independently loadable.
-     *
-     * Returns '' when the year/month pair is out of range for the
-     * active calendar. The caller decides whether to fall back to
-     * a numeric display.
-     */
     function resolveMonthName(year, monthId) {
         var cfg = getCalendarConfig();
         if (cfg && typeof cfg.getMonthName === 'function') {
@@ -538,7 +520,6 @@
             return '';
         }
 
-        // No CalendarConfig loaded. Inline Gregorian.
         var y = parseInt(year, 10);
         var m = parseInt(monthId, 10);
         if (isNaN(y) || y < 1 || isNaN(m) || m < 1 || m > 12) {
@@ -557,12 +538,6 @@
         lines.push(lineDash(heading));
         lines.push('');
 
-        // ---- Teams ----
-        //
-        // One line per assigned team. When no teams are assigned,
-        // a single "Team:  Unassigned" line. The label is padded so
-        // the first line reads cleanly; subsequent lines align
-        // under the first team name.
         var teamIds = MissionQueries.getTeamIdsForMission(mission);
 
         if (teamIds.length === 0) {
@@ -649,20 +624,6 @@
         lines.push('');
     }
 
-    // ============================================================
-    // PARTICIPANTS (this revision)
-    // ============================================================
-    //
-    // The section groups team participants by team, then prints
-    // rookies in their own block. Team blocks are sorted by team
-    // name; within each block participants are sorted by
-    // character name. The rookie block is sorted by character
-    // name.
-    //
-    // The mission's participant list is read via
-    // MissionQueries.getParticipantsForMission, which normalises
-    // each record and drops malformed ones.
-
     function pushParticipants(lines, mission) {
         var heading = 'PARTICIPANTS';
         lines.push(heading);
@@ -678,7 +639,6 @@
             return;
         }
 
-        // Partition into team participants and rookies.
         var byTeam = Object.create(null);
         var teamOrder = [];
         var rookies = [];
@@ -698,14 +658,12 @@
             byTeam[teamId].push(p);
         }
 
-        // Sort team blocks by resolved team name.
         teamOrder.sort(function(a, b) {
             var na = resolveTeamName(a);
             var nb = resolveTeamName(b);
             return na.localeCompare(nb);
         });
 
-        // ---- Team blocks ----
         for (var t = 0; t < teamOrder.length; t++) {
             var tid = teamOrder[t];
             var teamName = resolveTeamName(tid);
@@ -730,7 +688,6 @@
             lines.push('');
         }
 
-        // ---- Rookies ----
         if (rookies.length > 0) {
             rookies.sort(function(a, b) {
                 return resolveCharacterName(a.characterId)
@@ -752,13 +709,6 @@
         }
     }
 
-    /**
-     * Format a single participant line. The name is resolved
-     * against the character store; a deceased character gets a
-     * dagger suffix matching the UI convention. A character who
-     * does not resolve in the store prints as "(missing
-     * character)" from resolveCharacterName.
-     */
     function formatParticipantLine(charId) {
         var name = resolveCharacterName(charId);
         if (resolveCharacterDeceased(charId)) {
@@ -811,7 +761,6 @@
             return;
         }
 
-        // Newest first, matching the UI.
         var sorted = reports.slice().sort(function(a, b) {
             var ta = a && isNonEmptyString(a.createdAt) ? a.createdAt : '';
             var tb = b && isNonEmptyString(b.createdAt) ? b.createdAt : '';
@@ -861,8 +810,6 @@
             return;
         }
 
-        // Log is stored append-order (oldest first); display
-        // newest first, matching the UI.
         for (var i = log.length - 1; i >= 0; i--) {
             var entry = log[i];
             if (!isPlainObject(entry)) {
@@ -959,7 +906,6 @@
         pushActivityLog(lines, mission);
         pushNotes(lines, mission);
 
-        // Footer
         var footer = 'END OF REPORT';
         lines.push(lineUnder(footer));
         lines.push(footer);
@@ -994,15 +940,6 @@
     // ============================================================
     // JSON REPORT BUILDER
     // ============================================================
-    //
-    // The JSON export is the mission record verbatim. No envelope,
-    // no projection, no stripping. Every field the store carries is
-    // present, including the participants array.
-    //
-    // The record is deep-cloned before it is handed back. This is
-    // the same discipline the read layer follows: an export is a
-    // snapshot, not a live reference. A caller that mutates the
-    // returned object must not mutate the store.
 
     function buildJsonPayload(missionId) {
         var mission = null;
@@ -1080,18 +1017,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - TEXT
+    // PUBLIC API - SINGLE MISSION, TEXT
     // ============================================================
 
-    /**
-     * Export a single mission as a plain-text report.
-     *
-     * @param {string} missionId
-     * @returns {object}
-     *   { exported: true, filename, count, format: 'text' }
-     *   on success.
-     *   { error: string } on failure.
-     */
     function exportMissionText(missionId) {
         if (!isNonEmptyString(missionId)) {
             return { error: 'Mission ID is required.' };
@@ -1122,10 +1050,6 @@
         };
     }
 
-    /**
-     * Build the text report without downloading. For tests and
-     * preview.
-     */
     function buildMissionTextReport(missionId) {
         if (!isNonEmptyString(missionId)) {
             return { error: 'Mission ID is required.' };
@@ -1147,22 +1071,9 @@
     }
 
     // ============================================================
-    // PUBLIC API - JSON
+    // PUBLIC API - SINGLE MISSION, JSON
     // ============================================================
 
-    /**
-     * Export a single mission as a JSON file.
-     *
-     * The file contains the mission record verbatim. No envelope,
-     * no projection. This is the payload the import path expects
-     * back, and it round-trips cleanly through MissionSchema.
-     *
-     * @param {string} missionId
-     * @returns {object}
-     *   { exported: true, filename, count, format: 'json' }
-     *   on success.
-     *   { error: string } on failure.
-     */
     function exportMissionJson(missionId) {
         if (!isNonEmptyString(missionId)) {
             return { error: 'Mission ID is required.' };
@@ -1193,10 +1104,6 @@
         };
     }
 
-    /**
-     * Build the JSON payload without downloading. For tests and
-     * preview.
-     */
     function buildMissionJsonReport(missionId) {
         if (!isNonEmptyString(missionId)) {
             return { error: 'Mission ID is required.' };
@@ -1214,6 +1121,195 @@
         return {
             data: built.data,
             filename: buildJsonFilename(built.mission)
+        };
+    }
+
+    // ============================================================
+    // PUBLIC API - BULK, TEXT (this revision)
+    // ============================================================
+    //
+    // Concatenates the individual reports for a set of missions
+    // into one file, under a bulk banner. Each mission's report
+    // uses the existing single-mission text builder unchanged.
+    //
+    // A mission that fails to build (missing record, throw during
+    // build) is SKIPPED and counted. It does not abort the export.
+
+    function buildBulkTextBanner(count) {
+        var bannerWidth = 64;
+        var banner = '';
+        for (var i = 0; i < bannerWidth; i++) {
+            banner += '=';
+        }
+
+        return banner + '\n' +
+            'MISSION EXPORT \u2014 ' + count + ' mission' +
+            (count === 1 ? '' : 's') + '\n' +
+            'Generated: ' + new Date().toISOString() + '\n' +
+            banner;
+    }
+
+    function buildBulkTextFilename(count) {
+        return 'missions-export-' + count + '.txt';
+    }
+
+    function buildMissionsTextReport(missionIds) {
+        if (!Array.isArray(missionIds)) {
+            return { error: 'missionIds must be an array.' };
+        }
+        if (missionIds.length === 0) {
+            return { error: 'No missions selected.' };
+        }
+
+        var parts = [];
+        var skipped = 0;
+
+        for (var i = 0; i < missionIds.length; i++) {
+            var id = missionIds[i];
+            if (!isNonEmptyString(id)) {
+                skipped++;
+                continue;
+            }
+
+            var built;
+            try {
+                built = buildTextReport(String(id));
+            } catch (e) {
+                console.warn(
+                    '[MissionExport] buildTextReport threw for ' +
+                    'mission ' + id + ':', e
+                );
+                skipped++;
+                continue;
+            }
+
+            if (!built || built.error) {
+                skipped++;
+                continue;
+            }
+
+            parts.push(built.text);
+        }
+
+        if (parts.length === 0) {
+            return { error: 'No missions could be built.' };
+        }
+
+        var count = parts.length;
+        var banner = buildBulkTextBanner(count);
+        var content = banner + '\n\n' + parts.join('\n\n');
+
+        return {
+            text: content,
+            filename: buildBulkTextFilename(count),
+            count: count,
+            skipped: skipped
+        };
+    }
+
+    function exportMissionsText(missionIds) {
+        var built = buildMissionsTextReport(missionIds);
+        if (built.error) {
+            return { exported: false, error: built.error };
+        }
+
+        var dl = downloadText(built.filename, built.text);
+        if (dl.error) {
+            return { exported: false, error: dl.error };
+        }
+
+        return {
+            exported: true,
+            filename: built.filename,
+            count: built.count,
+            skipped: built.skipped,
+            format: 'text'
+        };
+    }
+
+    // ============================================================
+    // PUBLIC API - BULK, JSON (this revision)
+    // ============================================================
+    //
+    // Emits a JSON ARRAY of full mission records. The array shape
+    // is exactly what MissionImport.importFromJson accepts, so a
+    // bulk JSON export round-trips through the import path without
+    // further transformation.
+    //
+    // A mission that fails to build is SKIPPED and counted. It
+    // does not abort the export.
+
+    function buildBulkJsonFilename(count) {
+        return 'missions-export-' + count + '.json';
+    }
+
+    function buildMissionsJsonReport(missionIds) {
+        if (!Array.isArray(missionIds)) {
+            return { error: 'missionIds must be an array.' };
+        }
+        if (missionIds.length === 0) {
+            return { error: 'No missions selected.' };
+        }
+
+        var records = [];
+        var skipped = 0;
+
+        for (var i = 0; i < missionIds.length; i++) {
+            var id = missionIds[i];
+            if (!isNonEmptyString(id)) {
+                skipped++;
+                continue;
+            }
+
+            var built;
+            try {
+                built = buildJsonPayload(String(id));
+            } catch (e) {
+                console.warn(
+                    '[MissionExport] buildJsonPayload threw for ' +
+                    'mission ' + id + ':', e
+                );
+                skipped++;
+                continue;
+            }
+
+            if (!built || built.error) {
+                skipped++;
+                continue;
+            }
+
+            records.push(built.data);
+        }
+
+        if (records.length === 0) {
+            return { error: 'No missions could be built.' };
+        }
+
+        return {
+            data: records,
+            filename: buildBulkJsonFilename(records.length),
+            count: records.length,
+            skipped: skipped
+        };
+    }
+
+    function exportMissionsJson(missionIds) {
+        var built = buildMissionsJsonReport(missionIds);
+        if (built.error) {
+            return { exported: false, error: built.error };
+        }
+
+        var dl = downloadJson(built.filename, built.data);
+        if (dl.error) {
+            return { exported: false, error: dl.error };
+        }
+
+        return {
+            exported: true,
+            filename: built.filename,
+            count: built.count,
+            skipped: built.skipped,
+            format: 'json'
         };
     }
 
@@ -1238,13 +1334,21 @@
     // ============================================================
 
     window.MissionExport = Object.freeze({
-        // Text format
+        // Text format — single
         exportMissionText: exportMissionText,
         buildMissionTextReport: buildMissionTextReport,
 
-        // JSON format
+        // JSON format — single
         exportMissionJson: exportMissionJson,
         buildMissionJsonReport: buildMissionJsonReport,
+
+        // Text format — bulk
+        exportMissionsText: exportMissionsText,
+        buildMissionsTextReport: buildMissionsTextReport,
+
+        // JSON format — bulk
+        exportMissionsJson: exportMissionsJson,
+        buildMissionsJsonReport: buildMissionsJsonReport,
 
         // Legacy aliases. Text is the default.
         exportMission: exportMission,
@@ -1264,6 +1368,10 @@
             'buildMissionTextReport',
             'exportMissionJson',
             'buildMissionJsonReport',
+            'exportMissionsText',
+            'buildMissionsTextReport',
+            'exportMissionsJson',
+            'buildMissionsJsonReport',
             'exportMission',
             'buildMissionReport'
         ];
@@ -1274,14 +1382,6 @@
             }
         }
 
-        // Smoke test: the date display routes through
-        // CalendarConfig, not a hardcoded Gregorian table. Under
-        // the Gregorian fallback the December case must still
-        // render "December 8, 1920"; under a custom calendar it
-        // must render that calendar's name. The exact string is
-        // environment-dependent, so we only assert that the
-        // result contains the year and that the out-of-range case
-        // never leaves a bare " , " behind.
         try {
             var decDisplay = buildDateDisplay({
                 year: 1920,
@@ -1334,9 +1434,44 @@
                     'printed a comma, got "' + bad + '"'
                 );
             }
+
+            // ---- Bulk API shape smoke tests ----
+            var emptyText = buildMissionsTextReport([]);
+            if (!emptyText || emptyText.error !== 'No missions selected.') {
+                missing.push(
+                    'buildMissionsTextReport([]) did not return ' +
+                    'the expected empty error'
+                );
+            }
+
+            var emptyJson = buildMissionsJsonReport([]);
+            if (!emptyJson || emptyJson.error !== 'No missions selected.') {
+                missing.push(
+                    'buildMissionsJsonReport([]) did not return ' +
+                    'the expected empty error'
+                );
+            }
+
+            var emptyTextExport = exportMissionsText([]);
+            if (!emptyTextExport ||
+                emptyTextExport.exported !== false) {
+                missing.push(
+                    'exportMissionsText([]) did not return ' +
+                    '{ exported: false }'
+                );
+            }
+
+            var emptyJsonExport = exportMissionsJson([]);
+            if (!emptyJsonExport ||
+                emptyJsonExport.exported !== false) {
+                missing.push(
+                    'exportMissionsJson([]) did not return ' +
+                    '{ exported: false }'
+                );
+            }
         } catch (e) {
             missing.push(
-                'date-display smoke test threw: ' + e.message
+                'date-display / bulk smoke test threw: ' + e.message
             );
         }
 
