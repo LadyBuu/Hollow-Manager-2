@@ -7,7 +7,8 @@
  * This module is the SINGLE SOURCE OF TRUTH for Team UI state:
  *   - Which tab is selected (professional | civilian)
  *   - Which team is expanded in the list
- *   - Per-tab filter values (year, showInactive)
+ *   - Per-tab filter values (year, showInactive, sort,
+ *     sortDirection, specialisationIds)
  *
  * IMPORTANT:
  *   - UI state only. No domain data. No mutations. No domain reads.
@@ -30,19 +31,18 @@
  *   and caching stale shape across a code change produces bugs
  *   that are harder to diagnose than losing a saved tab.
  *
- *   v1 -> v2: the 'temporary' tab was retired. A persisted
- *   v1 state could carry currentTab: 'temporary' or a filters
- *   entry for it. Rather than migrate, v2 started clean. The
- *   previous key was not read.
+ *   v1 -> v2: the 'temporary' tab was retired.
  *
  *   v2 -> v3: the Show Inactive filter changed shape. The v2
- *   filterStatus string ('active' | 'inactive') is replaced by
- *   a showInactive boolean. The v2 semantics were inverted
- *   relative to the checkbox: 'inactive' meant "only inactive"
- *   rather than "also include inactive". Migrating the value
- *   would require interpreting the old polarity, which was the
- *   bug. v3 starts clean; the old keys (v1 and v2) are removed
- *   on load.
+ *   filterStatus string ('active' | 'inactive') was replaced by
+ *   a showInactive boolean.
+ *
+ *   THIS REVISION: no bump. The new filter keys (sort,
+ *   sortDirection, specialisationIds) are additive. The
+ *   merge-with-defaults path already drops unknown keys and fills
+ *   missing keys from DEFAULT_STATE, so an existing v3 state from
+ *   a live session simply picks up the new defaults on next load.
+ *   Nothing old is abandoned; nothing old is reinterpreted.
  *
  * TAB VOCABULARY:
  *   The valid tabs are:
@@ -60,13 +60,31 @@
  *   a filter on one tab does not affect another. The filter object
  *   for a tab is created on first access from the canonical defaults.
  *
- *   'filterYear':     '' (no year filter) or a positive integer.
- *   'showInactive':   false (only active) or true (active + inactive).
- *                     Maps to the query status 'active' or
- *                     'operational' respectively. Never 'inactive':
- *                     "show inactive" means "also include", not
- *                     "only show". The aggregator handles the
- *                     mapping.
+ *   'filterYear':       '' (no year filter) or a positive integer.
+ *   'showInactive':     false (only active) or true (active + inactive).
+ *                       Maps to the query status 'active' or
+ *                       'operational' respectively. Never 'inactive':
+ *                       "show inactive" means "also include", not
+ *                       "only show". The aggregator handles the
+ *                       mapping.
+ *   'sort':             'name' | 'period' | 'members'. Default
+ *                       'name'.
+ *   'sortDirection':    'asc' | 'desc'. Default 'asc'.
+ *   'specialisationIds': array of mission-type ids. Empty array
+ *                       means "no specialisation filter." A
+ *                       non-empty array means "team matches if its
+ *                       current specialisations contain AT LEAST
+ *                       ONE of these ids." Multi-select, any-of.
+ *
+ * ARRAY-VALUED FILTERS:
+ *   specialisationIds is the only array-valued filter today. The
+ *   "did the value change" comparison in setFilter and
+ *   updateFilter routes through filterValuesEqual(key, a, b),
+ *   which compares arrays as SETS and everything else with ===.
+ *   This exists because `a === b` on two arrays is always false,
+ *   which would otherwise cause every setFilter call on
+ *   specialisationIds to write to sessionStorage even when
+ *   nothing changed.
  *
  * DEPENDENCIES:
  *   None.
@@ -78,6 +96,10 @@
  *   UI.getFilter('professional');
  *   UI.setFilter('professional', 'filterYear', 2025);
  *   UI.setFilter('professional', 'showInactive', true);
+ *   UI.setFilter('professional', 'sort', 'members');
+ *   UI.setFilter('professional', 'sortDirection', 'desc');
+ *   UI.setFilter('professional', 'specialisationIds',
+ *                ['combat', 'recovery']);
  */
 
 (function() {
@@ -94,9 +116,7 @@
 
     var STORAGE_KEY = 'team_ui_state_v3';
 
-    // Old storage keys removed on load. v1 carried a 'temporary'
-    // tab entry; v2 carried the inverted filterStatus shape. Both
-    // are abandoned without migration.
+    // Old storage keys removed on load.
     var OLD_STORAGE_KEYS = [
         'team_ui_state_v1',
         'team_ui_state_v2'
@@ -105,12 +125,22 @@
     var VALID_TABS = ['professional', 'civilian'];
     var DEFAULT_TAB = 'professional';
 
+    var VALID_SORTS = ['name', 'period', 'members'];
+    var DEFAULT_SORT = 'name';
+
+    var VALID_SORT_DIRECTIONS = ['asc', 'desc'];
+    var DEFAULT_SORT_DIRECTION = 'asc';
+
     // ============================================================
     // DEFAULT STATE
     // ============================================================
     //
     // Frozen. Callers cannot mutate the template by holding a
     // reference. getDefaultState() returns a fresh structural clone.
+    //
+    // The professional filter gains three keys this revision:
+    //   sort, sortDirection, specialisationIds
+    // See the file header for their semantics.
 
     var DEFAULT_STATE = Object.freeze({
         currentTab: DEFAULT_TAB,
@@ -119,7 +149,10 @@
         filters: Object.freeze({
             professional: Object.freeze({
                 filterYear: '',
-                showInactive: false
+                showInactive: false,
+                sort: DEFAULT_SORT,
+                sortDirection: DEFAULT_SORT_DIRECTION,
+                specialisationIds: Object.freeze([])
             }),
             civilian: Object.freeze({
                 showInactive: false
@@ -170,8 +203,11 @@
      * Is this a valid value for the named filter key on the tab?
      *
      * Every filter key has a type contract:
-     *   filterYear:    '' or a positive integer
-     *   showInactive:  boolean
+     *   filterYear:        '' or a positive integer
+     *   showInactive:      boolean
+     *   sort:              'name' | 'period' | 'members'
+     *   sortDirection:     'asc' | 'desc'
+     *   specialisationIds: array of non-empty strings
      *
      * Returns true when the value satisfies the key's contract.
      * Unknown keys are not validated here; the caller checks the
@@ -197,8 +233,84 @@
             return typeof value === 'boolean';
         }
 
+        if (key === 'sort') {
+            return typeof value === 'string' &&
+                VALID_SORTS.indexOf(value) !== -1;
+        }
+
+        if (key === 'sortDirection') {
+            return typeof value === 'string' &&
+                VALID_SORT_DIRECTIONS.indexOf(value) !== -1;
+        }
+
+        if (key === 'specialisationIds') {
+            if (!Array.isArray(value)) { return false; }
+            for (var i = 0; i < value.length; i++) {
+                var entry = value[i];
+                if (typeof entry !== 'string') { return false; }
+                if (entry.trim() === '') { return false; }
+            }
+            return true;
+        }
+
         // Unknown key: caller already rejected it.
         return false;
+    }
+
+    /**
+     * Are two filter values for the same key equal?
+     *
+     * Arrays are compared as SETS (order-insensitive, dedup-
+     * insensitive on the value side). Everything else uses ===.
+     *
+     * This exists because `a === b` on two arrays is always false,
+     * which would otherwise cause every setFilter call on
+     * specialisationIds to write to sessionStorage even when the
+     * caller passed the same values in a different order, or a
+     * caller that already had the same values built a new array.
+     *
+     * The set-comparison assumes array entries are unique after
+     * normalisation. setFilter's writer normalises before storing,
+     * so this holds for the values that reach the comparison.
+     */
+    function filterValuesEqual(key, a, b) {
+        if (key === 'specialisationIds') {
+            if (!Array.isArray(a) || !Array.isArray(b)) {
+                return a === b;
+            }
+            if (a.length !== b.length) { return false; }
+            var set = Object.create(null);
+            for (var i = 0; i < a.length; i++) {
+                set[String(a[i])] = true;
+            }
+            for (var j = 0; j < b.length; j++) {
+                if (set[String(b[j])] !== true) { return false; }
+            }
+            return true;
+        }
+        return a === b;
+    }
+
+    /**
+     * Normalise a filter value for storage. Currently only
+     * specialisationIds needs it: it is deduped and trimmed.
+     * Every other key is stored as-is (validation already
+     * guaranteed its shape).
+     */
+    function normaliseFilterValueForStorage(key, value) {
+        if (key === 'specialisationIds') {
+            var seen = Object.create(null);
+            var out = [];
+            for (var i = 0; i < value.length; i++) {
+                var s = String(value[i]).trim();
+                if (s === '') { continue; }
+                if (seen[s]) { continue; }
+                seen[s] = true;
+                out.push(s);
+            }
+            return out;
+        }
+        return value;
     }
 
     // ============================================================
@@ -242,6 +354,11 @@
      * Invalid VALUES are rejected and replaced by the default.
      * This is what makes a future schema change safe: a stale or
      * tampered value cannot leak into live state.
+     *
+     * New keys added this revision (sort, sortDirection,
+     * specialisationIds) will be missing from an older stored
+     * state. The merge starts from defaults, so they land on
+     * their defaults; there is nothing to migrate.
      */
     function mergeWithDefaults(parsed) {
         var merged = getDefaultState();
@@ -273,10 +390,18 @@
                     }
                     var savedValue = saved[key];
                     if (isValidFilterValue(tab, key, savedValue)) {
-                        merged.filters[tab][key] =
-                            key === 'filterYear' && typeof savedValue === 'string'
-                                ? String(savedValue)
-                                : savedValue;
+                        if (key === 'filterYear' &&
+                            typeof savedValue === 'string') {
+                            merged.filters[tab][key] =
+                                String(savedValue);
+                        } else if (key === 'specialisationIds') {
+                            merged.filters[tab][key] =
+                                normaliseFilterValueForStorage(
+                                    key, savedValue
+                                );
+                        } else {
+                            merged.filters[tab][key] = savedValue;
+                        }
                     }
                     // Invalid values are silently dropped, replaced
                     // by the default that mergeWithDefaults began
@@ -303,11 +428,6 @@
     //
     // Initialized at declaration. There is no separate init step;
     // the state is ready the moment this module loads.
-    //
-    // init() remains exported for callers that expect a lifecycle
-    // hook. It reloads from storage when the stored state differs
-    // from in-memory state, so a pending in-memory change that
-    // failed to persist is preserved.
 
     removeOldStorageKeys();
 
@@ -521,10 +641,12 @@
     }
 
     /**
-     * Get a tab's current filter as a shallow copy.
+     * Get a tab's current filter as a copy.
      *
-     * Filter values are primitives (number, string, boolean), so a
-     * shallow copy is a full isolation guarantee.
+     * Every filter value is either a primitive or, for
+     * specialisationIds, an array of strings. The copy is a deep
+     * clone so a caller that mutates the returned array cannot
+     * mutate live state.
      *
      * An invalid tab returns {} (see getDefaultFilter).
      */
@@ -536,7 +658,8 @@
         if (!filters) {
             return getFilterDefaults(tab);
         }
-        return Object.assign({}, filters);
+        // Deep clone so specialisationIds is isolated too.
+        return clone(filters);
     }
 
     /**
@@ -546,6 +669,10 @@
      * tab's default filter; the value must satisfy the key's type
      * contract. A failed check rejects the whole call — nothing
      * is written.
+     *
+     * The value is normalised for storage (deduped and trimmed
+     * for array-typed keys). The "did it change" comparison is
+     * value-aware for arrays (see filterValuesEqual).
      */
     function setFilter(tab, key, value) {
         if (!isValidTab(tab)) {
@@ -562,10 +689,13 @@
         if (!_state.filters[tab]) {
             _state.filters[tab] = getFilterDefaults(tab);
         }
-        if (_state.filters[tab][key] === value) {
+
+        var normalised = normaliseFilterValueForStorage(key, value);
+
+        if (filterValuesEqual(key, _state.filters[tab][key], normalised)) {
             return true;
         }
-        _state.filters[tab][key] = value;
+        _state.filters[tab][key] = normalised;
         saveState();
         return true;
     }
@@ -607,8 +737,13 @@
         var changed = false;
         for (var j = 0; j < keys.length; j++) {
             var key = keys[j];
-            if (_state.filters[tab][key] !== updates[key]) {
-                _state.filters[tab][key] = updates[key];
+            var normalised = normaliseFilterValueForStorage(
+                key, updates[key]
+            );
+            if (!filterValuesEqual(
+                key, _state.filters[tab][key], normalised
+            )) {
+                _state.filters[tab][key] = normalised;
                 changed = true;
             }
         }
@@ -665,6 +800,12 @@
         updateFilter: updateFilter,
         resetFilter: resetFilter,
         resetAllFilters: resetAllFilters,
+
+        // Sort vocabulary (for the renderer's <select>)
+        getValidSorts: function() { return VALID_SORTS.slice(); },
+        getValidSortDirections: function() {
+            return VALID_SORT_DIRECTIONS.slice();
+        },
 
         // Read-only constants
         DEFAULT_STATE: DEFAULT_STATE,
