@@ -41,6 +41,33 @@
  *     When CalendarConfig is not loaded, the date fields fall
  *     back to Gregorian in-line, so the form keeps working.
  *
+ * LIST ROW SELECTION (this revision):
+ *   Each list row carries a `.mission-select-cell` containing a
+ *   `.mission-select-checkbox`. This mirrors the teams list's
+ *   team-select-cell / team-select-checkbox and drives the bulk
+ *   export flow owned by mission-ui.js.
+ *
+ *   renderList accepts `options.selectedIds` — an object whose
+ *   keys are mission ids and whose truthy values mark a mission
+ *   as selected. renderListRow threads it in so a re-render
+ *   preserves the checkbox state and the `.mission-item-selected`
+ *   row class.
+ *
+ *   The selection cell is a SIBLING of the row's data-action
+ *   handler. A click on the cell must not open the detail modal;
+ *   mission-ui.js stops propagation on clicks that land inside
+ *   `.mission-select-cell` before the row's own action handler
+ *   runs. The renderer's job is only to emit the markup.
+ *
+ * HEADER EXPORT BUTTON (this revision):
+ *   renderContainer emits `#mission-export-selected-btn` in the
+ *   page header, to the left of the +New Mission button. It is
+ *   disabled when `selectedCount` is zero and reads "Export (N)"
+ *   when N missions are selected. The button carries
+ *   data-action="mission-export-selected"; mission-ui.js owns the
+ *   click handler and the enabled-state refresh that happens
+ *   after each checkbox toggle.
+ *
  * TEAM OPTIONS (this revision):
  *   The form's "Assign Team" select renders one <option> per
  *   eligible team, in the order the aggregator produced. The
@@ -182,6 +209,18 @@
         return n;
     }
 
+    function countTrue(obj) {
+        if (!obj) { return 0; }
+        var n = 0;
+        for (var k in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, k) &&
+                obj[k] === true) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     // ============================================================
     // CALENDAR ACCESS (with Gregorian fallback)
     // ============================================================
@@ -249,6 +288,8 @@
         vm = vm || {};
         var filter = isNonEmptyString(vm.filter) ? vm.filter : 'all';
         var counts = isPlainObject(vm.counts) ? vm.counts : {};
+        var selectedIds = vm.selectedIds || Object.create(null);
+        var selectedCount = countTrue(selectedIds);
 
         var html = '';
 
@@ -258,6 +299,15 @@
         html += '<div class="header-actions">';
         html += '<button type="button" class="secondary" ' +
                     'data-action="mission-import">Import</button>';
+        html += '<button type="button" class="secondary" ' +
+                    'id="mission-export-selected-btn" ' +
+                    'data-action="mission-export-selected"' +
+                    (selectedCount === 0 ? ' disabled' : '') + '>' +
+                    'Export' +
+                    (selectedCount > 0
+                        ? ' (' + selectedCount + ')'
+                        : '') +
+                '</button>';
         html += '<button type="button" class="primary" ' +
                     'data-action="mission-new">+ New Mission</button>';
         html += '</div>';
@@ -329,7 +379,10 @@
     // LIST
     // ============================================================
 
-    function renderList(missions) {
+    function renderList(missions, options) {
+        options = options || {};
+        var selectedIds = options.selectedIds || Object.create(null);
+
         if (!isArray(missions) || missions.length === 0) {
             return renderEmpty();
         }
@@ -337,14 +390,16 @@
         var html = '';
 
         for (var i = 0; i < missions.length; i++) {
-            html += renderListRow(missions[i]);
+            html += renderListRow(missions[i], selectedIds);
         }
 
         return html;
     }
 
-    function renderListRow(m) {
+    function renderListRow(m, selectedIds) {
         if (!m || typeof m !== 'object') { return ''; }
+
+        var isSelected = selectedIds[String(m.id)] === true;
 
         var rowClass = 'list-item mission-item';
         if (m.isArchived === true) {
@@ -353,6 +408,9 @@
             rowClass += ' mission-completed';
         } else if (m.isCancelled === true) {
             rowClass += ' mission-cancelled';
+        }
+        if (isSelected) {
+            rowClass += ' mission-item-selected';
         }
 
         var statusInfo = MissionViews.getStatusInfo(m.status);
@@ -364,6 +422,25 @@
                     'data-action="mission-list-item" ' +
                     'data-mission-id="' +
                         escapeAttribute(m.id) + '">';
+
+        // ---- 0. Selection checkbox ----
+        //
+        // Mirrors the teams list's team-select-cell. A click on
+        // this cell must not open the detail modal; mission-ui.js
+        // stops propagation on clicks that land inside
+        // .mission-select-cell before the row's action handler
+        // runs. The renderer's job is to emit the markup.
+        html += '<span class="mission-select-cell">';
+        html += '<input type="checkbox" ' +
+                    'class="mission-select-checkbox" ' +
+                    'data-mission-id="' +
+                        escapeAttribute(m.id) + '"' +
+                    (isSelected ? ' checked' : '') +
+                    ' aria-label="Select ' +
+                        escapeAttribute(
+                            m.title || 'mission'
+                        ) + '">';
+        html += '</span>';
 
         // ---- 1. Mission ID label ----
         html += '<span class="mission-id">' +
@@ -2268,7 +2345,6 @@
 
         // Smoke test: team option label rendering.
         try {
-            // Team with no current specialisations: name only.
             if (buildTeamOptionLabel({
                 id: 't1',
                 name: 'Alpha',
@@ -2281,7 +2357,6 @@
                 );
             }
 
-            // Team with one specialisation: name + one label.
             if (buildTeamOptionLabel({
                 id: 't2',
                 name: 'Bravo',
@@ -2294,7 +2369,6 @@
                 );
             }
 
-            // Team with two specialisations: name + comma-joined labels.
             if (buildTeamOptionLabel({
                 id: 't3',
                 name: 'Charlie',
@@ -2307,7 +2381,6 @@
                 );
             }
 
-            // Labels array with only non-empty entries are used.
             if (buildTeamOptionLabel({
                 id: 't4',
                 name: 'Delta',
@@ -2320,7 +2393,6 @@
                 );
             }
 
-            // Defensive: undefined teamOption.
             if (buildTeamOptionLabel(null) !== '') {
                 missing.push(
                     'buildTeamOptionLabel: null input should return ""'
@@ -2328,6 +2400,108 @@
             }
         } catch (e) {
             missing.push('team option label smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: list row selection contract.
+        try {
+            var listHtml = renderList(
+                [
+                    {
+                        id: 'm1',
+                        title: 'Mission One',
+                        missionId: '2026-001-M',
+                        status: 'active',
+                        priority: 'medium',
+                        progress: 0,
+                        supportCount: 0,
+                        teamName: 'Unassigned',
+                        assignedTeams: [],
+                        typeDisplay: 'Unclassified',
+                        escalationLabel: '',
+                        difficultyLabel: '',
+                        dateDisplay: '',
+                        isCompleted: false,
+                        isCancelled: false,
+                        isArchived: false
+                    }
+                ],
+                { selectedIds: { m1: true } }
+            );
+
+            if (listHtml.indexOf('class="mission-select-cell"') === -1) {
+                missing.push(
+                    'renderList did not emit .mission-select-cell'
+                );
+            }
+            if (listHtml.indexOf('class="mission-select-checkbox"') === -1) {
+                missing.push(
+                    'renderList did not emit .mission-select-checkbox'
+                );
+            }
+            if (listHtml.indexOf('data-mission-id="m1"') === -1) {
+                missing.push(
+                    'renderList did not emit the mission id on the row ' +
+                    'or checkbox'
+                );
+            }
+            if (listHtml.indexOf(' checked') === -1) {
+                missing.push(
+                    'renderList did not check the selected row'
+                );
+            }
+            if (listHtml.indexOf('mission-item-selected') === -1) {
+                missing.push(
+                    'renderList did not add .mission-item-selected to ' +
+                    'the selected row'
+                );
+            }
+        } catch (e) {
+            missing.push('list row selection smoke test threw: ' + e.message);
+        }
+
+        // Smoke test: header export button.
+        try {
+            var containerHtml = renderContainer({
+                filter: 'all',
+                counts: { total: 3, readyForCompletion: 1 },
+                selectedIds: { m1: true, m2: true }
+            });
+
+            if (containerHtml.indexOf('id="mission-export-selected-btn"') === -1) {
+                missing.push(
+                    'renderContainer did not emit #mission-export-selected-btn'
+                );
+            }
+            if (containerHtml.indexOf('data-action="mission-export-selected"') === -1) {
+                missing.push(
+                    'renderContainer did not emit the export-selected action'
+                );
+            }
+            if (containerHtml.indexOf('Export (2)') === -1) {
+                missing.push(
+                    'renderContainer did not render the selected count ' +
+                    'in the export button'
+                );
+            }
+
+            var emptyContainer = renderContainer({
+                filter: 'all',
+                counts: { total: 0, readyForCompletion: 0 },
+                selectedIds: {}
+            });
+            if (emptyContainer.indexOf(' mission-export-selected-btn" ' +
+                    'data-action="mission-export-selected" disabled') === -1) {
+                // The disabled attribute may sit anywhere before the
+                // closing >, so a looser check is fine.
+                if (emptyContainer.indexOf('disabled') === -1) {
+                    missing.push(
+                        'renderContainer did not disable the export ' +
+                        'button when nothing is selected'
+                    );
+                }
+            }
+        } catch (e) {
+            missing.push('header export button smoke test threw: ' + e.message);
         }
 
         // Smoke test: report form modal.
