@@ -34,7 +34,6 @@
  *     .mission-team-input-group, .mission-team-chip)
  *   - Export picker modal (.mission-export-format)
  *   - Import modal (.mission-import-format, .mission-import-file-row)
- *   - Rookie picker modal (.mission-rookie-picker-*)
  *   - Status / priority / type badges
  *   - Progress bars
  *
@@ -160,8 +159,8 @@
 .list-item.mission-item {
     display: grid;
     grid-template-columns:
-        90px
-        90px
+        minmax(90px, max-content)
+        minmax(90px, max-content)
         1.6fr
         1.1fr
         0.7fr
@@ -204,15 +203,21 @@
     font-family: monospace;
     font-size: 0.65rem;
     color: var(--text-dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
 }
 
 .mission-date {
     font-size: 0.68rem;
     color: var(--text-dim);
-    white-space: nowrap;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
 }
 
 .mission-title {
@@ -1798,6 +1803,14 @@
     flex: 0 0 auto;
 }
 
+/* NEW: the description span must claim the remaining width. */
+.mission-import-format > span {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 .modal-import-body textarea {
     font-family: monospace;
     font-size: 0.72rem;
@@ -1815,155 +1828,6 @@
     white-space: pre-wrap;
     line-height: 1.45;
     word-break: break-word;
-}
-
-/* ============================================================
-   ROOKIE PICKER MODAL
-   ============================================================
-   The modal that lets a user choose which rookie-status 
-   characters took part in a mission. It has its own shell 
-   appended to document.body.
-
-   The list uses flex rows with proper spacing to separate the 
-   checkbox, the character name, the deceased marker, and the 
-   "On assigned team" note.
-   ============================================================ */
-
-.mission-rookie-picker-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.mission-rookie-picker-controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 8px;
-}
-
-.mission-rookie-picker-search-input {
-    flex: 1;
-    min-width: 200px;
-    padding: 6px 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-family: 'Inter', sans-serif;
-}
-
-.mission-rookie-picker-search-input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-
-.mission-rookie-picker-bulk {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.mission-rookie-picker-count {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    font-weight: 500;
-    margin-right: 4px;
-}
-
-.mission-rookie-picker-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    max-height: 400px;
-    overflow-y: auto;
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    padding: 4px;
-    background: var(--panel);
-}
-
-/* ---------- Rows ---------- */
-
-.mission-rookie-picker-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.15s;
-    font-size: 0.75rem;
-    color: var(--text);
-}
-
-.mission-rookie-picker-row:hover {
-    background: var(--accent-soft);
-}
-
-.mission-rookie-picker-row-selected {
-    background: var(--accent-soft);
-    font-weight: 500;
-}
-
-.mission-rookie-picker-row-on-team {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.mission-rookie-picker-row-on-team:hover {
-    background: transparent;
-}
-
-.mission-rookie-picker-row-busy {
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-/* Override the global width:100% from .form-group input */
-.mission-rookie-picker-checkbox {
-    width: auto;
-    margin: 0;
-    padding: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-    flex: 0 0 auto;
-}
-
-.mission-rookie-picker-row-on-team .mission-rookie-picker-checkbox {
-    cursor: not-allowed;
-}
-
-.mission-rookie-picker-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.mission-rookie-picker-deceased {
-    flex: 0 0 auto;
-    color: var(--text-dim);
-    font-size: 0.8rem;
-}
-
-.mission-rookie-picker-note {
-    flex: 0 0 auto;
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    background: var(--panel-alt);
-    padding: 1px 6px;
-    border-radius: 4px;
-    white-space: nowrap;
 }
 
 /* ============================================================
@@ -2109,21 +1973,5 @@
 
     .participant-member-name {
         font-size: 0.72rem;
-    }
-
-    /* ---- Rookie picker modal ---- */
-
-    .mission-rookie-picker-controls {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .mission-rookie-picker-search-input {
-        width: 100%;
-    }
-
-    .mission-rookie-picker-bulk {
-        justify-content: space-between;
-        width: 100%;
     }
 }
