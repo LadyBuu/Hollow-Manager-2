@@ -17,7 +17,11 @@
  *   - Team tab nav (.tab-nav, .tab-btn)
  *   - Filter bar (#filter-container, .filter-row, .filter-group)
  *     including the professional tab's four-way mode toggle
- *     (.mode-toggle, .mode-btn)
+ *     (.mode-toggle, .mode-btn), the sort <select> and direction
+ *     toggle, and the specialisations popover trigger + panel
+ *     (.team-specialisations-*)
+ *   - Sort indicator in the list header
+ *     (.team-header-sort-indicator)
  *   - Professional Pool view (.pool-*)
  *   - Timeline view (.timeline-*)
  *   - Rankings view (.rankings-*)
@@ -63,6 +67,33 @@
 
 .team-header-check {
     /* Empty header cell above the selection checkbox column. */
+}
+
+/* ---------- Sort indicator in the header ----------
+   The "Team Name" header cell carries a small suffix that
+   names the current sort key and direction, so the sort state
+   is legible even when the filter bar is scrolled out of view.
+   Read-only display; not a control. */
+
+.team-header-name {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.team-header-sort-indicator {
+    font-size: 0.6rem;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .list-item.team-item {
@@ -789,6 +820,163 @@
     margin-left: auto;
     font-size: 0.68rem;
     padding: 4px 14px;
+}
+
+/* ---------- Sort select ----------
+   The <select> that picks the primary sort key. Sized to match
+   the number inputs beside it so the filter bar reads as one
+   row of controls. */
+
+.filter-group select#team-sort {
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+}
+
+.filter-group select#team-sort:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Sort direction toggle ----------
+   Small square button showing ▲ / ▼. The renderer emits the
+   current direction on data-direction and the next direction
+   on data-next-direction; the two-way glyph is what tells the
+   user what a click will do. */
+
+.team-sort-direction-btn {
+    min-width: 32px;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    line-height: 1;
+    text-align: center;
+    font-variant-numeric: normal;
+    white-space: nowrap;
+}
+
+.team-sort-direction-btn:hover {
+    color: var(--accent);
+}
+
+/* ---------- Specialisations popover ----------
+   The trigger button carries .has-filter when a selection is
+   active, so the filter bar shows at a glance that the list is
+   being narrowed.
+
+   The panel is anchored to the filter group (which is
+   position: relative) and dropped below the trigger. It is a
+   plain absolutely-positioned block, not a <dialog> and not a
+   modal; TeamEvents owns the outside-click close. */
+
+.team-specialisations-group {
+    position: relative;
+}
+
+.team-specialisations-btn {
+    padding: 4px 10px;
+    font-size: 0.7rem;
+    white-space: nowrap;
+}
+
+.team-specialisations-btn.has-filter {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.team-specialisations-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 30;
+    min-width: 220px;
+    max-width: 300px;
+    max-height: 320px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.team-specialisations-panel[hidden] {
+    display: none;
+}
+
+.team-specialisations-panel-header {
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: var(--radius) var(--radius) 0 0;
+    flex: 0 0 auto;
+}
+
+.team-specialisations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.team-specialisations-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.team-specialisations-row:hover {
+    background: var(--panel-alt);
+}
+
+.team-specialisation-checkbox {
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.team-specialisations-row-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-specialisations-panel-footer {
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 var(--radius) var(--radius);
+    display: flex;
+    justify-content: flex-end;
+    flex: 0 0 auto;
+}
+
+.team-specialisations-clear {
+    font-size: 0.65rem;
+    padding: 3px 12px;
 }
 
 /* ============================================================
@@ -3975,6 +4163,32 @@
 
     .filter-group {
         justify-content: space-between;
+    }
+
+    .filter-group select#team-sort,
+    .team-sort-direction-btn,
+    .team-specialisations-btn {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .team-specialisations-group {
+        /* The popover anchors to this group. On mobile the
+           group fills the row, so the panel drops below the
+           trigger and stays within the viewport. */
+        width: 100%;
+    }
+
+    .team-specialisations-panel {
+        /* Belt and braces: cap the panel width against the
+           viewport, not the anchor. A 220px min-width can
+           overflow a narrow phone if the anchor is close to
+           the right edge; clamp with calc. */
+        left: 0;
+        right: 0;
+        min-width: 0;
+        max-width: 100%;
+        max-height: 50vh;
     }
 
     .filter-row button {
