@@ -138,7 +138,7 @@
  *   distinction use getEffectiveRanking, which returns
  *   { rank, explicit, sourcePeriod }.
  *
- * RANKINGS — ORDERED-LIST MODEL (this revision):
+ * RANKINGS — CASCADING SNAPSHOT MODEL (this revision):
  *   The Rankings tab does not render per-team effective ranks in
  *   arbitrary order. It renders a POSITION-ORDERED list per
  *   year: position 1, position 2, ..., position N, one team per
@@ -148,56 +148,33 @@
  *   (insertRankingAt, removeRankingAt, moveRanking). This module
  *   only reads the result.
  *
- *   Three new reads:
+ *   Because the write path writes a FULL SNAPSHOT of the order
+ *   for a specific year when a change occurs, the read path can
+ *   simply ask each team for its effective rank at the requested
+ *   year. If a team has an explicit entry at year Y, that is
+ *   their rank. If they do not, their rank is inherited from the
+ *   most recent explicit entry before Y.
+ *
+ *   Three reads:
  *
  *     getExplicitRankingOrderForYear(year)
  *       Raw ordered list of explicit entries at the year.
  *       [{ teamId, team, rank }]. Sorted by rank ascending.
- *       Contiguity is guaranteed by the write path.
  *
  *     getRankedTeamsForYear(year, options)
- *       Display-facing list the Rankings tab consumes. One entry
- *       per position, carrying the team id, resolved name, and
- *       the fields the table needs (periodDisplay, memberCount,
- *       status, activeAtYear). Also carries `explicit: true` and
- *       `sourcePeriod: String(year)` for symmetry with
- *       getEffectiveRanking, so a caller that already
- *       understands the per-team shape can migrate without
- *       re-learning the provenance semantics.
+ *       Display-facing list the Rankings tab consumes. It looks
+ *       at the effective rank for every team, filters out anyone
+ *       with no rank at all, and sorts by rank.
  *
- *       SHOWINACTIVE (this revision):
+ *       SHOWINACTIVE:
  *         options.showInactive gates whether rows whose team is
  *         NOT active in that year are returned.
- *
- *           showInactive !== true (default)
- *             Rows are filtered to activeAtYear === true. A team
- *             that disbanded before `year` is hidden from the
- *             numbered list at `year`.
- *
- *           showInactive === true
- *             Rows are returned unfiltered. Every explicit entry
- *             appears, whether the team was active in the year
- *             or not.
- *
- *         "Active in the year" uses isTeamActiveAtPeriod, which
- *         is inclusive on both bounds: a team whose endPeriod is
- *         Y is still active at Y, and a team whose startPeriod
- *         is Y is active at Y.
  *
  *     getUnrankedTeamsForYear(year, options)
  *       Teams active at the year that have NO explicit entry at
  *       the year and NO inherited effective rank from an earlier
  *       year. These are the candidates a "fill a slot" picker
- *       offers, and what a drag-to-empty-position drop would
- *       target. A team with an inherited rank is NOT in this
- *       list — the user would be double-ranking them.
- *
- *       The `options` argument is accepted for symmetry with
- *       getRankedTeamsForYear, but `showInactive` has NO effect
- *       on this read: the list is always active-only. Offering
- *       an inactive team as a candidate to INSERT into a
- *       position would let the user rank a team that does not
- *       exist in that year, which is not a meaningful slot.
+ *       offers.
  *
  * SHORTAGE HISTORY:
  *   getTeamShortagePeriods(team, targetSize, toYear) walks every
@@ -205,42 +182,9 @@
  *   population curve, and returns the runs where the active member
  *   count is strictly below targetSize.
  *
- *   The lower bound of the scan is the team's startPeriod when set,
- *   otherwise the earliest parseable member join period. When
- *   neither is available, the function returns [] — it does not
- *   invent a starting point.
- *
- *   The upper bound is `toYear`. The returned periods are inclusive
- *   on both ends. A period that is still short at `toYear` carries
- *   `to: null`.
- *
  * PROFESSIONAL PERSONNEL QUERY:
  *   getProfessionalPersonnelAtPeriod(period) returns domain facts
  *   about every character relevant to professional staffing.
- *
- *   INCLUSION RULES (all applied here, before the aggregator):
- *     - not deceased at the period
- *     - not eliminated
- *     - not retired (latest career status normalises to 'retired')
- *     - has a junior-or-senior phase in careerStatus
- *     - their student window does NOT overlap any professional
- *       team stint they held. A character whose student phase
- *       was 1895-1897 and who was never placed on a professional
- *       team during those years is a pool candidate FOREVER,
- *       not only when the query period falls inside 1895-1897.
- *
- *   The query period is used for:
- *     - the deceased check
- *     - assignment.status (active / future / available) at the
- *       period
- *     - statusAtPeriod and age for display
- *
- *   The query period is NOT used to filter who appears. Pool
- *   membership is a fact about the character, not about the year
- *   you are looking at.
- *
- *   availability.from / availability.to describe the student
- *   window. They do not depend on the query period.
  *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamConstants
@@ -1981,63 +1925,35 @@
     // RANKINGS — ORDERED-LIST READS (this revision)
     // ============================================================
     //
-    // The write path (TeamCore.insertRankingAt /
-    // removeRankingAt / moveRanking) guarantees that, for any
-    // given year, the multiset of explicit entries across all
-    // teams is a contiguous range 1..N with exactly one team per
-    // position. The reads below consume that guarantee; they do
-    // not re-validate it.
+    // The write path (TeamCore.insertRankingAt / moveRanking)
+    // writes a FULL SNAPSHOT for any year that is edited. If you
+    // drag and drop in 1920, every team in the list gets a 1920
+    // entry. If you do not touch 1945, 1944's exact order
+    // cascades into 1945. If you reorder in 1945, a new snapshot
+    // is written for 1945.
+    //
+    // The reads below consume that guarantee by looking at the
+    // EFFECTIVE rank for every team at or before the target year.
     //
     // Three reads:
     //
     //   getExplicitRankingOrderForYear(year)
     //     Raw ordered list. [{ teamId, team, rank }], sorted
-    //     ascending by rank. team is the LIVE record (used only
-    //     internally by the other two reads); callers outside
-    //     this module should not rely on it being a clone.
+    //     ascending by rank.
     //
     //   getRankedTeamsForYear(year, options)
-    //     Display-facing. One entry per position. Every field a
-    //     Rankings-tab row needs is resolved here so the
-    //     aggregator can pass it straight through.
+    //     Display-facing. Determines the effective rank for
+    //     every team, filters out anyone with no rank at all,
+    //     and sorts by rank.
     //
-    //     SHOWINACTIVE (this revision):
+    //     SHOWINACTIVE:
     //       options.showInactive gates whether rows whose team
     //       is NOT active in that year are returned.
-    //
-    //       showInactive !== true (default):
-    //         Rows are filtered to activeAtYear === true. A
-    //         team that disbanded before `year` is hidden.
-    //
-    //       showInactive === true:
-    //         Rows are returned unfiltered. Every explicit entry
-    //         appears, whether the team was active in the year
-    //         or not.
-    //
-    //       "Active in the year" uses isTeamActiveAtPeriod,
-    //       which is inclusive on both bounds: a team whose
-    //       endPeriod is Y is still active at Y; a team whose
-    //       startPeriod is Y is active at Y.
     //
     //   getUnrankedTeamsForYear(year, options)
     //     Candidates a "fill a slot" picker offers: teams
     //     active at the year with no explicit entry at the year
     //     and no inherited effective rank from an earlier year.
-    //     A team with an inherited rank is excluded: including
-    //     them would double-rank them.
-    //
-    //     The `options` argument is accepted for symmetry with
-    //     getRankedTeamsForYear, but showInactive has NO effect
-    //     here. This list is always active-only. Offering an
-    //     inactive team as a candidate to INSERT into a position
-    //     would let the user rank a team that does not exist in
-    //     that year, which is not a meaningful slot.
-    //
-    // RANKING ENTRIES ARE NOT CLONED BY getExplicitRankingOrderForYear.
-    //   The `team` field is a live reference. That is deliberate:
-    //   the two public wrappers both read from it and do not
-    //   expose it. A future caller that needs the raw list should
-    //   clone it (or use the display wrapper).
 
     function collectExplicitEntriesAtYearInternal(targetYear) {
         var targetStr = String(parseInt(targetYear, 10));
@@ -2080,10 +1996,6 @@
      *
      * @param {string|number} year
      * @returns {array} [{ teamId, team, rank }]
-     *
-     *   team is the LIVE team record. Do not mutate it. Use the
-     *   display wrapper (getRankedTeamsForYear) if you want a
-     *   read-safe shape.
      */
     function getExplicitRankingOrderForYear(year) {
         var yearNum = parsePeriod(year);
@@ -2094,10 +2006,10 @@
     /**
      * Display-facing ordered list for the Rankings tab.
      *
-     * One entry per occupied position 1..N, sorted by position
-     * ascending. Because the write path guarantees contiguity,
-     * there are no gaps and N equals the number of teams with an
-     * explicit entry at the year.
+     * Uses getEffectiveRanking for every team. If a team has an
+     * explicit entry at year Y, that is their rank. If they do
+     * not, their rank is inherited from the most recent explicit
+     * entry before Y. Sorts all teams with a non-null rank.
      *
      * Each entry:
      *
@@ -2105,11 +2017,9 @@
      *     position:      integer 1..N, the display position
      *     teamId:        string
      *     name:          string (resolved via getCurrentTeamName)
-     *     rank:          integer (same as position; kept for
-     *                    callers that already use `rank`)
-     *     explicit:      true   (write path guarantees this)
-     *     sourcePeriod:  String(year)   (same as the query year,
-     *                    kept for symmetry with getEffectiveRanking)
+     *     rank:          integer (same as position)
+     *     explicit:      boolean
+     *     sourcePeriod:  String  (the year the rank was written)
      *     periodDisplay: string  ('1900-1904', 'From 1900', ...)
      *     memberCount:   integer (active members at `year`)
      *     status:        raw stored status
@@ -2117,18 +2027,9 @@
      *   }
      *
      * SHOWINACTIVE:
-     *   See the block comment above the section. When
-     *   options.showInactive !== true, inactive rows are dropped.
-     *   When options.showInactive === true, every explicit entry
-     *   is returned. Position numbers are NOT renumbered after
-     *   filtering — a hidden row leaves a gap in the visible
-     *   sequence. That is deliberate: the position is a fact
-     *   about the ranking, not about what is currently visible.
-     *   If a caller needs contiguous display positions, it can
-     *   renumber after filtering; the aggregator does not.
+     *   When options.showInactive !== true, inactive rows are dropped.
      *
-     * Returns [] when no team has an explicit entry at the year,
-     * or when every explicit entry was filtered out.
+     * Returns [] when no team has a rank at the year.
      *
      * @param {string|number} year
      * @param {object} [options] - { showInactive: boolean }
@@ -2141,54 +2042,73 @@
         var yearNum = parsePeriod(year);
         if (yearNum === null) { return []; }
 
-        var raw = collectExplicitEntriesAtYearInternal(yearNum);
-        if (raw.length === 0) { return []; }
+        var teams = getTeamArray();
+        var effectiveRanks = [];
+        var seenRanks = Object.create(null);
 
-        var rows = [];
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || !team.id) { continue; }
+            
+            // getEffectiveRanking looks at the explicit entry at this year, 
+            // or inherits from the most recent explicit entry before it.
+            var effective = getEffectiveRanking(team, yearNum);
+            if (effective.rank === null) { continue; }
 
-        for (var i = 0; i < raw.length; i++) {
-            var entry = raw[i];
-            var team = entry.team;
-            if (!team) { continue; }
+            var activeAtYear = isTeamActiveAtPeriod(team, yearNum);
+            if (!showInactive && !activeAtYear) { continue; }
 
-            var position = i + 1;
+            // Ensure uniqueness (if two teams tie, take the more recent source)
+            var rankKey = String(effective.rank);
+            if (seenRanks[rankKey]) {
+                var existing = seenRanks[rankKey];
+                if (effective.sourcePeriod > existing.effective.sourcePeriod) {
+                    existing.team = team;
+                    existing.effective = effective;
+                    existing.activeAtYear = activeAtYear;
+                }
+            } else {
+                seenRanks[rankKey] = {
+                    team: team,
+                    effective: effective,
+                    activeAtYear: activeAtYear
+                };
+            }
+        }
 
+        var result = [];
+        var rankKeys = Object.keys(seenRanks);
+        for (var k = 0; k < rankKeys.length; k++) {
+            var item = seenRanks[rankKeys[k]];
+            var t = item.team;
+            var e = item.effective;
+            
             var memberCount = 0;
             try {
-                memberCount = getActiveTeamMemberCount(
-                    team, yearNum
-                );
-            } catch (e) {
+                memberCount = getActiveTeamMemberCount(t, yearNum);
+            } catch (err) {
                 memberCount = 0;
             }
 
-            var activeAtYear = false;
-            try {
-                activeAtYear = isTeamActiveAtPeriod(team, yearNum);
-            } catch (e) {
-                activeAtYear = false;
-            }
-
-            // CHANGED (showInactive): default hides inactive rows.
-            if (!showInactive && !activeAtYear) {
-                continue;
-            }
-
-            rows.push({
-                position: position,
-                teamId: String(team.id),
-                name: getCurrentTeamName(team),
-                rank: entry.rank,
-                explicit: true,
-                sourcePeriod: String(yearNum),
-                periodDisplay: buildTeamPeriodDisplay(team),
+            result.push({
+                position: e.rank,
+                teamId: String(t.id),
+                name: getCurrentTeamName(t),
+                rank: e.rank,
+                explicit: e.explicit,
+                sourcePeriod: e.sourcePeriod,
+                periodDisplay: buildTeamPeriodDisplay(t),
                 memberCount: memberCount,
-                status: team.status || 'active',
-                activeAtYear: activeAtYear
+                status: t.status || 'active',
+                activeAtYear: item.activeAtYear
             });
         }
 
-        return rows;
+        result.sort(function(a, b) {
+            return a.position - b.position;
+        });
+
+        return result;
     }
 
     /**
@@ -3011,20 +2931,6 @@
             }
 
             // ---- showInactive smoke test (this revision). ----
-            //
-            // We cannot inject a team store here without touching
-            // window.data, which would violate the read-only
-            // contract of this module at load. The verify block
-            // therefore only asserts the CONTRACT shape: the
-            // options object is accepted, the default is
-            // "hide inactive", and showInactive:true is the
-            // "include inactive" case.
-            //
-            // The behaviour itself (a ranked team active only at
-            // 1905 disappears at 1906 by default, reappears with
-            // showInactive:true) is covered by the integration
-            // test that drives TeamAggregator against a fixture
-            // store; it is not runnable at module load.
             try {
                 // Accepts options without throwing.
                 var withOpts = getRankedTeamsForYear('1999', {
