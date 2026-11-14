@@ -87,32 +87,6 @@
  *   only order. The "Insert team" picker offers `unrankedTeams`;
  *   the view is responsible for the picker's own sort.
  *
- *   SHOWINACTIVE (this revision):
- *     showInactive is passed through to BOTH query reads.
- *
- *       showInactive === false (default)
- *         getRankedTeamsForYear filters rows to activeAtYear ===
- *         true. A team that disbanded before `year` is hidden
- *         from the list at `year`. getUnrankedTeamsForYear
- *         ignores the flag and returns active-only candidates
- *         (its only behaviour).
- *
- *       showInactive === true
- *         getRankedTeamsForYear returns every explicit entry,
- *         including teams not active in `year`.
- *         getUnrankedTeamsForYear still returns active-only
- *         candidates; the flag has no effect on it. See the
- *         query module's block comment for why (offering an
- *         inactive team as a candidate to ENTER a position
- *         would let the user rank a team that does not exist in
- *         that year).
- *
- *     The flag is also echoed on the VM so the view's checkbox
- *     can render its own state without re-reading anything.
- *
- * (rest of header unchanged from the Pass 2 / Show Inactive ship;
- * dependencies, helpers, and every other VM builder preserved.)
- *
  * DEPENDENCIES (MANDATORY):
  *   - window.TeamQueries
  *   - window.TeamConstants
@@ -967,7 +941,10 @@
         }
 
         var periodNum = TeamConstants.parsePeriod(options.period);
-        var includeInactive = options.includeInactive || false;
+        // We include inactive/deprecated teams if we are explicitly 
+        // showing them.
+        var includeInactive = options.includeInactive === true ||
+            options.showInactive === true;
         var search = options.search || '';
         var sort = options.sort || 'name';
         var sortDirection = options.sortDirection || 'asc';
