@@ -6,10 +6,11 @@
  * UI controller for the missions tab.
  *
  * RESPONSIBILITIES:
- *   - Own transient UI state (current filter, current mission id,
- *     which modal is open, report-form scratch state, export
- *     picker state, import modal state, form scratch state,
- *     bulk-selection state).
+ *   - Own transient UI state (current filter, current sort,
+ *     current sort direction, current mission id, which modal is
+ *     open, report-form scratch state, export picker state,
+ *     import modal state, form scratch state, bulk-selection
+ *     state).
  *   - Render via MissionRender from VMs produced by
  *     MissionAggregator.
  *   - Dispatch user actions from data-action attributes.
@@ -27,7 +28,36 @@
  *   MissionQueries, MissionRender respectively). This module
  *   orchestrates them.
  *
- * BULK SELECTION (this revision):
+ * SORT (this revision):
+ *   The mission list carries two controls above it:
+ *
+ *     #mission-sort            <select> of sort keys
+ *     #mission-sort-direction  direction toggle
+ *
+ *   state.sort             'date' | 'title' | 'priority' |
+ *                          'status' | 'progress' | 'tier' |
+ *                          'type' | 'team' | 'difficulty'
+ *                          Default 'date'.
+ *   state.sortDirection    'asc' | 'desc'
+ *                          Default 'desc'.
+ *
+ *   The defaults match the previous behaviour: the list sorted by
+ *   createdAt descending. The user can change either control at
+ *   any time; the sort state is applied by
+ *   MissionAggregator.getMissionListViewModel and rendered by
+ *   MissionRender.renderList. This module only owns the state
+ *   and dispatches the change.
+ *
+ *   Sort state does NOT persist across page reloads. The missions
+ *   tab has never persisted UI state and this feature does not
+ *   introduce persistence for it. Within a session, sort state
+ *   survives tab switches because `state` is module-level.
+ *
+ *   Every sort is stable within its primary key: ties fall back
+ *   to title, then id. This is enforced by the aggregator, not
+ *   here.
+ *
+ * BULK SELECTION:
  *   The missions list carries a per-row .mission-select-checkbox,
  *   mirroring the teams list. The set of ticked mission ids lives
  *   in _missionSelectedIds. It is:
@@ -36,17 +66,11 @@
  *     - reset on destroyMissions,
  *     - reset after a successful bulk export.
  *
- *   The header carries #mission-export-selected-btn. It is disabled
- *   when the set is empty and reads "Export (N)" otherwise.
- *   Clicking it opens a small format picker (Text / JSON) which
- *   calls MissionExport.exportMissionsText or exportMissionsJson.
- *   Both produce a single file:
- *
- *     Text  — missions-export-<N>.txt, one full report per
- *             selected mission, separated by a bulk banner.
- *     JSON  — missions-export-<N>.json, a JSON array of full
- *             mission records. Round-trips through
- *             MissionImport.importFromJson.
+ *   The header carries #mission-export-selected-btn. It is
+ *   disabled when the set is empty and reads "Export (N)"
+ *   otherwise. Clicking it opens a small format picker (Text /
+ *   JSON) which calls MissionExport.exportMissionsText or
+ *   exportMissionsJson. Both produce a single file.
  *
  *   A click that lands inside .mission-select-cell is stopped
  *   before the row's own data-action handler runs, so ticking a
@@ -78,41 +102,25 @@
  *   The panel is rebuilt through
  *   MissionAggregator.getParticipantsViewModelFromFormState(...)
  *   and swapped in place (refreshParticipantsPanelFromFormState).
- *   The surrounding form — every other input, the team chips, the
- *   support rows, the objectives, the rookie chip list — is left
- *   byte-identical. Ticking a participant or returning from the
- *   picker must not discard an unsaved edit elsewhere in the form.
+ *   The surrounding form is left byte-identical. Ticking a
+ *   participant or returning from the picker must not discard an
+ *   unsaved edit elsewhere in the form.
  *
  *   SUBMIT PATH:
  *   _formState.participants is included in collectFormData's
  *   payload, so MissionCore.createMission / updateMission receive
- *   them. On create this is the ONLY write path (no mission id
- *   exists while the user is ticking boxes). On edit, the
+ *   them. On create this is the ONLY write path. On edit, the
  *   immediate-write path (MissionCore.addParticipant /
  *   removeParticipant) is retained so the stored record stays
- *   consistent even if the user navigates away without saving;
- *   the submit payload then writes the staged array on top,
- *   which is a no-op when the two agree and a reconcile when they
- *   do not.
+ *   consistent even if the user navigates away without saving.
  *
- * DISCARD CONFIRM (this revision):
+ * DISCARD CONFIRM:
  *   The form can be closed three ways: the × at the top of the
  *   modal, the "Discard Changes" button in the action bar, and
  *   (not wired here) the Escape key. All in-form close paths
  *   route through handleCloseForm(), which compares the form's
  *   current field values against a baseline captured when the
- *   form opened. If anything has changed, a confirm prompt
- *   appears before the form is torn down.
- *
- *   The dirty check is COARSE and ERR-ON-THE-SIDE-OF-DIRTY: any
- *   difference from the baseline counts as dirty.
- *
- *   KNOWN LIMITATION:
- *   On EDIT, a team-member participant toggle writes to the store
- *   immediately (MissionCore.addParticipant / removeParticipant),
- *   so discarding the form does NOT roll back an already-committed
- *   toggle. On CREATE there is no immediate write, so discard is
- *   clean.
+ *   form opened.
  *
  * REPORT FORM MODAL:
  *   The report form is a modal, not a browser prompt. It carries
@@ -123,27 +131,21 @@
  *   controller reads the chips on submit and passes the array to
  *   MissionCore. Chip add and remove are DOM-only operations
  *   inside the form modal; only the submit writes to the store.
- *   Chip add and remove also refresh the participant panel, and
- *   chip remove prunes staged participants whose teamId matches
- *   the removed team.
  *
  * MISSION EXPORT:
  *   Two separate flows:
  *
  *     - Single-mission export from the detail panel's Export
- *       button, via the #mission-export-modal picker (Text /
- *       JSON per mission).
+ *       button, via the #mission-export-modal picker.
  *     - Bulk export from the header's #mission-export-selected-btn,
- *       via the #mission-bulk-export-modal picker (Text / JSON
- *       across the selection).
+ *       via the #mission-bulk-export-modal picker.
  *
  * MISSION IMPORT:
  *   A header button opens the import modal.
  *
  * ACTIVITY LOG HAS BEEN REMOVED:
  *   The mission log field has been retired. There is no log modal,
- *   no prompt, no `mission-add-log` action. The relevant handler
- *   and branch are gone.
+ *   no prompt, no `mission-add-log` action.
  *
  * EVENT DELEGATION:
  *   One click listener on the container. One change listener. One
@@ -276,13 +278,57 @@
     window.__missionUILoaded = true;
 
     // ============================================================
+    // SORT VOCABULARY
+    // ============================================================
+    //
+    // The full set of sort keys the missions list supports. Kept
+    // here as the single source of truth for validation and for
+    // the renderer's <select>. The aggregator's sort switch
+    // implements the same set; if a key is added here, it must
+    // also be added to MissionAggregator.getMissionListViewModel.
+    //
+    // Order matches the renderer's dropdown for a stable display.
+
+    var VALID_SORTS = [
+        'date',
+        'title',
+        'priority',
+        'status',
+        'progress',
+        'tier',
+        'type',
+        'team',
+        'difficulty'
+    ];
+
+    var DEFAULT_SORT = 'date';
+
+    var VALID_SORT_DIRECTIONS = ['asc', 'desc'];
+    var DEFAULT_SORT_DIRECTION = 'desc';
+
+    function isValidSort(value) {
+        return typeof value === 'string' &&
+            VALID_SORTS.indexOf(value) !== -1;
+    }
+
+    function isValidSortDirection(value) {
+        return value === 'asc' || value === 'desc';
+    }
+
+    // ============================================================
     // STATE
     // ============================================================
 
     var state = {
         container: null,
         currentFilter: 'all',
-        currentMissionId: null
+        currentMissionId: null,
+
+        // Sort state. Initialised to the previous defaults
+        // (createdAt descending). Does not persist across page
+        // reloads; see the file header.
+        sort: DEFAULT_SORT,
+        sortDirection: DEFAULT_SORT_DIRECTION
     };
 
     var _listeners = [];
@@ -313,8 +359,7 @@
     // Form scratch state. The form modal is rebuilt from the VM on
     // open; the participant panel is re-rendered in place on a
     // team-member toggle, on a team-chip edit, on a year-field
-    // edit, and when the rookie picker closes. The surrounding
-    // form inputs are left untouched.
+    // edit, and when the rookie picker closes.
     var _formState = {
         editId: null,
         participants: [],
@@ -344,6 +389,37 @@
 
     function getMissionRookiePicker() {
         return window.MissionRookiePicker || null;
+    }
+
+    // ============================================================
+    // SORT SETTERS
+    // ============================================================
+    //
+    // These do not touch the DOM. They update module-level state.
+    // Every caller re-renders after calling one. Validation is
+    // enforced on write so a bad caller cannot corrupt the state.
+
+    function setSort(value) {
+        if (!isValidSort(value)) { return false; }
+        state.sort = value;
+        return true;
+    }
+
+    function setSortDirection(value) {
+        if (!isValidSortDirection(value)) { return false; }
+        state.sortDirection = value;
+        return true;
+    }
+
+    function flipSortDirection() {
+        state.sortDirection = state.sortDirection === 'desc'
+            ? 'asc'
+            : 'desc';
+        return state.sortDirection;
+    }
+
+    function getValidSorts() {
+        return VALID_SORTS.slice();
     }
 
     // ============================================================
@@ -420,13 +496,16 @@
 
         // Reset the bulk-selection set. A fresh render is a fresh
         // selection context; nothing in the new view has been
-        // ticked yet.
+        // ticked yet. Sort state is deliberately NOT reset: it is
+        // a user preference and should survive a re-render.
         _missionSelectedIds = Object.create(null);
 
         var listVM;
         try {
             listVM = MissionAggregator.getMissionListViewModel({
-                filter: state.currentFilter
+                filter: state.currentFilter,
+                sort: state.sort,
+                sortDirection: state.sortDirection
             });
         } catch (e) {
             console.warn(
@@ -439,7 +518,10 @@
         container.innerHTML = MissionRender.renderContainer({
             filter: state.currentFilter,
             counts: listVM.counts || {},
-            selectedIds: _missionSelectedIds
+            selectedIds: _missionSelectedIds,
+            sort: state.sort,
+            sortDirection: state.sortDirection,
+            sortOptions: getValidSorts()
         });
 
         try {
@@ -467,7 +549,9 @@
         if (!listHost) { return; }
 
         var vm = MissionAggregator.getMissionListViewModel({
-            filter: state.currentFilter
+            filter: state.currentFilter,
+            sort: state.sort,
+            sortDirection: state.sortDirection
         });
 
         listHost.innerHTML = MissionRender.renderList(
@@ -593,13 +677,28 @@
             return;
         }
 
+        // ---- Sort key ----
+        //
+        // Changing the sort key re-renders the list. The sort
+        // state itself is not persisted; it lives on the module's
+        // `state` object and survives tab switches in this
+        // session. The re-render re-reads both sort fields from
+        // state, so this handler does not need to pass the new
+        // value anywhere beyond setSort.
+        if (target.id === 'mission-sort') {
+            var nextSort = String(target.value || '');
+            if (setSort(nextSort)) {
+                renderListInto(state.container);
+            }
+            return;
+        }
+
         // ---- Bulk-selection checkbox ----
         //
         // A change event on .mission-select-checkbox updates the
         // selection set and re-renders the list so the row's
         // selected class and the header button both reflect the
-        // new state. The list is small; a full re-render is
-        // simpler and less error-prone than a surgical update.
+        // new state.
         if (target.dataset &&
             target.dataset.missionId &&
             target.classList &&
@@ -889,6 +988,16 @@
                 handleBulkExportSubmit();
                 return;
 
+            case 'mission-sort-direction':
+                event.preventDefault();
+                flipSortDirection();
+                renderListInto(state.container);
+                // Also refresh the direction toggle's arrow. A
+                // full re-render of just the list does not touch
+                // the header, so update the button in place.
+                syncSortDirectionButton();
+                return;
+
             case 'mission-import':
                 event.preventDefault();
                 openImportModal();
@@ -1029,6 +1138,37 @@
             default:
                 return;
         }
+    }
+
+    /**
+     * Sync the #mission-sort-direction button's glyph, tooltip,
+     * and data-* attributes to the current state. Called after a
+     * direction flip, since the click handler re-renders only the
+     * list and not the header. The button carries
+     * data-direction (current) and data-next-direction (what a
+     * click switches to), matching the teams filter-bar pattern.
+     */
+    function syncSortDirectionButton() {
+        if (!state.container) { return; }
+        var btn = state.container.querySelector(
+            '#mission-sort-direction'
+        );
+        if (!btn) { return; }
+
+        var current = state.sortDirection;
+        var next = current === 'desc' ? 'asc' : 'desc';
+        var arrow = current === 'desc'
+            ? '\u25bc'
+            : '\u25b2';
+        var label = current === 'desc'
+            ? 'Sort descending (click to switch to ascending)'
+            : 'Sort ascending (click to switch to descending)';
+
+        btn.textContent = arrow;
+        btn.setAttribute('data-direction', current);
+        btn.setAttribute('data-next-direction', next);
+        btn.setAttribute('title', label);
+        btn.setAttribute('aria-label', label);
     }
 
     // ============================================================
@@ -2415,7 +2555,7 @@
     }
 
     // ============================================================
-    // BULK EXPORT MODAL (this revision)
+    // BULK EXPORT MODAL
     // ============================================================
 
     function openBulkExportModal() {
@@ -3653,6 +3793,8 @@
         state.container = null;
         state.currentMissionId = null;
         state.currentFilter = 'all';
+        state.sort = DEFAULT_SORT;
+        state.sortDirection = DEFAULT_SORT_DIRECTION;
         resetReportForm();
         resetExportPicker();
         resetImportModal();
@@ -3668,7 +3810,12 @@
 
     window.MissionUI = Object.freeze({
         render: renderMissions,
-        destroy: destroyMissions
+        destroy: destroyMissions,
+
+        // Exposed for verification only. Not part of the stable
+        // public API; callers that want to inspect or set the
+        // sort go through the filter-bar controls.
+        getValidSorts: getValidSorts
     });
 
     // ============================================================
@@ -3684,6 +3831,27 @@
         }
         if (typeof exports.destroy !== 'function') {
             missing.push('destroy');
+        }
+        if (typeof exports.getValidSorts !== 'function') {
+            missing.push('getValidSorts');
+        }
+
+        // Smoke test: sort vocabulary shape.
+        try {
+            var sorts = exports.getValidSorts();
+            if (!Array.isArray(sorts) ||
+                sorts.length !== VALID_SORTS.length ||
+                sorts.indexOf('date') === -1 ||
+                sorts.indexOf('tier') === -1 ||
+                sorts.indexOf('type') === -1 ||
+                sorts.indexOf('team') === -1 ||
+                sorts.indexOf('difficulty') === -1) {
+                missing.push(
+                    'getValidSorts did not return the expected set'
+                );
+            }
+        } catch (e) {
+            missing.push('sort vocabulary smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
