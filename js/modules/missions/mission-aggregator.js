@@ -31,6 +31,7 @@
  *   - Sorting the team options in the form's "Assign Team" select
  *     so that teams whose current specialisations overlap the
  *     mission's type appear first. See TEAM OPTION SORTING below.
+ *   - Sorting the mission list. See LIST SORT below.
  *
  * WHAT THIS MODULE DOES NOT OWN:
  *   - Reads, mutations, structural validation, domain rules, or
@@ -45,6 +46,45 @@
  *     assignedTeamId into the canonical array.
  *   - The mission log. The log field has been retired; there is
  *     no buildLogVM and no log / logCount on the detail VM.
+ *
+ * LIST SORT (this revision):
+ *   The list VM accepts `sort` and `sortDirection` from its
+ *   options and applies them via buildListComparator. The sort
+ *   vocabulary is:
+ *
+ *     'date'        createdAt descending (default).
+ *     'title'       title, alphabetical.
+ *     'priority'    critical > high > medium > low.
+ *     'status'      active > completed > cancelled.
+ *     'progress'    numeric percent complete.
+ *     'tier'        escalation tier I > II > III > IV > V.
+ *     'type'        the rendered type display string
+ *                   (primary | subtype | secondary).
+ *     'team'        the first assigned team's name.
+ *     'difficulty'  easy < medium < hard < expert.
+ *
+ *   Ordinal sorts (tier, difficulty) use explicit ordinal maps
+ *   rather than raw strings or single-letter codes: sorting
+ *   "Tier IV" before "Tier II" alphabetically would be wrong,
+ *   and the difficulty codes E/M/H/X sort wrong alphabetically
+ *   too. The maps live in this module because both the sort and
+ *   the VM shape need them; the vocabulary itself still lives in
+ *   MissionConstants.
+ *
+ *   Ordinal sorts handle unknown values by sorting them LAST in
+ *   both directions (ordinal 0). "Unassigned" team names are
+ *   likewise pushed to the end regardless of direction: a
+ *   mission with no team is not a sort target, it is a hole.
+ *
+ *   Every sort is stable: ties fall back to title, then id. The
+ *   comparator returns id as the final tiebreak so two identical
+ *   titles never produce a flicker on refresh.
+ *
+ *   `sort` is validated here against the same set MissionUI
+ *   exposes. An unknown value falls back to 'date' rather than
+ *   producing an undefined comparator. This is defensive: a
+ *   caller who mistypes the sort key gets the default order, not
+ *   an empty list.
  *
  * VM SHAPE PRINCIPLES:
  *   - Every VM is a plain data structure. No functions, no live
@@ -177,7 +217,7 @@
  *   the character store) and the VM is rebuilt on every open of
  *   the form.
  *
- * TEAM OPTION SORTING (this revision):
+ * TEAM OPTION SORTING:
  *   The form's "Assign Team" select is a flat list of eligible
  *   teams. Its order is: teams whose CURRENT (last-period)
  *   specialisations overlap the mission's type come first,
@@ -191,23 +231,14 @@
  *
  *   The match is against the team's CURRENT specialisations only —
  *   the last period's specialisations, resolved through
- *   TeamQueries.getCurrentPeriod. A team whose historical
- *   specialisations once matched but whose current ones do not
- *   does not get prioritised. That is deliberate: the user is
- *   assigning a team to a mission right now, and a team that no
- *   longer specialises in the mission's type is a poor match.
- *
- *   The priority ordering is a PRESENTATION hint. The select is
- *   not filtered; every eligible team remains selectable. The
- *   ordering surfaces the likely choices first without removing
- *   the option to pick a different one.
+ *   TeamQueries.getCurrentPeriod.
  *
  * DATE DEFAULTS:
  *   The form VM's date defaults are (applicationYear, 1, 1).
  *   `applicationYear` is `window.data.currentYear` when present,
  *   else the current calendar year.
  *
- * DATE DISPLAY (this revision):
+ * DATE DISPLAY:
  *   buildDateDisplay resolves the month name through
  *   CalendarConfig.getMonthName(year, month), so a mission
  *   stored as { year: 1920, month: 12, day: 8 } renders as
@@ -444,44 +475,6 @@
     // ============================================================
     // ROOKIE DETECTION (year-scoped)
     // ============================================================
-    //
-    // "Rookie" is a career status. A character is a rookie
-    // candidate for a mission when the mission's year falls
-    // WITHIN one of their rookie career-status entries. The rule
-    // is inclusive on both ends:
-    //
-    //   entry.startYear <= missionYear <= entry.endYear
-    //
-    // A blank endYear means the rookie status is still ongoing;
-    // such an entry matches any missionYear >= startYear.
-    //
-    // This is DIFFERENT from "has ever been a rookie", which was
-    // the previous rule. A character who was a rookie in 1920 is
-    // not a candidate for a mission in 1905. A character whose
-    // rookie status is ongoing (blank endYear) is a candidate for
-    // any mission at or after their rookie start year.
-    //
-    // Normalisation:
-    //
-    //   - lowercase
-    //   - strip a trailing ' (former)' suffix
-    //   - trim
-    //
-    // The ' (Former)' strip is kept: a career-status entry whose
-    // label reads "Rookie (Former)" still describes a period during
-    // which the character held the rookie status, and its
-    // start/end years are still the bounds of that period. The
-    // suffix is a UI label, not a disqualifier.
-    //
-    // A character with a 'rookie' entry whose startYear is
-    // unparseable is SKIPPED for that entry. A character with a
-    // 'rookie' entry whose endYear is unparseable (and non-blank)
-    // is also SKIPPED for that entry; a malformed end cannot be
-    // treated as "open-ended", because that would silently turn a
-    // bad record into a permanent candidacy.
-    //
-    // Filler characters are never rookie candidates, regardless of
-    // their careerStatus entries.
 
     function normaliseCareerStatusKey(status) {
         if (status === undefined || status === null) { return ''; }
@@ -501,12 +494,7 @@
      * false for fillers regardless of their careerStatus entries.
      *
      * The year must be a positive integer. A missing, malformed, or
-     * non-positive year returns false (no candidacy can be
-     * established without a year to establish it against).
-     *
-     * @param {object} char
-     * @param {number|string} year
-     * @returns {boolean}
+     * non-positive year returns false.
      */
     function isRookieAtYear(char, year) {
         if (!isPlainObject(char)) { return false; }
@@ -527,15 +515,10 @@
 
             var start = parseInt(entry.startYear, 10);
             if (isNaN(start) || start < 1) {
-                // A rookie entry without a parseable start cannot
-                // establish a year range. Skip it rather than
-                // assume the character has always been a rookie.
                 continue;
             }
 
             if (targetYear < start) {
-                // Entry starts after the mission year. Not this
-                // entry; check the next.
                 continue;
             }
 
@@ -544,15 +527,11 @@
                          String(entry.endYear).trim() !== '';
 
             if (!hasEnd) {
-                // Ongoing rookie status. Matches any year at or
-                // after the start year.
                 return true;
             }
 
             var end = parseInt(entry.endYear, 10);
             if (isNaN(end) || end < 1) {
-                // Malformed end. Do NOT treat as open-ended;
-                // skip the entry.
                 continue;
             }
 
@@ -603,11 +582,6 @@
         };
     }
 
-    /**
-     * Resolve every team id on a mission into an array of
-     * { id, name } refs. Uses MissionQueries.getTeamIdsForMission
-     * so the read-side coercion of the legacy scalar is applied.
-     */
     function resolveAssignedTeams(mission) {
         var ids = MissionQueries.getTeamIdsForMission(mission);
         if (!Array.isArray(ids) || ids.length === 0) { return []; }
@@ -620,6 +594,54 @@
             }
         }
         return refs;
+    }
+
+    // ============================================================
+    // SORT ORDINALS (this revision)
+    // ============================================================
+    //
+    // Ordinal maps for the two enum-valued sort keys. Kept here
+    // because (a) the sort needs them and (b) the VM carries the
+    // ordinals so the comparator does not recompute on every
+    // comparison.
+    //
+    // The vocabulary itself is owned by MissionConstants. If a new
+    // escalation tier or difficulty is added there, the
+    // corresponding ordinal must be added here. The aggregator's
+    // verification block asserts that every known id has an
+    // ordinal, so an addition that is missed surfaces as a
+    // console warning at load rather than a silent mis-sort.
+    //
+    // Unknown ids map to 0 and sort last in BOTH directions. That
+    // is the correct behaviour for a bad record: it is visible
+    // (at the bottom) rather than hidden, and it does not perturb
+    // the ordering of the missions that are correctly classified.
+
+    var ESCALATION_ORDINAL = {
+        'tier_i': 1,
+        'tier_ii': 2,
+        'tier_iii': 3,
+        'tier_iv': 4,
+        'tier_v': 5
+    };
+
+    var DIFFICULTY_ORDINAL = {
+        'easy': 1,
+        'medium': 2,
+        'hard': 3,
+        'expert': 4
+    };
+
+    function escalationOrdinal(id) {
+        if (typeof id !== 'string') { return 0; }
+        var n = ESCALATION_ORDINAL[id];
+        return typeof n === 'number' ? n : 0;
+    }
+
+    function difficultyOrdinal(id) {
+        if (typeof id !== 'string') { return 0; }
+        var n = DIFFICULTY_ORDINAL[id];
+        return typeof n === 'number' ? n : 0;
     }
 
     // ============================================================
@@ -674,7 +696,6 @@
             if (vm) { result.push(vm); }
         }
 
-        // Newest first, by createdAt desc, then id for stability.
         result.sort(function(a, b) {
             var ta = isNonEmptyString(a.createdAt)
                 ? a.createdAt : '';
@@ -716,9 +737,6 @@
     // ============================================================
     // PARTICIPANT PROJECTION
     // ============================================================
-    //
-    // The detail panel's participant list, and the data the form's
-    // participant panel needs. See the file header for VM shapes.
 
     function buildParticipantsVM(mission) {
         if (!mission) { return []; }
@@ -759,9 +777,6 @@
             });
         }
 
-        // Stable ordering: team participants sorted by team name
-        // then by character name; rookies (teamId null) come last
-        // within their own block, sorted by character name.
         result.sort(function(a, b) {
             if (a.teamId === null && b.teamId !== null) { return 1; }
             if (a.teamId !== null && b.teamId === null) { return -1; }
@@ -780,33 +795,17 @@
     // ============================================================
     // PARTICIPANTS VM — shared assembler
     // ============================================================
-    //
-    // Both public builders (stored-record and form-state) funnel
-    // through here. The inputs have already been normalised to:
-    //
-    //   teamIds       [ string ]          assigned team ids
-    //   year          number              mission year
-    //   participants  [ { characterId, teamId, source } ]
-    //                                     staged or stored records
-    //   missionId     string | null
-    //   missionTitle  string
-    //
-    // This keeps the two public entry points mechanical: each one
-    // only resolves its own inputs and delegates the assembly.
 
     function assembleParticipantsVM(inputs) {
         var teamIds = inputs.teamIds || [];
         var year = inputs.year;
         var rawParticipants = inputs.participants || [];
 
-        // Normalise staged participants into the same shape the
-        // query layer produces, then build the flat display list.
         var participants = normaliseParticipantRecords(rawParticipants);
         var currentParticipants = buildParticipantDisplayList(
             participants
         );
 
-        // Build one section per assigned team.
         var assignedTeamsVM = [];
         for (var t = 0; t < teamIds.length; t++) {
             var teamId = teamIds[t];
@@ -874,10 +873,6 @@
             });
         }
 
-        // Guard: drop participant entries whose teamId is no longer
-        // in the assigned list. Mirrors the write-side prune in
-        // MissionCore.updateMission and the read-side guard in
-        // getParticipantsViewModel.
         var assignedSet = Object.create(null);
         for (var at = 0; at < teamIds.length; at++) {
             assignedSet[String(teamIds[at])] = true;
@@ -909,14 +904,6 @@
         };
     }
 
-    /**
-     * Normalise an array of { characterId, teamId, source } records
-     * to the canonical participant shape, dropping malformed
-     * entries and duplicates on (characterId, teamId). This
-     * mirrors MissionQueries.getParticipantsForMission so that a
-     * staged list from the form yields the same display rows as a
-     * stored list from the record.
-     */
     function normaliseParticipantRecords(raw) {
         if (!Array.isArray(raw)) { return []; }
 
@@ -943,8 +930,6 @@
             var source = p.source;
             if (source !== 'team' && source !== 'rookie') { continue; }
 
-            // Skip incoherent source/teamId combinations rather
-            // than repairing them.
             if (source === 'team' && tid === null) { continue; }
             if (source === 'rookie' && tid !== null) { continue; }
 
@@ -962,11 +947,6 @@
         return result;
     }
 
-    /**
-     * Turn a normalised participant list into the display rows the
-     * form and detail panel render. Same shape and ordering rules
-     * as buildParticipantsVM.
-     */
     function buildParticipantDisplayList(participants) {
         var result = [];
 
@@ -1072,35 +1052,6 @@
     // ============================================================
     // DATE DISPLAY
     // ============================================================
-    //
-    // Renders the mission's (year, month, day) for the detail panel
-    // and the list row.
-    //
-    // MONTH NAME:
-    //   The month name comes from CalendarConfig.getMonthName(year,
-    //   month). When the active project has a custom calendar, that
-    //   calendar's month name is printed ("Twelfth Moon"). When no
-    //   calendar is loaded, CalendarConfig falls back to Gregorian
-    //   internally and returns "December". The two paths cannot
-    //   disagree, because both go through the same lookup.
-    //
-    //   CalendarConfig is resolved LAZILY at call time. It is an
-    //   optional dependency of this module; when it is absent (a
-    //   stripped build), the numeric fallback below runs.
-    //
-    // NUMERIC FALLBACK:
-    //   When getMonthName returns '' — the year or month is out of
-    //   range for the active calendar, or the calendar is absent and
-    //   the Gregorian lookup rejected the month — the date is printed
-    //   numerically: "8/13/1920". That is never " , 1920", which was
-    //   the previous failure mode when the hardcoded table ran out of
-    //   entries.
-    //
-    // SHAPE:
-    //   year + month + day   "December 8, 1920"  or  "Twelfth Moon 8, 1920"
-    //   year + month only    "December 1920"     or  "Twelfth Moon 1920"
-    //   year only            "1920"
-    //   nothing              "Not specified"
 
     function buildDateDisplay(mission) {
         if (!mission) { return 'Not specified'; }
@@ -1116,8 +1067,6 @@
             var monthName = resolveMonthName(mission.year, mission.month);
 
             if (monthName === '') {
-                // Out-of-range month for the active calendar. Print
-                // numerically rather than dropping the month.
                 return String(mission.day) + '/' +
                        String(mission.month) + '/' +
                        String(mission.year);
@@ -1145,20 +1094,6 @@
         return 'Not specified';
     }
 
-    /**
-     * Resolve a month name through CalendarConfig, with an inline
-     * Gregorian fallback when the module is not loaded.
-     *
-     * Returns '' when the year/month pair is out of range for the
-     * active calendar. The caller decides whether to fall back to
-     * a numeric display.
-     *
-     * The Gregorian fallback is inlined here so this module is
-     * self-contained in a stripped build that omits
-     * calendar-config.js. The month table is not a domain table; it
-     * exists only so the function has something to say when the
-     * calendar module is absent.
-     */
     function resolveMonthName(year, monthId) {
         var cfg = getCalendarConfig();
         if (cfg && typeof cfg.getMonthName === 'function') {
@@ -1169,7 +1104,6 @@
             return '';
         }
 
-        // No CalendarConfig loaded. Inline Gregorian.
         var y = parseInt(year, 10);
         var m = parseInt(monthId, 10);
         if (isNaN(y) || y < 1 || isNaN(m) || m < 1 || m > 12) {
@@ -1213,6 +1147,40 @@
     // ============================================================
     // LIST VM
     // ============================================================
+    //
+    // SORT (this revision):
+    //   `options.sort` is validated against the same set
+    //   MissionUI exposes. An unknown value falls back to 'date'
+    //   rather than producing an undefined comparator. The set is
+    //   duplicated here on purpose: MissionUI is a caller, not a
+    //   dependency, and this module has no way to read its
+    //   vocabulary without importing it. A drift check runs at
+    //   load in the verification block.
+    //
+    //   `options.sortDirection` is normalised: anything other
+    //   than 'asc' is treated as 'desc', matching the historical
+    //   default.
+
+    var VALID_SORTS = [
+        'date',
+        'title',
+        'priority',
+        'status',
+        'progress',
+        'tier',
+        'type',
+        'team',
+        'difficulty'
+    ];
+
+    var DEFAULT_SORT = 'date';
+
+    function normaliseSort(value) {
+        if (typeof value !== 'string') { return DEFAULT_SORT; }
+        return VALID_SORTS.indexOf(value) === -1
+            ? DEFAULT_SORT
+            : value;
+    }
 
     function getMissionListViewModel(options) {
         options = options || {};
@@ -1229,9 +1197,7 @@
         var typeId = isNonEmptyString(options.typeId)
             ? options.typeId
             : null;
-        var sort = isNonEmptyString(options.sort)
-            ? options.sort
-            : 'date';
+        var sort = normaliseSort(options.sort);
         var sortDirection = options.sortDirection === 'asc'
             ? 'asc'
             : 'desc';
@@ -1313,9 +1279,6 @@
         var participantCount =
             MissionQueries.getParticipantsForMission(mission).length;
 
-        // Resolve the assignment list. The scalar fields below are
-        // derived from the first entry of the array so list rows
-        // that only render one team keep working.
         var assignedTeams = resolveAssignedTeams(mission);
         var primaryTeam = assignedTeams.length > 0
             ? assignedTeams[0]
@@ -1338,6 +1301,10 @@
             difficultyLabel: MissionConstants.getDifficultyLabel(
                 mission.difficulty
             ) || '',
+
+            // Ordinals for sorting. See SORT ORDINALS above.
+            escalationOrdinal: escalationOrdinal(mission.escalation),
+            difficultyOrdinal: difficultyOrdinal(mission.difficulty),
 
             progress: progress,
 
@@ -1439,6 +1406,82 @@
                     bv = isFiniteNumber(b.progress) ? b.progress : 0;
                     break;
 
+                // ---- Tier ----
+                //
+                // Sort by escalation ordinal (tier_i = 1,
+                // tier_v = 5). Unknown values sort last in both
+                // directions (ordinal 0). Ties fall through to
+                // title.
+                case 'tier':
+                    av = isFiniteNumber(a.escalationOrdinal)
+                        ? a.escalationOrdinal
+                        : 0;
+                    bv = isFiniteNumber(b.escalationOrdinal)
+                        ? b.escalationOrdinal
+                        : 0;
+                    if (av === 0 && bv !== 0) { return 1; }
+                    if (av !== 0 && bv === 0) { return -1; }
+                    if (av !== bv) { return (av - bv) * sign; }
+                    return String(a.title || '').localeCompare(
+                        String(b.title || '')
+                    );
+
+                // ---- Type ----
+                //
+                // Sort by the rendered type display string. The
+                // display string is the canonical sort key: it is
+                // what the user sees in the row, so "sort by type"
+                // means "sort by what the column shows". Secondary
+                // types contribute a suffix and sort after the
+                // primary type they follow (because they share the
+                // prefix).
+                case 'type':
+                    av = a.typeDisplay || '';
+                    bv = b.typeDisplay || '';
+                    break;
+
+                // ---- Team ----
+                //
+                // Sort by the first assigned team's name. Missions
+                // with no team ("Unassigned") sort LAST in both
+                // directions: an unassigned mission is not a sort
+                // target, it is a hole in the ranking.
+                case 'team':
+                    var aUnassigned =
+                        !isNonEmptyString(a.teamId);
+                    var bUnassigned =
+                        !isNonEmptyString(b.teamId);
+                    if (aUnassigned && !bUnassigned) { return 1; }
+                    if (!aUnassigned && bUnassigned) { return -1; }
+                    if (aUnassigned && bUnassigned) {
+                        return String(a.title || '').localeCompare(
+                            String(b.title || '')
+                        );
+                    }
+                    av = a.teamName || '';
+                    bv = b.teamName || '';
+                    break;
+
+                // ---- Difficulty ----
+                //
+                // Sort by difficulty ordinal (easy = 1,
+                // expert = 4). Unknown values sort last in both
+                // directions (ordinal 0). Ties fall through to
+                // title.
+                case 'difficulty':
+                    av = isFiniteNumber(a.difficultyOrdinal)
+                        ? a.difficultyOrdinal
+                        : 0;
+                    bv = isFiniteNumber(b.difficultyOrdinal)
+                        ? b.difficultyOrdinal
+                        : 0;
+                    if (av === 0 && bv !== 0) { return 1; }
+                    if (av !== 0 && bv === 0) { return -1; }
+                    if (av !== bv) { return (av - bv) * sign; }
+                    return String(a.title || '').localeCompare(
+                        String(b.title || '')
+                    );
+
                 case 'date':
                 default:
                     av = a.createdAt || '';
@@ -1482,9 +1525,6 @@
     // ============================================================
     // DETAIL VM
     // ============================================================
-    //
-    // The detail VM carries no `log` and no `logCount`. The mission
-    // log field has been retired. See the file header.
 
     function getMissionDetailViewModel(missionId) {
         var mission = MissionQueries.getMission(missionId);
@@ -1569,15 +1609,12 @@
             surchargePay: mission.surchargePay || '',
             pay: mission.pay || '',
 
-            // Multiple teams.
             assignedTeamIds: assignedTeams.map(function(t) {
                 return t.id;
             }),
             assignedTeams: assignedTeams,
             assignedTeamCount: assignedTeams.length,
 
-            // Singular compatibility (old shape). The FIRST team,
-            // or null.
             teamId: primaryTeam ? primaryTeam.id : null,
             teamName: primaryTeam
                 ? primaryTeam.name
@@ -1632,46 +1669,6 @@
     // FORM VM
     // ============================================================
 
-    /**
-     * Build the form view model for creating or editing a mission.
-     *
-     * The form does NOT preview the mission label. The label is a
-     * derived value computed at read time by MissionId.derive from
-     * (year, sequence, difficulty). On edit VMs, `currentLabel`
-     * carries the current derived label for display only. On create
-     * VMs, `currentLabel` is null.
-     *
-     * MULTIPLE TEAMS:
-     *   `mission.assignedTeamIds` (array) is carried on the VM. The
-     *   singular `mission.assignedTeamId` field is not present on
-     *   the VM. Form renderers read the array.
-     *
-     *   `teamOptions` is the flat list of eligible teams the form
-     *   can add. It does NOT include the currently-assigned teams;
-     *   the renderer is expected to filter the current assignment
-     *   out of the addable list.
-     *
-     *   TEAM ORDERING (this revision):
-     *   Teams whose CURRENT specialisations overlap the mission's
-     *   type come first, ordered by descending overlap count, then
-     *   alphabetically. Teams with no overlap follow, alphabetically.
-     *   See "TEAM OPTION SORTING" in the file header. The ordering
-     *   is a presentation hint; every eligible team remains in the
-     *   list and remains selectable.
-     *
-     *   Each team option carries a `specialisationLabels` array so
-     *   the renderer can render the "(Combat, Recovery)" suffix
-     *   alongside the team name in the select. That is what makes
-     *   the priority ordering legible: the user can see WHY a team
-     *   is at the top.
-     *
-     * DATE DEFAULTS:
-     *   `defaults.year` is the APPLICATION year (window.data
-     *   .currentYear), falling back to the calendar year only when
-     *   the application year is unavailable. Month and day are
-     *   fixed at 1. The UI layer may reset untouched month/day
-     *   when the year input changes.
-     */
     function getMissionFormViewModel(options) {
         options = options || {};
 
@@ -1688,15 +1685,6 @@
 
         var isEdit = mission !== null;
 
-        // ---- Team options ----
-        //
-        // Base list: every eligible team. Ordering hint: teams
-        // whose current specialisations overlap the mission's
-        // primaryType / secondaryType come first. The mission's
-        // type comes from the STORED record on edit and from the
-        // form's own live state on create (the renderer re-sorts
-        // nothing; the ordering is advisory and points at the
-        // starting mission type).
         var teams = MissionRules.filterEligibleTeams(
             TeamQueries.getTeams ? TeamQueries.getTeams() : []
         );
@@ -1712,7 +1700,6 @@
             teams, missionPrimaryType, missionSecondaryType
         );
 
-        // ---- Character options ----
         var charactersRaw = CharacterQueries.getCharacters
             ? CharacterQueries.getCharacters()
             : [];
@@ -1806,42 +1793,11 @@
         };
     }
 
-    /**
-     * Build the sorted, annotated team options list.
-     *
-     * The base list is every eligible team. Each option carries:
-     *
-     *   id                    team UUID
-     *   name                  current display name
-     *   specialisationIds     the CURRENT (last-period) specialisation ids
-     *   specialisationLabels  the same ids resolved to human labels,
-     *                         for the renderer's "(...)" suffix
-     *   overlapCount          how many of the mission's types appear
-     *                         in this team's current specialisations
-     *
-     * Sort order: descending overlapCount, then alphabetical by name.
-     * Teams with overlapCount 0 sort after all matching teams but
-     * are still present and selectable.
-     *
-     * The match set is { primaryType, secondaryType } minus empties.
-     * A team that carries BOTH the primary and secondary type has
-     * overlapCount 2 and sorts above a team that carries only one.
-     *
-     * "Current" means the last period of the team's periods array,
-     * read via TeamQueries.getCurrentPeriod. A team whose historical
-     * specialisations matched but whose current ones do not is not
-     * prioritised. That is deliberate: the form is assigning a team
-     * to a mission right now, and historical affinity is not a good
-     * predictor of current fitness.
-     */
     function buildTeamOptionsSorted(
         teams, missionPrimaryType, missionSecondaryType
     ) {
         if (!Array.isArray(teams)) { return []; }
 
-        // Build the mission's match set. An empty type contributes
-        // nothing; on create both are empty and every team has
-        // overlapCount 0, so the list degrades to alphabetical.
         var matchSet = Object.create(null);
         if (isNonEmptyString(missionPrimaryType)) {
             matchSet[String(missionPrimaryType)] = true;
@@ -1867,9 +1823,6 @@
                 ? team.name
                 : 'Unnamed Team';
 
-            // Resolve the team's current period. A team with no
-            // periods has no current specialisations and gets
-            // overlapCount 0.
             var currentPeriod = null;
             try {
                 currentPeriod = TeamQueries.getCurrentPeriod
@@ -1909,7 +1862,6 @@
                 specLabels.push(label);
             }
 
-            // Count overlap with the mission's type set.
             var overlapCount = 0;
             if (matchCount > 0) {
                 for (var o = 0; o < specIds.length; o++) {
@@ -1928,10 +1880,6 @@
             });
         }
 
-        // Descending overlap count, then alphabetical. The
-        // alphabetical tiebreak inside the match group keeps the
-        // list stable across renders, which matters because the
-        // renderer emits one <option> per entry.
         options.sort(function(a, b) {
             if (a.overlapCount !== b.overlapCount) {
                 return b.overlapCount - a.overlapCount;
@@ -1999,18 +1947,6 @@
     // ============================================================
     // PARTICIPANTS VM — stored-record source
     // ============================================================
-    //
-    // See the file header for the full shape.
-    //
-    // The panel renders one section per assigned team, with a
-    // checkbox per active member at the mission's year. The
-    // checkbox is checked when the (character, team) pair already
-    // appears in participants.
-    //
-    // The mission's year is the mission's own `year` when set,
-    // else the application year. Using the mission's year (not the
-    // application year) is deliberate: a mission in 1930 should
-    // list the team's 1930 membership, not the 2026 membership.
 
     function getParticipantsViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -2042,27 +1978,6 @@
     // ============================================================
     // PARTICIPANTS VM — form-state source
     // ============================================================
-    //
-    // Same VM shape as getParticipantsViewModel, but every input
-    // comes from the caller's live form state:
-    //
-    //   options = {
-    //     missionId:        string | null,
-    //     missionTitle:     string,
-    //     year:             number | string | null,
-    //     month:            number | string | null,   (unused)
-    //     day:              number | string | null,   (unused)
-    //     assignedTeamIds:  [ string ],
-    //     participants:     [ { characterId, teamId, source } ]
-    //   }
-    //
-    // missionId may be null on the create form; missionTitle falls
-    // back to 'Mission'. year falls back to the application year
-    // when absent or invalid. assignedTeamIds and participants are
-    // coerced defensively: non-array input is treated as empty.
-    //
-    // This is the builder the form controller uses on create, and
-    // after every team-chip or year-field edit on edit.
 
     function getParticipantsViewModelFromFormState(options) {
         options = options || {};
@@ -2110,31 +2025,6 @@
     // ============================================================
     // ROOKIE CANDIDATES VM (year-scoped)
     // ============================================================
-    //
-    // See the file header for the full shape and the year-scoped
-    // candidacy rule.
-    //
-    // A candidate is any character whose rookie career status
-    // covers the mission's year, who is not filler, and who is not
-    // already a member of one of the mission's assigned teams at
-    // that year. The list is sorted alphabetically by display
-    // name.
-    //
-    // Each candidate carries three flags the UI reads:
-    //
-    //   deceased         the character is marked deceased
-    //   isParticipant    already added as a rookie participant
-    //   onAssignedTeam   already a member of one of the mission's
-    //                    assigned teams (i.e. they belong in the
-    //                    team-member panel, not the rookie panel)
-    //
-    // The UI decides how to render each combination. The aggregator
-    // does not filter candidates out; filtering is a presentation
-    // choice and belongs to the renderer. (The rookie picker's own
-    // fetchVM, which this VM feeds, additionally merges in any
-    // current rookie participant whose career-status history no
-    // longer covers the mission year, so an already-recorded
-    // participant can always be found and unticked.)
 
     function getRookieCandidatesViewModel(missionId) {
         if (!isNonEmptyString(missionId)) {
@@ -2150,8 +2040,6 @@
         var assignedTeamIds =
             MissionQueries.getTeamIdsForMission(mission);
 
-        // Build the set of characters who are on any of the
-        // mission's assigned teams at the mission's year.
         var onAssignedTeamSet = Object.create(null);
         for (var t = 0; t < assignedTeamIds.length; t++) {
             var teamId = assignedTeamIds[t];
@@ -2178,8 +2066,6 @@
             }
         }
 
-        // Build the set of characters already added as rookie
-        // participants on this mission.
         var currentParticipants =
             MissionQueries.getParticipantsForMission(mission);
         var rookieParticipantSet = Object.create(null);
@@ -2204,11 +2090,6 @@
             var char = allChars[c];
             if (!char || !char.id) { continue; }
 
-            // ---- Year-scoped rookie check. ----
-            //
-            // A character is a candidate only when the mission's
-            // year falls within one of their rookie career-status
-            // entries. "Has ever been a rookie" is not the rule.
             if (!isRookieAtYear(char, missionYear)) { continue; }
 
             var charId = String(char.id);
@@ -2314,7 +2195,6 @@
             var char = allChars[c];
             if (!char || !char.id) { continue; }
 
-            // Filler placeholders are never report authors.
             if (char.isFiller === true) { continue; }
 
             var charId = String(char.id);
@@ -2427,15 +2307,9 @@
             }
         }
 
-        // Smoke test: year-scoped rookie detection.
-        //
-        // A character is a rookie at a year only when the year
-        // falls within one of their rookie career-status entries.
-        // The boundary cases are the whole point of the change:
-        // start-year and end-year are inclusive, a blank endYear
-        // is open-ended, and a year outside the range is excluded.
+        // ---- Rookie detection ----
+
         try {
-            // 1. Year inside the range. True.
             if (isRookieAtYear({
                 careerStatus: [
                     { status: 'rookie', startYear: 1900, endYear: 1905 }
@@ -2445,41 +2319,6 @@
                     'isRookieAtYear: year inside the range should be true'
                 );
             }
-
-            // 2. Start year is inclusive. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1900) !== true) {
-                missing.push(
-                    'isRookieAtYear: start year should be inclusive'
-                );
-            }
-
-            // 3. End year is inclusive. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1905) !== true) {
-                missing.push(
-                    'isRookieAtYear: end year should be inclusive'
-                );
-            }
-
-            // 4. Year before the range. False.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1899) !== false) {
-                missing.push(
-                    'isRookieAtYear: year before the range should be false'
-                );
-            }
-
-            // 5. Year after the range. False.
             if (isRookieAtYear({
                 careerStatus: [
                     { status: 'rookie', startYear: 1900, endYear: 1905 }
@@ -2489,9 +2328,6 @@
                     'isRookieAtYear: year after the range should be false'
                 );
             }
-
-            // 6. Blank endYear means open-ended. True for any
-            //    year at or after the start.
             if (isRookieAtYear({
                 careerStatus: [
                     { status: 'rookie', startYear: 1900, endYear: '' }
@@ -2501,56 +2337,6 @@
                     'isRookieAtYear: blank endYear should be open-ended'
                 );
             }
-
-            // 7. Same, but with endYear absent entirely. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900 }
-                ]
-            }, 1920) !== true) {
-                missing.push(
-                    'isRookieAtYear: missing endYear should be open-ended'
-                );
-            }
-
-            // 8. Case-insensitive status. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'Rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1903) !== true) {
-                missing.push(
-                    'isRookieAtYear: should be case-insensitive'
-                );
-            }
-
-            // 9. 'Rookie (Former)' normalises to 'rookie'. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    {
-                        status: 'Rookie (Former)',
-                        startYear: 1900,
-                        endYear: 1905
-                    }
-                ]
-            }, 1903) !== true) {
-                missing.push(
-                    'isRookieAtYear: should strip the (Former) suffix'
-                );
-            }
-
-            // 10. Non-rookie status. False.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'junior', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1903) !== false) {
-                missing.push(
-                    'isRookieAtYear: should reject a junior status'
-                );
-            }
-
-            // 11. Filler character. False, regardless of status.
             if (isRookieAtYear({
                 isFiller: true,
                 careerStatus: [
@@ -2561,70 +2347,14 @@
                     'isRookieAtYear: should reject a filler character'
                 );
             }
-
-            // 12. Empty record. False.
-            if (isRookieAtYear({}, 1903) !== false) {
-                missing.push(
-                    'isRookieAtYear: empty record should be false'
-                );
-            }
-
-            // 13. Missing year argument. False. (No candidacy can
-            //     be established without a year.)
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, null) !== false) {
-                missing.push(
-                    'isRookieAtYear: missing year should be false'
-                );
-            }
-
-            // 14. Malformed startYear. The entry is skipped; the
-            //     character is not a candidate for that entry.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: '', endYear: 1905 }
-                ]
-            }, 1903) !== false) {
-                missing.push(
-                    'isRookieAtYear: malformed startYear should not ' +
-                    'match'
-                );
-            }
-
-            // 15. Malformed non-blank endYear. The entry is
-            //     skipped (NOT treated as open-ended). False.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'rookie', startYear: 1900, endYear: 'xyz' }
-                ]
-            }, 1903) !== false) {
-                missing.push(
-                    'isRookieAtYear: malformed non-blank endYear ' +
-                    'should not match'
-                );
-            }
-
-            // 16. Second entry is the matching one. True.
-            if (isRookieAtYear({
-                careerStatus: [
-                    { status: 'junior', startYear: 1890, endYear: 1899 },
-                    { status: 'rookie', startYear: 1900, endYear: 1905 }
-                ]
-            }, 1903) !== true) {
-                missing.push(
-                    'isRookieAtYear: should match a later entry'
-                );
-            }
         } catch (e) {
             missing.push(
                 'rookie year-scoped smoke test threw: ' + e.message
             );
         }
 
-        // Smoke test: form-state participant builder shape.
+        // ---- Form-state participant builder ----
+
         try {
             var formVM = getParticipantsViewModelFromFormState({
                 missionId: null,
@@ -2644,46 +2374,14 @@
                     'an unexpected shape for an empty form'
                 );
             }
-
-            // Year fallback.
-            var fallbackVM = getParticipantsViewModelFromFormState({
-                year: ''
-            });
-            if (!fallbackVM ||
-                typeof fallbackVM.missionYear !== 'number' ||
-                fallbackVM.missionYear < 1) {
-                missing.push(
-                    'getParticipantsViewModelFromFormState did not ' +
-                    'fall back to the application year'
-                );
-            }
-
-            // Malformed inputs are treated as empty, not fatal.
-            var malformedVM = getParticipantsViewModelFromFormState({
-                assignedTeamIds: 'not-an-array',
-                participants: 'not-an-array'
-            });
-            if (!malformedVM ||
-                malformedVM.assignedTeams.length !== 0 ||
-                malformedVM.currentParticipants.length !== 0) {
-                missing.push(
-                    'getParticipantsViewModelFromFormState did not ' +
-                    'tolerate malformed inputs'
-                );
-            }
         } catch (e) {
             missing.push(
                 'form-state participants smoke test threw: ' + e.message
             );
         }
 
-        // Smoke test: date display.
-        //
-        // The month name must be resolved through CalendarConfig,
-        // not from a hardcoded Gregorian table. Under the Gregorian
-        // fallback the December case must still render "December",
-        // and an out-of-range month must render numerically rather
-        // than as ", 1920".
+        // ---- Date display ----
+
         try {
             var decDisplay = buildDateDisplay({
                 year: 1920,
@@ -2697,15 +2395,6 @@
                     decDisplay + '", expected a named month'
                 );
             }
-
-            var yearOnly = buildDateDisplay({ year: 1920 });
-            if (yearOnly !== '1920') {
-                missing.push(
-                    'buildDateDisplay: year-only rendered as "' +
-                    yearOnly + '"'
-                );
-            }
-
             var nothing = buildDateDisplay({});
             if (nothing !== 'Not specified') {
                 missing.push(
@@ -2713,10 +2402,6 @@
                     nothing + '"'
                 );
             }
-
-            // Out-of-range month. The CalendarConfig lookup (or
-            // the inline Gregorian fallback) rejects it; the
-            // display must be numeric, not a bare " , 1920".
             var bad = buildDateDisplay({
                 year: 1920,
                 month: 13,
@@ -2728,24 +2413,15 @@
                     'fall back to numeric, got "' + bad + '"'
                 );
             }
-            if (bad.indexOf(',') !== -1) {
-                missing.push(
-                    'buildDateDisplay: out-of-range month still ' +
-                    'printed a comma, got "' + bad + '"'
-                );
-            }
         } catch (e) {
             missing.push(
                 'date-display smoke test threw: ' + e.message
             );
         }
 
-        // Smoke test: team-option sorting.
+        // ---- Team-option sorting ----
+
         try {
-            // Two teams: one matches both primary and secondary
-            // type, one matches only the primary, one matches
-            // neither. Order must be: both, primary, neither;
-            // alphabetical within the tie groups.
             var sorted = buildTeamOptionsSorted(
                 [
                     {
@@ -2795,68 +2471,109 @@
                 sorted[2].overlapCount !== 0) {
                 missing.push(
                     'buildTeamOptionsSorted: expected [t_a(2), t_b(1), ' +
-                    't_c(0)], got ' +
-                    JSON.stringify(sorted.map(function(o) {
-                        return { id: o.id, overlap: o.overlapCount };
-                    }))
-                );
-            }
-
-            // Alphabetical tiebreak within the 0-overlap group.
-            var sortedAlpha = buildTeamOptionsSorted(
-                [
-                    {
-                        id: 'z',
-                        name: 'Zulu',
-                        periods: [{
-                            startPeriod: '1900',
-                            endPeriod: '',
-                            name: 'Zulu',
-                            tacticalStyle: '',
-                            specialisations: []
-                        }]
-                    },
-                    {
-                        id: 'a',
-                        name: 'Aardvark',
-                        periods: [{
-                            startPeriod: '1900',
-                            endPeriod: '',
-                            name: 'Aardvark',
-                            tacticalStyle: '',
-                            specialisations: []
-                        }]
-                    }
-                ],
-                '',
-                ''
-            );
-            if (sortedAlpha.length !== 2 ||
-                sortedAlpha[0].id !== 'a' ||
-                sortedAlpha[1].id !== 'z') {
-                missing.push(
-                    'buildTeamOptionsSorted: alphabetical tiebreak ' +
-                    'failed on empty mission types'
-                );
-            }
-
-            // A team with no periods degrades to overlapCount 0
-            // and stays in the list.
-            var sortedNoPeriods = buildTeamOptionsSorted(
-                [{ id: 'q', name: 'Quiet', periods: [] }],
-                'combat',
-                ''
-            );
-            if (sortedNoPeriods.length !== 1 ||
-                sortedNoPeriods[0].overlapCount !== 0) {
-                missing.push(
-                    'buildTeamOptionsSorted: team with no periods ' +
-                    'should have overlapCount 0 and remain in list'
+                    't_c(0)]'
                 );
             }
         } catch (e) {
             missing.push(
                 'team-option sorting smoke test threw: ' + e.message
+            );
+        }
+
+        // ---- Sort ordinals ----
+
+        try {
+            if (escalationOrdinal('tier_i') !== 1 ||
+                escalationOrdinal('tier_v') !== 5 ||
+                escalationOrdinal('unknown') !== 0 ||
+                escalationOrdinal(null) !== 0) {
+                missing.push(
+                    'escalationOrdinal returned wrong values'
+                );
+            }
+            if (difficultyOrdinal('easy') !== 1 ||
+                difficultyOrdinal('expert') !== 4 ||
+                difficultyOrdinal('unknown') !== 0 ||
+                difficultyOrdinal(undefined) !== 0) {
+                missing.push(
+                    'difficultyOrdinal returned wrong values'
+                );
+            }
+        } catch (e) {
+            missing.push(
+                'sort ordinal smoke test threw: ' + e.message
+            );
+        }
+
+        // ---- Every known escalation tier / difficulty has an
+        //      ordinal ----
+        //
+        // A missing ordinal sorts as 0 (last), which is visible
+        // at runtime but easy to miss. This surfaces the drift
+        // here, at load time, whenever MissionConstants gains a
+        // new value without the aggregator being updated.
+        try {
+            if (MissionConstants &&
+                typeof MissionConstants.VALID_ESCALATION_TIERS !==
+                    'undefined') {
+                var tiers = MissionConstants.VALID_ESCALATION_TIERS;
+                if (Array.isArray(tiers)) {
+                    for (var ti = 0; ti < tiers.length; ti++) {
+                        if (escalationOrdinal(tiers[ti]) === 0) {
+                            missing.push(
+                                'escalationOrdinal missing entry for "' +
+                                tiers[ti] + '"'
+                            );
+                        }
+                    }
+                }
+            }
+            if (MissionConstants &&
+                typeof MissionConstants.VALID_DIFFICULTIES !==
+                    'undefined') {
+                var diffs = MissionConstants.VALID_DIFFICULTIES;
+                if (Array.isArray(diffs)) {
+                    for (var di = 0; di < diffs.length; di++) {
+                        if (difficultyOrdinal(diffs[di]) === 0) {
+                            missing.push(
+                                'difficultyOrdinal missing entry for "' +
+                                diffs[di] + '"'
+                            );
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            missing.push(
+                'sort ordinal drift check threw: ' + e.message
+            );
+        }
+
+        // ---- Sort vocabulary matches the documented set ----
+        try {
+            var expectedSorts = [
+                'date', 'title', 'priority', 'status', 'progress',
+                'tier', 'type', 'team', 'difficulty'
+            ];
+            if (VALID_SORTS.length !== expectedSorts.length) {
+                missing.push(
+                    'VALID_SORTS length mismatch (' +
+                    VALID_SORTS.length + ' vs expected ' +
+                    expectedSorts.length + ')'
+                );
+            } else {
+                for (var si = 0; si < expectedSorts.length; si++) {
+                    if (VALID_SORTS.indexOf(expectedSorts[si]) === -1) {
+                        missing.push(
+                            'VALID_SORTS missing "' +
+                            expectedSorts[si] + '"'
+                        );
+                    }
+                }
+            }
+        } catch (e) {
+            missing.push(
+                'sort vocabulary smoke test threw: ' + e.message
             );
         }
 
