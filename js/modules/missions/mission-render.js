@@ -1,2567 +1,2187 @@
 /**
- * js/modules/missions/mission-render.js - Mission Rendering
- *
- * Path: js/modules/missions/mission-render.js
- *
- * Pure HTML rendering for the missions tab.
- *
- * WHAT THIS MODULE OWNS:
- *   - renderContainer:  the page shell (header, stats strip,
- *                       filter bar, list mount point, modal
- *                       shells for detail and form, and the
- *                       report-form modal shell).
- *   - renderList:       one row per mission, inside #missions-list.
- *   - renderDetail:     the detail panel body, inside
- *                       #mission-detail-content.
- *   - renderForm:       the mission form body, inside
- *                       #mission-form-content. Includes the
- *                       participants panel, rendered from
- *                       vm.participantsVM.
- *   - renderReportFormModal: the report form body, inside the
- *                       report modal's .modal-report-content.
- *   - renderEmpty / renderLoading: list placeholders.
- *
- * WHAT THIS MODULE DOES NOT OWN:
- *   - Reads, mutations, projections. Everything is a view model.
- *   - Event binding. mission-ui.js owns every listener.
- *   - The participants VM. mission-ui.js builds it from the
- *     current form state and attaches it as vm.participantsVM
- *     before calling renderForm; on a team-chip, year-field, or
- *     participant-toggle change, mission-ui.js rebuilds it and
- *     swaps only the #mission-participants-panel node.
- *   - Layout of the participants panel. That is owned by
- *     missions.css, with specific inline layout overrides applied
- *     directly in the team-member row markup to prevent flexbox
- *     collapse. The renderer emits class names and inline layout
- *     styles.
- *   - The custom calendar. That is owned by CalendarConfig
- *     (js/modules/shared/calendar-config.js). This module calls
- *     CalendarConfig.getMonthsForYear(year) and getDaysInMonth()
- *     to build the month <select> and to clamp the day input.
- *     When CalendarConfig is not loaded, the date fields fall
- *     back to Gregorian in-line, so the form keeps working.
- *
- * LIST ROW SELECTION (this revision):
- *   Each list row carries a `.mission-select-cell` containing a
- *   `.mission-select-checkbox`. This mirrors the teams list's
- *   team-select-cell / team-select-checkbox and drives the bulk
- *   export flow owned by mission-ui.js.
- *
- *   renderList accepts `options.selectedIds` — an object whose
- *   keys are mission ids and whose truthy values mark a mission
- *   as selected. renderListRow threads it in so a re-render
- *   preserves the checkbox state and the `.mission-item-selected`
- *   row class.
- *
- *   The selection cell is a SIBLING of the row's data-action
- *   handler. A click on the cell must not open the detail modal;
- *   mission-ui.js stops propagation on clicks that land inside
- *   `.mission-select-cell` before the row's own action handler
- *   runs. The renderer's job is only to emit the markup.
- *
- * HEADER EXPORT BUTTON (this revision):
- *   renderContainer emits `#mission-export-selected-btn` in the
- *   page header, to the left of the +New Mission button. It is
- *   disabled when `selectedCount` is zero and reads "Export (N)"
- *   when N missions are selected. The button carries
- *   data-action="mission-export-selected"; mission-ui.js owns the
- *   click handler and the enabled-state refresh that happens
- *   after each checkbox toggle.
- *
- * TEAM OPTIONS (this revision):
- *   The form's "Assign Team" select renders one <option> per
- *   eligible team, in the order the aggregator produced. The
- *   aggregator's buildTeamOptionsSorted puts teams whose current
- *   specialisations overlap the mission's type FIRST, ordered by
- *   descending overlap count, then alphabetically. Each option
- *   carries `specialisationLabels` (the human labels for the
- *   team's current specialisations), and this renderer appends
- *   them to the option text in parentheses:
- *
- *     Alpha (Combat, Recovery)
- *     Bravo (Combat)
- *     Charlie
- *
- *   That suffix is what makes the priority ordering legible: the
- *   user can see WHY a team is at the top of the list. The suffix
- *   is emitted only when the team has at least one current
- *   specialisation; a team with none renders as just its name.
- *
- *   The suffix is escaped with the same escapeHtml used for the
- *   team name; the labels come from MissionConstants and are not
- *   trusted to be plain text (defence in depth).
- *
- * DATE FIELDS:
- *   The three date inputs are:
- *
- *     <input  id="mission-year"  data-mission-year-field="true">
- *     <select id="mission-month" data-mission-month-field="true">
- *     <input  id="mission-day"   data-mission-day-field="true">
- *
- *   The month is a <select>, not an <input>. The option values
- *   are the month ids returned by CalendarConfig.getMonthsForYear
- *   (year). Those ids are integers 1..N, renumbered in calendar
- *   order per year. In a year that carries a per-year leap month,
- *   N is larger than in an ordinary year; the leap month appears
- *   in the select with its own name.
- *
- *   The day's `max` attribute is set to
- *   CalendarConfig.getDaysInMonth(year, month). When the user
- *   changes the year or month in the UI, mission-ui.js updates
- *   the day's `max` in place. Until that edit lands, the schema
- *   still rejects out-of-range days on submit via
- *   CalendarValidation.isValidCalendarDate, so the model stays
- *   correct.
- *
- * DEPENDENCIES (MANDATORY):
- *   - window.DomUtils
- *   - window.MissionConstants
- *   - window.MissionViews
- *
- * DEPENDENCIES (LAZY, at call time, optional):
- *   - window.CalendarConfig   (custom month names and lengths;
- *                              Gregorian fallback when absent)
- */
-
+js/modules/missions/mission-render.js - Mission Rendering
+Path: js/modules/missions/mission-render.js
+Pure HTML rendering for the missions tab.
+WHAT THIS MODULE OWNS:
+renderContainer:  the page shell (header, stats strip,
+                  filter bar, list mount point, modal
+                  shells for detail and form, and the
+                  report-form modal shell).
+renderList:       one row per mission, inside #missions-list.
+renderDetail:     the detail panel body, inside
+                  #mission-detail-content.
+renderForm:       the mission form body, inside
+                  #mission-form-content. Includes the
+                  participants panel, rendered from
+                  vm.participantsVM.
+renderReportFormModal: the report form body, inside the
+                  report modal's .modal-report-content.
+renderEmpty / renderLoading: list placeholders.
+WHAT THIS MODULE DOES NOT OWN:
+Reads, mutations, projections. Everything is a view model.
+Event binding. mission-ui.js owns every listener.
+The participants VM. mission-ui.js builds it from the
+current form state and attaches it as vm.participantsVM
+before calling renderForm; on a team-chip, year-field, or
+participant-toggle change, mission-ui.js rebuilds it and
+swaps only the #mission-participants-panel node.
+Layout of the participants panel. That is owned by
+missions.css. The renderer emits class names.
+The custom calendar. That is owned by CalendarConfig
+(js/modules/shared/calendar-config.js). This module calls
+CalendarConfig.getMonthsForYear(year) and getDaysInMonth()
+to build the month <select> and to clamp the day input.
+When CalendarConfig is not loaded, the date fields fall
+back to Gregorian in-line, so the form keeps working.
+LIST ROW SELECTION (this revision):
+Each list row carries a `.mission-select-cell` containing a
+`.mission-select-checkbox`. This mirrors the teams list's
+team-select-cell / team-select-checkbox and drives the bulk
+export flow owned by mission-ui.js.
+renderList accepts `options.selectedIds` — an object whose
+keys are mission ids and whose truthy values mark a mission
+as selected. renderListRow threads it in so a re-render
+preserves the checkbox state and the `.mission-item-selected`
+row class.
+The selection cell is a SIBLING of the row's data-action
+handler. A click on the cell must not open the detail modal;
+mission-ui.js stops propagation on clicks that land inside
+`.mission-select-cell` before the row's own action handler
+runs. The renderer's job is only to emit the markup.
+HEADER EXPORT BUTTON (this revision):
+renderContainer emits `#mission-export-selected-btn` in the
+page header, to the left of the +New Mission button. It is
+disabled when `selectedCount` is zero and reads "Export (N)"
+when N missions are selected. The button carries
+data-action="mission-export-selected"; mission-ui.js owns the
+click handler and the enabled-state refresh that happens
+after each checkbox toggle.
+TEAM OPTIONS (this revision):
+The form's "Assign Team" select renders one <option> per
+eligible team, in the order the aggregator produced. The
+aggregator's buildTeamOptionsSorted puts teams whose current
+specialisations overlap the mission's type FIRST, ordered by
+descending overlap count, then alphabetically. Each option
+carries `specialisationLabels` (the human labels for the
+team's current specialisations), and this renderer appends
+them to the option text in parentheses:
+Alpha (Combat, Recovery)
+Bravo (Combat)
+Charlie
+That suffix is what makes the priority ordering legible: the
+user can see WHY a team is at the top of the list. The suffix
+is emitted only when the team has at least one current
+specialisation; a team with none renders as just its name.
+The suffix is escaped with the same escapeHtml used for the
+team name; the labels come from MissionConstants and are not
+trusted to be plain text (defence in depth).
+DATE FIELDS:
+The three date inputs are:
+<input  id="mission-year"  data-mission-year-field="true">
+<select id="mission-month" data-mission-month-field="true">
+<input  id="mission-day"   data-mission-day-field="true">
+The month is a <select>, not an <input>. The option values
+are the month ids returned by CalendarConfig.getMonthsForYear
+(year). Those ids are integers 1..N, renumbered in calendar
+order per year. In a year that carries a per-year leap month,
+N is larger than in an ordinary year; the leap month appears
+in the select with its own name.
+The day's `max` attribute is set to
+CalendarConfig.getDaysInMonth(year, month). When the user
+changes the year or month in the UI, mission-ui.js updates
+the day's `max` in place. Until that edit lands, the schema
+still rejects out-of-range days on submit via
+CalendarValidation.isValidCalendarDate, so the model stays
+correct.
+DEPENDENCIES (MANDATORY):
+window.DomUtils
+window.MissionConstants
+window.MissionViews
+DEPENDENCIES (LAZY, at call time, optional):
+window.CalendarConfig   (custom month names and lengths;
+                         Gregorian fallback when absent)
+*/
 (function() {
-    'use strict';
-
-    if (window.__missionRenderLoaded) {
-        return;
-    }
-
-    // ============================================================
-    // DEPENDENCIES
-    // ============================================================
-
-    var DomUtils = window.DomUtils;
-    var MissionConstants = window.MissionConstants;
-    var MissionViews = window.MissionViews;
-
-    var _missing = [];
-
-    if (!DomUtils ||
-        typeof DomUtils.escapeHtml !== 'function' ||
-        typeof DomUtils.escapeAttribute !== 'function') {
-        _missing.push('DomUtils.escapeHtml/escapeAttribute');
-    }
-    if (!MissionConstants) {
-        _missing.push('MissionConstants (module)');
-    }
-    if (!MissionViews) {
-        _missing.push('MissionViews (module)');
-    } else {
-        if (typeof MissionViews.getStatusInfo !== 'function') {
-            _missing.push('MissionViews.getStatusInfo');
-        }
-        if (typeof MissionViews.getPriorityInfo !== 'function') {
-            _missing.push('MissionViews.getPriorityInfo');
-        }
-        if (typeof MissionViews.getParticipantSourceClass !== 'function') {
-            _missing.push('MissionViews.getParticipantSourceClass');
-        }
-    }
-
-    if (_missing.length > 0) {
-        throw new Error(
-            '[MissionRender] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
-    }
-
-    window.__missionRenderLoaded = true;
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function escapeAttribute(value) {
-        return DomUtils.escapeAttribute(value);
-    }
-
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
-
-    function isArray(value) {
-        return Array.isArray(value);
-    }
-
-    function isPlainObject(value) {
-        return value !== null &&
-               typeof value === 'object' &&
-               !Array.isArray(value);
-    }
-
-    function safeString(value) {
-        return value === undefined || value === null
-            ? ''
-            : String(value);
-    }
-
-    function toPositiveInt(value, fallback) {
-        var n = parseInt(value, 10);
-        if (isNaN(n) || n < 1) { return fallback; }
-        return n;
-    }
-
-    function countTrue(obj) {
-        if (!obj) { return 0; }
-        var n = 0;
-        for (var k in obj) {
-            if (Object.prototype.hasOwnProperty.call(obj, k) &&
-                obj[k] === true) {
-                n++;
-            }
-        }
-        return n;
-    }
-
-    // ============================================================
-    // CALENDAR ACCESS (with Gregorian fallback)
-    // ============================================================
-    //
-    // The month <select> and the day input's max come from
-    // CalendarConfig. When it is not loaded, or when the active
-    // project has no custom calendar, everything falls back to
-    // Gregorian exactly as before. The fallback lives here so
-    // mission-render.js is self-contained and works in a stripped
-    // build that does not include calendar-config.js.
-
-    var GREG_MONTHS = [
-        'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-
-    function isGregorianLeap(y) {
-        return (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
-    }
-
-    function gregorianMonths(year) {
-        var lp = isGregorianLeap(year);
-        var out = [];
-        for (var i = 0; i < 12; i++) {
-            out.push({
-                id: i + 1,
-                name: GREG_MONTHS[i],
-                days: i === 1 && lp ? 29 :
-                      [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][i]
-            });
-        }
-        return out;
-    }
-
-    function getMonthsForYear(year) {
-        var cfg = window.CalendarConfig;
-        if (cfg && typeof cfg.getMonthsForYear === 'function') {
-            var list = cfg.getMonthsForYear(year);
-            if (isArray(list) && list.length > 0) {
-                return list;
-            }
-        }
-        return gregorianMonths(year);
-    }
-
-    function getDaysInMonth(year, monthId) {
-        var cfg = window.CalendarConfig;
-        if (cfg && typeof cfg.getDaysInMonth === 'function') {
-            var n = cfg.getDaysInMonth(year, monthId);
-            if (typeof n === 'number' && n >= 1) {
-                return n;
-            }
-        }
-        var m = toPositiveInt(monthId, 1);
-        var list = gregorianMonths(year);
-        if (m > list.length) { return 31; }
-        return list[m - 1].days;
-    }
-
-    // ============================================================
-    // CONTAINER
-    // ============================================================
-
-    function renderContainer(vm) {
-        vm = vm || {};
-        var filter = isNonEmptyString(vm.filter) ? vm.filter : 'all';
-        var counts = isPlainObject(vm.counts) ? vm.counts : {};
-        var selectedIds = vm.selectedIds || Object.create(null);
-        var selectedCount = countTrue(selectedIds);
-
-        var html = '';
-
-        // ---- Page header ----
-        html += '<div class="page-header">';
-        html += '<h2>Missions</h2>';
-        html += '<div class="header-actions">';
-        html += '<button type="button" class="secondary" ' +
-                    'data-action="mission-import">Import</button>';
-        html += '<button type="button" class="secondary" ' +
-                    'id="mission-export-selected-btn" ' +
-                    'data-action="mission-export-selected"' +
-                    (selectedCount === 0 ? ' disabled' : '') + '>' +
-                    'Export' +
-                    (selectedCount > 0
-                        ? ' (' + selectedCount + ')'
-                        : '') +
-                '</button>';
-        html += '<button type="button" class="primary" ' +
-                    'data-action="mission-new">+ New Mission</button>';
-        html += '</div>';
-        html += '</div>';
-
-        // ---- Filter bar ----
-        html += '<div class="filter-section">';
-        html += '<label for="mission-filter">Status:</label>';
-        html += '<select id="mission-filter">';
-        html += renderFilterOption('all', 'All', filter);
-        html += renderFilterOption('active', 'Active', filter);
-        html += renderFilterOption('completed', 'Completed', filter);
-        html += renderFilterOption('cancelled', 'Cancelled', filter);
-        html += '</select>';
-        html += '<span class="mission-count">' +
-                    '<span id="mission-count-total">' +
-                        escapeHtml(String(counts.total || 0)) +
-                    '</span> total' +
-                    ' &middot; ' +
-                    '<span id="mission-count-ready">' +
-                        escapeHtml(String(counts.readyForCompletion || 0)) +
-                    '</span> ready' +
-                '</span>';
-        html += '</div>';
-
-        // ---- List mount point ----
-        html += '<div id="missions-list" class="missions-list"></div>';
-
-        // ---- Detail modal shell ----
-        html += '<div id="mission-detail-modal" class="modal hidden">';
-        html += '<div class="modal-content wide">';
-        html += '<div class="modal-header">';
-        html += '<h3 id="mission-detail-title">Mission</h3>';
-        html += '<button type="button" class="close-modal" ' +
-                    'data-action="mission-close-detail" ' +
-                    'aria-label="Close">&times;</button>';
-        html += '</div>';
-        html += '<div id="mission-detail-content" ' +
-                    'class="modal-body"></div>';
-        html += '</div>';
-        html += '</div>';
-
-        // ---- Form modal shell ----
-        html += '<div id="mission-form-modal" class="modal hidden">';
-        html += '<div class="modal-content wide">';
-        html += '<div class="modal-header">';
-        html += '<h3 id="mission-form-title">Mission</h3>';
-        html += '<button type="button" class="close-modal" ' +
-                    'data-action="mission-close-form" ' +
-                    'aria-label="Close">&times;</button>';
-        html += '</div>';
-        html += '<div id="mission-form-content" ' +
-                    'class="modal-body"></div>';
-        html += '</div>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderFilterOption(value, label, current) {
-        var selected = current === value ? ' selected' : '';
-        return '<option value="' + escapeAttribute(value) + '"' +
-                    selected + '>' +
-                    escapeHtml(label) +
-                '</option>';
-    }
-
-    // ============================================================
-    // LIST
-    // ============================================================
-
-    function renderList(missions, options) {
-        options = options || {};
-        var selectedIds = options.selectedIds || Object.create(null);
-
-        if (!isArray(missions) || missions.length === 0) {
-            return renderEmpty();
-        }
-
-        var html = '';
-
-        for (var i = 0; i < missions.length; i++) {
-            html += renderListRow(missions[i], selectedIds);
-        }
-
-        return html;
-    }
-
-    function renderListRow(m, selectedIds) {
-        if (!m || typeof m !== 'object') { return ''; }
-
-        var isSelected = selectedIds[String(m.id)] === true;
-
-        var rowClass = 'list-item mission-item';
-        if (m.isArchived === true) {
-            rowClass += ' mission-archived';
-        } else if (m.isCompleted === true) {
-            rowClass += ' mission-completed';
-        } else if (m.isCancelled === true) {
-            rowClass += ' mission-cancelled';
-        }
-        if (isSelected) {
-            rowClass += ' mission-item-selected';
-        }
-
-        var statusInfo = MissionViews.getStatusInfo(m.status);
-        var priorityInfo = MissionViews.getPriorityInfo(m.priority);
-
-        var html = '';
-
-        html += '<div class="' + rowClass + '" ' +
-                    'data-action="mission-list-item" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(m.id) + '">';
-
-        // ---- 0. Selection checkbox ----
-        //
-        // Mirrors the teams list's team-select-cell. A click on
-        // this cell must not open the detail modal; mission-ui.js
-        // stops propagation on clicks that land inside
-        // .mission-select-cell before the row's action handler
-        // runs. The renderer's job is to emit the markup.
-        html += '<span class="mission-select-cell">';
-        html += '<input type="checkbox" ' +
-                    'class="mission-select-checkbox" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(m.id) + '"' +
-                    (isSelected ? ' checked' : '') +
-                    ' aria-label="Select ' +
-                        escapeAttribute(
-                            m.title || 'mission'
-                        ) + '">';
-        html += '</span>';
-
-        // ---- 1. Mission ID label ----
-        html += '<span class="mission-id">' +
-                    escapeHtml(m.missionId || '\u2014') +
-                '</span>';
-
-        // ---- 2. Date ----
-        html += '<span class="mission-date">' +
-                    escapeHtml(m.dateDisplay || '\u2014') +
-                '</span>';
-
-        // ---- 3. Title + badges ----
-        html += '<span class="mission-title">';
-        html += '<strong>' +
-                    escapeHtml(m.title || 'Untitled') +
-                '</strong>';
-        if (m.isCompleted === true) {
-            html += '<span class="mission-completed-badge" ' +
-                        'title="Completed">\u2714</span>';
-        }
-        if (m.isArchived === true) {
-            html += '<span class="mission-archived-badge">' +
-                        'Archived' +
-                    '</span>';
-        }
-        if (typeof m.supportCount === 'number' && m.supportCount > 0) {
-            html += '<span class="mission-support-badge" ' +
-                        'title="Support personnel">' +
-                        'S' + escapeHtml(String(m.supportCount)) +
-                    '</span>';
-        }
-        html += '</span>';
-
-        // ---- 4. Type ----
-        html += '<span class="mission-type">' +
-                    escapeHtml(m.typeDisplay || 'Unclassified') +
-                '</span>';
-
-        // ---- 5. Escalation ----
-        html += '<span class="mission-escalation">' +
-                    escapeHtml(m.escalationLabel || '\u2014') +
-                '</span>';
-
-        // ---- 6. Difficulty ----
-        html += '<span class="mission-difficulty">' +
-                    escapeHtml(m.difficultyLabel || '\u2014') +
-                '</span>';
-
-        // ---- 7. Assigned team(s) ----
-        html += '<span class="mission-team">' +
-                    renderAssignedTeamsInline(m) +
-                '</span>';
-
-        // ---- 8. Progress ----
-        html += '<span class="mission-progress">' +
-                    renderProgressBar(m.progress) +
-                '</span>';
-
-        // ---- 9. Status + priority badges ----
-        html += '<span class="mission-status-priority">';
-        html += '<span class="mission-status ' +
-                    escapeAttribute(statusInfo.class) + '">' +
-                    escapeHtml(statusInfo.label) +
-                '</span>';
-        html += ' ';
-        html += '<span class="mission-priority ' +
-                    escapeAttribute(priorityInfo.class) + '">' +
-                    escapeHtml(priorityInfo.label) +
-                '</span>';
-        html += '</span>';
-
-        // ---- 10. Grid filler ----
-        html += '<span class="mission-row-tail"></span>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderAssignedTeamsInline(m) {
-        var teams = isArray(m.assignedTeams) ? m.assignedTeams : [];
-
-        if (teams.length === 0) {
-            return escapeHtml(m.teamName || 'Unassigned');
-        }
-
-        var first = teams[0];
-        var html = escapeHtml(first.name || 'Unnamed Team');
-        if (teams.length > 1) {
-            html += '<span class="mission-team-extra">' +
-                        '+' + (teams.length - 1) +
-                    '</span>';
-        }
-        return html;
-    }
-
-    function renderProgressBar(progress) {
-        var pct = (typeof progress === 'number' &&
-                   isFinite(progress))
-            ? Math.max(0, Math.min(100, Math.round(progress)))
-            : 0;
-
-        var html = '';
-        html += '<span class="progress-bar">';
-        html += '<span class="progress-fill" ' +
-                    'style="width:' + pct + '%;"></span>';
-        html += '</span>';
-        html += '<span class="progress-label">' + pct + '%</span>';
-        return html;
-    }
-
-    // ============================================================
-    // EMPTY / LOADING
-    // ============================================================
-
-    function renderEmpty() {
-        return '<p class="empty-state">No missions found.</p>';
-    }
-
-    function renderLoading() {
-        return '<p class="empty-state">Loading missions\u2026</p>';
-    }
-
-    // ============================================================
-    // DETAIL
-    // ============================================================
-
-    function renderDetail(vm) {
-        if (!vm) { return ''; }
-
-        var statusInfo = MissionViews.getStatusInfo(vm.status);
-        var priorityInfo = MissionViews.getPriorityInfo(vm.priority);
-
-        var html = '';
-
-        html += '<div class="mission-detail">';
-
-        // ---- Header ----
-        html += '<div class="mission-detail-header">';
-
-        html += '<div class="mission-detail-title-row">';
-        html += '<h3 class="mission-detail-title">' +
-                    escapeHtml(vm.title || 'Untitled') +
-                '</h3>';
-        html += '<span class="mission-status ' +
-                    escapeAttribute(statusInfo.class) + '">' +
-                    escapeHtml(statusInfo.label) +
-                '</span>';
-        html += '<span class="mission-priority ' +
-                    escapeAttribute(priorityInfo.class) + '">' +
-                    escapeHtml(priorityInfo.label) +
-                '</span>';
-        if (vm.isArchived === true) {
-            html += '<span class="mission-archived-badge">' +
-                        'Archived' +
-                    '</span>';
-        }
-        html += '</div>';
-
-        html += '<div class="mission-detail-id">' +
-                    'ID: <span class="mission-id-display">' +
-                        escapeHtml(vm.missionId || '\u2014') +
-                    '</span>' +
-                '</div>';
-
-        if (isNonEmptyString(vm.description)) {
-            html += '<p class="mission-detail-description">' +
-                        escapeHtml(vm.description) +
-                    '</p>';
-        }
-
-        html += '</div>';
-
-        // ---- Scalar fields ----
-        html += '<div class="mission-detail-fields">';
-
-        html += renderDetailField('Date', vm.dateDisplay);
-        html += renderDetailField('Type', vm.typeDisplay);
-        html += renderDetailField('Difficulty', vm.difficultyLabel);
-        html += renderDetailField('Escalation', vm.escalationLabel);
-        html += renderDetailField('Billing', vm.billingLabel);
-        html += renderDetailField('Pay', vm.pay);
-        html += renderDetailField('Threat type', vm.threatType);
-        html += renderDetailField('Environment', vm.environment);
-        html += renderDetailField('Location', vm.location);
-        html += renderDetailField('Duration', vm.duration);
-
-        html += renderDetailField('Progress',
-            (typeof vm.progress === 'number'
-                ? vm.progress + '%'
-                : ''));
-
-        html += renderDetailField('Created', vm.createdAtDisplay);
-        html += renderDetailField('Completed', vm.completedAtDisplay);
-        html += renderDetailField('Archived', vm.archivedAtDisplay);
-
-        if (isArray(vm.tags) && vm.tags.length > 0) {
-            html += '<div class="detail-row tags-row">';
-            html += '<span class="label">Tags</span>';
-            html += '<span class="tags-list">';
-            for (var t = 0; t < vm.tags.length; t++) {
-                html += '<span class="tag">' +
-                            escapeHtml(vm.tags[t]) +
-                        '</span>';
-            }
-            html += '</span>';
-            html += '</div>';
-        }
-
-        if (isNonEmptyString(vm.notes)) {
-            html += '<div class="detail-row description-row">';
-            html += '<span class="label">Notes</span>';
-            html += '<span class="description-text">' +
-                        escapeHtml(vm.notes) +
-                    '</span>';
-            html += '</div>';
-        }
-
-        html += '</div>'; // mission-detail-fields
-
-        // ---- Assigned teams ----
-        html += renderDetailAssignedTeams(vm);
-
-        // ---- Objectives ----
-        html += renderDetailObjectives(vm);
-
-        // ---- Participants ----
-        html += renderDetailParticipants(vm);
-
-        // ---- Support personnel ----
-        html += renderDetailSupportPersonnel(vm);
-
-        // ---- Reports ----
-        html += renderDetailReports(vm);
-
-        // ---- Actions ----
-        html += renderDetailActions(vm);
-
-        html += '</div>'; // mission-detail
-
-        return html;
-    }
-
-    function renderDetailField(label, value) {
-        if (!isNonEmptyString(value)) { return ''; }
-        return '<div class="detail-row">' +
-                    '<span class="label">' +
-                        escapeHtml(label) +
-                    '</span>' +
-                    '<span class="value">' +
-                        escapeHtml(value) +
-                    '</span>' +
-                '</div>';
-    }
-
-    function renderDetailAssignedTeams(vm) {
-        var teams = isArray(vm.assignedTeams) ? vm.assignedTeams : [];
-        if (teams.length === 0) { return ''; }
-
-        var html = '';
-        html += '<div class="assigned-teams-section">';
-        html += '<div class="section-header">';
-        html += '<strong>Assigned Teams</strong>';
-        html += '<span class="count">' + teams.length + '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-edit" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    'Edit' +
-                '</button>';
-        html += '</div>';
-        html += '<ul class="assigned-teams-list">';
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) { continue; }
-            html += '<li class="assigned-team-item">';
-            html += '<span class="assigned-team-name">' +
-                        escapeHtml(team.name || 'Unnamed Team') +
-                    '</span>';
-            html += '<button type="button" class="small danger" ' +
-                        'data-action="mission-remove-team" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-team-id="' +
-                            escapeAttribute(team.id) + '" ' +
-                        'title="Remove this team from the mission">' +
-                        '\u2715' +
-                    '</button>';
-            html += '</li>';
-        }
-        html += '</ul>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderDetailObjectives(vm) {
-        var objectives = isArray(vm.objectives) ? vm.objectives : [];
-        var progress = typeof vm.progress === 'number'
-            ? vm.progress : 0;
-
-        var html = '';
-        html += '<div class="objectives-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Objectives</strong>';
-        html += '<span class="count">' + objectives.length + '</span>';
-        html += '<span class="progress-label">' + progress + '%</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-add-objective" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    '+ Add' +
-                '</button>';
-        html += '</div>';
-
-        if (objectives.length === 0) {
-            html += '<p class="empty-state small">No objectives.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<ul class="objectives-list">';
-        for (var i = 0; i < objectives.length; i++) {
-            var obj = objectives[i];
-            if (!obj) { continue; }
-
-            var itemClass = 'objective-item';
-            if (obj.done === true) { itemClass += ' objective-done'; }
-
-            html += '<li class="' + itemClass + '">';
-            html += '<input type="checkbox" ' +
-                        'data-action="mission-objective-toggle" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-objective-index="' +
-                            escapeAttribute(String(obj.index)) + '"' +
-                        (obj.done === true ? ' checked' : '') +
-                        '>';
-            html += '<span class="objective-text">' +
-                        escapeHtml(obj.text || '(empty)') +
-                    '</span>';
-            html += '<button type="button" class="small danger" ' +
-                        'data-action="mission-remove-objective" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-objective-index="' +
-                            escapeAttribute(String(obj.index)) + '" ' +
-                        'title="Remove this objective">' +
-                        '\u2715' +
-                    '</button>';
-            html += '</li>';
-        }
-        html += '</ul>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderDetailParticipants(vm) {
-        var participants = isArray(vm.participants)
-            ? vm.participants
-            : [];
-
-        var html = '';
-        html += '<div class="participants-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Participants</strong>';
-        html += '<span class="count">' + participants.length + '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-open-rookie-picker" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    'Add Rookies' +
-                '</button>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-edit-participants" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    'Edit Participants' +
-                '</button>';
-        html += '</div>';
-
-        if (participants.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No participants recorded.' +
-                    '</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<ul class="participants-list">';
-        for (var i = 0; i < participants.length; i++) {
-            var p = participants[i];
-            if (!p) { continue; }
-
-            var itemClass = 'participant-item';
-            if (p.source === 'rookie') {
-                itemClass += ' participant-rookie';
-            }
-
-            var sourceClass = MissionViews.getParticipantSourceClass(
-                p.source
-            );
-
-            html += '<li class="' + itemClass + '">';
-
-            html += '<span class="participant-name">' +
-                        escapeHtml(p.displayName || 'Unknown') +
-                    '</span>';
-
-            if (p.deceased === true) {
-                html += '<span class="participant-deceased" ' +
-                            'title="Deceased">\u2020</span>';
-            }
-
-            if (isNonEmptyString(p.teamName)) {
-                html += '<span class="participant-team">' +
-                            escapeHtml(p.teamName) +
-                        '</span>';
-            }
-
-            html += '<span class="participant-source ' +
-                        escapeAttribute(sourceClass) + '">' +
-                        escapeHtml(p.sourceLabel || p.source || '') +
-                    '</span>';
-
-            html += '<button type="button" class="small danger" ' +
-                        'data-action="mission-remove-participant" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-character-id="' +
-                            escapeAttribute(p.characterId) + '" ' +
-                        'data-team-id="' +
-                            escapeAttribute(
-                                p.teamId === null || p.teamId === undefined
-                                    ? ''
-                                    : p.teamId
-                            ) + '" ' +
-                        'title="Remove this participant">' +
-                        '\u2715' +
-                    '</button>';
-
-            html += '</li>';
-        }
-        html += '</ul>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderDetailSupportPersonnel(vm) {
-        var support = isArray(vm.supportPersonnel)
-            ? vm.supportPersonnel
-            : [];
-
-        var html = '';
-        html += '<div class="support-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Support Personnel</strong>';
-        html += '<span class="count">' + support.length + '</span>';
-        html += '</div>';
-
-        if (support.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No support assigned.' +
-                    '</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<ul class="support-list">';
-        for (var i = 0; i < support.length; i++) {
-            var s = support[i];
-            if (!s) { continue; }
-
-            html += '<li class="support-item">';
-            html += '<span class="support-name">' +
-                        escapeHtml(s.name || 'Unknown') +
-                    '</span>';
-            html += '<button type="button" class="small danger" ' +
-                        'data-action="mission-remove-support" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-character-id="' +
-                            escapeAttribute(s.id) + '" ' +
-                        'title="Remove this support assignment">' +
-                        '\u2715' +
-                    '</button>';
-            html += '</li>';
-        }
-        html += '</ul>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderDetailReports(vm) {
-        var reports = isArray(vm.reports) ? vm.reports : [];
-
-        var html = '';
-        html += '<div class="reports-section">';
-
-        html += '<div class="section-header">';
-        html += '<strong>Reports</strong>';
-        html += '<span class="count">' + reports.length + '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-report-add" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    '+ Add Report' +
-                '</button>';
-        html += '</div>';
-
-        if (reports.length === 0) {
-            html += '<p class="empty-state small">No reports.</p>';
-            html += '</div>';
-            return html;
-        }
-
-        for (var i = 0; i < reports.length; i++) {
-            var r = reports[i];
-            if (!r) { continue; }
-
-            var rowClass = 'report-row';
-            if (r.authorRedacted === true) {
-                rowClass += ' report-author-redacted';
-            }
-
-            html += '<div class="' + rowClass + '">';
-
-            html += '<div class="report-meta">';
-            html += '<span class="report-author">' +
-                        escapeHtml(r.authorName || 'Unknown') +
-                    '</span>';
-            html += '<span class="report-timestamp">' +
-                        escapeHtml(r.createdAtDisplay || '') +
-                    '</span>';
-            if (r.isEdited === true) {
-                html += '<span class="report-edited">' +
-                            '(edited ' +
-                            escapeHtml(r.updatedAtDisplay || '') +
-                            ')' +
-                        '</span>';
-            }
-            html += '</div>';
-
-            html += '<div class="report-body">' +
-                        escapeHtml(r.text || '') +
-                    '</div>';
-
-            html += '<div class="report-actions">';
-            html += '<button type="button" class="small secondary" ' +
-                        'data-action="mission-report-edit" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-report-id="' +
-                            escapeAttribute(r.id) + '">' +
-                        'Edit' +
-                    '</button>';
-            html += '<button type="button" class="small danger" ' +
-                        'data-action="mission-report-delete" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '" ' +
-                        'data-report-id="' +
-                            escapeAttribute(r.id) + '">' +
-                        'Delete' +
-                    '</button>';
-            html += '</div>';
-
-            html += '</div>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderDetailActions(vm) {
-        var caps = vm.capabilities || {};
-
-        var html = '';
-        html += '<div class="mission-detail-actions">';
-
-        if (caps.edit === true) {
-            html += '<button type="button" class="primary" ' +
-                        'data-action="mission-edit" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Edit' +
-                    '</button>';
-        }
-
-        if (caps.complete === true) {
-            html += '<button type="button" class="secondary" ' +
-                        'data-action="mission-complete" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Mark Complete' +
-                    '</button>';
-        }
-
-        if (caps.cancel === true) {
-            html += '<button type="button" class="secondary" ' +
-                        'data-action="mission-cancel" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Cancel Mission' +
-                    '</button>';
-        }
-
-        if (caps.reactivate === true) {
-            html += '<button type="button" class="secondary" ' +
-                        'data-action="mission-reactivate" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Reactivate' +
-                    '</button>';
-        }
-
-        html += '<button type="button" class="secondary" ' +
-                    'data-action="mission-export" ' +
-                    'data-mission-id="' +
-                        escapeAttribute(vm.id) + '">' +
-                    'Export' +
-                '</button>';
-
-        if (vm.isArchived === true) {
-            html += '<button type="button" class="danger" ' +
-                        'data-action="mission-unarchive" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Unarchive' +
-                    '</button>';
-        } else {
-            html += '<button type="button" class="danger" ' +
-                        'data-action="mission-archive" ' +
-                        'data-mission-id="' +
-                            escapeAttribute(vm.id) + '">' +
-                        'Archive' +
-                    '</button>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // FORM
-    // ============================================================
-
-    function renderForm(vm) {
-        if (!vm) { return ''; }
-
-        var isEdit = vm.isEdit === true;
-        var mission = isPlainObject(vm.mission) ? vm.mission : {};
-        var defaults = isPlainObject(vm.defaults) ? vm.defaults : {};
-
-        var titleVal = isNonEmptyString(mission.title)
-            ? mission.title
-            : '';
-        var descriptionVal = isNonEmptyString(mission.description)
-            ? mission.description
-            : '';
-        var yearVal = (mission.year !== undefined &&
-                       mission.year !== null)
-            ? String(mission.year)
-            : String(defaults.year || '');
-        var monthVal = (mission.month !== undefined &&
-                        mission.month !== null)
-            ? String(mission.month)
-            : String(defaults.month || 1);
-        var dayVal = (mission.day !== undefined &&
-                      mission.day !== null)
-            ? String(mission.day)
-            : String(defaults.day || 1);
-        var notesVal = isNonEmptyString(mission.notes)
-            ? mission.notes
-            : '';
-        var tagsVal = isArray(mission.tags)
-            ? mission.tags.join(', ')
-            : '';
-
-        var html = '';
-
-        html += '<form id="mission-form-inner" class="mission-form" ' +
-                    'data-edit-id="' +
-                        escapeAttribute(isEdit ? (vm.editId || '') : '') +
-                    '">';
-
-        html += '<div class="form-grid">';
-
-        html += renderFormText('mission-title', 'Title',
-            titleVal, 'full-width', true);
-
-        html += renderFormTextarea('mission-description', 'Description',
-            descriptionVal, 'full-width');
-
-        html += renderDateFields(yearVal, monthVal, dayVal);
-
-        html += renderTypeFields(vm, mission);
-
-        html += renderFormSelect('mission-escalation', 'Escalation',
-            vm.escalationTiers || [], mission.escalation || '');
-        html += renderFormText('mission-threat-type', 'Threat Type',
-            mission.threatType || '');
-
-        html += renderFormText('mission-environment', 'Environment',
-            mission.environment || '');
-        html += renderFormText('mission-location', 'Location',
-            mission.location || '');
-        html += renderFormText('mission-duration', 'Duration',
-            mission.duration || '');
-
-        html += renderFormSelect('mission-difficulty', 'Difficulty',
-            vm.difficulties || [], mission.difficulty || '');
-        html += renderFormSelect('mission-priority', 'Priority',
-            vm.priorities || [], mission.priority || '');
-
-        html += renderFormText('mission-base-pay', 'Base Pay',
-            mission.basePay || '');
-        html += renderFormText('mission-surcharge-pay',
-            'Surcharge Pay', mission.surchargePay || '');
-        html += renderFormSelect('mission-billing', 'Billing',
-            vm.billingTypes || [], mission.billing || '');
-
-        html += renderFormSelect('mission-status', 'Status',
-            vm.statuses || [], mission.status || '');
-
-        html += renderDerivedLabel(vm, isEdit);
-
-        html += renderTeamsEditor(vm, mission);
-
-        html += renderSupportEditor(vm, mission);
-
-        html += renderObjectivesEditor(mission);
-
-        html += renderParticipantsPanel(vm);
-
-        html += renderFormTextarea('mission-notes', 'Notes',
-            notesVal, 'full-width');
-
-        html += renderFormText('mission-tags', 'Tags',
-            tagsVal, 'full-width',
-            false,
-            'Comma-separated. e.g. urgent, night, long-term');
-
-        html += '</div>'; // form-grid
-
-        // ---- Action bar ----
-        html += '<div class="form-actions">';
-        html += '<button type="button" class="secondary" ' +
-                    'data-action="mission-close-form">' +
-                    'Discard Changes' +
-                '</button>';
-        html += '<button type="submit" class="primary">' +
-                    (isEdit ? 'Update Mission' : 'Create Mission') +
-                '</button>';
-        html += '</div>';
-
-        html += '</form>';
-
-        return html;
-    }
-
-    // ============================================================
-    // FORM FIELD HELPERS
-    // ============================================================
-
-    function renderFormText(id, label, value, extraClass,
-                            required, hint) {
-        var groupClass = 'form-group';
-        if (isNonEmptyString(extraClass)) {
-            groupClass += ' ' + extraClass;
-        }
-
-        var html = '';
-        html += '<div class="' + groupClass + '">';
-        html += '<label for="' + escapeAttribute(id) + '">' +
-                    escapeHtml(label) +
-                    (required === true ? ' *' : '') +
-                '</label>';
-        html += '<input type="text" ' +
-                    'id="' + escapeAttribute(id) + '" ' +
-                    'name="' + escapeAttribute(id) + '" ' +
-                    'value="' + escapeAttribute(safeString(value)) + '"' +
-                    (required === true ? ' required' : '') +
-                    '>';
-        if (isNonEmptyString(hint)) {
-            html += '<span class="field-hint">' +
-                        escapeHtml(hint) +
-                    '</span>';
-        }
-        html += '</div>';
-        return html;
-    }
-
-    function renderFormTextarea(id, label, value, extraClass) {
-        var groupClass = 'form-group';
-        if (isNonEmptyString(extraClass)) {
-            groupClass += ' ' + extraClass;
-        }
-
-        var html = '';
-        html += '<div class="' + groupClass + '">';
-        html += '<label for="' + escapeAttribute(id) + '">' +
-                    escapeHtml(label) +
-                '</label>';
-        html += '<textarea id="' + escapeAttribute(id) + '" ' +
-                    'name="' + escapeAttribute(id) + '" ' +
-                    'rows="3">' +
-                    escapeHtml(safeString(value)) +
-                '</textarea>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderFormSelect(id, label, options, currentValue) {
-        var html = '';
-        html += '<div class="form-group">';
-        html += '<label for="' + escapeAttribute(id) + '">' +
-                    escapeHtml(label) +
-                '</label>';
-        html += '<select id="' + escapeAttribute(id) + '" ' +
-                    'name="' + escapeAttribute(id) + '">';
-        html += '<option value="">Select...</option>';
-        if (isArray(options)) {
-            for (var i = 0; i < options.length; i++) {
-                var opt = options[i];
-                if (!opt) { continue; }
-                var selected = currentValue === opt.id
-                    ? ' selected'
-                    : '';
-                html += '<option value="' +
-                            escapeAttribute(opt.id) + '"' +
-                            selected + '>' +
-                            escapeHtml(opt.label || opt.id) +
-                        '</option>';
-            }
-        }
-        html += '</select>';
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // DATE FIELDS (custom-calendar aware)
-    // ============================================================
-    //
-    // Year is a number input. Month is a <select> populated from
-    // CalendarConfig.getMonthsForYear(year) — the active project's
-    // calendar when one is set, Gregorian otherwise. The month ids
-    // are integers 1..N, renumbered per year so that in a year with
-    // a leap-month insertion, the leap month appears at its own
-    // position and the following months shift by one.
-    //
-    // Day's max is the number of days in that month, in that year,
-    // in that calendar. The browser clamps the number spinner; a
-    // manually typed out-of-range day is rejected on submit by
-    // MissionSchema via CalendarValidation.isValidCalendarDate.
-    //
-    // The data-* markers on the three fields are what mission-ui.js
-    // reads to reset untouched month/day when the year changes.
-
-    function renderDateFields(yearVal, monthVal, dayVal) {
-        var yearNum = toPositiveInt(yearVal, null);
-        var fallbackYear = yearNum !== null
-            ? yearNum
-            : new Date().getFullYear();
-
-        var months = getMonthsForYear(fallbackYear);
-        if (!isArray(months) || months.length === 0) {
-            months = gregorianMonths(fallbackYear);
-        }
-
-        var selectedMonth = toPositiveInt(monthVal, 1);
-        if (selectedMonth > months.length) {
-            selectedMonth = 1;
-        }
-
-        var maxDays = months[selectedMonth - 1].days;
-        var selectedDay = toPositiveInt(dayVal, 1);
-        if (selectedDay > maxDays) {
-            selectedDay = maxDays;
-        }
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Date</label>';
-        html += '<div class="date-input-group">';
-
-        // ---- Year ----
-        html += '<div class="date-field">';
-        html += '<span class="date-label">Year</span>';
-        html += '<input type="number" id="mission-year" ' +
-                    'class="date-year" min="1" ' +
-                    'data-mission-year-field="true" ' +
-                    'value="' + escapeAttribute(yearVal) + '" ' +
-                    'placeholder="Year">';
-        html += '</div>';
-
-        // ---- Month (custom-calendar <select>) ----
-        html += '<div class="date-field">';
-        html += '<span class="date-label">Month</span>';
-        html += '<select id="mission-month" ' +
-                    'class="date-month" ' +
-                    'data-mission-month-field="true">';
-        for (var i = 0; i < months.length; i++) {
-            var m = months[i];
-            var isSel = m.id === selectedMonth;
-            html += '<option value="' + escapeAttribute(m.id) + '"' +
-                        (isSel ? ' selected' : '') + '>' +
-                        escapeHtml(m.name) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // ---- Day ----
-        html += '<div class="date-field">';
-        html += '<span class="date-label">Day</span>';
-        html += '<input type="number" id="mission-day" ' +
-                    'class="date-day" min="1" max="' +
-                    escapeAttribute(String(maxDays)) + '" ' +
-                    'data-mission-day-field="true" ' +
-                    'value="' + escapeAttribute(String(selectedDay)) + '">';
-        html += '</div>';
-
-        html += '</div>';
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // TYPE FIELDS (primary / subtype / secondary)
-    // ============================================================
-
-    function renderTypeFields(vm, mission) {
-        var types = isArray(vm.missionTypes) ? vm.missionTypes : [];
-        var primaryType = mission.primaryType || '';
-        var subtype = mission.subtype || '';
-        var secondaryType = mission.secondaryType || '';
-
-        var primary = null;
-        for (var i = 0; i < types.length; i++) {
-            if (types[i] && types[i].id === primaryType) {
-                primary = types[i];
-                break;
-            }
-        }
-
-        var html = '';
-
-        // ---- Primary type ----
-        html += '<div class="form-group">';
-        html += '<label for="mission-primary-type">' +
-                    'Primary Type' +
-                '</label>';
-        html += '<select id="mission-primary-type" ' +
-                    'name="mission-primary-type">';
-        html += '<option value="">Select...</option>';
-        for (var p = 0; p < types.length; p++) {
-            var pt = types[p];
-            if (!pt || !pt.id) { continue; }
-            var pSel = primaryType === pt.id ? ' selected' : '';
-            html += '<option value="' +
-                        escapeAttribute(pt.id) + '"' + pSel + '>' +
-                        escapeHtml(pt.label || pt.id) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // ---- Subtype ----
-        html += '<div class="form-group">';
-        html += '<label for="mission-subtype">Subtype</label>';
-        html += '<select id="mission-subtype" ' +
-                    'name="mission-subtype">';
-        if (primary && isArray(primary.subtypes) &&
-            primary.subtypes.length > 0) {
-            html += '<option value="">Select...</option>';
-            for (var s = 0; s < primary.subtypes.length; s++) {
-                var st = primary.subtypes[s];
-                if (!st || !st.id) { continue; }
-                var sSel = subtype === st.id ? ' selected' : '';
-                html += '<option value="' +
-                            escapeAttribute(st.id) + '"' + sSel + '>' +
-                            escapeHtml(st.label || st.id) +
-                        '</option>';
-            }
-        } else {
-            var placeholder = primary
-                ? '(no subtypes for this category)'
-                : '(select a category first)';
-            html += '<option value="" disabled selected>' +
-                        escapeHtml(placeholder) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // ---- Secondary type ----
-        html += '<div class="form-group">';
-        html += '<label for="mission-secondary-type">' +
-                    'Secondary Type' +
-                '</label>';
-        html += '<select id="mission-secondary-type" ' +
-                    'name="mission-secondary-type">';
-        html += '<option value="">None</option>';
-        for (var q = 0; q < types.length; q++) {
-            var qt = types[q];
-            if (!qt || !qt.id) { continue; }
-            var qSel = secondaryType === qt.id ? ' selected' : '';
-            html += '<option value="' +
-                        escapeAttribute(qt.id) + '"' + qSel + '>' +
-                        escapeHtml(qt.label || qt.id) +
-                    '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        return html;
-    }
-
-    // ============================================================
-    // DERIVED LABEL
-    // ============================================================
-
-    function renderDerivedLabel(vm, isEdit) {
-        var label = isNonEmptyString(vm.currentLabel)
-            ? vm.currentLabel
-            : '';
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Mission ID</label>';
-        if (isEdit && label !== '') {
-            html += '<div class="mission-form-id-display">' +
-                        escapeHtml(label) +
-                    '</div>';
-        } else {
-            html += '<div class="mission-form-id-display ' +
-                        'mission-form-id-pending">' +
-                        'Assigned on save' +
-                    '</div>';
-        }
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // TEAMS EDITOR
-    // ============================================================
-    //
-    // The "Assign Team" select renders one <option> per eligible
-    // team in the order the aggregator produced. The aggregator's
-    // buildTeamOptionsSorted puts teams whose current
-    // specialisations overlap the mission's type first, ordered by
-    // descending overlap count, then alphabetically. Each option
-    // carries `specialisationLabels`, and this renderer appends
-    // them to the option text in parentheses so the user can see
-    // WHY a team is at the top of the list:
-    //
-    //   Alpha (Combat, Recovery)
-    //   Bravo (Combat)
-    //   Charlie
-    //
-    // A team with no current specialisations renders as just its
-    // name; the suffix is emitted only when the labels array is
-    // non-empty. The labels are escaped with escapeHtml, not
-    // trusted as plain text.
-
-    function renderTeamsEditor(vm, mission) {
-        var teamOptions = isArray(vm.teams) ? vm.teams : [];
-        var currentTeamIds = isArray(mission.assignedTeamIds)
-            ? mission.assignedTeamIds
-            : [];
-
-        var currentSet = Object.create(null);
-        for (var c = 0; c < currentTeamIds.length; c++) {
-            if (isNonEmptyString(currentTeamIds[c])) {
-                currentSet[String(currentTeamIds[c])] = true;
-            }
-        }
-
-        var optionById = Object.create(null);
-        for (var o = 0; o < teamOptions.length; o++) {
-            var opt = teamOptions[o];
-            if (!opt || !opt.id) { continue; }
-            optionById[String(opt.id)] = opt;
-        }
-
-        var pickable = [];
-        for (var p = 0; p < teamOptions.length; p++) {
-            var pt = teamOptions[p];
-            if (!pt || !pt.id) { continue; }
-            if (currentSet[String(pt.id)] === true) { continue; }
-            pickable.push(pt);
-        }
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Assigned Teams</label>';
-        html += '<div class="mission-team-editor">';
-
-        html += '<div class="mission-team-input-group">';
-        html += '<select id="mission-team-select" ' +
-                    'class="mission-team-select"' +
-                    (pickable.length === 0 ? ' disabled' : '') + '>';
-        if (pickable.length === 0) {
-            var placeholder = teamOptions.length === 0
-                ? 'No eligible teams available'
-                : 'All eligible teams assigned';
-            html += '<option value="" disabled selected>' +
-                        escapeHtml(placeholder) +
-                    '</option>';
-        } else {
-            html += '<option value="">Select a team...</option>';
-            for (var pk = 0; pk < pickable.length; pk++) {
-                var pt2 = pickable[pk];
-                html += '<option value="' +
-                            escapeAttribute(pt2.id) + '">' +
-                            escapeHtml(
-                                buildTeamOptionLabel(pt2)
-                            ) +
-                        '</option>';
-            }
-        }
-        html += '</select>';
-        html += '<button type="button" class="small primary ' +
-                    'mission-add-team" ' +
-                    'data-action="mission-add-team"' +
-                    (pickable.length === 0 ? ' disabled' : '') + '>' +
-                    '+ Add Team' +
-                '</button>';
-        html += '</div>';
-
-        html += '<div id="mission-teams-list" ' +
-                    'class="mission-teams-list">';
-        if (currentTeamIds.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No teams assigned.' +
-                    '</p>';
-        } else {
-            for (var t = 0; t < currentTeamIds.length; t++) {
-                var teamId = String(currentTeamIds[t]);
-                var team = optionById[teamId];
-                var teamName = team && isNonEmptyString(team.name)
-                    ? team.name
-                    : teamId;
-                html += '<div class="mission-team-chip" ' +
-                            'data-team-id="' +
-                                escapeAttribute(teamId) + '">';
-                html += '<span class="mission-team-chip-name">' +
-                            escapeHtml(teamName) +
-                        '</span>';
-                html += '<button type="button" ' +
-                            'class="small danger" ' +
-                            'data-action="mission-remove-team" ' +
-                            'data-team-id="' +
-                                escapeAttribute(teamId) + '" ' +
-                            'title="Remove this team">' +
-                            '\u2715' +
-                        '</button>';
-                html += '</div>';
-            }
-        }
-        html += '</div>';
-
-        html += '</div>'; // mission-team-editor
-        html += '</div>'; // form-group full-width
-
-        return html;
-    }
-
-    /**
-     * Compose the <option> text for a team.
-     *
-     * Returns "Name" when the team has no current specialisations,
-     * or "Name (Label A, Label B)" otherwise. Labels are the human
-     * strings the aggregator resolved from the team's current
-     * period. They are NOT trusted as plain text; the caller runs
-     * the whole result through escapeHtml.
-     *
-     * This is the piece that makes the aggregator's priority
-     * ordering legible: the user sees why a team is at the top.
-     */
-    function buildTeamOptionLabel(teamOption) {
-        if (!teamOption || !teamOption.id) { return ''; }
-
-        var name = isNonEmptyString(teamOption.name)
-            ? teamOption.name
-            : teamOption.id;
-
-        var labels = isArray(teamOption.specialisationLabels)
-            ? teamOption.specialisationLabels
-            : [];
-
-        if (labels.length === 0) {
-            return name;
-        }
-
-        var parts = [];
-        for (var i = 0; i < labels.length; i++) {
-            var label = labels[i];
-            if (!isNonEmptyString(label)) { continue; }
-            parts.push(String(label));
-        }
-
-        if (parts.length === 0) {
-            return name;
-        }
-
-        return name + ' (' + parts.join(', ') + ')';
-    }
-
-    // ============================================================
-    // SUPPORT EDITOR
-    // ============================================================
-
-    function renderSupportEditor(vm, mission) {
-        var charOptions = isArray(vm.characters) ? vm.characters : [];
-        var currentSupportIds = isArray(mission.supportPersonnel)
-            ? mission.supportPersonnel
-            : [];
-
-        var currentSet = Object.create(null);
-        for (var c = 0; c < currentSupportIds.length; c++) {
-            if (isNonEmptyString(currentSupportIds[c])) {
-                currentSet[String(currentSupportIds[c])] = true;
-            }
-        }
-
-        var charById = Object.create(null);
-        for (var ch = 0; ch < charOptions.length; ch++) {
-            var char = charOptions[ch];
-            if (!char || !char.id) { continue; }
-            charById[String(char.id)] = char;
-        }
-
-        var pickable = [];
-        for (var p = 0; p < charOptions.length; p++) {
-            var pc = charOptions[p];
-            if (!pc || !pc.id) { continue; }
-            if (currentSet[String(pc.id)] === true) { continue; }
-            pickable.push(pc);
-        }
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Support Personnel</label>';
-
-        html += '<div class="support-input-group">';
-        html += '<select id="mission-support-select" ' +
-                    'class="support-select"' +
-                    (pickable.length === 0 ? ' disabled' : '') + '>';
-        if (pickable.length === 0) {
-            var placeholder = charOptions.length === 0
-                ? 'No characters available'
-                : 'All characters are already support';
-            html += '<option value="" disabled selected>' +
-                        escapeHtml(placeholder) +
-                    '</option>';
-        } else {
-            html += '<option value="">Select a character...</option>';
-            for (var pk = 0; pk < pickable.length; pk++) {
-                var pc2 = pickable[pk];
-                html += '<option value="' +
-                            escapeAttribute(pc2.id) + '">' +
-                            escapeHtml(pc2.name || pc2.id) +
-                        '</option>';
-            }
-        }
-        html += '</select>';
-        html += '<button type="button" class="small primary ' +
-                    'data-action="mission-add-support"' +
-                    (pickable.length === 0 ? ' disabled' : '') + '>' +
-                    '+ Add' +
-                '</button>';
-        html += '</div>';
-
-        html += '<div id="mission-support-list">';
-        if (currentSupportIds.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No support assigned.' +
-                    '</p>';
-        } else {
-            for (var s = 0; s < currentSupportIds.length; s++) {
-                var sId = String(currentSupportIds[s]);
-                var sChar = charById[sId];
-                var sName = sChar && isNonEmptyString(sChar.name)
-                    ? sChar.name
-                    : sId;
-                html += '<div class="support-row" ' +
-                            'data-character-id="' +
-                                escapeAttribute(sId) + '">';
-                html += '<span class="support-name">' +
-                            escapeHtml(sName) +
-                        '</span>';
-                html += '<button type="button" ' +
-                            'class="small danger" ' +
-                            'data-action="mission-remove-support" ' +
-                            'data-character-id="' +
-                                escapeAttribute(sId) + '">' +
-                            '\u2715' +
-                        '</button>';
-                html += '</div>';
-            }
-        }
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // OBJECTIVES EDITOR
-    // ============================================================
-
-    function renderObjectivesEditor(mission) {
-        var objectives = isArray(mission.objectives)
-            ? mission.objectives
-            : [];
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Objectives</label>';
-
-        html += '<div class="objective-input-group">';
-        html += '<input type="text" ' +
-                    'id="mission-objective-input" ' +
-                    'class="objective-input" ' +
-                    'placeholder="New objective...">';
-        html += '<button type="button" class="small primary" ' +
-                    'data-action="mission-add-objective">' +
-                    '+ Add' +
-                '</button>';
-        html += '</div>';
-
-        html += '<div id="mission-objectives-list">';
-        if (objectives.length === 0) {
-            html += '<p class="empty-state small">No objectives.</p>';
-        } else {
-            for (var i = 0; i < objectives.length; i++) {
-                var obj = objectives[i];
-                if (!obj) { continue; }
-                html += '<div class="objective-row">';
-                html += '<input type="checkbox" class="objective-done"' +
-                            (obj.done === true ? ' checked' : '') +
-                        '>';
-                html += '<input type="text" ' +
-                            'class="objective-text-input" ' +
-                            'value="' +
-                                escapeAttribute(obj.text || '') + '">';
-                html += '<button type="button" ' +
-                            'class="small danger" ' +
-                            'data-action="mission-remove-objective" ' +
-                            'data-objective-index="' +
-                                escapeAttribute(String(obj.index)) + '">' +
-                            '\u2715' +
-                        '</button>';
-                html += '</div>';
-            }
-        }
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // PARTICIPANTS PANEL
-    // ============================================================
-
-    function renderParticipantsPanel(vm) {
-        var pvm = vm && vm.participantsVM
-            ? vm.participantsVM
-            : null;
-
-        var html = '';
-        html += '<div class="form-group full-width">';
-        html += '<label>Participants</label>';
-        html += '<div id="mission-participants-panel" ' +
-                    'class="participants-panel">';
-
-        if (!pvm) {
-            html += '<p class="empty-state small">' +
-                        'Add a team to the mission to manage ' +
-                        'its participants.' +
-                    '</p>';
-            html += '</div>';
-            html += '</div>';
-            return html;
-        }
-
-        var missionId = pvm.missionId || null;
-        var missionIdAttr = missionId
-            ? ' data-mission-id="' +
-                escapeAttribute(String(missionId)) + '"'
-            : '';
-
-        var assignedTeams = isArray(pvm.assignedTeams)
-            ? pvm.assignedTeams
-            : [];
-        var currentParticipants = isArray(pvm.currentParticipants)
-            ? pvm.currentParticipants
-            : [];
-
-        if (assignedTeams.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No teams assigned yet. Add a team above to ' +
-                        'manage its participants.' +
-                    '</p>';
-        } else {
-            for (var t = 0; t < assignedTeams.length; t++) {
-                html += renderParticipantTeamSection(
-                    assignedTeams[t], missionIdAttr
-                );
-            }
-        }
-
-        html += renderRookieSection(
-            currentParticipants, missionIdAttr
-        );
-
-        html += '</div>';
-        html += '</div>';
-        return html;
-    }
-
-    function renderParticipantTeamSection(team, missionIdAttr) {
-        if (!team || !team.teamId) { return ''; }
-
-        var members = isArray(team.members) ? team.members : [];
-
-        var html = '';
-        html += '<div class="participant-team-section">';
-
-        html += '<div class="participant-section-header">';
-        html += '<span class="participant-team-name">' +
-                    escapeHtml(team.teamName || 'Unnamed Team') +
-                '</span>';
-        html += '<span class="participant-team-count">' +
-                    members.length + ' member' +
-                    (members.length === 1 ? '' : 's') +
-                '</span>';
-        html += '</div>';
-
-        if (members.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No active members at the mission year.' +
-                    '</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<ul class="participant-member-list">';
-        for (var i = 0; i < members.length; i++) {
-            html += renderTeamMemberCheckbox(
-                team, members[i], missionIdAttr
-            );
-        }
-        html += '</ul>';
-
-        html += '</div>';
-        return html;
-    }
-
-    function renderTeamMemberCheckbox(team, member, missionIdAttr) {
-        if (!member || !member.characterId) { return ''; }
-
-        var charId = String(member.characterId);
-        var teamId = String(team.teamId);
-        var checked = member.isParticipant === true;
-
-        // Inline styles applied to force the flex layout to behave.
-        // 1. The label is forced to display:flex, align-items:center, and stretch 100% width.
-        // 2. The checkbox is prevented from stretching or shrinking.
-        // 3. The name span is forced to take up the remaining space (flex: 1) and is 
-        //    explicitly prevented from collapsing into a vertical column (white-space: pre-wrap).
-        var html = '';
-        html += '<li class="participant-member-row" style="display: block; width: 100%; margin-bottom: 4px;">';
-        html += '<label class="participant-member-label" style="display: flex; align-items: center; width: 100%; cursor: pointer;">';
-
-        html += '<input type="checkbox" ' +
-                    'class="participant-member-checkbox" ' +
-                    'data-action="mission-toggle-participant" ' +
-                    'data-character-id="' +
-                        escapeAttribute(charId) + '" ' +
-                    'data-team-id="' +
-                        escapeAttribute(teamId) + '" ' +
-                    'data-source="team"' +
-                    missionIdAttr +
-                    (checked ? ' checked' : '') +
-                    ' style="width: 16px !important; height: 16px; flex: 0 0 auto; margin-right: 8px; margin-top: 0; margin-bottom: 0; cursor: pointer;">';
-
-        html += '<span class="participant-member-name" style="flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; color: var(--text); text-align: left;">' +
-                    escapeHtml(member.displayName || 'Unknown') +
-                '</span>';
-
-        if (isNonEmptyString(member.role)) {
-            html += '<span class="participant-member-role" style="flex: 0 0 auto; margin-left: 8px; font-size: 0.75rem; color: var(--text-dim); white-space: nowrap;">(' +
-                        escapeHtml(member.role) +
-                    ')</span>';
-        }
-
-        if (member.deceased === true) {
-            html += '<span class="participant-member-deceased" ' +
-                        'title="Deceased" style="flex: 0 0 auto; margin-left: 6px; color: var(--text-dim);">\u2020</span>';
-        }
-
-        html += '</label>';
-        html += '</li>';
-        return html;
-    }
-
-    function renderRookieSection(currentParticipants, missionIdAttr) {
-        var rookies = [];
-        for (var i = 0; i < currentParticipants.length; i++) {
-            var p = currentParticipants[i];
-            if (!p) { continue; }
-            if (p.source !== 'rookie') { continue; }
-            rookies.push(p);
-        }
-
-        var html = '';
-        html += '<div class="participant-rookie-section">';
-
-        html += '<div class="participant-section-header">';
-        html += '<span class="participant-team-name">Rookies</span>';
-        html += '<span class="participant-team-count">' +
-                    rookies.length +
-                '</span>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="mission-open-rookie-picker"' +
-                    missionIdAttr + '>' +
-                    '+ Add Rookies' +
-                '</button>';
-        html += '</div>';
-
-        if (rookies.length === 0) {
-            html += '<p class="empty-state small">' +
-                        'No rookies selected.' +
-                    '</p>';
-            html += '</div>';
-            return html;
-        }
-
-        html += '<div class="rookie-chip-list">';
-        for (var r = 0; r < rookies.length; r++) {
-            var rook = rookies[r];
-
-            html += '<span class="rookie-chip">';
-            html += '<span class="rookie-chip-name">' +
-                        escapeHtml(rook.displayName || 'Unknown') +
-                    '</span>';
-            if (rook.deceased === true) {
-                html += '<span class="rookie-chip-deceased" ' +
-                            'title="Deceased">\u2020</span>';
-            }
-            html += '<button type="button" ' +
-                        'class="rookie-chip-remove" ' +
-                        'data-action="mission-remove-participant" ' +
-                        'data-character-id="' +
-                            escapeAttribute(rook.characterId) + '" ' +
-                        'data-team-id=""' +
-                        missionIdAttr + ' ' +
-                        'title="Remove this rookie">' +
-                        '\u2715' +
-                    '</button>';
-            html += '</span>';
-        }
-        html += '</div>';
-
-        html += '</div>';
-        return html;
-    }
-
-    // ============================================================
-    // REPORT FORM MODAL
-    // ============================================================
-
-    function renderReportFormModal(vm) {
-        if (!vm) { return ''; }
-
-        var isEdit = vm.mode === 'edit';
-
-        var html = '';
-
-        html += '<div class="modal-header">';
-        html += '<h3>' +
-                    (isEdit ? 'Edit Report' : 'Add Report') +
-                    ' \u2014 ' +
-                    escapeHtml(vm.missionTitle || 'Mission') +
-                '</h3>';
-        html += '<button type="button" class="close-modal" ' +
-                    'data-action="mission-report-cancel" ' +
-                    'aria-label="Close">&times;</button>';
-        html += '</div>';
-
-        html += '<div class="modal-body mission-report-body">';
-
-        html += '<div class="form-group">';
-        html += '<label for="mission-report-author">Author</label>';
-        html += '<select id="mission-report-author"' +
-                    (vm.authorRedacted === true ? ' disabled' : '') +
-                    '>';
-        html += '<option value="">Select...</option>';
-        html += renderAuthorOptgroup(
-            'Assigned Team Members',
-            vm.teamMembers,
-            vm.authorId
-        );
-        html += renderAuthorOptgroup(
-            'Other Characters',
-            vm.otherCharacters,
-            vm.authorId
-        );
-        html += '</select>';
-        html += '</div>';
-
-        html += '<div class="form-group mission-report-redact-row">';
-        html += '<label>';
-        html += '<input type="checkbox" ' +
-                    'id="mission-report-redacted"' +
-                    (vm.authorRedacted === true ? ' checked' : '') +
-                    '> ';
-        html += 'Submit as redacted (no author)';
-        html += '</label>';
-        html += '<span class="field-hint">' +
-                    'When redacted, the report is filed under ' +
-                    '\u201cUnknown\u201d and the author select ' +
-                    'is disabled.' +
-                '</span>';
-        html += '</div>';
-
-        html += '<div class="form-group">';
-        html += '<label for="mission-report-text">' +
-                    'Report Text' +
-                '</label>';
-        html += '<textarea id="mission-report-text" ' +
-                    'rows="10" ' +
-                    'spellcheck="true" ' +
-                    'placeholder="Write the report...">' +
-                    escapeHtml(vm.text || '') +
-                '</textarea>';
-        html += '<span class="field-hint">' +
-                    'Ctrl / Cmd + Enter to submit.' +
-                '</span>';
-        html += '</div>';
-
-        html += '<div id="mission-report-error" ' +
-                    'class="mission-report-error" ' +
-                    'style="display:none;padding:8px 12px;' +
-                    'background:var(--danger-soft);' +
-                    'border-left:3px solid var(--danger);' +
-                    'border-radius:4px;' +
-                    'font-size:0.75rem;color:var(--danger);"></div>';
-
-        html += '</div>';
-
-        html += '<div class="form-actions" ' +
-                    'style="display:flex;gap:8px;' +
-                    'justify-content:flex-end;' +
-                    'margin-top:12px;padding-top:12px;' +
-                    'border-top:1px solid var(--border-soft);">';
-        html += '<button type="button" class="secondary" ' +
-                    'data-action="mission-report-cancel">' +
-                    'Cancel' +
-                '</button>';
-        html += '<button type="button" class="primary" ' +
-                    'data-action="mission-report-submit">' +
-                    (isEdit ? 'Update Report' : 'Add Report') +
-                '</button>';
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderAuthorOptgroup(label, options, currentAuthorId) {
-        if (!isArray(options) || options.length === 0) {
-            return '';
-        }
-
-        var html = '';
-        html += '<optgroup label="' +
-                    escapeAttribute(label) + '">';
-        for (var i = 0; i < options.length; i++) {
-            var opt = options[i];
-            if (!opt || !opt.id) { continue; }
-
-            var selected = currentAuthorId &&
-                           String(currentAuthorId) === String(opt.id)
-                ? ' selected'
-                : '';
-
-            var display = opt.name || 'Unknown';
-            if (opt.deceased === true) {
-                display += ' \u2020';
-            }
-
-            html += '<option value="' +
-                        escapeAttribute(opt.id) + '"' + selected + '>' +
-                        escapeHtml(display) +
-                    '</option>';
-        }
-        html += '</optgroup>';
-        return html;
-    }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.MissionRender = Object.freeze({
-        renderContainer: renderContainer,
-        renderList: renderList,
-        renderDetail: renderDetail,
-        renderForm: renderForm,
-        renderReportFormModal: renderReportFormModal,
-        renderEmpty: renderEmpty,
-        renderLoading: renderLoading
-    });
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.MissionRender;
-        var missing = [];
-
-        var required = [
-            'renderContainer',
-            'renderList',
-            'renderDetail',
-            'renderForm',
-            'renderReportFormModal',
-            'renderEmpty',
-            'renderLoading'
-        ];
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        // Smoke test: participant panel contract.
-        try {
-            var fakeVM = {
-                isEdit: false,
-                editId: null,
-                mission: {
-                    title: '',
-                    description: '',
-                    year: 2026,
-                    month: 1,
-                    day: 1,
-                    primaryType: '',
-                    subtype: '',
-                    secondaryType: '',
-                    escalation: '',
-                    threatType: '',
-                    environment: '',
-                    location: '',
-                    duration: '',
-                    difficulty: '',
-                    priority: '',
-                    basePay: '',
-                    surchargePay: '',
-                    billing: '',
-                    status: '',
-                    objectives: [],
-                    notes: '',
-                    tags: [],
-                    assignedTeamIds: [],
-                    supportPersonnel: [],
-                    participants: []
-                },
-                currentLabel: null,
-                teams: [],
-                characters: [],
-                difficulties: [],
-                priorities: [],
-                statuses: [],
-                billingTypes: [],
-                escalationTiers: [],
-                missionTypes: [],
-                defaults: { year: 2026, month: 1, day: 1 },
-                participantsVM: {
-                    missionId: null,
-                    missionTitle: 'Mission',
-                    missionYear: 2026,
-                    assignedTeams: [
-                        {
-                            teamId: 'team_a',
-                            teamName: 'Alpha',
-                            members: [
-                                {
-                                    characterId: 'char_1',
-                                    displayName: 'Anne',
-                                    role: 'Leader',
-                                    deceased: false,
-                                    isParticipant: true
-                                }
-                            ]
-                        }
-                    ],
-                    currentParticipants: [
-                        {
-                            characterId: 'char_2',
-                            displayName: 'Beth',
-                            teamId: null,
-                            teamName: null,
-                            source: 'rookie',
-                            sourceLabel: 'Rookie',
-                            deceased: false
-                        }
-                    ]
-                }
-            };
-
-            var html = renderForm(fakeVM);
-
-            if (html.indexOf('id="mission-participants-panel"') === -1) {
-                missing.push(
-                    'renderForm did not emit #mission-participants-panel'
-                );
-            }
-            if (html.indexOf('class="participant-member-checkbox"') === -1) {
-                missing.push(
-                    'renderForm did not emit .participant-member-checkbox'
-                );
-            }
-            if (html.indexOf('data-action="mission-toggle-participant"') === -1) {
-                missing.push(
-                    'renderForm did not emit the toggle action'
-                );
-            }
-            if (html.indexOf('data-character-id="char_1"') === -1) {
-                missing.push(
-                    'renderForm did not emit the character id on the toggle'
-                );
-            }
-            if (html.indexOf('data-team-id="team_a"') === -1) {
-                missing.push(
-                    'renderForm did not emit the team id on the toggle'
-                );
-            }
-            if (html.indexOf('class="rookie-chip"') === -1) {
-                missing.push(
-                    'renderForm did not emit .rookie-chip for the rookie'
-                );
-            }
-            if (html.indexOf('data-action="mission-close-form"') === -1) {
-                missing.push(
-                    'renderForm did not emit the Discard Changes action'
-                );
-            }
-            if (html.indexOf('Discard Changes') === -1) {
-                missing.push(
-                    'renderForm did not label the abandon button ' +
-                    '"Discard Changes"'
-                );
-            }
-
-            // E1: date fields emit the correct elements.
-            if (html.indexOf('id="mission-year"') === -1) {
-                missing.push('renderForm missing #mission-year');
-            }
-            if (html.indexOf('id="mission-month"') === -1) {
-                missing.push('renderForm missing #mission-month');
-            }
-            if (html.indexOf('id="mission-day"') === -1) {
-                missing.push('renderForm missing #mission-day');
-            }
-            if (html.indexOf('select id="mission-month"') === -1) {
-                missing.push(
-                    'renderForm did not emit #mission-month as a <select>'
-                );
-            }
-            if (html.indexOf('data-mission-year-field="true"') === -1) {
-                missing.push(
-                    'renderForm lost data-mission-year-field'
-                );
-            }
-            if (html.indexOf('data-mission-month-field="true"') === -1) {
-                missing.push(
-                    'renderForm lost data-mission-month-field'
-                );
-            }
-            if (html.indexOf('data-mission-day-field="true"') === -1) {
-                missing.push(
-                    'renderForm lost data-mission-day-field'
-                );
-            }
-            if (html.indexOf('>January<') === -1) {
-                missing.push(
-                    'renderForm month <select> did not include Gregorian ' +
-                    'fallback months'
-                );
-            }
-        } catch (e) {
-            missing.push('form smoke test threw: ' + e.message);
-        }
-
-        // Smoke test: team option label rendering.
-        try {
-            if (buildTeamOptionLabel({
-                id: 't1',
-                name: 'Alpha',
-                specialisationIds: [],
-                specialisationLabels: []
-            }) !== 'Alpha') {
-                missing.push(
-                    'buildTeamOptionLabel: team with no specialisations ' +
-                    'should render as just the name'
-                );
-            }
-
-            if (buildTeamOptionLabel({
-                id: 't2',
-                name: 'Bravo',
-                specialisationIds: ['combat'],
-                specialisationLabels: ['Combat']
-            }) !== 'Bravo (Combat)') {
-                missing.push(
-                    'buildTeamOptionLabel: single-specialisation team ' +
-                    'should render "Name (Label)"'
-                );
-            }
-
-            if (buildTeamOptionLabel({
-                id: 't3',
-                name: 'Charlie',
-                specialisationIds: ['combat', 'recovery'],
-                specialisationLabels: ['Combat', 'Recovery']
-            }) !== 'Charlie (Combat, Recovery)') {
-                missing.push(
-                    'buildTeamOptionLabel: multi-specialisation team ' +
-                    'should render "Name (LabelA, LabelB)"'
-                );
-            }
-
-            if (buildTeamOptionLabel({
-                id: 't4',
-                name: 'Delta',
-                specialisationIds: ['combat'],
-                specialisationLabels: ['Combat', '', null]
-            }) !== 'Delta (Combat)') {
-                missing.push(
-                    'buildTeamOptionLabel: empty labels should be ' +
-                    'skipped'
-                );
-            }
-
-            if (buildTeamOptionLabel(null) !== '') {
-                missing.push(
-                    'buildTeamOptionLabel: null input should return ""'
-                );
-            }
-        } catch (e) {
-            missing.push('team option label smoke test threw: ' + e.message);
-        }
-
-        // Smoke test: list row selection contract.
-        try {
-            var listHtml = renderList(
-                [
-                    {
-                        id: 'm1',
-                        title: 'Mission One',
-                        missionId: '2026-001-M',
-                        status: 'active',
-                        priority: 'medium',
-                        progress: 0,
-                        supportCount: 0,
-                        teamName: 'Unassigned',
-                        assignedTeams: [],
-                        typeDisplay: 'Unclassified',
-                        escalationLabel: '',
-                        difficultyLabel: '',
-                        dateDisplay: '',
-                        isCompleted: false,
-                        isCancelled: false,
-                        isArchived: false
-                    }
-                ],
-                { selectedIds: { m1: true } }
-            );
-
-            if (listHtml.indexOf('class="mission-select-cell"') === -1) {
-                missing.push(
-                    'renderList did not emit .mission-select-cell'
-                );
-            }
-            if (listHtml.indexOf('class="mission-select-checkbox"') === -1) {
-                missing.push(
-                    'renderList did not emit .mission-select-checkbox'
-                );
-            }
-            if (listHtml.indexOf('data-mission-id="m1"') === -1) {
-                missing.push(
-                    'renderList did not emit the mission id on the row ' +
-                    'or checkbox'
-                );
-            }
-            if (listHtml.indexOf(' checked') === -1) {
-                missing.push(
-                    'renderList did not check the selected row'
-                );
-            }
-            if (listHtml.indexOf('mission-item-selected') === -1) {
-                missing.push(
-                    'renderList did not add .mission-item-selected to ' +
-                    'the selected row'
-                );
-            }
-        } catch (e) {
-            missing.push('list row selection smoke test threw: ' + e.message);
-        }
-
-        // Smoke test: header export button.
-        try {
-            var containerHtml = renderContainer({
-                filter: 'all',
-                counts: { total: 3, readyForCompletion: 1 },
-                selectedIds: { m1: true, m2: true }
-            });
-
-            if (containerHtml.indexOf('id="mission-export-selected-btn"') === -1) {
-                missing.push(
-                    'renderContainer did not emit #mission-export-selected-btn'
-                );
-            }
-            if (containerHtml.indexOf('data-action="mission-export-selected"') === -1) {
-                missing.push(
-                    'renderContainer did not emit the export-selected action'
-                );
-            }
-            if (containerHtml.indexOf('Export (2)') === -1) {
-                missing.push(
-                    'renderContainer did not render the selected count ' +
-                    'in the export button'
-                );
-            }
-
-            var emptyContainer = renderContainer({
-                filter: 'all',
-                counts: { total: 0, readyForCompletion: 0 },
-                selectedIds: {}
-            });
-            if (emptyContainer.indexOf(' mission-export-selected-btn" ' +
-                    'data-action="mission-export-selected" disabled') === -1) {
-                // The disabled attribute may sit anywhere before the
-                // closing >, so a looser check is fine.
-                if (emptyContainer.indexOf('disabled') === -1) {
-                    missing.push(
-                        'renderContainer did not disable the export ' +
-                        'button when nothing is selected'
-                    );
-                }
-            }
-        } catch (e) {
-            missing.push('header export button smoke test threw: ' + e.message);
-        }
-
-        // Smoke test: report form modal.
-        try {
-            var reportHtml = renderReportFormModal({
-                mode: 'create',
-                missionId: 'm1',
-                missionTitle: 'Test',
-                reportId: null,
-                authorId: '',
-                authorRedacted: false,
-                text: '',
-                teamMembers: [
-                    { id: 'c1', name: 'Anne', deceased: false }
-                ],
-                otherCharacters: [
-                    { id: 'c2', name: 'Beth', deceased: true }
-                ]
-            });
-
-            if (reportHtml.indexOf('id="mission-report-author"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing #mission-report-author'
-                );
-            }
-            if (reportHtml.indexOf('id="mission-report-redacted"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing #mission-report-redacted'
-                );
-            }
-            if (reportHtml.indexOf('id="mission-report-text"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing #mission-report-text'
-                );
-            }
-            if (reportHtml.indexOf('data-action="mission-report-submit"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing submit action'
-                );
-            }
-            if (reportHtml.indexOf('<optgroup label="Assigned Team Members"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing team-members optgroup'
-                );
-            }
-            if (reportHtml.indexOf('<optgroup label="Other Characters"') === -1) {
-                missing.push(
-                    'renderReportFormModal missing other-characters optgroup'
-                );
-            }
-        } catch (e) {
-            missing.push('report smoke test threw: ' + e.message);
-        }
-
-        if (missing.length > 0) {
-            console.warn(
-                '[MissionRender] Verification failed:',
-                missing.join(', ')
-            );
-        }
-    })();
-
+'use strict';
+if (window.__missionRenderLoaded) {
+     return;
+ }
+ // ============================================================
+ // DEPENDENCIES
+ // ============================================================
+ var DomUtils = window.DomUtils;
+ var MissionConstants = window.MissionConstants;
+ var MissionViews = window.MissionViews;
+ var _missing = [];
+ if (!DomUtils ||
+     typeof DomUtils.escapeHtml !== 'function' ||
+     typeof DomUtils.escapeAttribute !== 'function') {
+     _missing.push('DomUtils.escapeHtml/escapeAttribute');
+ }
+ if (!MissionConstants) {
+     _missing.push('MissionConstants (module)');
+ }
+ if (!MissionViews) {
+     _missing.push('MissionViews (module)');
+ } else {
+     if (typeof MissionViews.getStatusInfo !== 'function') {
+         _missing.push('MissionViews.getStatusInfo');
+     }
+     if (typeof MissionViews.getPriorityInfo !== 'function') {
+         _missing.push('MissionViews.getPriorityInfo');
+     }
+     if (typeof MissionViews.getParticipantSourceClass !== 'function') {
+         _missing.push('MissionViews.getParticipantSourceClass');
+     }
+ }
+ if (_missing.length > 0) {
+     throw new Error(
+         '[MissionRender] Missing mandatory dependencies: ' +
+         _missing.join(', ')
+     );
+ }
+ window.__missionRenderLoaded = true;
+ // ============================================================
+ // HELPERS
+ // ============================================================
+ function escapeHtml(value) {
+     return DomUtils.escapeHtml(value);
+ }
+ function escapeAttribute(value) {
+     return DomUtils.escapeAttribute(value);
+ }
+ function isNonEmptyString(value) {
+     return typeof value === 'string' && value.trim() !== '';
+ }
+ function isArray(value) {
+     return Array.isArray(value);
+ }
+ function isPlainObject(value) {
+     return value !== null &&
+            typeof value === 'object' &&
+            !Array.isArray(value);
+ }
+ function safeString(value) {
+     return value === undefined || value === null
+         ? ''
+         : String(value);
+ }
+ function toPositiveInt(value, fallback) {
+     var n = parseInt(value, 10);
+     if (isNaN(n) || n < 1) { return fallback; }
+     return n;
+ }
+ function countTrue(obj) {
+     if (!obj) { return 0; }
+     var n = 0;
+     for (var k in obj) {
+         if (Object.prototype.hasOwnProperty.call(obj, k) &&
+             obj[k] === true) {
+             n++;
+         }
+     }
+     return n;
+ }
+ // ============================================================
+ // CALENDAR ACCESS (with Gregorian fallback)
+ // ============================================================
+ var GREG_MONTHS = [
+     'January', 'February', 'March', 'April', 'May', 'June',
+     'July', 'August', 'September', 'October', 'November', 'December'
+ ];
+ function isGregorianLeap(y) {
+     return (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+ }
+ function gregorianMonths(year) {
+     var lp = isGregorianLeap(year);
+     var out = [];
+     for (var i = 0; i < 12; i++) {
+         out.push({
+             id: i + 1,
+             name: GREG_MONTHS[i],
+             days: i === 1 && lp ? 29 :
+                   [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][i]
+         });
+     }
+     return out;
+ }
+ function getMonthsForYear(year) {
+     var cfg = window.CalendarConfig;
+     if (cfg && typeof cfg.getMonthsForYear === 'function') {
+         var list = cfg.getMonthsForYear(year);
+         if (isArray(list) && list.length > 0) {
+             return list;
+         }
+     }
+     return gregorianMonths(year);
+ }
+ function getDaysInMonth(year, monthId) {
+     var cfg = window.CalendarConfig;
+     if (cfg && typeof cfg.getDaysInMonth === 'function') {
+         var n = cfg.getDaysInMonth(year, monthId);
+         if (typeof n === 'number' && n >= 1) {
+             return n;
+         }
+     }
+     var m = toPositiveInt(monthId, 1);
+     var list = gregorianMonths(year);
+     if (m > list.length) { return 31; }
+     return list[m - 1].days;
+ }
+ // ============================================================
+ // CONTAINER
+ // ============================================================
+ function renderContainer(vm) {
+     vm = vm || {};
+     var filter = isNonEmptyString(vm.filter) ? vm.filter : 'all';
+     var counts = isPlainObject(vm.counts) ? vm.counts : {};
+     var selectedIds = vm.selectedIds || Object.create(null);
+     var selectedCount = countTrue(selectedIds);
+     var html = '';
+     // ---- Page header ----
+     html += '<div class="page-header">';
+     html += '<h2>Missions</h2>';
+     html += '<div class="header-actions">';
+     html += '<button type="button" class="secondary" ' +
+                 'data-action="mission-import">Import</button>';
+     html += '<button type="button" class="secondary" ' +
+                 'id="mission-export-selected-btn" ' +
+                 'data-action="mission-export-selected"' +
+                 (selectedCount === 0 ? ' disabled' : '') + '>' +
+                 'Export' +
+                 (selectedCount > 0
+                     ? ' (' + selectedCount + ')'
+                     : '') +
+             '</button>';
+     html += '<button type="button" class="primary" ' +
+                 'data-action="mission-new">+ New Mission</button>';
+     html += '</div>';
+     html += '</div>';
+     // ---- Filter bar ----
+     html += '<div class="filter-section">';
+     html += '<label for="mission-filter">Status:</label>';
+     html += '<select id="mission-filter">';
+     html += renderFilterOption('all', 'All', filter);
+     html += renderFilterOption('active', 'Active', filter);
+     html += renderFilterOption('completed', 'Completed', filter);
+     html += renderFilterOption('cancelled', 'Cancelled', filter);
+     html += '</select>';
+     html += '<span class="mission-count">' +
+                 '<span id="mission-count-total">' +
+                     escapeHtml(String(counts.total || 0)) +
+                 '</span> total' +
+                 ' &middot; ' +
+                 '<span id="mission-count-ready">' +
+                     escapeHtml(String(counts.readyForCompletion || 0)) +
+                 '</span> ready' +
+             '</span>';
+     html += '</div>';
+     // ---- List mount point ----
+     html += '<div id="missions-list" class="missions-list"></div>';
+     // ---- Detail modal shell ----
+     html += '<div id="mission-detail-modal" class="modal hidden">';
+     html += '<div class="modal-content wide">';
+     html += '<div class="modal-header">';
+     html += '<h3 id="mission-detail-title">Mission</h3>';
+     html += '<button type="button" class="close-modal" ' +
+                 'data-action="mission-close-detail" ' +
+                 'aria-label="Close">&times;</button>';
+     html += '</div>';
+     html += '<div id="mission-detail-content" ' +
+                 'class="modal-body"></div>';
+     html += '</div>';
+     html += '</div>';
+     // ---- Form modal shell ----
+     html += '<div id="mission-form-modal" class="modal hidden">';
+     html += '<div class="modal-content wide">';
+     html += '<div class="modal-header">';
+     html += '<h3 id="mission-form-title">Mission</h3>';
+     html += '<button type="button" class="close-modal" ' +
+                 'data-action="mission-close-form" ' +
+                 'aria-label="Close">&times;</button>';
+     html += '</div>';
+     html += '<div id="mission-form-content" ' +
+                 'class="modal-body"></div>';
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ function renderFilterOption(value, label, current) {
+     var selected = current === value ? ' selected' : '';
+     return '<option value="' + escapeAttribute(value) + '"' +
+                 selected + '>' +
+                 escapeHtml(label) +
+             '</option>';
+ }
+ // ============================================================
+ // LIST
+ // ============================================================
+ function renderList(missions, options) {
+     options = options || {};
+     var selectedIds = options.selectedIds || Object.create(null);
+     if (!isArray(missions) || missions.length === 0) {
+         return renderEmpty();
+     }
+     var html = '';
+     for (var i = 0; i < missions.length; i++) {
+         html += renderListRow(missions[i], selectedIds);
+     }
+     return html;
+ }
+ function renderListRow(m, selectedIds) {
+     if (!m || typeof m !== 'object') { return ''; }
+     var isSelected = selectedIds[String(m.id)] === true;
+     var rowClass = 'list-item mission-item';
+     if (m.isArchived === true) {
+         rowClass += ' mission-archived';
+     } else if (m.isCompleted === true) {
+         rowClass += ' mission-completed';
+     } else if (m.isCancelled === true) {
+         rowClass += ' mission-cancelled';
+     }
+     if (isSelected) {
+         rowClass += ' mission-item-selected';
+     }
+     var statusInfo = MissionViews.getStatusInfo(m.status);
+     var priorityInfo = MissionViews.getPriorityInfo(m.priority);
+     var html = '';
+     html += '<div class="' + rowClass + '" ' +
+                 'data-action="mission-list-item" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(m.id) + '">';
+     // ---- 0. Selection checkbox ----
+     html += '<span class="mission-select-cell">';
+     html += '<input type="checkbox" ' +
+                 'class="mission-select-checkbox" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(m.id) + '"' +
+                 (isSelected ? ' checked' : '') +
+                 ' aria-label="Select ' +
+                     escapeAttribute(
+                         m.title || 'mission'
+                     ) + '">';
+     html += '</span>';
+     // ---- 1. Mission ID label ----
+     html += '<span class="mission-id">' +
+                 escapeHtml(m.missionId || '\u2014') +
+             '</span>';
+     // ---- 2. Date ----
+     html += '<span class="mission-date">' +
+                 escapeHtml(m.dateDisplay || '\u2014') +
+             '</span>';
+     // ---- 3. Title + badges ----
+     html += '<span class="mission-title">';
+     html += '<strong>' +
+                 escapeHtml(m.title || 'Untitled') +
+             '</strong>';
+     if (m.isCompleted === true) {
+         html += '<span class="mission-completed-badge" ' +
+                     'title="Completed">\u2714</span>';
+     }
+     if (m.isArchived === true) {
+         html += '<span class="mission-archived-badge">' +
+                     'Archived' +
+                 '</span>';
+     }
+     if (typeof m.supportCount === 'number' && m.supportCount > 0) {
+         html += '<span class="mission-support-badge" ' +
+                     'title="Support personnel">' +
+                     'S' + escapeHtml(String(m.supportCount)) +
+                 '</span>';
+     }
+     html += '</span>';
+     // ---- 4. Type ----
+     html += '<span class="mission-type">' +
+                 escapeHtml(m.typeDisplay || 'Unclassified') +
+             '</span>';
+     // ---- 5. Escalation ----
+     html += '<span class="mission-escalation">' +
+                 escapeHtml(m.escalationLabel || '\u2014') +
+             '</span>';
+     // ---- 6. Difficulty ----
+     html += '<span class="mission-difficulty">' +
+                 escapeHtml(m.difficultyLabel || '\u2014') +
+             '</span>';
+     // ---- 7. Assigned team(s) ----
+     html += '<span class="mission-team">' +
+                 renderAssignedTeamsInline(m) +
+             '</span>';
+     // ---- 8. Progress ----
+     html += '<span class="mission-progress">' +
+                 renderProgressBar(m.progress) +
+             '</span>';
+     // ---- 9. Status + priority badges ----
+     html += '<span class="mission-status-priority">';
+     html += '<span class="mission-status ' +
+                 escapeAttribute(statusInfo.class) + '">' +
+                 escapeHtml(statusInfo.label) +
+             '</span>';
+     html += ' ';
+     html += '<span class="mission-priority ' +
+                 escapeAttribute(priorityInfo.class) + '">' +
+                 escapeHtml(priorityInfo.label) +
+             '</span>';
+     html += '</span>';
+     // ---- 10. Grid filler ----
+     html += '<span class="mission-row-tail"></span>';
+     html += '</div>';
+     return html;
+ }
+ function renderAssignedTeamsInline(m) {
+     var teams = isArray(m.assignedTeams) ? m.assignedTeams : [];
+     if (teams.length === 0) {
+         return escapeHtml(m.teamName || 'Unassigned');
+     }
+     var first = teams[0];
+     var html = escapeHtml(first.name || 'Unnamed Team');
+     if (teams.length > 1) {
+         html += '<span class="mission-team-extra">' +
+                     '+' + (teams.length - 1) +
+                 '</span>';
+     }
+     return html;
+ }
+ function renderProgressBar(progress) {
+     var pct = (typeof progress === 'number' &&
+                isFinite(progress))
+         ? Math.max(0, Math.min(100, Math.round(progress)))
+         : 0;
+     var html = '';
+     html += '<span class="progress-bar">';
+     html += '<span class="progress-fill" ' +
+                 'style="width:' + pct + '%;"></span>';
+     html += '</span>';
+     html += '<span class="progress-label">' + pct + '%</span>';
+     return html;
+ }
+ // ============================================================
+ // EMPTY / LOADING
+ // ============================================================
+ function renderEmpty() {
+     return '<p class="empty-state">No missions found.</p>';
+ }
+ function renderLoading() {
+     return '<p class="empty-state">Loading missions\u2026</p>';
+ }
+ // ============================================================
+ // DETAIL
+ // ============================================================
+ function renderDetail(vm) {
+     if (!vm) { return ''; }
+     var statusInfo = MissionViews.getStatusInfo(vm.status);
+     var priorityInfo = MissionViews.getPriorityInfo(vm.priority);
+     var html = '';
+     html += '<div class="mission-detail">';
+     // ---- Header ----
+     html += '<div class="mission-detail-header">';
+     html += '<div class="mission-detail-title-row">';
+     html += '<h3 class="mission-detail-title">' +
+                 escapeHtml(vm.title || 'Untitled') +
+             '</h3>';
+     html += '<span class="mission-status ' +
+                 escapeAttribute(statusInfo.class) + '">' +
+                 escapeHtml(statusInfo.label) +
+             '</span>';
+     html += '<span class="mission-priority ' +
+                 escapeAttribute(priorityInfo.class) + '">' +
+                 escapeHtml(priorityInfo.label) +
+             '</span>';
+     if (vm.isArchived === true) {
+         html += '<span class="mission-archived-badge">' +
+                     'Archived' +
+                 '</span>';
+     }
+     html += '</div>';
+     html += '<div class="mission-detail-id">' +
+                 'ID: <span class="mission-id-display">' +
+                     escapeHtml(vm.missionId || '\u2014') +
+                 '</span>' +
+             '</div>';
+     if (isNonEmptyString(vm.description)) {
+         html += '<p class="mission-detail-description">' +
+                     escapeHtml(vm.description) +
+                 '</p>';
+     }
+     html += '</div>';
+     // ---- Scalar fields ----
+     html += '<div class="mission-detail-fields">';
+     html += renderDetailField('Date', vm.dateDisplay);
+     html += renderDetailField('Type', vm.typeDisplay);
+     html += renderDetailField('Difficulty', vm.difficultyLabel);
+     html += renderDetailField('Escalation', vm.escalationLabel);
+     html += renderDetailField('Billing', vm.billingLabel);
+     html += renderDetailField('Pay', vm.pay);
+     html += renderDetailField('Threat type', vm.threatType);
+     html += renderDetailField('Environment', vm.environment);
+     html += renderDetailField('Location', vm.location);
+     html += renderDetailField('Duration', vm.duration);
+     html += renderDetailField('Progress',
+         (typeof vm.progress === 'number'
+             ? vm.progress + '%'
+             : ''));
+     html += renderDetailField('Created', vm.createdAtDisplay);
+     html += renderDetailField('Completed', vm.completedAtDisplay);
+     html += renderDetailField('Archived', vm.archivedAtDisplay);
+     if (isArray(vm.tags) && vm.tags.length > 0) {
+         html += '<div class="detail-row tags-row">';
+         html += '<span class="label">Tags</span>';
+         html += '<span class="tags-list">';
+         for (var t = 0; t < vm.tags.length; t++) {
+             html += '<span class="tag">' +
+                         escapeHtml(vm.tags[t]) +
+                     '</span>';
+         }
+         html += '</span>';
+         html += '</div>';
+     }
+     if (isNonEmptyString(vm.notes)) {
+         html += '<div class="detail-row description-row">';
+         html += '<span class="label">Notes</span>';
+         html += '<span class="description-text">' +
+                     escapeHtml(vm.notes) +
+                 '</span>';
+         html += '</div>';
+     }
+     html += '</div>'; // mission-detail-fields
+     // ---- Assigned teams ----
+     html += renderDetailAssignedTeams(vm);
+     // ---- Objectives ----
+     html += renderDetailObjectives(vm);
+     // ---- Participants ----
+     html += renderDetailParticipants(vm);
+     // ---- Support personnel ----
+     html += renderDetailSupportPersonnel(vm);
+     // ---- Reports ----
+     html += renderDetailReports(vm);
+     // ---- Actions ----
+     html += renderDetailActions(vm);
+     html += '</div>'; // mission-detail
+     return html;
+ }
+ function renderDetailField(label, value) {
+     if (!isNonEmptyString(value)) { return ''; }
+     return '<div class="detail-row">' +
+                 '<span class="label">' +
+                     escapeHtml(label) +
+                 '</span>' +
+                 '<span class="value">' +
+                     escapeHtml(value) +
+                 '</span>' +
+             '</div>';
+ }
+ function renderDetailAssignedTeams(vm) {
+     var teams = isArray(vm.assignedTeams) ? vm.assignedTeams : [];
+     if (teams.length === 0) { return ''; }
+     var html = '';
+     html += '<div class="assigned-teams-section">';
+     html += '<div class="section-header">';
+     html += '<strong>Assigned Teams</strong>';
+     html += '<span class="count">' + teams.length + '</span>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-edit" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 'Edit' +
+             '</button>';
+     html += '</div>';
+     html += '<ul class="assigned-teams-list">';
+     for (var i = 0; i < teams.length; i++) {
+         var team = teams[i];
+         if (!team) { continue; }
+         html += '<li class="assigned-team-item">';
+         html += '<span class="assigned-team-name">' +
+                     escapeHtml(team.name || 'Unnamed Team') +
+                 '</span>';
+         html += '<button type="button" class="small danger" ' +
+                     'data-action="mission-remove-team" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-team-id="' +
+                         escapeAttribute(team.id) + '" ' +
+                     'title="Remove this team from the mission">' +
+                     '\u2715' +
+                 '</button>';
+         html += '</li>';
+     }
+     html += '</ul>';
+     html += '</div>';
+     return html;
+ }
+ function renderDetailObjectives(vm) {
+     var objectives = isArray(vm.objectives) ? vm.objectives : [];
+     var progress = typeof vm.progress === 'number'
+         ? vm.progress : 0;
+     var html = '';
+     html += '<div class="objectives-section">';
+     html += '<div class="section-header">';
+     html += '<strong>Objectives</strong>';
+     html += '<span class="count">' + objectives.length + '</span>';
+     html += '<span class="progress-label">' + progress + '%</span>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-add-objective" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 '+ Add' +
+             '</button>';
+     html += '</div>';
+     if (objectives.length === 0) {
+         html += '<p class="empty-state small">No objectives.</p>';
+         html += '</div>';
+         return html;
+     }
+     html += '<ul class="objectives-list">';
+     for (var i = 0; i < objectives.length; i++) {
+         var obj = objectives[i];
+         if (!obj) { continue; }
+         var itemClass = 'objective-item';
+         if (obj.done === true) { itemClass += ' objective-done'; }
+         html += '<li class="' + itemClass + '">';
+         html += '<input type="checkbox" ' +
+                     'data-action="mission-objective-toggle" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-objective-index="' +
+                         escapeAttribute(String(obj.index)) + '"' +
+                     (obj.done === true ? ' checked' : '') +
+                     '>';
+         html += '<span class="objective-text">' +
+                     escapeHtml(obj.text || '(empty)') +
+                 '</span>';
+         html += '<button type="button" class="small danger" ' +
+                     'data-action="mission-remove-objective" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-objective-index="' +
+                         escapeAttribute(String(obj.index)) + '" ' +
+                     'title="Remove this objective">' +
+                     '\u2715' +
+                 '</button>';
+         html += '</li>';
+     }
+     html += '</ul>';
+     html += '</div>';
+     return html;
+ }
+ function renderDetailParticipants(vm) {
+     var participants = isArray(vm.participants)
+         ? vm.participants
+         : [];
+     var html = '';
+     html += '<div class="participants-section">';
+     html += '<div class="section-header">';
+     html += '<strong>Participants</strong>';
+     html += '<span class="count">' + participants.length + '</span>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-open-rookie-picker" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 'Add Rookies' +
+             '</button>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-edit-participants" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 'Edit Participants' +
+             '</button>';
+     html += '</div>';
+     if (participants.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No participants recorded.' +
+                 '</p>';
+         html += '</div>';
+         return html;
+     }
+     html += '<ul class="participants-list">';
+     for (var i = 0; i < participants.length; i++) {
+         var p = participants[i];
+         if (!p) { continue; }
+         var itemClass = 'participant-item';
+         if (p.source === 'rookie') {
+             itemClass += ' participant-rookie';
+         }
+         var sourceClass = MissionViews.getParticipantSourceClass(
+             p.source
+         );
+         html += '<li class="' + itemClass + '">';
+         html += '<span class="participant-name">' +
+                     escapeHtml(p.displayName || 'Unknown') +
+                 '</span>';
+         if (p.deceased === true) {
+             html += '<span class="participant-deceased" ' +
+                         'title="Deceased">\u2020</span>';
+         }
+         if (isNonEmptyString(p.teamName)) {
+             html += '<span class="participant-team">' +
+                         escapeHtml(p.teamName) +
+                     '</span>';
+         }
+         html += '<span class="participant-source ' +
+                     escapeAttribute(sourceClass) + '">' +
+                     escapeHtml(p.sourceLabel || p.source || '') +
+                 '</span>';
+         html += '<button type="button" class="small danger" ' +
+                     'data-action="mission-remove-participant" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-character-id="' +
+                         escapeAttribute(p.characterId) + '" ' +
+                     'data-team-id="' +
+                         escapeAttribute(
+                             p.teamId === null || p.teamId === undefined
+                                 ? ''
+                                 : p.teamId
+                         ) + '" ' +
+                     'title="Remove this participant">' +
+                     '\u2715' +
+                 '</button>';
+         html += '</li>';
+     }
+     html += '</ul>';
+     html += '</div>';
+     return html;
+ }
+ function renderDetailSupportPersonnel(vm) {
+     var support = isArray(vm.supportPersonnel)
+         ? vm.supportPersonnel
+         : [];
+     var html = '';
+     html += '<div class="support-section">';
+     html += '<div class="section-header">';
+     html += '<strong>Support Personnel</strong>';
+     html += '<span class="count">' + support.length + '</span>';
+     html += '</div>';
+     if (support.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No support assigned.' +
+                 '</p>';
+         html += '</div>';
+         return html;
+     }
+     html += '<ul class="support-list">';
+     for (var i = 0; i < support.length; i++) {
+         var s = support[i];
+         if (!s) { continue; }
+         html += '<li class="support-item">';
+         html += '<span class="support-name">' +
+                     escapeHtml(s.name || 'Unknown') +
+                 '</span>';
+         html += '<button type="button" class="small danger" ' +
+                     'data-action="mission-remove-support" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-character-id="' +
+                         escapeAttribute(s.id) + '" ' +
+                     'title="Remove this support assignment">' +
+                     '\u2715' +
+                 '</button>';
+         html += '</li>';
+     }
+     html += '</ul>';
+     html += '</div>';
+     return html;
+ }
+ function renderDetailReports(vm) {
+     var reports = isArray(vm.reports) ? vm.reports : [];
+     var html = '';
+     html += '<div class="reports-section">';
+     html += '<div class="section-header">';
+     html += '<strong>Reports</strong>';
+     html += '<span class="count">' + reports.length + '</span>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-report-add" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 '+ Add Report' +
+             '</button>';
+     html += '</div>';
+     if (reports.length === 0) {
+         html += '<p class="empty-state small">No reports.</p>';
+         html += '</div>';
+         return html;
+     }
+     for (var i = 0; i < reports.length; i++) {
+         var r = reports[i];
+         if (!r) { continue; }
+         var rowClass = 'report-row';
+         if (r.authorRedacted === true) {
+             rowClass += ' report-author-redacted';
+         }
+         html += '<div class="' + rowClass + '">';
+         html += '<div class="report-meta">';
+         html += '<span class="report-author">' +
+                     escapeHtml(r.authorName || 'Unknown') +
+                 '</span>';
+         html += '<span class="report-timestamp">' +
+                     escapeHtml(r.createdAtDisplay || '') +
+                 '</span>';
+         if (r.isEdited === true) {
+             html += '<span class="report-edited">' +
+                         '(edited ' +
+                         escapeHtml(r.updatedAtDisplay || '') +
+                         ')' +
+                     '</span>';
+         }
+         html += '</div>';
+         html += '<div class="report-body">' +
+                     escapeHtml(r.text || '') +
+                 '</div>';
+         html += '<div class="report-actions">';
+         html += '<button type="button" class="small secondary" ' +
+                     'data-action="mission-report-edit" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-report-id="' +
+                         escapeAttribute(r.id) + '">' +
+                     'Edit' +
+                 '</button>';
+         html += '<button type="button" class="small danger" ' +
+                     'data-action="mission-report-delete" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '" ' +
+                     'data-report-id="' +
+                         escapeAttribute(r.id) + '">' +
+                     'Delete' +
+                 '</button>';
+         html += '</div>';
+         html += '</div>';
+     }
+     html += '</div>';
+     return html;
+ }
+ function renderDetailActions(vm) {
+     var caps = vm.capabilities || {};
+     var html = '';
+     html += '<div class="mission-detail-actions">';
+     if (caps.edit === true) {
+         html += '<button type="button" class="primary" ' +
+                     'data-action="mission-edit" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Edit' +
+                 '</button>';
+     }
+     if (caps.complete === true) {
+         html += '<button type="button" class="secondary" ' +
+                     'data-action="mission-complete" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Mark Complete' +
+                 '</button>';
+     }
+     if (caps.cancel === true) {
+         html += '<button type="button" class="secondary" ' +
+                     'data-action="mission-cancel" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Cancel Mission' +
+                 '</button>';
+     }
+     if (caps.reactivate === true) {
+         html += '<button type="button" class="secondary" ' +
+                     'data-action="mission-reactivate" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Reactivate' +
+                 '</button>';
+     }
+     html += '<button type="button" class="secondary" ' +
+                 'data-action="mission-export" ' +
+                 'data-mission-id="' +
+                     escapeAttribute(vm.id) + '">' +
+                 'Export' +
+             '</button>';
+     if (vm.isArchived === true) {
+         html += '<button type="button" class="danger" ' +
+                     'data-action="mission-unarchive" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Unarchive' +
+                 '</button>';
+     } else {
+         html += '<button type="button" class="danger" ' +
+                     'data-action="mission-archive" ' +
+                     'data-mission-id="' +
+                         escapeAttribute(vm.id) + '">' +
+                     'Archive' +
+                 '</button>';
+     }
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // FORM
+ // ============================================================
+ function renderForm(vm) {
+     if (!vm) { return ''; }
+     var isEdit = vm.isEdit === true;
+     var mission = isPlainObject(vm.mission) ? vm.mission : {};
+     var defaults = isPlainObject(vm.defaults) ? vm.defaults : {};
+     var titleVal = isNonEmptyString(mission.title)
+         ? mission.title
+         : '';
+     var descriptionVal = isNonEmptyString(mission.description)
+         ? mission.description
+         : '';
+     var yearVal = (mission.year !== undefined &&
+                    mission.year !== null)
+         ? String(mission.year)
+         : String(defaults.year || '');
+     var monthVal = (mission.month !== undefined &&
+                     mission.month !== null)
+         ? String(mission.month)
+         : String(defaults.month || 1);
+     var dayVal = (mission.day !== undefined &&
+                   mission.day !== null)
+         ? String(mission.day)
+         : String(defaults.day || 1);
+     var notesVal = isNonEmptyString(mission.notes)
+         ? mission.notes
+         : '';
+     var tagsVal = isArray(mission.tags)
+         ? mission.tags.join(', ')
+         : '';
+     var html = '';
+     html += '<form id="mission-form-inner" class="mission-form" ' +
+                 'data-edit-id="' +
+                     escapeAttribute(isEdit ? (vm.editId || '') : '') +
+                 '">';
+     html += '<div class="form-grid">';
+     html += renderFormText('mission-title', 'Title',
+         titleVal, 'full-width', true);
+     html += renderFormTextarea('mission-description', 'Description',
+         descriptionVal, 'full-width');
+     html += renderDateFields(yearVal, monthVal, dayVal);
+     html += renderTypeFields(vm, mission);
+     html += renderFormSelect('mission-escalation', 'Escalation',
+         vm.escalationTiers || [], mission.escalation || '');
+     html += renderFormText('mission-threat-type', 'Threat Type',
+         mission.threatType || '');
+     html += renderFormText('mission-environment', 'Environment',
+         mission.environment || '');
+     html += renderFormText('mission-location', 'Location',
+         mission.location || '');
+     html += renderFormText('mission-duration', 'Duration',
+         mission.duration || '');
+     html += renderFormSelect('mission-difficulty', 'Difficulty',
+         vm.difficulties || [], mission.difficulty || '');
+     html += renderFormSelect('mission-priority', 'Priority',
+         vm.priorities || [], mission.priority || '');
+     html += renderFormText('mission-base-pay', 'Base Pay',
+         mission.basePay || '');
+     html += renderFormText('mission-surcharge-pay',
+         'Surcharge Pay', mission.surchargePay || '');
+     html += renderFormSelect('mission-billing', 'Billing',
+         vm.billingTypes || [], mission.billing || '');
+     html += renderFormSelect('mission-status', 'Status',
+         vm.statuses || [], mission.status || '');
+     html += renderDerivedLabel(vm, isEdit);
+     html += renderTeamsEditor(vm, mission);
+     html += renderSupportEditor(vm, mission);
+     html += renderObjectivesEditor(mission);
+     html += renderParticipantsPanel(vm);
+     html += renderFormTextarea('mission-notes', 'Notes',
+         notesVal, 'full-width');
+     html += renderFormText('mission-tags', 'Tags',
+         tagsVal, 'full-width',
+         false,
+         'Comma-separated. e.g. urgent, night, long-term');
+     html += '</div>'; // form-grid
+     // ---- Action bar ----
+     html += '<div class="form-actions">';
+     html += '<button type="button" class="secondary" ' +
+                 'data-action="mission-close-form">' +
+                 'Discard Changes' +
+             '</button>';
+     html += '<button type="submit" class="primary">' +
+                 (isEdit ? 'Update Mission' : 'Create Mission') +
+             '</button>';
+     html += '</div>';
+     html += '</form>';
+     return html;
+ }
+ // ============================================================
+ // FORM FIELD HELPERS
+ // ============================================================
+ function renderFormText(id, label, value, extraClass,
+                         required, hint) {
+     var groupClass = 'form-group';
+     if (isNonEmptyString(extraClass)) {
+         groupClass += ' ' + extraClass;
+     }
+     var html = '';
+     html += '<div class="' + groupClass + '">';
+     html += '<label for="' + escapeAttribute(id) + '">' +
+                 escapeHtml(label) +
+                 (required === true ? ' *' : '') +
+             '</label>';
+     html += '<input type="text" ' +
+                 'id="' + escapeAttribute(id) + '" ' +
+                 'name="' + escapeAttribute(id) + '" ' +
+                 'value="' + escapeAttribute(safeString(value)) + '"' +
+                 (required === true ? ' required' : '') +
+                 '>';
+     if (isNonEmptyString(hint)) {
+         html += '<span class="field-hint">' +
+                     escapeHtml(hint) +
+                 '</span>';
+     }
+     html += '</div>';
+     return html;
+ }
+ function renderFormTextarea(id, label, value, extraClass) {
+     var groupClass = 'form-group';
+     if (isNonEmptyString(extraClass)) {
+         groupClass += ' ' + extraClass;
+     }
+     var html = '';
+     html += '<div class="' + groupClass + '">';
+     html += '<label for="' + escapeAttribute(id) + '">' +
+                 escapeHtml(label) +
+             '</label>';
+     html += '<textarea id="' + escapeAttribute(id) + '" ' +
+                 'name="' + escapeAttribute(id) + '" ' +
+                 'rows="3">' +
+                 escapeHtml(safeString(value)) +
+             '</textarea>';
+     html += '</div>';
+     return html;
+ }
+ function renderFormSelect(id, label, options, currentValue) {
+     var html = '';
+     html += '<div class="form-group">';
+     html += '<label for="' + escapeAttribute(id) + '">' +
+                 escapeHtml(label) +
+             '</label>';
+     html += '<select id="' + escapeAttribute(id) + '" ' +
+                 'name="' + escapeAttribute(id) + '">';
+     html += '<option value="">Select...</option>';
+     if (isArray(options)) {
+         for (var i = 0; i < options.length; i++) {
+             var opt = options[i];
+             if (!opt) { continue; }
+             var selected = currentValue === opt.id
+                 ? ' selected'
+                 : '';
+             html += '<option value="' +
+                         escapeAttribute(opt.id) + '"' +
+                         selected + '>' +
+                         escapeHtml(opt.label || opt.id) +
+                     '</option>';
+         }
+     }
+     html += '</select>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // DATE FIELDS (custom-calendar aware)
+ // ============================================================
+ function renderDateFields(yearVal, monthVal, dayVal) {
+     var yearNum = toPositiveInt(yearVal, null);
+     var fallbackYear = yearNum !== null
+         ? yearNum
+         : new Date().getFullYear();
+     var months = getMonthsForYear(fallbackYear);
+     if (!isArray(months) || months.length === 0) {
+         months = gregorianMonths(fallbackYear);
+     }
+     var selectedMonth = toPositiveInt(monthVal, 1);
+     if (selectedMonth > months.length) {
+         selectedMonth = 1;
+     }
+     var maxDays = months[selectedMonth - 1].days;
+     var selectedDay = toPositiveInt(dayVal, 1);
+     if (selectedDay > maxDays) {
+         selectedDay = maxDays;
+     }
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Date</label>';
+     html += '<div class="date-input-group">';
+     // ---- Year ----
+     html += '<div class="date-field">';
+     html += '<span class="date-label">Year</span>';
+     html += '<input type="number" id="mission-year" ' +
+                 'class="date-year" min="1" ' +
+                 'data-mission-year-field="true" ' +
+                 'value="' + escapeAttribute(yearVal) + '" ' +
+                 'placeholder="Year">';
+     html += '</div>';
+     // ---- Month (custom-calendar <select>) ----
+     html += '<div class="date-field">';
+     html += '<span class="date-label">Month</span>';
+     html += '<select id="mission-month" ' +
+                 'class="date-month" ' +
+                 'data-mission-month-field="true">';
+     for (var i = 0; i < months.length; i++) {
+         var m = months[i];
+         var isSel = m.id === selectedMonth;
+         html += '<option value="' + escapeAttribute(m.id) + '"' +
+                     (isSel ? ' selected' : '') + '>' +
+                     escapeHtml(m.name) +
+                 '</option>';
+     }
+     html += '</select>';
+     html += '</div>';
+     // ---- Day ----
+     html += '<div class="date-field">';
+     html += '<span class="date-label">Day</span>';
+     html += '<input type="number" id="mission-day" ' +
+                 'class="date-day" min="1" max="' +
+                 escapeAttribute(String(maxDays)) + '" ' +
+                 'data-mission-day-field="true" ' +
+                 'value="' + escapeAttribute(String(selectedDay)) + '">';
+     html += '</div>';
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // TYPE FIELDS (primary / subtype / secondary)
+ // ============================================================
+ function renderTypeFields(vm, mission) {
+     var types = isArray(vm.missionTypes) ? vm.missionTypes : [];
+     var primaryType = mission.primaryType || '';
+     var subtype = mission.subtype || '';
+     var secondaryType = mission.secondaryType || '';
+     var primary = null;
+     for (var i = 0; i < types.length; i++) {
+         if (types[i] && types[i].id === primaryType) {
+             primary = types[i];
+             break;
+         }
+     }
+     var html = '';
+     // ---- Primary type ----
+     html += '<div class="form-group">';
+     html += '<label for="mission-primary-type">' +
+                 'Primary Type' +
+             '</label>';
+     html += '<select id="mission-primary-type" ' +
+                 'name="mission-primary-type">';
+     html += '<option value="">Select...</option>';
+     for (var p = 0; p < types.length; p++) {
+         var pt = types[p];
+         if (!pt || !pt.id) { continue; }
+         var pSel = primaryType === pt.id ? ' selected' : '';
+         html += '<option value="' +
+                     escapeAttribute(pt.id) + '"' + pSel + '>' +
+                     escapeHtml(pt.label || pt.id) +
+                 '</option>';
+     }
+     html += '</select>';
+     html += '</div>';
+     // ---- Subtype ----
+     html += '<div class="form-group">';
+     html += '<label for="mission-subtype">Subtype</label>';
+     html += '<select id="mission-subtype" ' +
+                 'name="mission-subtype">';
+     if (primary && isArray(primary.subtypes) &&
+         primary.subtypes.length > 0) {
+         html += '<option value="">Select...</option>';
+         for (var s = 0; s < primary.subtypes.length; s++) {
+             var st = primary.subtypes[s];
+             if (!st || !st.id) { continue; }
+             var sSel = subtype === st.id ? ' selected' : '';
+             html += '<option value="' +
+                         escapeAttribute(st.id) + '"' + sSel + '>' +
+                         escapeHtml(st.label || st.id) +
+                     '</option>';
+         }
+     } else {
+         var placeholder = primary
+             ? '(no subtypes for this category)'
+             : '(select a category first)';
+         html += '<option value="" disabled selected>' +
+                     escapeHtml(placeholder) +
+                 '</option>';
+     }
+     html += '</select>';
+     html += '</div>';
+     // ---- Secondary type ----
+     html += '<div class="form-group">';
+     html += '<label for="mission-secondary-type">' +
+                 'Secondary Type' +
+             '</label>';
+     html += '<select id="mission-secondary-type" ' +
+                 'name="mission-secondary-type">';
+     html += '<option value="">None</option>';
+     for (var q = 0; q < types.length; q++) {
+         var qt = types[q];
+         if (!qt || !qt.id) { continue; }
+         var qSel = secondaryType === qt.id ? ' selected' : '';
+         html += '<option value="' +
+                     escapeAttribute(qt.id) + '"' + qSel + '>' +
+                     escapeHtml(qt.label || qt.id) +
+                 '</option>';
+     }
+     html += '</select>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // DERIVED LABEL
+ // ============================================================
+ function renderDerivedLabel(vm, isEdit) {
+     var label = isNonEmptyString(vm.currentLabel)
+         ? vm.currentLabel
+         : '';
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Mission ID</label>';
+     if (isEdit && label !== '') {
+         html += '<div class="mission-form-id-display">' +
+                     escapeHtml(label) +
+                 '</div>';
+     } else {
+         html += '<div class="mission-form-id-display ' +
+                     'mission-form-id-pending">' +
+                     'Assigned on save' +
+                 '</div>';
+     }
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // TEAMS EDITOR
+ // ============================================================
+ function renderTeamsEditor(vm, mission) {
+     var teamOptions = isArray(vm.teams) ? vm.teams : [];
+     var currentTeamIds = isArray(mission.assignedTeamIds)
+         ? mission.assignedTeamIds
+         : [];
+     var currentSet = Object.create(null);
+     for (var c = 0; c < currentTeamIds.length; c++) {
+         if (isNonEmptyString(currentTeamIds[c])) {
+             currentSet[String(currentTeamIds[c])] = true;
+         }
+     }
+     var optionById = Object.create(null);
+     for (var o = 0; o < teamOptions.length; o++) {
+         var opt = teamOptions[o];
+         if (!opt || !opt.id) { continue; }
+         optionById[String(opt.id)] = opt;
+     }
+     var pickable = [];
+     for (var p = 0; p < teamOptions.length; p++) {
+         var pt = teamOptions[p];
+         if (!pt || !pt.id) { continue; }
+         if (currentSet[String(pt.id)] === true) { continue; }
+         pickable.push(pt);
+     }
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Assigned Teams</label>';
+     html += '<div class="mission-team-editor">';
+     html += '<div class="mission-team-input-group">';
+     html += '<select id="mission-team-select" ' +
+                 'class="mission-team-select"' +
+                 (pickable.length === 0 ? ' disabled' : '') + '>';
+     if (pickable.length === 0) {
+         var placeholder = teamOptions.length === 0
+             ? 'No eligible teams available'
+             : 'All eligible teams assigned';
+         html += '<option value="" disabled selected>' +
+                     escapeHtml(placeholder) +
+                 '</option>';
+     } else {
+         html += '<option value="">Select a team...</option>';
+         for (var pk = 0; pk < pickable.length; pk++) {
+             var pt2 = pickable[pk];
+             html += '<option value="' +
+                         escapeAttribute(pt2.id) + '">' +
+                         escapeHtml(
+                             buildTeamOptionLabel(pt2)
+                         ) +
+                     '</option>';
+         }
+     }
+     html += '</select>';
+     html += '<button type="button" class="small primary" ' +
+                 'data-action="mission-add-team"' +
+                 (pickable.length === 0 ? ' disabled' : '') + '>' +
+                 '+ Add Team' +
+             '</button>';
+     html += '</div>';
+     html += '<div id="mission-teams-list" ' +
+                 'class="mission-teams-list">';
+     if (currentTeamIds.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No teams assigned.' +
+                 '</p>';
+     } else {
+         for (var t = 0; t < currentTeamIds.length; t++) {
+             var teamId = String(currentTeamIds[t]);
+             var team = optionById[teamId];
+             var teamName = team && isNonEmptyString(team.name)
+                 ? team.name
+                 : teamId;
+             html += '<div class="mission-team-chip" ' +
+                         'data-team-id="' +
+                             escapeAttribute(teamId) + '">';
+             html += '<span class="mission-team-chip-name">' +
+                         escapeHtml(teamName) +
+                     '</span>';
+             html += '<button type="button" ' +
+                         'class="small danger" ' +
+                         'data-action="mission-remove-team" ' +
+                         'data-team-id="' +
+                             escapeAttribute(teamId) + '" ' +
+                         'title="Remove this team">' +
+                         '\u2715' +
+                     '</button>';
+             html += '</div>';
+         }
+     }
+     html += '</div>';
+     html += '</div>'; // mission-team-editor
+     html += '</div>'; // form-group full-width
+     return html;
+ }
+ function buildTeamOptionLabel(teamOption) {
+     if (!teamOption || !teamOption.id) { return ''; }
+     var name = isNonEmptyString(teamOption.name)
+         ? teamOption.name
+         : teamOption.id;
+     var labels = isArray(teamOption.specialisationLabels)
+         ? teamOption.specialisationLabels
+         : [];
+     if (labels.length === 0) {
+         return name;
+     }
+     var parts = [];
+     for (var i = 0; i < labels.length; i++) {
+         var label = labels[i];
+         if (!isNonEmptyString(label)) { continue; }
+         parts.push(String(label));
+     }
+     if (parts.length === 0) {
+         return name;
+     }
+     return name + ' (' + parts.join(', ') + ')';
+ }
+ // ============================================================
+ // SUPPORT EDITOR
+ // ============================================================
+ function renderSupportEditor(vm, mission) {
+     var charOptions = isArray(vm.characters) ? vm.characters : [];
+     var currentSupportIds = isArray(mission.supportPersonnel)
+         ? mission.supportPersonnel
+         : [];
+     var currentSet = Object.create(null);
+     for (var c = 0; c < currentSupportIds.length; c++) {
+         if (isNonEmptyString(currentSupportIds[c])) {
+             currentSet[String(currentSupportIds[c])] = true;
+         }
+     }
+     var charById = Object.create(null);
+     for (var ch = 0; ch < charOptions.length; ch++) {
+         var char = charOptions[ch];
+         if (!char || !char.id) { continue; }
+         charById[String(char.id)] = char;
+     }
+     var pickable = [];
+     for (var p = 0; p < charOptions.length; p++) {
+         var pc = charOptions[p];
+         if (!pc || !pc.id) { continue; }
+         if (currentSet[String(pc.id)] === true) { continue; }
+         pickable.push(pc);
+     }
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Support Personnel</label>';
+     html += '<div class="support-input-group">';
+     html += '<select id="mission-support-select" ' +
+                 'class="support-select"' +
+                 (pickable.length === 0 ? ' disabled' : '') + '>';
+     if (pickable.length === 0) {
+         var placeholder = charOptions.length === 0
+             ? 'No characters available'
+             : 'All characters are already support';
+         html += '<option value="" disabled selected>' +
+                     escapeHtml(placeholder) +
+                 '</option>';
+     } else {
+         html += '<option value="">Select a character...</option>';
+         for (var pk = 0; pk < pickable.length; pk++) {
+             var pc2 = pickable[pk];
+             html += '<option value="' +
+                         escapeAttribute(pc2.id) + '">' +
+                         escapeHtml(pc2.name || pc2.id) +
+                     '</option>';
+         }
+     }
+     html += '</select>';
+     
+     // FIX: Closed the quote on the class attribute so data-action 
+     // is parsed correctly by the browser.
+     html += '<button type="button" class="small primary" ' +
+                 'data-action="mission-add-support"' +
+                 (pickable.length === 0 ? ' disabled' : '') + '>' +
+                 '+ Add' +
+             '</button>';
+             
+     html += '</div>';
+     html += '<div id="mission-support-list">';
+     if (currentSupportIds.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No support assigned.' +
+                 '</p>';
+     } else {
+         for (var s = 0; s < currentSupportIds.length; s++) {
+             var sId = String(currentSupportIds[s]);
+             var sChar = charById[sId];
+             var sName = sChar && isNonEmptyString(sChar.name)
+                 ? sChar.name
+                 : sId;
+             html += '<div class="support-row" ' +
+                         'data-character-id="' +
+                             escapeAttribute(sId) + '">';
+             html += '<span class="support-name">' +
+                         escapeHtml(sName) +
+                     '</span>';
+             html += '<button type="button" ' +
+                         'class="small danger" ' +
+                         'data-action="mission-remove-support" ' +
+                         'data-character-id="' +
+                             escapeAttribute(sId) + '">' +
+                         '\u2715' +
+                     '</button>';
+             html += '</div>';
+         }
+     }
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // OBJECTIVES EDITOR
+ // ============================================================
+ function renderObjectivesEditor(mission) {
+     var objectives = isArray(mission.objectives)
+         ? mission.objectives
+         : [];
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Objectives</label>';
+     html += '<div class="objective-input-group">';
+     html += '<input type="text" ' +
+                 'id="mission-objective-input" ' +
+                 'class="objective-input" ' +
+                 'placeholder="New objective...">';
+     html += '<button type="button" class="small primary" ' +
+                 'data-action="mission-add-objective">' +
+                 '+ Add' +
+             '</button>';
+     html += '</div>';
+     html += '<div id="mission-objectives-list">';
+     if (objectives.length === 0) {
+         html += '<p class="empty-state small">No objectives.</p>';
+     } else {
+         for (var i = 0; i < objectives.length; i++) {
+             var obj = objectives[i];
+             if (!obj) { continue; }
+             html += '<div class="objective-row">';
+             html += '<input type="checkbox" class="objective-done"' +
+                         (obj.done === true ? ' checked' : '') +
+                     '>';
+             html += '<input type="text" ' +
+                         'class="objective-text-input" ' +
+                         'value="' +
+                             escapeAttribute(obj.text || '') + '">';
+             html += '<button type="button" ' +
+                         'class="small danger" ' +
+                         'data-action="mission-remove-objective" ' +
+                         'data-objective-index="' +
+                             escapeAttribute(String(obj.index)) + '">' +
+                         '\u2715' +
+                     '</button>';
+             html += '</div>';
+         }
+     }
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // PARTICIPANTS PANEL
+ // ============================================================
+ function renderParticipantsPanel(vm) {
+     var pvm = vm && vm.participantsVM
+         ? vm.participantsVM
+         : null;
+     var html = '';
+     html += '<div class="form-group full-width">';
+     html += '<label>Participants</label>';
+     html += '<div id="mission-participants-panel" ' +
+                 'class="participants-panel">';
+     if (!pvm) {
+         html += '<p class="empty-state small">' +
+                     'Add a team to the mission to manage ' +
+                     'its participants.' +
+                 '</p>';
+         html += '</div>';
+         html += '</div>';
+         return html;
+     }
+     var missionId = pvm.missionId || null;
+     var missionIdAttr = missionId
+         ? ' data-mission-id="' +
+             escapeAttribute(String(missionId)) + '"'
+         : '';
+     var assignedTeams = isArray(pvm.assignedTeams)
+         ? pvm.assignedTeams
+         : [];
+     var currentParticipants = isArray(pvm.currentParticipants)
+         ? pvm.currentParticipants
+         : [];
+     if (assignedTeams.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No teams assigned yet. Add a team above to ' +
+                     'manage its participants.' +
+                 '</p>';
+     } else {
+         for (var t = 0; t < assignedTeams.length; t++) {
+             html += renderParticipantTeamSection(
+                 assignedTeams[t], missionIdAttr
+             );
+         }
+     }
+     html += renderRookieSection(
+         currentParticipants, missionIdAttr
+     );
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ function renderParticipantTeamSection(team, missionIdAttr) {
+     if (!team || !team.teamId) { return ''; }
+     var members = isArray(team.members) ? team.members : [];
+     var html = '';
+     html += '<div class="participant-team-section">';
+     html += '<div class="participant-section-header">';
+     html += '<span class="participant-team-name">' +
+                 escapeHtml(team.teamName || 'Unnamed Team') +
+             '</span>';
+     html += '<span class="participant-team-count">' +
+                 members.length + ' member' +
+                 (members.length === 1 ? '' : 's') +
+             '</span>';
+     html += '</div>';
+     if (members.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No active members at the mission year.' +
+                 '</p>';
+         html += '</div>';
+         return html;
+     }
+     html += '<ul class="participant-member-list">';
+     for (var i = 0; i < members.length; i++) {
+         html += renderTeamMemberCheckbox(
+             team, members[i], missionIdAttr
+         );
+     }
+     html += '</ul>';
+     html += '</div>';
+     return html;
+ }
+ 
+ // FIX: Stripped all inline flex styles. Layout is now handled 
+ // entirely by CSS classes (.participant-member-row, etc).
+ function renderTeamMemberCheckbox(team, member, missionIdAttr) {
+     if (!member || !member.characterId) { return ''; }
+     var charId = String(member.characterId);
+     var teamId = String(team.teamId);
+     var checked = member.isParticipant === true;
+     
+     var html = '';
+     html += '<li class="participant-member-row">';
+     html += '<label class="participant-member-label">';
+     html += '<input type="checkbox" ' +
+                 'class="participant-member-checkbox" ' +
+                 'data-action="mission-toggle-participant" ' +
+                 'data-character-id="' + escapeAttribute(charId) + '" ' +
+                 'data-team-id="' + escapeAttribute(teamId) + '" ' +
+                 'data-source="team"' +
+                 missionIdAttr +
+                 (checked ? ' checked' : '') + '>';
+     html += '<span class="participant-member-name">' +
+                 escapeHtml(member.displayName || 'Unknown') +
+             '</span>';
+     if (isNonEmptyString(member.role)) {
+         html += '<span class="participant-member-role">(' +
+                     escapeHtml(member.role) +
+                 ')</span>';
+     }
+     if (member.deceased === true) {
+         html += '<span class="participant-member-deceased" ' +
+                     'title="Deceased">\u2020</span>';
+     }
+     html += '</label>';
+     html += '</li>';
+     return html;
+ }
+ 
+ function renderRookieSection(currentParticipants, missionIdAttr) {
+     var rookies = [];
+     for (var i = 0; i < currentParticipants.length; i++) {
+         var p = currentParticipants[i];
+         if (!p) { continue; }
+         if (p.source !== 'rookie') { continue; }
+         rookies.push(p);
+     }
+     var html = '';
+     html += '<div class="participant-rookie-section">';
+     html += '<div class="participant-section-header">';
+     html += '<span class="participant-team-name">Rookies</span>';
+     html += '<span class="participant-team-count">' +
+                 rookies.length +
+             '</span>';
+     html += '<button type="button" class="small secondary" ' +
+                 'data-action="mission-open-rookie-picker"' +
+                 missionIdAttr + '>' +
+                 '+ Add Rookies' +
+             '</button>';
+     html += '</div>';
+     if (rookies.length === 0) {
+         html += '<p class="empty-state small">' +
+                     'No rookies selected.' +
+                 '</p>';
+         html += '</div>';
+         return html;
+     }
+     html += '<div class="rookie-chip-list">';
+     for (var r = 0; r < rookies.length; r++) {
+         var rook = rookies[r];
+         html += '<span class="rookie-chip">';
+         html += '<span class="rookie-chip-name">' +
+                     escapeHtml(rook.displayName || 'Unknown') +
+                 '</span>';
+         if (rook.deceased === true) {
+             html += '<span class="rookie-chip-deceased" ' +
+                         'title="Deceased">\u2020</span>';
+         }
+         html += '<button type="button" ' +
+                     'class="rookie-chip-remove" ' +
+                     'data-action="mission-remove-participant" ' +
+                     'data-character-id="' +
+                         escapeAttribute(rook.characterId) + '" ' +
+                     'data-team-id=""' +
+                     missionIdAttr + ' ' +
+                     'title="Remove this rookie">' +
+                     '\u2715' +
+                 '</button>';
+         html += '</span>';
+     }
+     html += '</div>';
+     html += '</div>';
+     return html;
+ }
+ // ============================================================
+ // REPORT FORM MODAL
+ // ============================================================
+ function renderReportFormModal(vm) {
+     if (!vm) { return ''; }
+     var isEdit = vm.mode === 'edit';
+     var html = '';
+     html += '<div class="modal-header">';
+     html += '<h3>' +
+                 (isEdit ? 'Edit Report' : 'Add Report') +
+                 ' \u2014 ' +
+                 escapeHtml(vm.missionTitle || 'Mission') +
+             '</h3>';
+     html += '<button type="button" class="close-modal" ' +
+                 'data-action="mission-report-cancel" ' +
+                 'aria-label="Close">&times;</button>';
+     html += '</div>';
+     html += '<div class="modal-body mission-report-body">';
+     html += '<div class="form-group">';
+     html += '<label for="mission-report-author">Author</label>';
+     html += '<select id="mission-report-author"' +
+                 (vm.authorRedacted === true ? ' disabled' : '') +
+                 '>';
+     html += '<option value="">Select...</option>';
+     html += renderAuthorOptgroup(
+         'Assigned Team Members',
+         vm.teamMembers,
+         vm.authorId
+     );
+     html += renderAuthorOptgroup(
+         'Other Characters',
+         vm.otherCharacters,
+         vm.authorId
+     );
+     html += '</select>';
+     html += '</div>';
+     html += '<div class="form-group mission-report-redact-row">';
+     html += '<label>';
+     html += '<input type="checkbox" ' +
+                 'id="mission-report-redacted"' +
+                 (vm.authorRedacted === true ? ' checked' : '') +
+                 '> ';
+     html += 'Submit as redacted (no author)';
+     html += '</label>';
+     html += '<span class="field-hint">' +
+                 'When redacted, the report is filed under ' +
+                 '\u201cUnknown\u201d and the author select ' +
+                 'is disabled.' +
+             '</span>';
+     html += '</div>';
+     html += '<div class="form-group">';
+     html += '<label for="mission-report-text">' +
+                 'Report Text' +
+             '</label>';
+     html += '<textarea id="mission-report-text" ' +
+                 'rows="10" ' +
+                 'spellcheck="true" ' +
+                 'placeholder="Write the report...">' +
+                 escapeHtml(vm.text || '') +
+             '</textarea>';
+     html += '<span class="field-hint">' +
+                 'Ctrl / Cmd + Enter to submit.' +
+             '</span>';
+     html += '</div>';
+     html += '<div id="mission-report-error" ' +
+                 'class="mission-report-error" ' +
+                 'style="display:none;padding:8px 12px;' +
+                 'background:var(--danger-soft);' +
+                 'border-left:3px solid var(--danger);' +
+                 'border-radius:4px;' +
+                 'font-size:0.75rem;color:var(--danger);"></div>';
+     html += '</div>';
+     html += '<div class="form-actions" ' +
+                 'style="display:flex;gap:8px;' +
+                 'justify-content:flex-end;' +
+                 'margin-top:12px;padding-top:12px;' +
+                 'border-top:1px solid var(--border-soft);">';
+     html += '<button type="button" class="secondary" ' +
+                 'data-action="mission-report-cancel">' +
+                 'Cancel' +
+             '</button>';
+     html += '<button type="button" class="primary" ' +
+                 'data-action="mission-report-submit">' +
+                 (isEdit ? 'Update Report' : 'Add Report') +
+             '</button>';
+     html += '</div>';
+     return html;
+ }
+ function renderAuthorOptgroup(label, options, currentAuthorId) {
+     if (!isArray(options) || options.length === 0) {
+         return '';
+     }
+     var html = '';
+     html += '<optgroup label="' +
+                 escapeAttribute(label) + '">';
+     for (var i = 0; i < options.length; i++) {
+         var opt = options[i];
+         if (!opt || !opt.id) { continue; }
+         var selected = currentAuthorId &&
+                        String(currentAuthorId) === String(opt.id)
+             ? ' selected'
+             : '';
+         var display = opt.name || 'Unknown';
+         if (opt.deceased === true) {
+             display += ' \u2020';
+         }
+         html += '<option value="' +
+                     escapeAttribute(opt.id) + '"' + selected + '>' +
+                     escapeHtml(display) +
+                 '</option>';
+     }
+     html += '</optgroup>';
+     return html;
+ }
+ // ============================================================
+ // EXPOSE
+ // ============================================================
+ window.MissionRender = Object.freeze({
+     renderContainer: renderContainer,
+     renderList: renderList,
+     renderDetail: renderDetail,
+     renderForm: renderForm,
+     renderReportFormModal: renderReportFormModal,
+     renderEmpty: renderEmpty,
+     renderLoading: renderLoading
+ });
+ // ============================================================
+ // VERIFICATION
+ // ============================================================
+ (function verify() {
+     var exports = window.MissionRender;
+     var missing = [];
+     var required = [
+         'renderContainer',
+         'renderList',
+         'renderDetail',
+         'renderForm',
+         'renderReportFormModal',
+         'renderEmpty',
+         'renderLoading'
+     ];
+     for (var i = 0; i < required.length; i++) {
+         if (typeof exports[required[i]] !== 'function') {
+             missing.push(required[i]);
+         }
+     }
+     // Smoke test: participant panel contract.
+     try {
+         var fakeVM = {
+             isEdit: false,
+             editId: null,
+             mission: {
+                 title: '',
+                 description: '',
+                 year: 2026,
+                 month: 1,
+                 day: 1,
+                 primaryType: '',
+                 subtype: '',
+                 secondaryType: '',
+                 escalation: '',
+                 threatType: '',
+                 environment: '',
+                 location: '',
+                 duration: '',
+                 difficulty: '',
+                 priority: '',
+                 basePay: '',
+                 surchargePay: '',
+                 billing: '',
+                 status: '',
+                 objectives: [],
+                 notes: '',
+                 tags: [],
+                 assignedTeamIds: [],
+                 supportPersonnel: [],
+                 participants: []
+             },
+             currentLabel: null,
+             teams: [],
+             characters: [],
+             difficulties: [],
+             priorities: [],
+             statuses: [],
+             billingTypes: [],
+             escalationTiers: [],
+             missionTypes: [],
+             defaults: { year: 2026, month: 1, day: 1 },
+             participantsVM: {
+                 missionId: null,
+                 missionTitle: 'Mission',
+                 missionYear: 2026,
+                 assignedTeams: [
+                     {
+                         teamId: 'team_a',
+                         teamName: 'Alpha',
+                         members: [
+                             {
+                                 characterId: 'char_1',
+                                 displayName: 'Anne',
+                                 role: 'Leader',
+                                 deceased: false,
+                                 isParticipant: true
+                             }
+                         ]
+                     }
+                 ],
+                 currentParticipants: [
+                     {
+                         characterId: 'char_2',
+                         displayName: 'Beth',
+                         teamId: null,
+                         teamName: null,
+                         source: 'rookie',
+                         sourceLabel: 'Rookie',
+                         deceased: false
+                     }
+                 ]
+             }
+         };
+         var html = renderForm(fakeVM);
+         if (html.indexOf('id="mission-participants-panel"') === -1) {
+             missing.push(
+                 'renderForm did not emit #mission-participants-panel'
+             );
+         }
+         if (html.indexOf('class="participant-member-checkbox"') === -1) {
+             missing.push(
+                 'renderForm did not emit .participant-member-checkbox'
+             );
+         }
+         if (html.indexOf('data-action="mission-toggle-participant"') === -1) {
+             missing.push(
+                 'renderForm did not emit the toggle action'
+             );
+         }
+         if (html.indexOf('data-character-id="char_1"') === -1) {
+             missing.push(
+                 'renderForm did not emit the character id on the toggle'
+             );
+         }
+         if (html.indexOf('data-team-id="team_a"') === -1) {
+             missing.push(
+                 'renderForm did not emit the team id on the toggle'
+             );
+         }
+         if (html.indexOf('class="rookie-chip"') === -1) {
+             missing.push(
+                 'renderForm did not emit .rookie-chip for the rookie'
+             );
+         }
+         if (html.indexOf('data-action="mission-close-form"') === -1) {
+             missing.push(
+                 'renderForm did not emit the Discard Changes action'
+             );
+         }
+         if (html.indexOf('Discard Changes') === -1) {
+             missing.push(
+                 'renderForm did not label the abandon button ' +
+                 '"Discard Changes"'
+             );
+         }
+         // E1: date fields emit the correct elements.
+         if (html.indexOf('id="mission-year"') === -1) {
+             missing.push('renderForm missing #mission-year');
+         }
+         if (html.indexOf('id="mission-month"') === -1) {
+             missing.push('renderForm missing #mission-month');
+         }
+         if (html.indexOf('id="mission-day"') === -1) {
+             missing.push('renderForm missing #mission-day');
+         }
+         if (html.indexOf('select id="mission-month"') === -1) {
+             missing.push(
+                 'renderForm did not emit #mission-month as a <select>'
+             );
+         }
+         if (html.indexOf('data-mission-year-field="true"') === -1) {
+             missing.push(
+                 'renderForm lost data-mission-year-field'
+             );
+         }
+         if (html.indexOf('data-mission-month-field="true"') === -1) {
+             missing.push(
+                 'renderForm lost data-mission-month-field'
+             );
+         }
+         if (html.indexOf('data-mission-day-field="true"') === -1) {
+             missing.push(
+                 'renderForm lost data-mission-day-field'
+             );
+         }
+         if (html.indexOf('>January<') === -1) {
+             missing.push(
+                 'renderForm month <select> did not include Gregorian ' +
+                 'fallback months'
+             );
+         }
+     } catch (e) {
+         missing.push('form smoke test threw: ' + e.message);
+     }
+     // Smoke test: team option label rendering.
+     try {
+         if (buildTeamOptionLabel({
+             id: 't1',
+             name: 'Alpha',
+             specialisationIds: [],
+             specialisationLabels: []
+         }) !== 'Alpha') {
+             missing.push(
+                 'buildTeamOptionLabel: team with no specialisations ' +
+                 'should render as just the name'
+             );
+         }
+         if (buildTeamOptionLabel({
+             id: 't2',
+             name: 'Bravo',
+             specialisationIds: ['combat'],
+             specialisationLabels: ['Combat']
+         }) !== 'Bravo (Combat)') {
+             missing.push(
+                 'buildTeamOptionLabel: single-specialisation team ' +
+                 'should render "Name (Label)"'
+             );
+         }
+         if (buildTeamOptionLabel({
+             id: 't3',
+             name: 'Charlie',
+             specialisationIds: ['combat', 'recovery'],
+             specialisationLabels: ['Combat', 'Recovery']
+         }) !== 'Charlie (Combat, Recovery)') {
+             missing.push(
+                 'buildTeamOptionLabel: multi-specialisation team ' +
+                 'should render "Name (LabelA, LabelB)"'
+             );
+         }
+         if (buildTeamOptionLabel({
+             id: 't4',
+             name: 'Delta',
+             specialisationIds: ['combat'],
+             specialisationLabels: ['Combat', '', null]
+         }) !== 'Delta (Combat)') {
+             missing.push(
+                 'buildTeamOptionLabel: empty labels should be ' +
+                 'skipped'
+             );
+         }
+         if (buildTeamOptionLabel(null) !== '') {
+             missing.push(
+                 'buildTeamOptionLabel: null input should return ""'
+             );
+         }
+     } catch (e) {
+         missing.push('team option label smoke test threw: ' + e.message);
+     }
+     // Smoke test: list row selection contract.
+     try {
+         var listHtml = renderList(
+             [
+                 {
+                     id: 'm1',
+                     title: 'Mission One',
+                     missionId: '2026-001-M',
+                     status: 'active',
+                     priority: 'medium',
+                     progress: 0,
+                     supportCount: 0,
+                     teamName: 'Unassigned',
+                     assignedTeams: [],
+                     typeDisplay: 'Unclassified',
+                     escalationLabel: '',
+                     difficultyLabel: '',
+                     dateDisplay: '',
+                     isCompleted: false,
+                     isCancelled: false,
+                     isArchived: false
+                 }
+             ],
+             { selectedIds: { m1: true } }
+         );
+         if (listHtml.indexOf('class="mission-select-cell"') === -1) {
+             missing.push(
+                 'renderList did not emit .mission-select-cell'
+             );
+         }
+         if (listHtml.indexOf('class="mission-select-checkbox"') === -1) {
+             missing.push(
+                 'renderList did not emit .mission-select-checkbox'
+             );
+         }
+         if (listHtml.indexOf('data-mission-id="m1"') === -1) {
+             missing.push(
+                 'renderList did not emit the mission id on the row ' +
+                 'or checkbox'
+             );
+         }
+         if (listHtml.indexOf(' checked') === -1) {
+             missing.push(
+                 'renderList did not check the selected row'
+             );
+         }
+         if (listHtml.indexOf('mission-item-selected') === -1) {
+             missing.push(
+                 'renderList did not add .mission-item-selected to ' +
+                 'the selected row'
+             );
+         }
+     } catch (e) {
+         missing.push('list row selection smoke test threw: ' + e.message);
+     }
+     // Smoke test: header export button.
+     try {
+         var containerHtml = renderContainer({
+             filter: 'all',
+             counts: { total: 3, readyForCompletion: 1 },
+             selectedIds: { m1: true, m2: true }
+         });
+         if (containerHtml.indexOf('id="mission-export-selected-btn"') === -1) {
+             missing.push(
+                 'renderContainer did not emit #mission-export-selected-btn'
+             );
+         }
+         if (containerHtml.indexOf('data-action="mission-export-selected"') === -1) {
+             missing.push(
+                 'renderContainer did not emit the export-selected action'
+             );
+         }
+         if (containerHtml.indexOf('Export (2)') === -1) {
+             missing.push(
+                 'renderContainer did not render the selected count ' +
+                 'in the export button'
+             );
+         }
+         var emptyContainer = renderContainer({
+             filter: 'all',
+             counts: { total: 0, readyForCompletion: 0 },
+             selectedIds: {}
+         });
+         if (emptyContainer.indexOf(' mission-export-selected-btn" ' +
+                 'data-action="mission-export-selected" disabled') === -1) {
+             if (emptyContainer.indexOf('disabled') === -1) {
+                 missing.push(
+                     'renderContainer did not disable the export ' +
+                     'button when nothing is selected'
+                 );
+             }
+         }
+     } catch (e) {
+         missing.push('header export button smoke test threw: ' + e.message);
+     }
+     // Smoke test: report form modal.
+     try {
+         var reportHtml = renderReportFormModal({
+             mode: 'create',
+             missionId: 'm1',
+             missionTitle: 'Test',
+             reportId: null,
+             authorId: '',
+             authorRedacted: false,
+             text: '',
+             teamMembers: [
+                 { id: 'c1', name: 'Anne', deceased: false }
+             ],
+             otherCharacters: [
+                 { id: 'c2', name: 'Beth', deceased: true }
+             ]
+         });
+         if (reportHtml.indexOf('id="mission-report-author"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing #mission-report-author'
+             );
+         }
+         if (reportHtml.indexOf('id="mission-report-redacted"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing #mission-report-redacted'
+             );
+         }
+         if (reportHtml.indexOf('id="mission-report-text"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing #mission-report-text'
+             );
+         }
+         if (reportHtml.indexOf('data-action="mission-report-submit"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing submit action'
+             );
+         }
+         if (reportHtml.indexOf('<optgroup label="Assigned Team Members"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing team-members optgroup'
+             );
+         }
+         if (reportHtml.indexOf('<optgroup label="Other Characters"') === -1) {
+             missing.push(
+                 'renderReportFormModal missing other-characters optgroup'
+             );
+         }
+     } catch (e) {
+         missing.push('report smoke test threw: ' + e.message);
+     }
+     if (missing.length > 0) {
+         console.warn(
+             '[MissionRender] Verification failed:',
+             missing.join(', ')
+         );
+     }
+ })();
 })();
