@@ -303,29 +303,54 @@ if (window.__missionExportLoaded) {
  /**
   * Resolve a team's display name.
   *
-  * Uses the period-aware resolution (TeamQueries.getTeamName or
-  * getCurrentTeamName) when available, passing the mission's
-  * year so the export reflects the name the team held *during
-  * the mission*, rather than its current name or a raw UUID.
-  * Falls back to the raw team record's `name` property if the
-  * period-aware API is absent.
+  * When `year` is provided, looks up the team's period at that
+  * year via TeamQueries.getPeriodForYear and uses the period's
+  * name. This is what makes the export reflect the name the
+  * team held *during the mission*, rather than its current name
+  * or a raw UUID.
+  *
+  * Falls back through:
+  *   1. period.name at the mission's year (via getPeriodForYear)
+  *   2. getCurrentTeamName (the current period's name)
+  *   3. team.name (raw stored name)
+  *   4. '(unnamed team)'
+  *
+  * Returns '' for missing/invalid teamId, '(missing team)' when
+  * the team cannot be resolved, so the report stays legible.
   */
  function resolveTeamName(teamId, year) {
      if (!isNonEmptyString(teamId)) { return ''; }
-     
-     if (typeof TeamQueries.getTeamName === 'function') {
-         var periodName = TeamQueries.getTeamName(teamId, year);
-         if (isNonEmptyString(periodName)) return periodName;
-     } else if (typeof TeamQueries.getCurrentTeamName === 'function') {
-         var currentName = TeamQueries.getCurrentTeamName(teamId, year);
-         if (isNonEmptyString(currentName)) return currentName;
-     }
-
      var t = null;
      try {
          t = TeamQueries.getTeamById(teamId);
      } catch (e) { t = null; }
      if (!t) { return '(missing team)'; }
+
+     // Period-aware resolution: use the name the team had at
+     // the mission's year, when we have one.
+     if (year !== undefined && year !== null &&
+         typeof TeamQueries.getPeriodForYear === 'function') {
+         try {
+             var period = TeamQueries.getPeriodForYear(t, year);
+             if (period && isNonEmptyString(period.name)) {
+                 return String(period.name);
+             }
+         } catch (e) {
+             // Fall through to current-name resolution.
+         }
+     }
+
+     if (typeof TeamQueries.getCurrentTeamName === 'function') {
+         try {
+             var currentName = TeamQueries.getCurrentTeamName(t);
+             if (isNonEmptyString(currentName)) {
+                 return String(currentName);
+             }
+         } catch (e) {
+             // Fall through.
+         }
+     }
+
      return isNonEmptyString(t.name) ? t.name : '(unnamed team)';
  }
  // ============================================================
@@ -1213,6 +1238,31 @@ if (window.__missionExportLoaded) {
              missing.push(
                  'exportMissionsJson([]) did not return ' +
                  '{ exported: false }'
+             );
+         }
+         // ---- Period-aware team name resolution ----
+         //
+         // Without TeamQueries loaded, resolveTeamName should
+         // still fall back gracefully (return '(missing team)'
+         // or the raw team name). With TeamQueries loaded and
+         // a team carrying periods, it should return the name
+         // from the period that covers the mission's year.
+         //
+         // We cannot inject a fake TeamQueries here without
+         // polluting the global scope, so the smoke test only
+         // asserts the function's signature accepts the year
+         // argument and does not throw.
+         try {
+             var resolved = resolveTeamName('nonexistent_team_id', 1920);
+             if (resolved !== '(missing team)') {
+                 missing.push(
+                     'resolveTeamName: unknown id should yield ' +
+                     '"(missing team)", got "' + resolved + '"'
+                 );
+             }
+         } catch (e) {
+             missing.push(
+                 'resolveTeamName threw on unknown id: ' + e.message
              );
          }
      } catch (e) {
