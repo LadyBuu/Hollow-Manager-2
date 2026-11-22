@@ -7,6 +7,8 @@
  *   - Ranking CRUD operations (create, update, delete)
  *   - Ranking queries (get by class, student, week)
  *   - Ranking generation (autoGenerate from AcademyPerformance)
+ *   - MANUAL ranking assignment (setRanking, insertRankingAt,
+ *     removeRankingAt, moveRanking) — v35
  *   - Ranking statistics (percentile, distribution)
  *   - Ranking validation
  *   - Cross-domain cascade helpers (stripCharacterRefs, stripClassRefs)
@@ -17,7 +19,8 @@
  *   - Uses AcademyPerformance for the per-student aggregates. Ranking
  *     CONSUMES performance. It does NOT calculate averages.
  *   - Uses AcademyAggregator.getClassStudentsViewModel to resolve the
- *     class roster for auto-generate.
+ *     class roster for auto-generate and for manual setRanking
+ *     normalisation.
  *   - Uses CharacterQueries for name resolution ONLY in the enriched
  *     query variants. The base ranking record does not carry a name.
  *   - All MUTATIONS go through MutationPipeline.
@@ -47,12 +50,53 @@
  *     ungraded student would produce records the UI cannot render.
  *     Absence of a record means "not yet graded".
  *
- *   MIGRATION COMPLETED (v30):
- *     AcademyPerformance.calculateRanking has been deleted. This
- *     module no longer references it. The ordering invariant (rank <=
- *     totalStudents) is enforced by this module's own sort and rank
- *     assignment pass, and validated by the pipeline validator
- *     against the transaction snapshot.
+ * MANUAL RANKING (v35):
+ *   Ranking is now a first-class, independently-assignable datum. A
+ *   caller can set ranks without producing grades and without
+ *   going through autoGenerate.
+ *
+ *   The write surface is:
+ *
+ *     setRanking(classId, week, orderedCharIds)
+ *       The resequencing primitive. Takes the full ordered list of
+ *       character IDs and writes rank = 1..N. This is what
+ *       drag-and-drop calls. It is also the ONLY path that can
+ *       move a character between positions in a single transaction,
+ *       which is what makes the "one person per rank" invariant
+ *       hold: every rank in the bucket is recomputed, so there is
+ *       no window in which two records share a rank.
+ *
+ *     insertRankingAt(classId, week, charId, position)
+ *       Convenience wrapper. Appends if position is blank/out of
+ *       range. Implemented by calling setRanking with a spliced
+ *       order.
+ *
+ *     removeRankingAt(classId, week, charId)
+ *       Removes the character's record, then renormalises the
+ *       remaining ranks so there are no gaps.
+ *
+ *     moveRanking(classId, week, charId, toPosition)
+ *       Convenience wrapper around setRanking.
+ *
+ *   MANUAL PRESERVATION:
+ *     Records written by the manual API carry manuallyRanked: true.
+ *     autoGenerate SKIPS manually-ranked records unless
+ *     options.overwriteManual is true. This means a hand-tuned
+ *     ranking survives a regenerate, which is the whole point of
+ *     hand-tuning it.
+ *
+ *   `totalStudents` on a manually-written record is the length of
+ *   the ordered list (i.e. the number of ranked students), matching
+ *   the existing semantics. It is NOT class size.
+ *
+ *   `academicAverage`, `socialScore`, and `overallScore` are left
+ *   null on manually-created records unless the caller supplies
+ *   them. Manual ranking does not fabricate grade data.
+ *
+ *   The rank-uniqueness invariant is enforced in pipeline validate
+ *   against the transaction snapshot via
+ *   findConflictingRankAtRankInSnapshot. A duplicate rank within a
+ *   (classId, week) bucket fails the transaction and rolls back.
  *
  * RANKING RECORD SHAPE:
  *   {
@@ -65,6 +109,7 @@
  *     academicAverage,   // 82.5 (number|null)
  *     socialScore,       // 88 (number|null)
  *     overallScore,      // 83.7 (number|null)
+ *     manuallyRanked,    // boolean (v35)
  *     createdAt,
  *     updatedAt
  *   }
@@ -93,6 +138,12 @@
  * RANK BOUND CONTRACT:
  *   - rank must be >= 1.
  *   - rank must be <= totalStudents.
+ *
+ * RANK UNIQUENESS CONTRACT (v35):
+ *   - Within a (classId, week) bucket, no two records may share a
+ *     rank. Enforced in pipeline validate for every mutation that
+ *     writes a rank, and by construction for setRanking (which
+ *     rewrites the whole bucket).
  *
  * SCORE BOUND CONTRACT:
  *   - academicAverage, when present, must be in [0, 100].
@@ -123,10 +174,6 @@
  *   Callers that want names call CharacterQueries.getCharacterById
  *   on the studentId, or go through the aggregator.
  *
- *   The only live consumer was the aggregator, which already calls
- *   `getClassRankings(classId, week, false)` and then reads names
- *   itself when it needs them. The enriched path was dead.
- *
  * TRANSACTION SNAPSHOT RULE:
  *   Every pipeline validate() callback resolves references against
  *   the appData argument it is handed. It does not read window.data.
@@ -154,12 +201,21 @@
  *   - window.MutationPipeline
  *
  * DEPENDENCIES (LAZY, mandatory at call time):
- *   - window.AcademyAggregator    (class roster for auto-generate)
+ *   - window.AcademyAggregator    (class roster for auto-generate
+ *                                  and manual normalisation)
  *
  * USAGE:
  *   var rankings = window.AcademyRanking;
  *
  *   rankings.autoGenerate('class_789', 5).then(function(result) { ... });
+ *
+ *   // Manual ranking (v35):
+ *   rankings.setRanking('class_789', 5, ['char_a', 'char_b', 'char_c'])
+ *     .then(function(result) { ... });
+ *
+ *   rankings.insertRankingAt('class_789', 5, 'char_d', 2);
+ *   rankings.removeRankingAt('class_789', 5, 'char_b');
+ *   rankings.moveRanking('class_789', 5, 'char_c', 1);
  *
  *   var classRankings = rankings.getClassRankings('class_789', 5);
  *   var studentRank = rankings.getStudentRank('class_789', 'char_456', 5);
@@ -385,6 +441,45 @@
             if (String(r.classId) !== String(classId)) continue;
             if (String(r.studentId) !== String(studentId)) continue;
             if (parseWeekStrict(r.week) !== targetWeek) continue;
+            return r;
+        }
+        return null;
+    }
+
+    /**
+     * v35 — rank uniqueness within a (classId, week) bucket.
+     *
+     * Returns the conflicting record, or null. `excludeIds` is a
+     * set-like object of ranking IDs to ignore (used by setRanking
+     * to exclude every record it is about to rewrite).
+     */
+    function findConflictingRankAtRankInSnapshot(
+        appData, classId, week, rank, excludeIds
+    ) {
+        if (!appData || !appData.academy || !appData.academy.rankings) {
+            return null;
+        }
+
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
+        }
+
+        var targetClass = String(classId);
+        var targetWeek = parseWeekStrict(week);
+        var targetRank = parseStrictInteger(rank);
+        if (targetWeek === null || targetRank === null) {
+            return null;
+        }
+
+        for (var id in rankings) {
+            if (!Object.prototype.hasOwnProperty.call(rankings, id)) continue;
+            var r = rankings[id];
+            if (!r) continue;
+            if (excludeIds && excludeIds[String(id)]) continue;
+            if (String(r.classId) !== targetClass) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
+            if (parseStrictInteger(r.rank) !== targetRank) continue;
             return r;
         }
         return null;
@@ -843,6 +938,7 @@
             academicAverage: academicAverage,
             socialScore: socialScore,
             overallScore: overallScore,
+            manuallyRanked: data.manuallyRanked === true,
             createdAt: existingCreatedAt || now,
             updatedAt: now
         };
@@ -870,6 +966,17 @@
             ));
         }
 
+        // v35 — rank uniqueness within the bucket.
+        var rankConflict = findConflictingRankAtRankInSnapshot(
+            getDataStore(), data.classId, data.week, data.rank, null
+        );
+        if (rankConflict) {
+            return Promise.resolve(failure(
+                'Rank ' + data.rank + ' is already assigned in this ' +
+                'class and week. Use setRanking to resequence the bucket.'
+            ));
+        }
+
         var newRanking;
         try {
             newRanking = buildRankingRecord(data, null, null);
@@ -894,9 +1001,30 @@
                     return { valid: false, message: 'Ranking ID collision.' };
                 }
 
-                return validateCandidateAgainstSnapshot(
+                var snapshotCheck = validateCandidateAgainstSnapshot(
                     newRanking, appData, null
                 );
+                if (!snapshotCheck.valid) {
+                    return snapshotCheck;
+                }
+
+                var rankConflictInSnapshot =
+                    findConflictingRankAtRankInSnapshot(
+                        appData,
+                        newRanking.classId,
+                        newRanking.week,
+                        newRanking.rank,
+                        null
+                    );
+                if (rankConflictInSnapshot) {
+                    return {
+                        valid: false,
+                        message: 'Rank ' + newRanking.rank +
+                            ' is already assigned in this class and week.'
+                    };
+                }
+
+                return { valid: true };
             },
             mutate: function(appData) {
                 if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
@@ -938,7 +1066,8 @@
         var hasChanges = false;
         var updateFields = [
             'classId', 'studentId', 'week', 'rank', 'totalStudents',
-            'academicAverage', 'socialScore', 'overallScore'
+            'academicAverage', 'socialScore', 'overallScore',
+            'manuallyRanked'
         ];
 
         for (var i = 0; i < updateFields.length; i++) {
@@ -1016,6 +1145,14 @@
                         }
                     }
                     break;
+
+                case 'manuallyRanked':
+                    var manualFlag = value === true;
+                    if (candidate.manuallyRanked !== manualFlag) {
+                        candidate.manuallyRanked = manualFlag;
+                        hasChanges = true;
+                    }
+                    break;
             }
         }
 
@@ -1049,9 +1186,34 @@
                     return { valid: false, message: 'Ranking no longer exists.' };
                 }
 
-                return validateCandidateAgainstSnapshot(
+                var snapshotCheck = validateCandidateAgainstSnapshot(
                     candidate, appData, targetId
                 );
+                if (!snapshotCheck.valid) {
+                    return snapshotCheck;
+                }
+
+                var rankConflictInSnapshot =
+                    findConflictingRankAtRankInSnapshot(
+                        appData,
+                        candidate.classId,
+                        candidate.week,
+                        candidate.rank,
+                        (function() {
+                            var s = Object.create(null);
+                            s[targetId] = true;
+                            return s;
+                        })()
+                    );
+                if (rankConflictInSnapshot) {
+                    return {
+                        valid: false,
+                        message: 'Rank ' + candidate.rank +
+                            ' is already assigned in this class and week.'
+                    };
+                }
+
+                return { valid: true };
             },
             mutate: function(appData) {
                 if (!appData.academy || !appData.academy.rankings) {
@@ -1172,12 +1334,6 @@
     // ============================================================
     // PUBLIC READ SURFACE (CLONES)
     // ============================================================
-    //
-    // Base records, decorated with a derived percentile.
-    //
-    // Names are NOT attached. Callers that need them call
-    // CharacterQueries.getCharacterById on the studentId, or route
-    // through the aggregator.
 
     function getClassRankings(classId, week) {
         var rankings = getClassRankingsInternal(classId, week);
@@ -1291,40 +1447,7 @@
     // ============================================================
     // AUTO-GENERATE RANKINGS FROM PERFORMANCE
     // ============================================================
-    //
-    // MIGRATION (v30):
-    //   This module used to call AcademyPerformance.calculateRanking,
-    //   which returned an ORDERED, RANK-ASSIGNED list. The
-    //   performance layer has been reduced to
-    //   calculateClassPerformance, which returns per-student
-    //   aggregates in input order without any ordering or rank.
-    //
-    //   The ordering and rank assignment now live HERE, in
-    //   assignRanks:
-    //     1. Sort the aggregates by score (overall, falling back to
-    //        academic), descending.
-    //     2. Skip entries with no score at all.
-    //     3. Assign rank 1 to the first placed entry, rank 2 to the
-    //        second, and so on. Ties are ordered by studentId.
-    //
-    //   The rank bound invariant (rank <= totalStudents) is satisfied
-    //   by construction, and validated by the pipeline.
 
-    /**
-     * Assign ranks to a list of performance aggregates.
-     *
-     * INPUT:
-     *   An array of { studentId, academicAverage, socialScore,
-     *   overallScore, disciplineCount, gradeCount }, in any order.
-     *
-     * OUTPUT:
-     *   A sorted array of the same shape plus a `rank` field. Only
-     *   entries with at least one score participate. Entries with
-     *   both academicAverage and overallScore null are DROPPED.
-     *
-     *   totalStudents (the count of participants) is returned
-     *   separately; callers use it as the record's denominator.
-     */
     function assignRanks(entries) {
         if (!Array.isArray(entries) || entries.length === 0) {
             return { ranked: [], totalStudents: 0 };
@@ -1389,6 +1512,9 @@
 
         options = options || {};
         var overwrite = options.overwrite !== false;
+        // v35 — manual ranks survive a regenerate unless the caller
+        // explicitly asks to overwrite them.
+        var overwriteManual = options.overwriteManual === true;
 
         var classValidation = validateClassExists(classId);
         if (!classValidation.valid) {
@@ -1410,10 +1536,6 @@
         }
 
         // ---- Ask performance for the per-student aggregates ----
-        //
-        // calculateClassPerformance returns aggregates in the same
-        // order as the input student IDs. It does NOT order them
-        // and it does NOT assign rank.
         var aggregates;
         try {
             aggregates = AcademyPerformance.calculateClassPerformance(
@@ -1458,6 +1580,13 @@
 
             var existing = getStudentRankInternal(classId, data.studentId, weekNum);
 
+            // v35 — preserve manually-ranked records unless the caller
+            // opts in to overwriting them.
+            if (existing && existing.manuallyRanked === true && !overwriteManual) {
+                planned.push({ action: 'skip' });
+                continue;
+            }
+
             if (existing && !overwrite) {
                 planned.push({ action: 'skip' });
                 continue;
@@ -1470,6 +1599,7 @@
                 candidate.academicAverage = data.academicAverage;
                 candidate.socialScore = data.socialScore;
                 candidate.overallScore = data.overallScore;
+                candidate.manuallyRanked = false;
                 candidate.updatedAt = new Date().toISOString();
                 planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
@@ -1483,7 +1613,8 @@
                         totalStudents: totalStudents,
                         academicAverage: data.academicAverage,
                         socialScore: data.socialScore,
-                        overallScore: data.overallScore
+                        overallScore: data.overallScore,
+                        manuallyRanked: false
                     }, null, null);
                 } catch (e) {
                     errors.push({ studentId: data.studentId, error: e.message });
@@ -1505,6 +1636,66 @@
 
                 if (!findClassInSnapshot(appData, classId)) {
                     return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                // v35 — rank uniqueness across the whole planned set.
+                // Collect the ranks we are about to write and the IDs
+                // of records we are rewriting, so the check sees only
+                // the ranks that WILL exist after commit.
+                var plannedRankById = Object.create(null);
+                var rewrittenIds = Object.create(null);
+                for (var pi = 0; pi < planned.length; pi++) {
+                    var pItem = planned[pi];
+                    if (pItem.action === 'create') {
+                        plannedRankById[pItem.record.id] =
+                            parseStrictInteger(pItem.record.rank);
+                    } else if (pItem.action === 'update') {
+                        rewrittenIds[String(pItem.matchId)] = true;
+                        plannedRankById[pItem.matchId] =
+                            parseStrictInteger(pItem.record.rank);
+                    }
+                }
+
+                var seenRanks = Object.create(null);
+                var byRankKeys = Object.keys(plannedRankById);
+                for (var rk = 0; rk < byRankKeys.length; rk++) {
+                    var rkId = byRankKeys[rk];
+                    var rkRank = plannedRankById[rkId];
+                    var rkKey = String(rkRank);
+                    if (seenRanks[rkKey]) {
+                        return {
+                            valid: false,
+                            message: 'Rank ' + rkRank +
+                                ' would be assigned to more than one ' +
+                                'student by this operation.'
+                        };
+                    }
+                    seenRanks[rkKey] = true;
+                }
+
+                // Existing ranks from records we are NOT rewriting
+                // must not collide with the new ranks.
+                if (appData.academy.rankings) {
+                    for (var existingId in appData.academy.rankings) {
+                        if (!Object.prototype.hasOwnProperty.call(
+                            appData.academy.rankings, existingId
+                        )) { continue; }
+                        if (rewrittenIds[String(existingId)]) { continue; }
+                        var existingRec = appData.academy.rankings[existingId];
+                        if (!existingRec) { continue; }
+                        if (String(existingRec.classId) !== String(classId)) { continue; }
+                        if (parseWeekStrict(existingRec.week) !== weekNum) { continue; }
+                        var existingRankKey =
+                            String(parseStrictInteger(existingRec.rank));
+                        if (seenRanks[existingRankKey]) {
+                            return {
+                                valid: false,
+                                message: 'Rank ' + existingRankKey +
+                                    ' is already held by a record this ' +
+                                    'operation does not rewrite.'
+                            };
+                        }
+                    }
                 }
 
                 for (var i = 0; i < planned.length; i++) {
@@ -1609,6 +1800,397 @@
             result.push(String(s.id));
         }
         return result;
+    }
+
+    // ============================================================
+    // MANUAL RANKING — ORDERED-LIST WRITE API (v35)
+    // ============================================================
+    //
+    // See the MANUAL RANKING note in the header for the full
+    // contract. Summary:
+    //
+    //   setRanking           — resequencing primitive. Drag-drop.
+    //   insertRankingAt      — append or insert at a position.
+    //   removeRankingAt      — remove, renormalise.
+    //   moveRanking          — move an existing entry.
+    //
+    // "One person per rank" holds by construction: setRanking
+    // rewrites every record in the (classId, week) bucket to rank
+    // 1..N, so there is no window in which two records share a
+    // rank. The pipeline validator re-checks the invariant against
+    // the transaction snapshot.
+
+    function buildManualRankingRecord(
+        classId,
+        studentId,
+        weekNum,
+        rank,
+        totalStudents,
+        existing
+    ) {
+        var now = new Date().toISOString();
+
+        var academicAverage = null;
+        var socialScore = null;
+        var overallScore = null;
+
+        if (existing) {
+            academicAverage = existing.academicAverage !== undefined
+                ? existing.academicAverage : null;
+            socialScore = existing.socialScore !== undefined
+                ? existing.socialScore : null;
+            overallScore = existing.overallScore !== undefined
+                ? existing.overallScore : null;
+        }
+
+        return {
+            id: existing ? existing.id : generateId(),
+            classId: String(classId),
+            studentId: String(studentId),
+            week: weekNum,
+            rank: rank,
+            totalStudents: totalStudents,
+            academicAverage: academicAverage,
+            socialScore: socialScore,
+            overallScore: overallScore,
+            manuallyRanked: true,
+            createdAt: existing ? existing.createdAt : now,
+            updatedAt: now
+        };
+    }
+
+    /**
+     * Normalise an ordered character list for a (classId, week):
+     * dedupe, drop non-strings, drop characters not on the class
+     * roster. A character that has been removed from the class
+     * cannot be ranked; the drag UI can race a roster change, so
+     * we drop rather than throw.
+     */
+    function normaliseOrderedCharIds(classId, orderedCharIds) {
+        if (!Array.isArray(orderedCharIds)) { return []; }
+
+        var seen = Object.create(null);
+        var result = [];
+
+        var roster = [];
+        try {
+            roster = resolveClassStudentIds(classId);
+        } catch (e) {
+            roster = [];
+        }
+        var rosterSet = Object.create(null);
+        for (var r = 0; r < roster.length; r++) {
+            rosterSet[String(roster[r])] = true;
+        }
+
+        for (var i = 0; i < orderedCharIds.length; i++) {
+            if (!isNonEmptyString(orderedCharIds[i])) { continue; }
+            var id = String(orderedCharIds[i]);
+            if (seen[id]) { continue; }
+            if (rosterSet[id] !== true) { continue; }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return result;
+    }
+
+    function setRanking(classId, week, orderedCharIds) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var classValidation = validateClassExists(classId);
+        if (!classValidation.valid) {
+            return Promise.resolve(failure(classValidation.message));
+        }
+
+        var targetClass = String(classId);
+        var order = normaliseOrderedCharIds(targetClass, orderedCharIds);
+        var total = order.length;
+
+        // Snapshot current records so we can diff inside mutate.
+        var existingRecords = getClassRankingsInternal(
+            targetClass, weekNum
+        );
+        var existingByStudent = Object.create(null);
+        for (var e = 0; e < existingRecords.length; e++) {
+            var er = existingRecords[e];
+            if (er && er.studentId) {
+                existingByStudent[String(er.studentId)] = er;
+            }
+        }
+
+        // Plan records: every ordered character gets rank = index+1.
+        var planned = [];
+        var plannedIds = Object.create(null);
+        for (var i = 0; i < order.length; i++) {
+            var sid = order[i];
+            var existing = existingByStudent[sid] || null;
+            var record = buildManualRankingRecord(
+                targetClass, sid, weekNum, i + 1, total, existing
+            );
+            planned.push(record);
+            plannedIds[String(record.id)] = true;
+        }
+
+        // Any record in the bucket not covered by the new order is
+        // removed (the student was dragged out).
+        var removeIds = [];
+        for (var existingStudent in existingByStudent) {
+            if (!Object.prototype.hasOwnProperty.call(
+                existingByStudent, existingStudent
+            )) { continue; }
+            var existingRec = existingByStudent[existingStudent];
+            if (!plannedIds[String(existingRec.id)]) {
+                removeIds.push(String(existingRec.id));
+            }
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                if (!findClassInSnapshot(appData, targetClass)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                // Every planned record must survive the snapshot checks.
+                for (var vi = 0; vi < planned.length; vi++) {
+                    var pRec = planned[vi];
+                    var pCheck = validateCandidate(pRec);
+                    if (!pCheck.valid) { return pCheck; }
+
+                    if (!findCharacterInSnapshot(appData, pRec.studentId)) {
+                        return {
+                            valid: false,
+                            message: 'Student no longer exists: ' +
+                                pRec.studentId
+                        };
+                    }
+                }
+
+                // Rank uniqueness across the bucket, excluding the
+                // records we are about to rewrite or remove.
+                var excludeSet = Object.create(null);
+                for (var pi = 0; pi < planned.length; pi++) {
+                    excludeSet[String(planned[pi].id)] = true;
+                }
+                for (var ri = 0; ri < removeIds.length; ri++) {
+                    excludeSet[String(removeIds[ri])] = true;
+                }
+
+                var seenRanks = Object.create(null);
+                for (var rk = 0; rk < planned.length; rk++) {
+                    var rankKey = String(parseStrictInteger(planned[rk].rank));
+                    if (seenRanks[rankKey]) {
+                        return {
+                            valid: false,
+                            message: 'Rank ' + rankKey +
+                                ' is assigned to more than one student.'
+                        };
+                    }
+                    seenRanks[rankKey] = true;
+                }
+
+                // Collision with records we are not touching.
+                if (appData.academy.rankings) {
+                    for (var otherId in appData.academy.rankings) {
+                        if (!Object.prototype.hasOwnProperty.call(
+                            appData.academy.rankings, otherId
+                        )) { continue; }
+                        if (excludeSet[String(otherId)]) { continue; }
+                        var otherRec = appData.academy.rankings[otherId];
+                        if (!otherRec) { continue; }
+                        if (String(otherRec.classId) !== targetClass) { continue; }
+                        if (parseWeekStrict(otherRec.week) !== weekNum) { continue; }
+                        var otherRankKey =
+                            String(parseStrictInteger(otherRec.rank));
+                        if (seenRanks[otherRankKey]) {
+                            return {
+                                valid: false,
+                                message: 'Rank ' + otherRankKey +
+                                    ' is already held by a record this ' +
+                                    'operation does not rewrite.'
+                            };
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings ||
+                    typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+                var rankings = appData.academy.rankings;
+
+                // Remove stale records (removed from the order).
+                for (var ri = 0; ri < removeIds.length; ri++) {
+                    delete rankings[removeIds[ri]];
+                }
+
+                // Upsert planned records.
+                for (var pi = 0; pi < planned.length; pi++) {
+                    rankings[planned[pi].id] = deepClone(planned[pi]);
+                }
+
+                var finalRankings = getClassRankingsFromSnapshot(
+                    appData, targetClass, weekNum
+                );
+
+                return {
+                    classId: targetClass,
+                    week: weekNum,
+                    orderedCharIds: order.slice(),
+                    totalStudents: total,
+                    rankings: finalRankings
+                };
+            },
+            logMessage: 'Set ranking for class ' + targetClass +
+                ', week ' + weekNum + ' (' + total + ' ranked)',
+            successMessage: 'Ranking updated successfully!',
+            failureMessage: 'Failed to update ranking.'
+        });
+    }
+
+    function insertRankingAt(classId, week, charId, position) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        for (var i = 0; i < current.length; i++) {
+            if (current[i] && current[i].studentId) {
+                order.push(String(current[i].studentId));
+            }
+        }
+
+        // If the character is already ranked, move rather than insert.
+        var existingIdx = order.indexOf(targetChar);
+        if (existingIdx !== -1) {
+            order.splice(existingIdx, 1);
+        }
+
+        var pos = parseStrictInteger(position);
+        var insertAt;
+        if (pos === null || pos < 1) {
+            insertAt = order.length;
+        } else if (pos > order.length) {
+            insertAt = order.length;
+        } else {
+            insertAt = pos - 1;
+        }
+
+        order.splice(insertAt, 0, targetChar);
+
+        return setRanking(targetClass, weekNum, order);
+    }
+
+    function removeRankingAt(classId, week, charId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        var found = false;
+        for (var i = 0; i < current.length; i++) {
+            if (!current[i] || !current[i].studentId) { continue; }
+            var sid = String(current[i].studentId);
+            if (sid === targetChar) {
+                found = true;
+                continue;
+            }
+            order.push(sid);
+        }
+
+        if (!found) {
+            return Promise.resolve(failure('That student is not ranked at this week.'));
+        }
+
+        // setRanking with an empty order also removes all records.
+        return setRanking(targetClass, weekNum, order);
+    }
+
+    function moveRanking(classId, week, charId, toPosition) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        var pos = parseStrictInteger(toPosition);
+        if (pos === null || pos < 1) {
+            return Promise.resolve(failure('Target position must be an integer >= 1.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        var found = false;
+        for (var i = 0; i < current.length; i++) {
+            if (!current[i] || !current[i].studentId) { continue; }
+            var sid = String(current[i].studentId);
+            if (sid === targetChar) {
+                found = true;
+                continue;
+            }
+            order.push(sid);
+        }
+
+        if (!found) {
+            return Promise.resolve(failure('That student is not ranked at this week.'));
+        }
+
+        var insertAt = pos - 1;
+        if (insertAt > order.length) {
+            insertAt = order.length;
+        }
+        order.splice(insertAt, 0, targetChar);
+
+        return setRanking(targetClass, weekNum, order);
     }
 
     // ============================================================
@@ -1895,6 +2477,12 @@
         deleteClassRankings: deleteClassRankings,
         autoGenerate: autoGenerate,
         saveRankings: saveRankings,
+
+        // ---- Manual ranking (v35) ----
+        setRanking: setRanking,
+        insertRankingAt: insertRankingAt,
+        removeRankingAt: removeRankingAt,
+        moveRanking: moveRanking,
 
         // ---- Public queries (synchronous, CLONES) ----
         //
