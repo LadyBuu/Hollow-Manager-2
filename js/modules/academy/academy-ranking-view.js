@@ -1,81 +1,122 @@
 /**
  * modules/academy/academy-ranking-view.js - Academy Ranking View
- * Standalone view for browsing class rankings.
+ * Standalone view for browsing and editing class rankings.
  *
  * Path: js/modules/academy/academy-ranking-view.js
  *
- * This module is responsible for:
- *   - Rendering the class selector for rankings
- *   - Rendering the ranking table (rank, student, average, grades)
- *   - Rendering an empty state when no class is selected
+ * WHAT THIS OWNS:
+ *   - Rendering the Rankings tab body.
+ *   - The class selector.
+ *   - The week input.
+ *   - The position-ordered ranking table (rank is POSITION,
+ *     derived from the ordered list, not a user-editable field).
+ *   - Draggable rows.
+ *   - The drop-position indicator between rows.
+ *   - The "Insert into ranking" strip for unranked students.
+ *   - The per-row "remove from this ranking" clear button.
  *
- * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic.
- *   - Does NOT fetch data. Does NOT call AcademyQueries or AcademyRanking.
- *   - Receives a view model from AcademyAggregator.getRankingViewModel.
- *   - Does NOT bind events. Rows emit data-* attributes that
- *     AcademyView's delegated container listeners resolve.
- *   - Uses DomUtils for escaping (MANDATORY, no fallback).
- *   - Returns an HTML string.
+ * WHAT THIS DOES NOT OWN:
+ *   - Reads. AcademyAggregator.getRankingViewModel owns them.
+ *   - Writes. AcademyRanking.setRanking / insertRankingAt /
+ *     removeRankingAt / moveRanking own them.
+ *   - Event binding. AcademyView's delegated container
+ *     listeners own it.
+ *   - The tab shell.
  *
- * VM CONTRACT:
- *   The renderer TRUSTS the VM. It does not defend against a
- *   malformed VM by silently substituting defaults; a broken VM is
- *   a bug in the aggregator and should surface as a thrown error,
- *   not as a table that quietly claims fewer students than exist.
+ * VM CONTRACT (from AcademyAggregator.getRankingViewModel):
  *
- *   {{
- *     classes:   [ { id, name } ],      // guaranteed array
+ *   {
+ *     classes:   [ { id, name } ],
  *     classId:   string | null,
  *     className: string | null,
  *     week:      number | null,
- *     entries:   [ <entryVM> ],         // guaranteed array
- *     total:     number                 // guaranteed integer
- *   }}
+ *     entries:   [ <entryVM> ],
+ *     total:     number,
+ *     rankedCharIds: [ string ],        // ordered, rank order
+ *     unrankedStudents: [ { id, name, status } ],
+ *     manuallyRankedCount: number
+ *   }
  *
  *   entryVM:
  *   {
- *     characterId,        // string
- *     characterName,      // string
- *     rank,               // number | null
- *     rankDisplay,        // string ('#3' | '—')
- *     average,            // number | null
- *     averageDisplay,     // string ('82.5' | '—')
- *     averageBand,        // 'excellent' | 'good' | 'passing' | 'failing' | null
- *     gradeCount,         // number | null
- *     gradeCountDisplay,  // string ('5' | '—')
- *     isInstructor        // boolean
+ *     characterId,
+ *     characterName,
+ *     rank,                 // number | null
+ *     rankDisplay,          // '#3' | '—'
+ *     totalStudents,        // number | null
+ *     totalDisplay,         // '17' | '—'
+ *     percentile,           // number | null
+ *     percentileDisplay,    // '82%' | '—'
+ *     average,              // number | null
+ *     averageDisplay,       // '82.5' | '—'
+ *     averageBand,          // null (manual rankings have no band)
+ *     gradeCount,           // number | null
+ *     gradeCountDisplay,    // '5' | '—'
+ *     manuallyRanked,       // boolean
+ *     isInstructor          // boolean
  *   }
  *
- *   `averageBand` is a PURELY VISUAL band provided by the aggregator.
- *   It is not derived from the grade scheme and does not represent
- *   pass/fail. The renderer maps the band to a CSS class; it never
- *   recomputes the band. When the aggregator supplies a band that is
- *   not one of the four known values, the renderer THROWS. Unknown
- *   values are not silently styled as neutral.
+ *   The renderer TRUSTS the VM. A missing required field is an
+ *   aggregator bug and surfaces as a thrown error, not as a
+ *   silently-empty table.
  *
- * STABILITY OF THE VM SHAPE:
- *   If the aggregator is changed to emit a VM missing a required
- *   field, this renderer will throw with a message naming the
- *   field. That is the intended failure mode. A renderer that
- *   substitutes `[]` for a missing array turns "the aggregator is
- *   broken" into "there are no classes", which is the exact bug
- *   this contract exists to prevent.
+ * ROW SHAPE:
+ *   Each row is a .academy-ranking-row with data-character-id
+ *   and data-position. The row's column layout mirrors the
+ *   header:
+ *
+ *     .rankings-col-rank      position number + drag grip
+ *     .rankings-col-name      student name (button for keyboard)
+ *     .rankings-col-total     "N" (of totalStudents)
+ *     .rankings-col-pct       percentile, if any
+ *     .rankings-col-avg       average display
+ *     .rankings-col-grades    grade count
+ *     .rankings-col-actions   clear button
+ *
+ *   The row is draggable="true". The drag handle lives inside
+ *   the rank cell; the delegated listener reads it off
+ *   .rankings-drag-handle and starts the drag.
+ *
+ * DROP INDICATOR:
+ *   The row carries a .rankings-drop-marker child that renders
+ *   an empty strip. During a drag the delegated listener adds
+ *   .drop-before or .drop-after to the row under the pointer;
+ *   academy.css styles those classes to draw the drop line.
+ *   This module renders the row with no drop class.
+ *
+ * INSERT STRIP:
+ *   Below the table, a strip for students who have no ranking
+ *   record this week. Three controls:
+ *
+ *     #academy-ranking-insert-student   <select>
+ *     #academy-ranking-insert-position  <input type=number>
+ *     #academy-ranking-insert-btn       <button data-week=...>
+ *
+ *   The button carries data-current-rows and data-class-id so
+ *   the controller can interpret a blank position as "append"
+ *   without re-reading the VM.
+ *
+ * CLEAR BUTTON:
+ *   Per-row. Carries data-character-id and data-week. The
+ *   controller calls AcademyRanking.removeRankingAt(...). The
+ *   row's title text differs for manually-ranked vs generated
+ *   entries; the write is the same either way.
  *
  * EVENTS EMITTED (data-* attributes, for AcademyView to bind):
  *   - #academy-ranking-class-select (change)
- *   - #academy-ranking-week-input  (change / Enter)
+ *   - #academy-ranking-week-input   (change / Enter)
  *   - .academy-ranking-row [data-character-id]  (click, delegated)
- *   - .academy-ranking-name-btn [data-character-id]  (click; also
- *     the keyboard-accessible entry point for the same action)
+ *   - .academy-ranking-name-btn [data-character-id]  (click)
+ *   - .academy-ranking-clear-btn [data-character-id] (click)
+ *   - #academy-ranking-insert-btn   (click)
  *
  * ACCESSIBILITY:
- *   The row is not a control. It does not carry role="button" or
- *   tabindex. The character's name is rendered as a real <button>
- *   inside the name cell; keyboard users can Tab to it and press
- *   Enter or Space to open the character in the People view. The
- *   row's delegated click handler continues to catch clicks
- *   anywhere on the row for mouse users.
+ *   The row is not a control. The name is a real <button> so
+ *   keyboard users can activate it. The drag handle is
+ *   aria-hidden; keyboard users reorder via the move controls
+ *   (up/down) that the delegated listener provides, or via the
+ *   position input in the insert strip. Drag is an enhancement,
+ *   not the only path.
  *
  * DEPENDENCIES:
  *   - window.DomUtils         (MANDATORY)
@@ -164,8 +205,6 @@
      *
      * STRICT: `null` is valid and returns the neutral class.
      * Anything else that is not one of the four known bands THROWS.
-     * A typo in the aggregator must not be silently styled as
-     * "unknown"; it must surface.
      */
     function getAverageClass(averageBand) {
         if (averageBand === null || averageBand === undefined) {
@@ -188,9 +227,6 @@
     // ============================================================
     // VM VALIDATION
     // ============================================================
-    //
-    // Strict. The renderer trusts the VM's shape. A missing field is
-    // an aggregator bug, not a request for a default value.
 
     function validateVM(viewModel) {
         if (!viewModel || typeof viewModel !== 'object') {
@@ -217,6 +253,25 @@
             );
         }
 
+        if (!Array.isArray(viewModel.rankedCharIds)) {
+            throw new Error(
+                '[AcademyRankingView] VM.rankedCharIds must be an array.'
+            );
+        }
+
+        if (!Array.isArray(viewModel.unrankedStudents)) {
+            throw new Error(
+                '[AcademyRankingView] VM.unrankedStudents must be an array.'
+            );
+        }
+
+        if (!isFiniteNumber(viewModel.manuallyRankedCount)) {
+            throw new Error(
+                '[AcademyRankingView] VM.manuallyRankedCount must be ' +
+                'a finite number.'
+            );
+        }
+
         return viewModel;
     }
 
@@ -238,7 +293,7 @@
     }
 
     // ============================================================
-    // TOP BAR - Class selector + Week indicator
+    // TOP BAR - Class selector + Week input
     // ============================================================
 
     function renderTopBar(vm) {
@@ -293,7 +348,7 @@
     }
 
     // ============================================================
-    // BODY - Table or empty state
+    // BODY - Table, empty state, or no-class prompt
     // ============================================================
 
     function renderBody(vm, classId) {
@@ -308,6 +363,7 @@
         }
 
         var entries = vm.entries;
+        var unrankedStudents = vm.unrankedStudents;
         var className = isNonEmptyString(vm.className)
             ? vm.className
             : null;
@@ -328,46 +384,77 @@
                     '</span>';
         }
         html += '<span class="academy-ranking-count">' +
-                    escapeHtml(String(vm.total)) + ' students' +
+                    escapeHtml(String(vm.total)) + ' ranked' +
+                    (vm.manuallyRankedCount > 0
+                        ? ' (' + escapeHtml(String(vm.manuallyRankedCount)) +
+                          ' manual)'
+                        : '') +
                 '</span>';
         html += '</div>';
 
-        if (entries.length === 0) {
-            // Wording note: the ranking data is derived from
-            // performance, not persisted as a table of "records".
-            // "No ranking data is available" is the honest phrasing.
+        if (entries.length === 0 && unrankedStudents.length === 0) {
             html += '<p class="empty-state small">' +
-                        'No ranking data is available for this week.' +
+                        'No students are available to rank at this week.' +
                     '</p>';
             html += '</div>';
             return html;
         }
 
-        html += '<div class="academy-ranking-table-wrapper">';
-        html += '<table class="academy-ranking-full-table">';
-        html += '<thead>';
-        html += '<tr>';
-        html += '<th class="rank-col">Rank</th>';
-        html += '<th class="name-col">Student</th>';
-        html += '<th class="avg-col">Average</th>';
-        html += '<th class="count-col">Grades</th>';
-        html += '</tr>';
-        html += '</thead>';
-        html += '<tbody>';
-
-        for (var i = 0; i < entries.length; i++) {
-            html += renderRankingRow(entries[i], i);
+        if (entries.length === 0) {
+            html += '<p class="empty-state small">' +
+                        'No students are ranked at this week yet.' +
+                    '</p>';
+            html += renderInsertStrip(
+                unrankedStudents, classId, week, 0
+            );
+            html += '</div>';
+            return html;
         }
 
-        html += '</tbody>';
-        html += '</table>';
-        html += '</div>';
+        html += renderTable(vm);
+        html += renderInsertStrip(
+            unrankedStudents, classId, week, entries.length
+        );
         html += '</div>';
 
         return html;
     }
 
-    function renderRankingRow(entry, index) {
+    // ============================================================
+    // TABLE
+    // ============================================================
+
+    function renderTable(vm) {
+        var rows = vm.entries;
+        var classId = vm.classId;
+        var week = vm.week;
+
+        var html = '';
+
+        html += '<div class="rankings-table academy-ranking-table">';
+
+        // ---- Header row ----
+        html += '<div class="rankings-table-header">';
+        html += '<span class="rankings-col-rank">Rank</span>';
+        html += '<span class="rankings-col-name">Student</span>';
+        html += '<span class="rankings-col-total">Of</span>';
+        html += '<span class="rankings-col-pct">Percentile</span>';
+        html += '<span class="rankings-col-avg">Average</span>';
+        html += '<span class="rankings-col-grades">Grades</span>';
+        html += '<span class="rankings-col-actions"></span>';
+        html += '</div>';
+
+        // ---- Body ----
+        for (var i = 0; i < rows.length; i++) {
+            html += renderRow(rows[i], classId, week, i);
+        }
+
+        html += '</div>';
+
+        return html;
+    }
+
+    function renderRow(entry, classId, week, index) {
         if (!entry || typeof entry !== 'object') {
             throw new Error(
                 '[AcademyRankingView] VM.entries[' + index + '] ' +
@@ -378,31 +465,47 @@
         var rankClass = getRankBadgeClass(entry.rank);
         var avgClass = getAverageClass(entry.averageBand);
 
-        var rowClass = 'academy-ranking-row';
+        var rowClasses = 'rankings-table-row academy-ranking-row';
         if (entry.isInstructor) {
-            rowClass += ' academy-ranking-row-instructor';
+            rowClasses += ' academy-ranking-row-instructor';
+        }
+        if (entry.manuallyRanked) {
+            rowClasses += ' is-manual';
         }
 
         var characterId = entry.characterId || '';
+        var characterIdAttr = escapeAttribute(characterId);
+        var weekAttr = escapeAttribute(
+            isFiniteNumber(week) ? String(week) : ''
+        );
+        var positionAttr = escapeAttribute(
+            isFiniteNumber(entry.rank) ? String(entry.rank) : ''
+        );
 
         var html = '';
-        html += '<tr class="' + rowClass + '" ' +
-                    'data-character-id="' +
-                        escapeAttribute(characterId) + '">';
 
-        html += '<td class="rank-col">';
+        html += '<div class="' + rowClasses + '" ' +
+                    'data-character-id="' + characterIdAttr + '" ' +
+                    'data-position="' + positionAttr + '" ' +
+                    'draggable="true">';
+
+        // ---- Rank / drag handle ----
+        html += '<span class="rankings-col-rank">';
         html += '<span class="' + rankClass + '">' +
                     escapeHtml(entry.rankDisplay) +
                 '</span>';
-        html += '</td>';
+        html += '<span class="rankings-drag-handle" ' +
+                    'title="Drag to reorder" ' +
+                    'aria-hidden="true">' +
+                    '\u2630' +
+                '</span>';
+        html += '</span>';
 
-        // Name is rendered as a real <button> so keyboard users can
-        // activate the row. The row itself is not a control.
-        html += '<td class="name-col">';
+        // ---- Name (button for keyboard activation) ----
+        html += '<span class="rankings-col-name">';
         html += '<button type="button" ' +
                     'class="academy-ranking-name-btn" ' +
-                    'data-character-id="' +
-                        escapeAttribute(characterId) + '">' +
+                    'data-character-id="' + characterIdAttr + '">' +
                     escapeHtml(entry.characterName) +
                 '</button>';
         if (entry.isInstructor) {
@@ -410,19 +513,130 @@
                         'Instructor' +
                     '</span>';
         }
-        html += '</td>';
+        if (entry.manuallyRanked) {
+            html += ' <span class="academy-ranking-manual-badge" ' +
+                        'title="This rank was set manually and will ' +
+                        'survive a regenerate.">manual</span>';
+        }
+        html += '</span>';
 
-        html += '<td class="avg-col">';
-        html += '<span class="' + avgClass + '">' +
-                    escapeHtml(entry.averageDisplay) +
+        // ---- Of (totalStudents) ----
+        html += '<span class="rankings-col-total">' +
+                    escapeHtml(entry.totalDisplay || '\u2014') +
                 '</span>';
-        html += '</td>';
 
-        html += '<td class="count-col">' +
-                    escapeHtml(entry.gradeCountDisplay) +
-                '</td>';
+        // ---- Percentile ----
+        html += '<span class="rankings-col-pct">' +
+                    escapeHtml(entry.percentileDisplay || '\u2014') +
+                '</span>';
 
-        html += '</tr>';
+        // ---- Average ----
+        html += '<span class="rankings-col-avg">';
+        html += '<span class="' + avgClass + '">' +
+                    escapeHtml(entry.averageDisplay || '\u2014') +
+                '</span>';
+        html += '</span>';
+
+        // ---- Grades ----
+        html += '<span class="rankings-col-grades">' +
+                    escapeHtml(entry.gradeCountDisplay || '\u2014') +
+                '</span>';
+
+        // ---- Actions ----
+        var clearTitle = entry.manuallyRanked
+            ? 'Remove this manual rank. Remaining ranks will be ' +
+              'renumbered.'
+            : 'Remove this rank. The student can be re-ranked ' +
+              'from the insert strip.';
+
+        html += '<span class="rankings-col-actions">';
+        html += '<button type="button" ' +
+                    'class="small danger academy-ranking-clear-btn" ' +
+                    'data-character-id="' + characterIdAttr + '" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + weekAttr + '" ' +
+                    'title="' + escapeAttribute(clearTitle) + '">' +
+                    '\u2715' +
+                '</button>';
+        html += '</span>';
+
+        // ---- Drop marker (empty; listener adds class at drag time) ----
+        html += '<span class="rankings-drop-marker" ' +
+                    'aria-hidden="true"></span>';
+
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // INSERT STRIP
+    // ============================================================
+    //
+    // Below the table. Lets the user add a student who has no
+    // ranking record yet.
+    //
+    // When unrankedStudents is empty, the strip is rendered with
+    // a disabled state and a note explaining that every roster
+    // student already has a rank.
+
+    function renderInsertStrip(unrankedStudents, classId, week, currentRows) {
+        var hasUnranked = Array.isArray(unrankedStudents) &&
+                          unrankedStudents.length > 0;
+
+        var html = '';
+        html += '<div class="academy-ranking-insert-strip">';
+
+        html += '<span class="academy-ranking-insert-label">' +
+                    'Add to ranking:' +
+                '</span>';
+
+        // ---- Student picker ----
+        html += '<select id="academy-ranking-insert-student" ' +
+                    'class="academy-ranking-insert-select"' +
+                    (hasUnranked ? '' : ' disabled') + '>';
+
+        if (hasUnranked) {
+            html += '<option value="">Select a student...</option>';
+            for (var i = 0; i < unrankedStudents.length; i++) {
+                var s = unrankedStudents[i];
+                if (!s || !s.id) { continue; }
+                html += '<option value="' +
+                            escapeAttribute(s.id) + '">' +
+                            escapeHtml(s.name || s.id) +
+                        '</option>';
+            }
+        } else {
+            html += '<option value="" disabled selected>' +
+                        'No unranked students available' +
+                    '</option>';
+        }
+
+        html += '</select>';
+
+        // ---- Position input ----
+        html += '<input type="number" ' +
+                    'id="academy-ranking-insert-position" ' +
+                    'class="academy-ranking-insert-position" ' +
+                    'min="1" ' +
+                    'placeholder="Pos."' +
+                    (hasUnranked ? '' : ' disabled') + '>';
+
+        // ---- Insert button ----
+        html += '<button type="button" ' +
+                    'id="academy-ranking-insert-btn" ' +
+                    'class="small primary"' +
+                    (hasUnranked ? '' : ' disabled') + ' ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + escapeAttribute(
+                        isFiniteNumber(week) ? String(week) : ''
+                    ) + '" ' +
+                    'data-current-rows="' +
+                        escapeAttribute(String(currentRows)) + '">' +
+                    'Insert' +
+                '</button>';
+
+        html += '</div>';
+
         return html;
     }
 
@@ -430,8 +644,8 @@
     // EXPOSE
     // ============================================================
 
-    window.AcademyRankingView = {
+    window.AcademyRankingView = Object.freeze({
         renderHTML: renderHTML
-    };
+    });
 
 })();
