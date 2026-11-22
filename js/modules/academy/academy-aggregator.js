@@ -1,3236 +1,2524 @@
 /**
- * modules/academy/academy-aggregator.js - Academy Aggregator
- * Cross-domain projection builder for the Academy domain.
+ * js/modules/academy/academy-ranking.js - Academy Ranking
+ * SINGLE SOURCE OF TRUTH for all academy ranking data and operations
+ * Path: js/modules/academy/academy-ranking.js
  *
- * Path: js/modules/academy/academy-aggregator.js
- *
- * PROJECTIONS:
- *   Classes:
- *     getClassListViewModel()
- *     getClassViewModel(classId, week)
- *     getClassStudentsViewModel(classId, week)
- *
- *   People:
- *     getPeopleViewModel(classId, options)
- *
- *   Characters:
- *     getStudentViewModel(studentId, options)
- *     getInstructorViewModel(instructorId, options)
- *
- *   Instructor:
- *     getClassInstructorDisciplines(classId, instructorId, week)
- *     getInstructorGroupPickerViewModel(classId, instructorId, disciplineId, week)
- *
- *   Disciplines:
- *     getDisciplineListViewModel(filters)
- *     getDisciplineEditorViewModel(options)
- *
- *   Class-discipline picker (v27):
- *     getClassDisciplinesPickerViewModel(classId, options)
- *
- *   Rankings:
- *     getRankingViewModel(classId, week)
- *
- *   Locations:
- *     getLocationViewModel(filters, week, selectedLocationId)
- *
- *   Weekly Teams:
- *     getWeeklyTeamsViewModel(classId, week, selectedTeamId)
- *     getWeeklyTeamMemberManagerViewModel({ classId, teamId, week })
- *     getUnassignedTeamsViewModel({ classId })
- *
- *   Rebalance (v32):
- *     getRebalanceInputViewModel(classId, disciplineId, week, options)
- *
- *   Free slots (v33):
- *     getFreeSlotCandidateStudentsViewModel(classId, disciplineId, week)
- *
- *   Shared groups (v34, revised):
- *     getSharedGroupsViewModel(charIds, options)
+ * This module is responsible for:
+ *   - Ranking CRUD operations (create, update, delete)
+ *   - Ranking queries (get by class, student, week)
+ *   - Ranking generation (autoGenerate from AcademyPerformance)
+ *   - MANUAL ranking assignment (setRanking, insertRankingAt,
+ *     removeRankingAt, moveRanking) — v35
+ *   - Ranking statistics (percentile, distribution)
+ *   - Ranking validation
+ *   - Cross-domain cascade helpers (stripCharacterRefs, stripClassRefs)
  *
  * IMPORTANT:
- *   - Projection builder. Never mutates. No UI dependencies.
- *   - Composes domain modules. Never walks raw storage.
- *   - No fallback values for missing domain data. When a source is
- *     absent, the projection returns null or an empty collection.
- *   - The class VM is deliberately small (header fields only). It
- *     does NOT carry an instructor field; see INSTRUCTOR-OF-CLASS
- *     below.
+ *   - This module OWNS ranking data - it does NOT depend on AcademyQueries.
+ *   - Uses AcademyClasses for class existence checks (no circular dep).
+ *   - Uses AcademyPerformance for the per-student aggregates. Ranking
+ *     CONSUMES performance. It does NOT calculate averages.
+ *   - Uses AcademyAggregator.getClassStudentsViewModel to resolve the
+ *     class roster for auto-generate and for manual setRanking
+ *     normalisation.
+ *   - Uses CharacterQueries for name resolution ONLY in the enriched
+ *     query variants. The base ranking record does not carry a name.
+ *   - All MUTATIONS go through MutationPipeline.
+ *   - All READS are synchronous and side-effect free.
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false }).
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored.
  *
- * INSTRUCTOR-OF-CLASS — TWO QUERIES, TWO QUESTIONS:
+ * READ SAFETY:
+ *   - getAcademyStore() returns null (does NOT create academy.{...}) when
+ *     the store is missing. Reads are side-effect free.
+ *   - Public queries return DEEP CLONES. Callers cannot mutate live state.
+ *   - Internal accessors return LIVE REFERENCES.
+ *   - Pipeline validate() callbacks read from the `appData` argument.
+ *   - ObjectUtils.deepClone throws if cloning fails or if the clone
+ *     aliases the input.
  *
- *   "Who is an instructor of this class?"
+ * PERFORMANCE INTEGRATION (v30):
+ *   - autoGenerate calls AcademyPerformance.calculateClassPerformance,
+ *     which returns per-student aggregates in input order.
+ *   - The performance layer does NOT order or rank. Ranking ordering
+ *     and rank assignment live HERE, in this module.
+ *   - autoGenerate sorts the aggregates by overall score (falling back
+ *     to academic average), assigns rank numbers, then writes the
+ *     ranking records.
+ *   - Students with no score (academic null AND overall null) are
+ *     SKIPPED. Writing a ranking record with rank: null for an
+ *     ungraded student would produce records the UI cannot render.
+ *     Absence of a record means "not yet graded".
  *
- *     AcademyClasses.getClassInstructorIdsAllTime(classId)
+ * MANUAL RANKING (v35):
+ *   Ranking is now a first-class, independently-assignable datum. A
+ *   caller can set ranks without producing grades and without
+ *   going through autoGenerate.
  *
- *   which walks the class's enrolment intervals and returns every
- *   character who has any instructor-role interval in this class.
- *   The character-wide `mode` field is a legacy tombstone and is
- *   NOT consulted.
+ *   The write surface is:
  *
- *   "Who is actively teaching this class this week?"
+ *     setRanking(classId, week, orderedCharIds)
+ *       The resequencing primitive. Takes the full ordered list of
+ *       character IDs and writes rank = 1..N. This is what
+ *       drag-and-drop calls. It is also the ONLY path that can
+ *       move a character between positions in a single transaction,
+ *       which is what makes the "one person per rank" invariant
+ *       hold: every rank in the bucket is recomputed, so there is
+ *       no window in which two records share a rank.
  *
- *     AcademyClasses.getClassInstructorIds(classId, week)
+ *     insertRankingAt(classId, week, charId, position)
+ *       Convenience wrapper. Appends if position is blank/out of
+ *       range. Implemented by calling setRanking with a spliced
+ *       order.
  *
- *   Week-scoped. Reads per-discipline instructor enrolments and
- *   filters by week.
+ *     removeRankingAt(classId, week, charId)
+ *       Removes the character's record, then renormalises the
+ *       remaining ranks so there are no gaps.
  *
- * INSTRUCTOR DISCIPLINES (v27):
- *   getClassInstructorDisciplines(classId, instructorId, week)
- *   answers "which of this class's disciplines does this specific
- *   instructor teach during this week?"
+ *     moveRanking(classId, week, charId, toPosition)
+ *       Convenience wrapper around setRanking.
  *
- * INSTRUCTOR GROUP PICKER (v28):
- *   getInstructorGroupPickerViewModel(classId, instructorId,
- *   disciplineId, week) answers "which existing teaching groups
- *   exist for this (class, discipline, instructor) triple that
- *   are active during this week?"
+ *   MANUAL PRESERVATION:
+ *     Records written by the manual API carry manuallyRanked: true.
+ *     autoGenerate SKIPS manually-ranked records unless
+ *     options.overwriteManual is true. This means a hand-tuned
+ *     ranking survives a regenerate, which is the whole point of
+ *     hand-tuning it.
  *
- * REBALANCE INPUT (v32):
- *   getRebalanceInputViewModel(classId, disciplineId, week, options)
- *   assembles the input object AcademyBalanceSuggestions.suggest
- *   consumes. It does NOT run the algorithm.
+ *   `totalStudents` on a manually-written record is the length of
+ *   the ordered list (i.e. the number of ranked students), matching
+ *   the existing semantics. It is NOT class size.
  *
- * FREE SLOT CANDIDATE STUDENTS (v33):
- *   getFreeSlotCandidateStudentsViewModel(classId, disciplineId,
- *   week) answers "which students are eligible to be placed into
- *   a new session for this discipline right now?"
+ *   `academicAverage`, `socialScore`, and `overallScore` are left
+ *   null on manually-created records unless the caller supplies
+ *   them. Manual ranking does not fabricate grade data.
  *
- * SHARED GROUPS (v34, revised):
- *   getSharedGroupsViewModel(charIds, options) answers "which
- *   teaching groups contain EVERY ONE of these characters, and
- *   during which weeks are they all present together?"
+ *   The rank-uniqueness invariant is enforced in pipeline validate
+ *   against the transaction snapshot via
+ *   findConflictingRankAtRankInSnapshot. A duplicate rank within a
+ *   (classId, week) bucket fails the transaction and rolls back.
  *
- *   THE QUESTION IS GROUP-CENTRIC AND ALL-CHARACTER:
- *     Two characters enrolled in the same discipline but placed in
- *     different groups are NOT reported. And a group that contains
- *     only two of three selected characters is NOT reported,
- *     either.
+ * RANKING RECORD SHAPE:
+ *   {
+ *     id,                // rank_xxx
+ *     classId,           // class_789
+ *     studentId,         // char_456
+ *     week,              // 5
+ *     rank,              // 1
+ *     totalStudents,     // 17
+ *     academicAverage,   // 82.5 (number|null)
+ *     socialScore,       // 88 (number|null)
+ *     overallScore,      // 83.7 (number|null)
+ *     manuallyRanked,    // boolean (v35)
+ *     createdAt,
+ *     updatedAt
+ *   }
  *
- *     A group is reported only when EVERY selected character is a
- *     member of it at some week. The `weeks` list on a row is the
- *     weeks during which ALL selected characters are present in
- *     that group. A week with only some of the selection is
- *     excluded.
+ *   TOTAL STUDENTS — MEANING:
+ *     `totalStudents` is the number of students that received a
+ *     ranking record for this (class, week) pair. It is NOT the
+ *     number of students enrolled in the class.
  *
- *     This is the strict reading of "these people share a group."
- *     The earlier "any two of the selection" semantics are gone.
+ *     Ungraded students do not receive a ranking record. If 25
+ *     students are enrolled and 17 have grades this week,
+ *     totalStudents is 17, and rank 17 is last.
  *
- *   INSTRUCTOR EXCLUSION (this revision):
- *     A character who is an instructor of a class is excluded from
- *     that class's shared-groups query, entirely. The exclusion
- *     is CLASS-SCOPED: a character can be an instructor of Class A
- *     and a student of Class B, and they participate in B's query
- *     normally.
+ *     This is the correct denominator for percentile. It is NOT a
+ *     proxy for class size.
  *
- *     The exclusion is year-level: it uses
- *     AcademyClasses.getClassInstructorIdsAllTime. A character who
- *     taught the class once is excluded from the query for that
- *     class, regardless of whether they are currently teaching it.
+ *   `score` and `averageScore` are REMOVED. The record carries the
+ *   three scores produced by the performance layer.
+ *   `percentile` is DERIVED on read from `rank` and `totalStudents`.
  *
- *     The per-interval `role === 'instructor'` check remains as a
- *     guard against interval-level corruption. It is a
- *     belt-and-braces check on top of the class-scoped exclusion.
+ * UNIQUENESS CONTRACT:
+ *   - The tuple (classId, studentId, week) is UNIQUE across the store.
+ *   - Enforced pre-flight, in pipeline validate, and via input
+ *     deduplication inside autoGenerate / saveRankings.
  *
- *   The query is CLASS-SCOPED implicitly: a teaching group belongs
- *   to exactly one class, so a group match implies a class match.
+ * RANK BOUND CONTRACT:
+ *   - rank must be >= 1.
+ *   - rank must be <= totalStudents.
  *
- *   A character's group can change week-to-week. The projection
- *   walks each character's enrolment weeks and resolves the group
- *   per week. Two characters who shared a group in week 3 but were
- *   split in week 8 report a weeks list of [3, ..., 7] and do not
- *   report week 8.
+ * RANK UNIQUENESS CONTRACT (v35):
+ *   - Within a (classId, week) bucket, no two records may share a
+ *     rank. Enforced in pipeline validate for every mutation that
+ *     writes a rank, and by construction for setRanking (which
+ *     rewrites the whole bucket).
  *
- *   OPTIONS:
- *     classId  string|null  When supplied, only that class is
- *                           inspected. When null (default), every
- *                           class either character is enrolled in
- *                           is walked.
- *     week     number|null  When supplied, only that week is
- *                           inspected. When null (default), every
- *                           week either character's enrolment
- *                           covers is walked.
+ * SCORE BOUND CONTRACT:
+ *   - academicAverage, when present, must be in [0, 100].
+ *   - socialScore, when present, must be in [0, 100].
+ *   - overallScore, when present, must be in [0, 100].
  *
- *   SORT:
- *     Rows sorted by (className, disciplineName, groupName).
- *     Characters within a row sorted by display name.
+ * PERCENTILE SEMANTICS:
+ *   calculatePercentile(rank, total) returns:
+ *     ((total - rank + 1) / total) * 100
  *
- *   FAILURE POLICY:
- *     Non-array charIds, or fewer than two distinct charIds → an
- *     empty VM (not null).
+ *   Rank 1 of 25 → 100. Rank 25 of 25 → 4.
  *
- *     A character with no classes, no enrolments, or no groups
- *     contributes nothing.
+ *   This is "percentage of ranked students at or below this
+ *   student's position, with rank 1 = 100%". It is NOT the
+ *   statistics-textbook percentile.
  *
- *     Missing AcademyTeachingGroups → throws (via require).
+ * ENRICHED QUERY VARIANTS REMOVED (v30):
+ *   The enriched `getClassRankings(classId, week, includeStudentDetails)`
+ *   and `getStudentRank(classId, studentId, week, includeDetails)`
+ *   forms, and the standalone `getRankingsWithDetails(classId, week)`,
+ *   were removed. Names and student records belong to the aggregator
+ *   layer, not the ranking query surface.
  *
- *     Missing CharacterQueries → throws. Names are part of the
- *     contract.
+ *   The current API:
+ *     getClassRankings(classId, week)   — base records, decorated
+ *     getStudentRank(classId, sid, wk)  — base record, decorated
  *
- *     Missing AcademyClasses → throws (via the module-level
- *     mandatory check). The instructor exclusion uses
- *     getClassInstructorIdsAllTime, which is a mandatory
- *     dependency of this module.
+ *   Callers that want names call CharacterQueries.getCharacterById
+ *   on the studentId, or go through the aggregator.
  *
- * RANGE PREDICATES:
- *   The "does this range contain this week" question is owned by
- *   window.RangeUtils, which is the canonical range-predicate module
- *   for the whole application. This aggregator delegates to
- *   RangeUtils.containsWeek. Do not reimplement the range math here;
- *   it lives in one place, on purpose.
+ * TRANSACTION SNAPSHOT RULE:
+ *   Every pipeline validate() callback resolves references against
+ *   the appData argument it is handed. It does not read window.data.
  *
- * MEMBER INTERVALS MODEL (v24):
- *   Each team member entry on a persistent Team entity is:
+ * WEEK PARSING:
+ *   Week parsing goes through CalendarValidation.parseWeek, the
+ *   canonical strict parser.
  *
- *     {
- *       memberId,
- *       characterId,
- *       role,
- *       intervals: [
- *         { joinPeriod, leavePeriod },
- *         ...
- *       ]
- *     }
- *
- * WEEKLY TEAMS WEEK FILTER:
- *   The team list for a given (class, week) is filtered by the
- *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
- *   weekly-team window record. Both must contain the week.
+ * CASCADE STRICTNESS:
+ *   stripCharacterRefs and stripClassRefs operate on a destructive
+ *   cascade. A missing store is a no-op; a malformed store (present
+ *   but not a plain object, or an array) is an error.
  *
  * DEPENDENCIES (MANDATORY):
- *   - AcademyClasses
- *   - AcademyDisciplines
- *   - AcademyClassDisciplinesQueries
- *   - AcademyEnrolments
- *   - CharacterQueries
- *   - AcademyLocations
- *   - TeamQueries
- *   - TeamConstants
- *   - CalendarConstants
- *   - RangeUtils
+ *   - window.ObjectUtils
+ *   - window.IdUtils
+ *   - window.ValidationUtils
+ *   - window.CalendarValidation
+ *   - window.CalendarConstants
+ *   - window.AcademyPerformance        (calculateClassPerformance)
+ *   - window.AcademyClasses
+ *   - window.CharacterQueries          (uniqueness validation on
+ *                                       candidate reference; not
+ *                                       used for names)
+ *   - window.MutationPipeline
  *
- * DEPENDENCIES (LAZY, resolved at call time):
- *   - TeamAggregator
- *   - AcademyWeeklyTeams
- *   - AcademyRanking
- *   - AcademyCalendarAggregator
- *   - AcademyGrades
- *   - EliminationQueries
- *   - AcademyTeachingGroups
- *   - AcademyTeachingSessions
- *   - AcademyTeachingProjector
+ * DEPENDENCIES (LAZY, mandatory at call time):
+ *   - window.AcademyAggregator    (class roster for auto-generate
+ *                                  and manual normalisation)
+ *
+ * USAGE:
+ *   var rankings = window.AcademyRanking;
+ *
+ *   rankings.autoGenerate('class_789', 5).then(function(result) { ... });
+ *
+ *   // Manual ranking (v35):
+ *   rankings.setRanking('class_789', 5, ['char_a', 'char_b', 'char_c'])
+ *     .then(function(result) { ... });
+ *
+ *   rankings.insertRankingAt('class_789', 5, 'char_d', 2);
+ *   rankings.removeRankingAt('class_789', 5, 'char_b');
+ *   rankings.moveRanking('class_789', 5, 'char_c', 1);
+ *
+ *   var classRankings = rankings.getClassRankings('class_789', 5);
+ *   var studentRank = rankings.getStudentRank('class_789', 'char_456', 5);
  */
 
 (function() {
     'use strict';
 
-    if (window.__academyAggregatorLoaded) {
+    if (window.__academyRankingLoaded) {
         return;
     }
 
     // ============================================================
-    // MANDATORY DEPENDENCIES
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
-    var AcademyClasses = window.AcademyClasses;
-    var AcademyDisciplines = window.AcademyDisciplines;
-    var AcademyClassDisciplinesQueries =
-        window.AcademyClassDisciplinesQueries;
-    var AcademyEnrolments = window.AcademyEnrolments;
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyLocations = window.AcademyLocations;
-    var TeamQueries = window.TeamQueries;
-    var TeamConstants = window.TeamConstants;
+    var missing = [];
+
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
+        missing.push('IdUtils.generateId');
+    }
+
+    if (!window.ValidationUtils || typeof window.ValidationUtils.isNonEmptyString !== 'function') {
+        missing.push('ValidationUtils.isNonEmptyString');
+    }
+
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+
+    if (!window.CalendarConstants ||
+        typeof window.CalendarConstants.MIN_WEEK !== 'number' ||
+        typeof window.CalendarConstants.MAX_WEEK !== 'number') {
+        missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
+    }
+
+    if (!window.AcademyPerformance ||
+        typeof window.AcademyPerformance.calculateClassPerformance !== 'function') {
+        missing.push('AcademyPerformance.calculateClassPerformance');
+    }
+
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClass !== 'function') {
+        missing.push('AcademyClasses.getClass');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+
+    if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
+        missing.push('MutationPipeline.performMutation');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[AcademyRanking] Missing dependencies: ' + missing.join(', '));
+    }
+
+    window.__academyRankingLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
-    var RangeUtils = window.RangeUtils;
+    var AcademyPerformance = window.AcademyPerformance;
+    var AcademyClasses = window.AcademyClasses;
+    var CharacterQueries = window.CharacterQueries;
+    var MutationPipeline = window.MutationPipeline;
 
     // ============================================================
-    // MANDATORY DEPENDENCY CHECK
+    // LAZY DEPENDENCIES
     // ============================================================
 
-    var _missing = [];
-
-    if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function') {
-        _missing.push('AcademyClasses.getClass');
-    }
-    if (!AcademyClasses || typeof AcademyClasses.getClasses !== 'function') {
-        _missing.push('AcademyClasses.getClasses');
-    }
-    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIds !== 'function') {
-        _missing.push('AcademyClasses.getClassInstructorIds');
-    }
-    if (!AcademyClasses || typeof AcademyClasses.getClassInstructorIdsAllTime !== 'function') {
-        _missing.push('AcademyClasses.getClassInstructorIdsAllTime');
-    }
-    if (!AcademyDisciplines || typeof AcademyDisciplines.getDisciplines !== 'function') {
-        _missing.push('AcademyDisciplines.getDisciplines');
-    }
-    if (!AcademyDisciplines || typeof AcademyDisciplines.getDiscipline !== 'function') {
-        _missing.push('AcademyDisciplines.getDiscipline');
-    }
-    if (!AcademyClassDisciplinesQueries ||
-        typeof AcademyClassDisciplinesQueries.hasClassDiscipline !== 'function') {
-        _missing.push('AcademyClassDisciplinesQueries.hasClassDiscipline');
-    }
-    if (!AcademyClassDisciplinesQueries ||
-        typeof AcademyClassDisciplinesQueries.isActiveInWeek !== 'function') {
-        _missing.push('AcademyClassDisciplinesQueries.isActiveInWeek');
-    }
-    if (!AcademyClassDisciplinesQueries ||
-        typeof AcademyClassDisciplinesQueries.getClassDiscipline !== 'function') {
-        _missing.push('AcademyClassDisciplinesQueries.getClassDiscipline');
-    }
-    if (!AcademyClassDisciplinesQueries ||
-        typeof AcademyClassDisciplinesQueries.getClassDisciplinesForClass !== 'function') {
-        _missing.push(
-            'AcademyClassDisciplinesQueries.getClassDisciplinesForClass'
-        );
-    }
-    if (!AcademyEnrolments ||
-        typeof AcademyEnrolments.isEnrolledInWeek !== 'function') {
-        _missing.push('AcademyEnrolments.isEnrolledInWeek');
-    }
-    if (!AcademyEnrolments ||
-        typeof AcademyEnrolments.getEnrolledStudents !== 'function') {
-        _missing.push('AcademyEnrolments.getEnrolledStudents');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-        _missing.push('CharacterQueries.getCharacterById');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-        _missing.push('CharacterQueries.getDisplayName');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-        _missing.push('CharacterQueries.getCurrentStatus');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
-        _missing.push('CharacterQueries.getCharacterAge');
-    }
-    if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
-        _missing.push('CharacterQueries.getCharacters');
-    }
-    if (!AcademyLocations || typeof AcademyLocations.getLocations !== 'function') {
-        _missing.push('AcademyLocations.getLocations');
-    }
-    if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-        _missing.push('TeamQueries.getTeamsByClass');
-    }
-    if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-        _missing.push('TeamQueries.getTeamName');
-    }
-    if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-        _missing.push('TeamQueries.getActiveTeamMembers');
-    }
-    if (!TeamQueries || typeof TeamQueries.isTeamActiveAtPeriod !== 'function') {
-        _missing.push('TeamQueries.isTeamActiveAtPeriod');
-    }
-    if (!TeamQueries || typeof TeamQueries.getAllTeamMemberRecords !== 'function') {
-        _missing.push('TeamQueries.getAllTeamMemberRecords');
-    }
-    if (!TeamConstants) {
-        _missing.push('TeamConstants');
-    }
-    if (!CalendarConstants ||
-        typeof CalendarConstants.MIN_WEEK !== 'number' ||
-        typeof CalendarConstants.MAX_WEEK !== 'number') {
-        _missing.push('CalendarConstants.MIN_WEEK/MAX_WEEK');
-    }
-    if (!RangeUtils || typeof RangeUtils.containsWeek !== 'function') {
-        _missing.push('RangeUtils.containsWeek');
+    function getAcademyAggregator() {
+        return window.AcademyAggregator || null;
     }
 
-    if (_missing.length > 0) {
-        throw new Error(
-            '[AcademyAggregator] Missing mandatory dependencies: ' +
-            _missing.join(', ')
-        );
-    }
-
-    // ============================================================
-    // LAZY OPTIONAL DEPENDENCIES
-    // ============================================================
-
-    function getTeamAggregator() {
-        return window.TeamAggregator || null;
-    }
-
-    function getAcademyWeeklyTeams() {
-        return window.AcademyWeeklyTeams || null;
-    }
-
-    function getAcademyRanking() {
-        return window.AcademyRanking || null;
-    }
-
-    function getAcademyCalendarAggregator() {
-        return window.AcademyCalendarAggregator || null;
-    }
-
-    function getAcademyGrades() {
-        return window.AcademyGrades || null;
-    }
-
-    function getGradeSchemes() {
-        return window.AcademyGradeSchemes || null;
-    }
-
-    function getEliminationQueries() {
-        return window.EliminationQueries || null;
-    }
-
-    // ============================================================
-    // LAZY-BUT-MANDATORY DEPENDENCIES
-    // ============================================================
-
-    function requireAcademyTeachingGroups(contextLabel) {
-        var ATG = window.AcademyTeachingGroups;
-        if (!ATG ||
-            typeof ATG.getGroupsForClassDisciplineInstructor !== 'function' ||
-            typeof ATG.getActiveMembers !== 'function') {
+    function requireAcademyAggregator(contextLabel) {
+        var AGG = getAcademyAggregator();
+        if (!AGG ||
+            typeof AGG.getClassStudentsViewModel !== 'function') {
             throw new Error(
-                '[AcademyAggregator] AcademyTeachingGroups is required ' +
-                'by ' + contextLabel + '. Check the script load order ' +
-                'in index.html.'
+                '[AcademyRanking] AcademyAggregator.getClassStudentsViewModel ' +
+                'is required by ' + contextLabel + '. Check the script ' +
+                'load order in index.html.'
             );
         }
-        return ATG;
-    }
-
-    function requireAcademyTeachingSessions(contextLabel) {
-        var ATS = window.AcademyTeachingSessions;
-        if (!ATS || typeof ATS.getSessionsForGroup !== 'function') {
-            throw new Error(
-                '[AcademyAggregator] AcademyTeachingSessions is required ' +
-                'by ' + contextLabel + '. Check the script load order ' +
-                'in index.html.'
-            );
-        }
-        return ATS;
-    }
-
-    function requireAcademyTeachingProjector(contextLabel) {
-        var ATP = window.AcademyTeachingProjector;
-        if (!ATP ||
-            typeof ATP.projectForStudent !== 'function') {
-            throw new Error(
-                '[AcademyAggregator] AcademyTeachingProjector is required ' +
-                'by ' + contextLabel + '. Check the script load order ' +
-                'in index.html.'
-            );
-        }
-        return ATP;
+        return AGG;
     }
 
     // ============================================================
-    // SMALL HELPERS
+    // CONSTANTS
     // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_RANK = 1;
+    var MIN_SCORE = 0;
+    var MAX_SCORE = 100;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
 
     function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+        return ValidationUtils.isNonEmptyString(value);
     }
 
-    function isFiniteNumber(value) {
+    function isNumber(value) {
         return typeof value === 'number' && isFinite(value);
     }
 
-    function resolveWeek(week) {
-        if (week === undefined || week === null || week === '') {
+    function deepClone(value) {
+        var result = ObjectUtils.deepClone(value);
+        if (result === value && value !== null && typeof value === 'object') {
+            throw new Error(
+                '[AcademyRanking] deepClone returned the original reference. ' +
+                'ObjectUtils.deepClone must return a genuine clone for objects.'
+            );
+        }
+        return result;
+    }
+
+    function generateId() {
+        return IdUtils.generateId('rank');
+    }
+
+    function failure(message) {
+        return { success: false, message: message };
+    }
+
+    function success(data) {
+        return { success: true, data: data };
+    }
+
+    function parseWeekStrict(week) {
+        var parsed = CalendarValidation.parseWeek(week);
+        if (parsed === null) {
             return null;
         }
-        var n = Number(week);
-        if (!Number.isInteger(n)) {
+        if (parsed < MIN_WEEK || parsed > MAX_WEEK) {
             return null;
         }
-        if (n < CalendarConstants.MIN_WEEK ||
-            n > CalendarConstants.MAX_WEEK) {
+        return parsed;
+    }
+
+    function parseStrictInteger(value) {
+        if (value === undefined || value === null) {
             return null;
         }
-        return n;
+
+        if (typeof value === 'number') {
+            return Number.isInteger(value) ? value : null;
+        }
+
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (trimmed === '') { return null; }
+            if (!/^-?\d+$/.test(trimmed)) { return null; }
+            var n = Number(trimmed);
+            return Number.isInteger(n) ? n : null;
+        }
+
+        return null;
     }
 
-    function getCharacterDisplayName(charId) {
-        if (!charId) { return 'Unknown'; }
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) { return 'Unknown'; }
-        return CharacterQueries.getDisplayName(char);
+    // ============================================================
+    // UNIQUENESS KEY
+    // ============================================================
+
+    function makeUniqueKey(classId, studentId, week) {
+        return String(classId) + '\u0000' + String(studentId) + '\u0000' + String(week);
     }
 
-    function getTeamPeriodDisplay(team) {
-        var TA = getTeamAggregator();
-        if (TA && typeof TA.getTeamPeriodDisplay === 'function') {
-            return TA.getTeamPeriodDisplay(team);
+    function findConflictingRanking(classId, studentId, week, excludeId) {
+        var records = getRankingRecords();
+        var exclude = excludeId !== null && excludeId !== undefined ? String(excludeId) : null;
+
+        var targetWeek = parseWeekStrict(week);
+
+        for (var i = 0; i < records.length; i++) {
+            var r = records[i];
+            if (!r) continue;
+            if (exclude !== null && String(r.id) === exclude) continue;
+            if (String(r.classId) !== String(classId)) continue;
+            if (String(r.studentId) !== String(studentId)) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
+            return r;
         }
-        return '-';
+        return null;
     }
 
-    function getClassInstructorIds(classId, week, disciplineId) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-        if (week === undefined || week === null) {
-            return [];
-        }
-        if (typeof AcademyClasses.getClassInstructorIds !== 'function') {
-            return [];
-        }
-        var options = null;
-        if (isNonEmptyString(disciplineId)) {
-            options = { disciplineId: String(disciplineId) };
-        }
-        try {
-            var ids = AcademyClasses.getClassInstructorIds(
-                classId, week, options
-            );
-            return Array.isArray(ids) ? ids : [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getClassInstructorIds failed:', e
-            );
-            return [];
-        }
-    }
-
-    function getClassInstructorSetForClass(classId) {
-        var set = Object.create(null);
-        if (!isNonEmptyString(classId)) {
-            return set;
+    function findConflictingRankingInSnapshot(appData, classId, studentId, week, excludeId) {
+        if (!appData || !appData.academy || !appData.academy.rankings) {
+            return null;
         }
 
-        var ids;
-        try {
-            ids = AcademyClasses.getClassInstructorIdsAllTime(
-                classId
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getClassInstructorIdsAllTime ' +
-                'failed:', e
-            );
-            return set;
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
         }
 
-        if (!Array.isArray(ids)) { return set; }
+        var exclude = excludeId !== null && excludeId !== undefined ? String(excludeId) : null;
+        var targetWeek = parseWeekStrict(week);
 
-        for (var i = 0; i < ids.length; i++) {
-            if (ids[i] === undefined || ids[i] === null) {
-                continue;
-            }
-            var key = String(ids[i]);
-            if (key === '') { continue; }
-            set[key] = true;
+        for (var id in rankings) {
+            if (!Object.prototype.hasOwnProperty.call(rankings, id)) continue;
+            var r = rankings[id];
+            if (!r) continue;
+            if (exclude !== null && String(r.id) === exclude) continue;
+            if (String(r.classId) !== String(classId)) continue;
+            if (String(r.studentId) !== String(studentId)) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
+            return r;
         }
-
-        return set;
-    }
-
-    function buildIdSet(ids) {
-        var set = Object.create(null);
-        if (!Array.isArray(ids)) { return set; }
-        for (var i = 0; i < ids.length; i++) {
-            if (ids[i] === undefined || ids[i] === null) { continue; }
-            var key = String(ids[i]);
-            if (key === '') { continue; }
-            set[key] = true;
-        }
-        return set;
+        return null;
     }
 
     /**
-     * Enumerate every week covered by a non-empty list of
-     * { startWeek, endWeek } intervals, deduplicated and sorted
-     * ascending.
+     * v35 — rank uniqueness within a (classId, week) bucket.
      *
-     * endWeek === null or undefined means "ongoing" and is treated
-     * as CalendarConstants.MAX_WEEK.
-     *
-     * Bounds that are not finite numbers are ignored (the interval
-     * contributes nothing).
+     * Returns the conflicting record, or null. `excludeIds` is a
+     * set-like object of ranking IDs to ignore (used by setRanking
+     * to exclude every record it is about to rewrite).
      */
-    function enumerateWeeksOfIntervals(intervals) {
+    function findConflictingRankAtRankInSnapshot(
+        appData, classId, week, rank, excludeIds
+    ) {
+        if (!appData || !appData.academy || !appData.academy.rankings) {
+            return null;
+        }
+
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
+        }
+
+        var targetClass = String(classId);
+        var targetWeek = parseWeekStrict(week);
+        var targetRank = parseStrictInteger(rank);
+        if (targetWeek === null || targetRank === null) {
+            return null;
+        }
+
+        for (var id in rankings) {
+            if (!Object.prototype.hasOwnProperty.call(rankings, id)) continue;
+            var r = rankings[id];
+            if (!r) continue;
+            if (excludeIds && excludeIds[String(id)]) continue;
+            if (String(r.classId) !== targetClass) continue;
+            if (parseWeekStrict(r.week) !== targetWeek) continue;
+            if (parseStrictInteger(r.rank) !== targetRank) continue;
+            return r;
+        }
+        return null;
+    }
+
+    // ============================================================
+    // SNAPSHOT-AWARE LOOKUPS
+    // ============================================================
+
+    function findRankingInSnapshot(appData, rankId) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return null;
+        }
+        var record = rankings[String(rankId)];
+        if (!isObject(record)) {
+            return null;
+        }
+        return record;
+    }
+
+    function findClassInSnapshot(appData, classId) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+        var store = appData.academy.graduatingClasses;
+        if (!isObject(store)) {
+            return null;
+        }
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+        return store[String(classId)] || null;
+    }
+
+    function findCharacterInSnapshot(appData, charId) {
+        if (!appData || !Array.isArray(appData.characters)) {
+            return null;
+        }
+        if (!isNonEmptyString(charId)) {
+            return null;
+        }
+        var target = String(charId);
+        for (var i = 0; i < appData.characters.length; i++) {
+            var c = appData.characters[i];
+            if (c && String(c.id) === target) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    // ============================================================
+    // DERIVED FIELD HELPERS
+    // ============================================================
+
+    function calculatePercentile(rank, total) {
+        if (!isNumber(total) || total <= 0) {
+            return 0;
+        }
+        if (!isNumber(rank) || rank <= 0) {
+            return 0;
+        }
+        return Math.round(((total - rank + 1) / total) * 100);
+    }
+
+    function decorateRanking(record) {
+        if (!record || typeof record !== 'object') {
+            return record;
+        }
+        var copy = deepClone(record);
+        copy.percentile = calculatePercentile(copy.rank, copy.totalStudents);
+        return copy;
+    }
+
+    function decorateRankings(records) {
+        if (!Array.isArray(records)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < records.length; i++) {
+            result.push(decorateRanking(records[i]));
+        }
+        return result;
+    }
+
+    // ============================================================
+    // DATA STORE ACCESS - INTERNAL
+    // ============================================================
+
+    function getDataStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        return window.data;
+    }
+
+    function getAcademyStore() {
+        var data = getDataStore();
+        if (!data) {
+            return null;
+        }
+
+        if (!data.academy || typeof data.academy !== 'object') {
+            return null;
+        }
+
+        return data.academy;
+    }
+
+    // ============================================================
+    // INTERNAL RANKING LOOKUP - PRIVATE (LIVE REFERENCES)
+    // ============================================================
+
+    function getRankingRecord(rankId) {
+        if (!isNonEmptyString(rankId)) {
+            return null;
+        }
+
+        var academy = getAcademyStore();
+        if (!academy || !academy.rankings) {
+            return null;
+        }
+
+        var target = String(rankId);
+        return academy.rankings[target] || null;
+    }
+
+    function getRankingRecords(classId, week) {
+        var academy = getAcademyStore();
+        if (!academy || !academy.rankings) {
+            return [];
+        }
+
+        var result = [];
+
+        var filterClass = isNonEmptyString(classId) ? String(classId) : null;
+
+        var filterWeek = null;
+        if (week !== undefined) {
+            filterWeek = parseWeekStrict(week);
+            if (filterWeek === null) {
+                return [];
+            }
+        }
+
+        for (var id in academy.rankings) {
+            if (Object.prototype.hasOwnProperty.call(academy.rankings, id)) {
+                var rank = academy.rankings[id];
+                if (!rank) continue;
+
+                if (filterClass !== null && String(rank.classId) !== filterClass) {
+                    continue;
+                }
+
+                if (filterWeek !== null && parseWeekStrict(rank.week) !== filterWeek) {
+                    continue;
+                }
+
+                result.push(rank);
+            }
+        }
+
+        result.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return result;
+    }
+
+    function getClassRankingsInternal(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return [];
+        }
+
+        return getRankingRecords(classId, weekNum);
+    }
+
+    function getStudentRankInternal(classId, studentId, week) {
+        if (!isNonEmptyString(classId) || !isNonEmptyString(studentId)) {
+            return null;
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return null;
+        }
+
+        var rankings = getClassRankingsInternal(classId, weekNum);
+        var targetStudent = String(studentId);
+
+        for (var i = 0; i < rankings.length; i++) {
+            if (String(rankings[i].studentId) === targetStudent) {
+                return rankings[i];
+            }
+        }
+
+        return null;
+    }
+
+    function getClassRankingsFromSnapshot(appData, classId, weekNum) {
+        if (!appData || !appData.academy || !appData.academy.rankings) {
+            return [];
+        }
+
+        var rankings = appData.academy.rankings;
+        if (!isObject(rankings)) {
+            return [];
+        }
+
+        var targetClass = String(classId);
+        var result = [];
+
+        for (var id in rankings) {
+            if (Object.prototype.hasOwnProperty.call(rankings, id)) {
+                var rank = rankings[id];
+                if (!rank) continue;
+                if (String(rank.classId) !== targetClass) continue;
+                if (parseWeekStrict(rank.week) !== weekNum) continue;
+                result.push(deepClone(rank));
+            }
+        }
+
+        result.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // PREFLIGHT CLASS VALIDATION (live reads, UX only)
+    // ============================================================
+
+    function validateClassExists(classId) {
+        if (!isNonEmptyString(classId)) {
+            return { valid: false, message: 'Class ID is required.' };
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return { valid: false, message: 'Class not found.' };
+        }
+
+        return { valid: true, class: cls };
+    }
+
+    // ============================================================
+    // RANKING VALIDATION
+    // ============================================================
+
+    function validateRankingData(data, isPartial) {
+        if (!isObject(data)) {
+            return { valid: false, message: 'Ranking data must be an object.' };
+        }
+
+        if (!isPartial || data.classId !== undefined) {
+            if (!isNonEmptyString(data.classId)) {
+                return { valid: false, message: 'Class ID is required.' };
+            }
+        }
+
+        if (!isPartial || data.studentId !== undefined) {
+            if (!isNonEmptyString(data.studentId)) {
+                return { valid: false, message: 'Student ID is required.' };
+            }
+        }
+
+        if (!isPartial || data.week !== undefined) {
+            var week = parseWeekStrict(data.week);
+            if (week === null) {
+                return {
+                    valid: false,
+                    message: 'Valid week is required (' +
+                        MIN_WEEK + '-' + MAX_WEEK + ').'
+                };
+            }
+        }
+
+        if (!isPartial || data.rank !== undefined) {
+            var rank = parseStrictInteger(data.rank);
+            if (rank === null || rank < MIN_RANK) {
+                return { valid: false, message: 'Rank must be an integer greater than or equal to 1.' };
+            }
+        }
+
+        if (data.totalStudents !== undefined) {
+            var total = parseStrictInteger(data.totalStudents);
+            if (total === null || total < 0) {
+                return { valid: false, message: 'Total students must be an integer greater than or equal to 0.' };
+            }
+        }
+
+        var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
+        for (var i = 0; i < scoreFields.length; i++) {
+            var field = scoreFields[i];
+            var value = data[field];
+            if (value === undefined || value === null) { continue; }
+            var num = Number(value);
+            if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                return {
+                    valid: false,
+                    message: field + ' must be a finite number in [' +
+                        MIN_SCORE + ', ' + MAX_SCORE + '].'
+                };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    function validateCandidate(candidate) {
+        if (!isObject(candidate)) {
+            return { valid: false, message: 'Candidate is not an object.' };
+        }
+
+        if (!isNonEmptyString(candidate.classId)) {
+            return { valid: false, message: 'Candidate missing classId.' };
+        }
+        if (!isNonEmptyString(candidate.studentId)) {
+            return { valid: false, message: 'Candidate missing studentId.' };
+        }
+
+        var week = parseWeekStrict(candidate.week);
+        if (week === null) {
+            return { valid: false, message: 'Candidate week is out of range.' };
+        }
+
+        var rank = parseStrictInteger(candidate.rank);
+        if (rank === null || rank < MIN_RANK) {
+            return { valid: false, message: 'Candidate rank must be >= 1.' };
+        }
+
+        var total = parseStrictInteger(candidate.totalStudents);
+        if (total === null || total < 0) {
+            return { valid: false, message: 'Candidate totalStudents is invalid.' };
+        }
+
+        if (total > 0 && rank > total) {
+            return {
+                valid: false,
+                message: 'Rank (' + rank + ') cannot exceed totalStudents (' + total + ').'
+            };
+        }
+
+        var scoreFields = ['academicAverage', 'socialScore', 'overallScore'];
+        for (var i = 0; i < scoreFields.length; i++) {
+            var field = scoreFields[i];
+            var value = candidate[field];
+            if (value === null || value === undefined) { continue; }
+            var num = Number(value);
+            if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                return {
+                    valid: false,
+                    message: 'Candidate ' + field + ' is out of range [' +
+                        MIN_SCORE + ', ' + MAX_SCORE + '].'
+                };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    function validateCandidateAgainstSnapshot(candidate, appData, excludeId) {
+        var structural = validateCandidate(candidate);
+        if (!structural.valid) {
+            return structural;
+        }
+
+        if (!findClassInSnapshot(appData, candidate.classId)) {
+            return {
+                valid: false,
+                message: 'Class no longer exists: ' + candidate.classId
+            };
+        }
+
+        if (!findCharacterInSnapshot(appData, candidate.studentId)) {
+            return {
+                valid: false,
+                message: 'Student no longer exists: ' + candidate.studentId
+            };
+        }
+
+        if (excludeId !== null && excludeId !== undefined) {
+            if (!findRankingInSnapshot(appData, excludeId)) {
+                return {
+                    valid: false,
+                    message: 'Ranking no longer exists.'
+                };
+            }
+        }
+
+        var conflict = findConflictingRankingInSnapshot(
+            appData,
+            candidate.classId,
+            candidate.studentId,
+            candidate.week,
+            excludeId
+        );
+        if (conflict) {
+            return {
+                valid: false,
+                message: 'A ranking already exists for this student, ' +
+                    'class, and week.'
+            };
+        }
+
+        return { valid: true };
+    }
+
+    // ============================================================
+    // INTERNAL CANDIDATE BUILDER
+    // ============================================================
+
+    function buildRankingRecord(data, existingId, existingCreatedAt) {
+        var now = new Date().toISOString();
+
+        var weekNum = parseWeekStrict(data.week);
+        if (weekNum === null) {
+            throw new Error(
+                '[AcademyRanking] buildRankingRecord received an ' +
+                'invalid week: ' + String(data.week)
+            );
+        }
+
+        var rank = parseStrictInteger(data.rank);
+        var totalStudents = data.totalStudents !== undefined
+            ? parseStrictInteger(data.totalStudents)
+            : 0;
+
+        var academicAverage = data.academicAverage !== undefined && data.academicAverage !== null
+            ? Number(data.academicAverage)
+            : null;
+        var socialScore = data.socialScore !== undefined && data.socialScore !== null
+            ? Number(data.socialScore)
+            : null;
+        var overallScore = data.overallScore !== undefined && data.overallScore !== null
+            ? Number(data.overallScore)
+            : null;
+
+        return {
+            id: existingId || generateId(),
+            classId: String(data.classId),
+            studentId: String(data.studentId),
+            week: weekNum,
+            rank: rank,
+            totalStudents: totalStudents,
+            academicAverage: academicAverage,
+            socialScore: socialScore,
+            overallScore: overallScore,
+            manuallyRanked: data.manuallyRanked === true,
+            createdAt: existingCreatedAt || now,
+            updatedAt: now
+        };
+    }
+
+    // ============================================================
+    // PUBLIC API - RANKING CRUD
+    // ============================================================
+
+    function create(data) {
+        var validation = validateRankingData(data, false);
+        if (!validation.valid) {
+            return Promise.resolve(failure(validation.message));
+        }
+
+        var classValidation = validateClassExists(data.classId);
+        if (!classValidation.valid) {
+            return Promise.resolve(failure(classValidation.message));
+        }
+
+        var conflict = findConflictingRanking(data.classId, data.studentId, data.week, null);
+        if (conflict) {
+            return Promise.resolve(failure(
+                'A ranking already exists for this student, class, and week. Use update instead.'
+            ));
+        }
+
+        // v35 — rank uniqueness within the bucket.
+        var rankConflict = findConflictingRankAtRankInSnapshot(
+            getDataStore(), data.classId, data.week, data.rank, null
+        );
+        if (rankConflict) {
+            return Promise.resolve(failure(
+                'Rank ' + data.rank + ' is already assigned in this ' +
+                'class and week. Use setRanking to resequence the bucket.'
+            ));
+        }
+
+        var newRanking;
+        try {
+            newRanking = buildRankingRecord(data, null, null);
+        } catch (e) {
+            return Promise.resolve(failure(e.message));
+        }
+
+        var candidateCheck = validateCandidate(newRanking);
+        if (!candidateCheck.valid) {
+            return Promise.resolve(failure(candidateCheck.message));
+        }
+
+        var targetId = newRanking.id;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+
+                if (findRankingInSnapshot(appData, targetId)) {
+                    return { valid: false, message: 'Ranking ID collision.' };
+                }
+
+                var snapshotCheck = validateCandidateAgainstSnapshot(
+                    newRanking, appData, null
+                );
+                if (!snapshotCheck.valid) {
+                    return snapshotCheck;
+                }
+
+                var rankConflictInSnapshot =
+                    findConflictingRankAtRankInSnapshot(
+                        appData,
+                        newRanking.classId,
+                        newRanking.week,
+                        newRanking.rank,
+                        null
+                    );
+                if (rankConflictInSnapshot) {
+                    return {
+                        valid: false,
+                        message: 'Rank ' + newRanking.rank +
+                            ' is already assigned in this class and week.'
+                    };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+                appData.academy.rankings[targetId] = deepClone(newRanking);
+                return { ranking: newRanking, id: targetId };
+            },
+            logMessage: 'Created ranking for student ' + newRanking.studentId,
+            successMessage: 'Ranking created successfully!',
+            failureMessage: 'Failed to create ranking.'
+        });
+    }
+
+    function update(rankId, updates) {
+        if (!isNonEmptyString(rankId)) {
+            return Promise.resolve(failure('Ranking ID is required.'));
+        }
+
+        if (!isObject(updates) || Object.keys(updates).length === 0) {
+            return Promise.resolve(failure('Updates are required.'));
+        }
+
+        var existing = getRankingRecord(rankId);
+        if (!existing) {
+            return Promise.resolve(failure('Ranking not found.'));
+        }
+
+        var fieldValidation = validateRankingData(updates, true);
+        if (!fieldValidation.valid) {
+            return Promise.resolve(failure(fieldValidation.message));
+        }
+
+        var candidate = deepClone(existing);
+        if (candidate === null) {
+            return Promise.resolve(failure('Failed to clone ranking data.'));
+        }
+
+        var hasChanges = false;
+        var updateFields = [
+            'classId', 'studentId', 'week', 'rank', 'totalStudents',
+            'academicAverage', 'socialScore', 'overallScore',
+            'manuallyRanked'
+        ];
+
+        for (var i = 0; i < updateFields.length; i++) {
+            var field = updateFields[i];
+            if (updates[field] === undefined) {
+                continue;
+            }
+
+            var value = updates[field];
+
+            switch (field) {
+                case 'classId':
+                case 'studentId':
+                    if (!isNonEmptyString(value)) {
+                        return Promise.resolve(failure(field + ' must be a non-empty string.'));
+                    }
+                    if (candidate[field] !== String(value)) {
+                        candidate[field] = String(value);
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'week':
+                    var week = parseWeekStrict(value);
+                    if (week === null) {
+                        return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
+                    }
+                    if (candidate.week !== week) {
+                        candidate.week = week;
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'rank':
+                    var rank = parseStrictInteger(value);
+                    if (rank === null || rank < MIN_RANK) {
+                        return Promise.resolve(failure('Rank must be an integer greater than or equal to 1.'));
+                    }
+                    if (candidate.rank !== rank) {
+                        candidate.rank = rank;
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'totalStudents':
+                    var total = parseStrictInteger(value);
+                    if (total === null || total < 0) {
+                        return Promise.resolve(failure('Total students must be an integer greater than or equal to 0.'));
+                    }
+                    if (candidate.totalStudents !== total) {
+                        candidate.totalStudents = total;
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'academicAverage':
+                case 'socialScore':
+                case 'overallScore':
+                    if (value === null) {
+                        if (candidate[field] !== null) {
+                            candidate[field] = null;
+                            hasChanges = true;
+                        }
+                    } else {
+                        var num = Number(value);
+                        if (!isFinite(num) || num < MIN_SCORE || num > MAX_SCORE) {
+                            return Promise.resolve(failure(
+                                field + ' must be a finite number in [' +
+                                MIN_SCORE + ', ' + MAX_SCORE + '].'
+                            ));
+                        }
+                        if (candidate[field] !== num) {
+                            candidate[field] = num;
+                            hasChanges = true;
+                        }
+                    }
+                    break;
+
+                case 'manuallyRanked':
+                    var manualFlag = value === true;
+                    if (candidate.manuallyRanked !== manualFlag) {
+                        candidate.manuallyRanked = manualFlag;
+                        hasChanges = true;
+                    }
+                    break;
+            }
+        }
+
+        if (!hasChanges) {
+            return Promise.resolve(success({ ranking: decorateRanking(existing), changed: false }));
+        }
+
+        var candidateCheck = validateCandidate(candidate);
+        if (!candidateCheck.valid) {
+            return Promise.resolve(failure(candidateCheck.message));
+        }
+
+        var conflict = findConflictingRanking(
+            candidate.classId,
+            candidate.studentId,
+            candidate.week,
+            rankId
+        );
+        if (conflict) {
+            return Promise.resolve(failure(
+                'Another ranking already exists for this student, class, and week.'
+            ));
+        }
+
+        candidate.updatedAt = new Date().toISOString();
+        var targetId = String(rankId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+
+                var snapshotCheck = validateCandidateAgainstSnapshot(
+                    candidate, appData, targetId
+                );
+                if (!snapshotCheck.valid) {
+                    return snapshotCheck;
+                }
+
+                var rankConflictInSnapshot =
+                    findConflictingRankAtRankInSnapshot(
+                        appData,
+                        candidate.classId,
+                        candidate.week,
+                        candidate.rank,
+                        (function() {
+                            var s = Object.create(null);
+                            s[targetId] = true;
+                            return s;
+                        })()
+                    );
+                if (rankConflictInSnapshot) {
+                    return {
+                        valid: false,
+                        message: 'Rank ' + candidate.rank +
+                            ' is already assigned in this class and week.'
+                    };
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy || !appData.academy.rankings) {
+                    throw new Error('Academy data is not available.');
+                }
+                if (!appData.academy.rankings[targetId]) {
+                    throw new Error('Ranking not found in data store.');
+                }
+                appData.academy.rankings[targetId] = deepClone(candidate);
+                return { ranking: candidate, changed: true };
+            },
+            logMessage: 'Updated ranking for student ' + candidate.studentId,
+            successMessage: 'Ranking updated successfully!',
+            failureMessage: 'Failed to update ranking.'
+        });
+    }
+
+    function deleteRanking(rankId) {
+        if (!isNonEmptyString(rankId)) {
+            return Promise.resolve(failure('Ranking ID is required.'));
+        }
+
+        var target = String(rankId);
+        var existing = getRankingRecord(target);
+        if (!existing) {
+            return Promise.resolve(failure('Ranking not found.'));
+        }
+
+        var rankInfo = {
+            id: target,
+            classId: existing.classId,
+            studentId: existing.studentId,
+            week: existing.week,
+            rank: existing.rank
+        };
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                if (!findRankingInSnapshot(appData, target)) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy || !appData.academy.rankings) {
+                    throw new Error('Academy data is not available.');
+                }
+                if (!appData.academy.rankings[target]) {
+                    throw new Error('Ranking not found in data store.');
+                }
+                delete appData.academy.rankings[target];
+                return { deleted: true, ranking: rankInfo };
+            },
+            logMessage: 'Deleted ranking for student ' + existing.studentId,
+            successMessage: 'Ranking deleted successfully!',
+            failureMessage: 'Failed to delete ranking.'
+        });
+    }
+
+    function deleteClassRankings(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
+        }
+
+        var targetClass = String(classId);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var rankings = appData.academy.rankings;
+                var toRemove = [];
+                var removed = [];
+
+                for (var id in rankings) {
+                    if (Object.prototype.hasOwnProperty.call(rankings, id)) {
+                        var rank = rankings[id];
+                        if (rank && String(rank.classId) === targetClass && parseWeekStrict(rank.week) === weekNum) {
+                            toRemove.push(id);
+                            removed.push({
+                                id: id,
+                                studentId: rank.studentId,
+                                rank: rank.rank
+                            });
+                        }
+                    }
+                }
+
+                for (var i = 0; i < toRemove.length; i++) {
+                    delete rankings[toRemove[i]];
+                }
+
+                return {
+                    classId: targetClass,
+                    week: weekNum,
+                    removedCount: removed.length,
+                    removed: removed
+                };
+            },
+            logMessage: 'Deleted rankings for class ' + targetClass + ', week ' + weekNum,
+            successMessage: 'Class rankings deleted successfully!',
+            failureMessage: 'Failed to delete class rankings.'
+        });
+    }
+
+    // ============================================================
+    // PUBLIC READ SURFACE (CLONES)
+    // ============================================================
+
+    function getClassRankings(classId, week) {
+        var rankings = getClassRankingsInternal(classId, week);
+        return decorateRankings(rankings);
+    }
+
+    function getStudentRank(classId, studentId, week) {
+        var rank = getStudentRankInternal(classId, studentId, week);
+
+        if (!rank) {
+            return null;
+        }
+
+        return decorateRanking(rank);
+    }
+
+    function getRankings(classId, week) {
+        var records = getRankingRecords(classId, week);
+        return decorateRankings(records);
+    }
+
+    function getRanking(rankId) {
+        var rank = getRankingRecord(rankId);
+        return rank ? decorateRanking(rank) : null;
+    }
+
+    // ============================================================
+    // RANKING CALCULATIONS - Pure
+    // ============================================================
+
+    function calculateRankingSummary(rankings) {
+        if (!Array.isArray(rankings) || rankings.length === 0) {
+            return {
+                count: 0,
+                minRank: null,
+                maxRank: null,
+                averageRank: 0,
+                topStudent: null,
+                bottomStudent: null
+            };
+        }
+
+        var count = rankings.length;
+        var minRank = Infinity;
+        var maxRank = -Infinity;
+        var totalRank = 0;
+        var topStudent = null;
+        var bottomStudent = null;
+
+        for (var i = 0; i < rankings.length; i++) {
+            var rank = rankings[i];
+            if (!rank) continue;
+
+            var rankValue = rank.rank || 999;
+            totalRank += rankValue;
+
+            if (rankValue < minRank) {
+                minRank = rankValue;
+                topStudent = rank.studentId;
+            }
+            if (rankValue > maxRank) {
+                maxRank = rankValue;
+                bottomStudent = rank.studentId;
+            }
+        }
+
+        return {
+            count: count,
+            minRank: minRank === Infinity ? null : minRank,
+            maxRank: maxRank === -Infinity ? null : maxRank,
+            averageRank: count > 0 ? Math.round((totalRank / count) * 10) / 10 : 0,
+            topStudent: topStudent,
+            bottomStudent: bottomStudent
+        };
+    }
+
+    function calculateRankDistribution(rankings, bins) {
+        bins = bins || 5;
+
+        if (!Array.isArray(rankings) || rankings.length === 0) {
+            return {};
+        }
+
+        var distribution = {};
+        var binSize = Math.ceil(100 / bins);
+
+        for (var i = 0; i < rankings.length; i++) {
+            var rank = rankings[i];
+            if (!rank) continue;
+
+            var percentile = rank.percentile !== undefined
+                ? rank.percentile
+                : calculatePercentile(rank.rank, rank.totalStudents);
+
+            var binKey = Math.floor(percentile / binSize) * binSize;
+            var binLabel = binKey + '-' + Math.min(binKey + binSize - 1, 100);
+            if (binKey >= 100) {
+                binLabel = '100';
+            }
+
+            if (!distribution[binLabel]) {
+                distribution[binLabel] = { count: 0 };
+            }
+
+            distribution[binLabel].count++;
+        }
+
+        return distribution;
+    }
+
+    // ============================================================
+    // AUTO-GENERATE RANKINGS FROM PERFORMANCE
+    // ============================================================
+
+    function assignRanks(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+            return { ranked: [], totalStudents: 0 };
+        }
+
+        var participants = [];
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            if (!e || !isNonEmptyString(e.studentId)) { continue; }
+
+            var overall = isNumber(e.overallScore) ? e.overallScore : null;
+            var academic = isNumber(e.academicAverage) ? e.academicAverage : null;
+
+            if (overall === null && academic === null) {
+                continue;
+            }
+
+            participants.push({
+                studentId: String(e.studentId),
+                academicAverage: academic,
+                socialScore: isNumber(e.socialScore) ? e.socialScore : null,
+                overallScore: overall,
+                disciplineCount: isNumber(e.disciplineCount) ? e.disciplineCount : 0,
+                gradeCount: isNumber(e.gradeCount) ? e.gradeCount : 0
+            });
+        }
+
+        participants.sort(function(a, b) {
+            var aVal = a.overallScore !== null ? a.overallScore : a.academicAverage;
+            var bVal = b.overallScore !== null ? b.overallScore : b.academicAverage;
+
+            if (aVal === null && bVal === null) {
+                return a.studentId.localeCompare(b.studentId);
+            }
+            if (aVal === null) { return 1; }
+            if (bVal === null) { return -1; }
+            if (bVal !== aVal) { return bVal - aVal; }
+            return a.studentId.localeCompare(b.studentId);
+        });
+
+        var totalStudents = participants.length;
+
+        for (var j = 0; j < participants.length; j++) {
+            participants[j].rank = j + 1;
+        }
+
+        return {
+            ranked: participants,
+            totalStudents: totalStudents
+        };
+    }
+
+    function autoGenerate(classId, week, options) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
+        }
+
+        options = options || {};
+        var overwrite = options.overwrite !== false;
+        // v35 — manual ranks survive a regenerate unless the caller
+        // explicitly asks to overwrite them.
+        var overwriteManual = options.overwriteManual === true;
+
+        var classValidation = validateClassExists(classId);
+        if (!classValidation.valid) {
+            return Promise.resolve(failure(classValidation.message));
+        }
+
+        // ---- Resolve the roster ----
+        var studentIds = options.studentIds;
+        if (!Array.isArray(studentIds)) {
+            try {
+                studentIds = resolveClassStudentIds(classId);
+            } catch (e) {
+                return Promise.resolve(failure(e.message));
+            }
+        }
+
+        if (!Array.isArray(studentIds) || studentIds.length === 0) {
+            return Promise.resolve(failure('No students found in this class.'));
+        }
+
+        // ---- Ask performance for the per-student aggregates ----
+        var aggregates;
+        try {
+            aggregates = AcademyPerformance.calculateClassPerformance(
+                studentIds,
+                classId,
+                weekNum
+            );
+        } catch (e) {
+            return Promise.resolve(failure('Failed to calculate performance: ' + e.message));
+        }
+
+        if (!Array.isArray(aggregates) || aggregates.length === 0) {
+            return Promise.resolve(failure('No performance data available for this class and week.'));
+        }
+
+        // ---- Order and rank ----
+        var ranked = assignRanks(aggregates);
+        var rankedEntries = ranked.ranked;
+        var totalStudents = ranked.totalStudents;
+
+        if (rankedEntries.length === 0) {
+            return Promise.resolve(failure('No students have grades for this class and week.'));
+        }
+
+        // ---- Plan ----
+        var planned = [];
+        var errors = [];
+        var seenKeys = {};
+
+        for (var j = 0; j < rankedEntries.length; j++) {
+            var data = rankedEntries[j];
+
+            var uniqueKey = makeUniqueKey(classId, data.studentId, weekNum);
+            if (seenKeys[uniqueKey]) {
+                errors.push({
+                    studentId: data.studentId,
+                    error: 'Duplicate entry in input.'
+                });
+                continue;
+            }
+            seenKeys[uniqueKey] = true;
+
+            var existing = getStudentRankInternal(classId, data.studentId, weekNum);
+
+            // v35 — preserve manually-ranked records unless the caller
+            // opts in to overwriting them.
+            if (existing && existing.manuallyRanked === true && !overwriteManual) {
+                planned.push({ action: 'skip' });
+                continue;
+            }
+
+            if (existing && !overwrite) {
+                planned.push({ action: 'skip' });
+                continue;
+            }
+
+            if (existing) {
+                var candidate = deepClone(existing);
+                candidate.rank = data.rank;
+                candidate.totalStudents = totalStudents;
+                candidate.academicAverage = data.academicAverage;
+                candidate.socialScore = data.socialScore;
+                candidate.overallScore = data.overallScore;
+                candidate.manuallyRanked = false;
+                candidate.updatedAt = new Date().toISOString();
+                planned.push({ action: 'update', record: candidate, matchId: existing.id });
+            } else {
+                var newRecord;
+                try {
+                    newRecord = buildRankingRecord({
+                        classId: classId,
+                        studentId: data.studentId,
+                        week: weekNum,
+                        rank: data.rank,
+                        totalStudents: totalStudents,
+                        academicAverage: data.academicAverage,
+                        socialScore: data.socialScore,
+                        overallScore: data.overallScore,
+                        manuallyRanked: false
+                    }, null, null);
+                } catch (e) {
+                    errors.push({ studentId: data.studentId, error: e.message });
+                    continue;
+                }
+                planned.push({ action: 'create', record: newRecord });
+            }
+        }
+
+        var creates = planned.filter(function(p) { return p.action === 'create'; });
+        var updates = planned.filter(function(p) { return p.action === 'update'; });
+        var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+
+                if (!findClassInSnapshot(appData, classId)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                // v35 — rank uniqueness across the whole planned set.
+                // Collect the ranks we are about to write and the IDs
+                // of records we are rewriting, so the check sees only
+                // the ranks that WILL exist after commit.
+                var plannedRankById = Object.create(null);
+                var rewrittenIds = Object.create(null);
+                for (var pi = 0; pi < planned.length; pi++) {
+                    var pItem = planned[pi];
+                    if (pItem.action === 'create') {
+                        plannedRankById[pItem.record.id] =
+                            parseStrictInteger(pItem.record.rank);
+                    } else if (pItem.action === 'update') {
+                        rewrittenIds[String(pItem.matchId)] = true;
+                        plannedRankById[pItem.matchId] =
+                            parseStrictInteger(pItem.record.rank);
+                    }
+                }
+
+                var seenRanks = Object.create(null);
+                var byRankKeys = Object.keys(plannedRankById);
+                for (var rk = 0; rk < byRankKeys.length; rk++) {
+                    var rkId = byRankKeys[rk];
+                    var rkRank = plannedRankById[rkId];
+                    var rkKey = String(rkRank);
+                    if (seenRanks[rkKey]) {
+                        return {
+                            valid: false,
+                            message: 'Rank ' + rkRank +
+                                ' would be assigned to more than one ' +
+                                'student by this operation.'
+                        };
+                    }
+                    seenRanks[rkKey] = true;
+                }
+
+                // Existing ranks from records we are NOT rewriting
+                // must not collide with the new ranks.
+                if (appData.academy.rankings) {
+                    for (var existingId in appData.academy.rankings) {
+                        if (!Object.prototype.hasOwnProperty.call(
+                            appData.academy.rankings, existingId
+                        )) { continue; }
+                        if (rewrittenIds[String(existingId)]) { continue; }
+                        var existingRec = appData.academy.rankings[existingId];
+                        if (!existingRec) { continue; }
+                        if (String(existingRec.classId) !== String(classId)) { continue; }
+                        if (parseWeekStrict(existingRec.week) !== weekNum) { continue; }
+                        var existingRankKey =
+                            String(parseStrictInteger(existingRec.rank));
+                        if (seenRanks[existingRankKey]) {
+                            return {
+                                valid: false,
+                                message: 'Rank ' + existingRankKey +
+                                    ' is already held by a record this ' +
+                                    'operation does not rewrite.'
+                            };
+                        }
+                    }
+                }
+
+                for (var i = 0; i < planned.length; i++) {
+                    var item = planned[i];
+
+                    if (item.action === 'create') {
+                        if (findRankingInSnapshot(appData, item.record.id)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking ID collision during ' +
+                                    'auto-generate: ' + item.record.id
+                            };
+                        }
+                        var createCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, null
+                        );
+                        if (!createCheck.valid) {
+                            return createCheck;
+                        }
+                    } else if (item.action === 'update') {
+                        if (!findRankingInSnapshot(appData, item.matchId)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking no longer exists: ' +
+                                    item.matchId
+                            };
+                        }
+                        var updateCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, item.matchId
+                        );
+                        if (!updateCheck.valid) {
+                            return updateCheck;
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+
+                var created = 0;
+                var updated = 0;
+
+                for (var k = 0; k < planned.length; k++) {
+                    var item = planned[k];
+                    if (item.action === 'create') {
+                        appData.academy.rankings[item.record.id] = deepClone(item.record);
+                        created++;
+                    } else if (item.action === 'update') {
+                        if (!appData.academy.rankings[item.matchId]) {
+                            throw new Error('Ranking no longer exists: ' + item.matchId);
+                        }
+                        appData.academy.rankings[item.matchId] = deepClone(item.record);
+                        updated++;
+                    }
+                }
+
+                var finalRankings = getClassRankingsFromSnapshot(appData, classId, weekNum);
+
+                return {
+                    classId: classId,
+                    week: weekNum,
+                    totalStudents: totalStudents,
+                    created: created,
+                    updated: updated,
+                    skipped: skipped,
+                    errors: errors,
+                    rankings: finalRankings
+                };
+            },
+            logMessage: 'Generated rankings for class ' + classId + ', week ' + weekNum,
+            successMessage: 'Rankings generated successfully!',
+            failureMessage: 'Failed to generate rankings.'
+        });
+    }
+
+    function resolveClassStudentIds(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var AGG = requireAcademyAggregator(
+            'resolveClassStudentIds'
+        );
+
+        var students = AGG.getClassStudentsViewModel(classId);
+
+        if (!Array.isArray(students)) {
+            throw new Error(
+                '[AcademyRanking] AcademyAggregator.getClassStudentsViewModel ' +
+                'returned a non-array. This is an aggregator bug.'
+            );
+        }
+
+        var result = [];
+        for (var i = 0; i < students.length; i++) {
+            var s = students[i];
+            if (!s || !s.id) { continue; }
+            result.push(String(s.id));
+        }
+        return result;
+    }
+
+    // ============================================================
+    // MANUAL RANKING — ORDERED-LIST WRITE API (v35)
+    // ============================================================
+    //
+    // See the MANUAL RANKING note in the header for the full
+    // contract. Summary:
+    //
+    //   setRanking           — resequencing primitive. Drag-drop.
+    //   insertRankingAt      — append or insert at a position.
+    //   removeRankingAt      — remove, renormalise.
+    //   moveRanking          — move an existing entry.
+    //
+    // "One person per rank" holds by construction: setRanking
+    // rewrites every record in the (classId, week) bucket to rank
+    // 1..N, so there is no window in which two records share a
+    // rank. The pipeline validator re-checks the invariant against
+    // the transaction snapshot.
+
+    function buildManualRankingRecord(
+        classId,
+        studentId,
+        weekNum,
+        rank,
+        totalStudents,
+        existing
+    ) {
+        var now = new Date().toISOString();
+
+        var academicAverage = null;
+        var socialScore = null;
+        var overallScore = null;
+
+        if (existing) {
+            academicAverage = existing.academicAverage !== undefined
+                ? existing.academicAverage : null;
+            socialScore = existing.socialScore !== undefined
+                ? existing.socialScore : null;
+            overallScore = existing.overallScore !== undefined
+                ? existing.overallScore : null;
+        }
+
+        return {
+            id: existing ? existing.id : generateId(),
+            classId: String(classId),
+            studentId: String(studentId),
+            week: weekNum,
+            rank: rank,
+            totalStudents: totalStudents,
+            academicAverage: academicAverage,
+            socialScore: socialScore,
+            overallScore: overallScore,
+            manuallyRanked: true,
+            createdAt: existing ? existing.createdAt : now,
+            updatedAt: now
+        };
+    }
+
+    /**
+     * Normalise an ordered character list for a (classId, week):
+     * dedupe, drop non-strings, drop characters not on the class
+     * roster. A character that has been removed from the class
+     * cannot be ranked; the drag UI can race a roster change, so
+     * we drop rather than throw.
+     */
+    function normaliseOrderedCharIds(classId, orderedCharIds) {
+        if (!Array.isArray(orderedCharIds)) { return []; }
+
         var seen = Object.create(null);
         var result = [];
 
-        if (!Array.isArray(intervals) || intervals.length === 0) {
-            return result;
-        }
-
-        var minW = CalendarConstants.MIN_WEEK;
-        var maxW = CalendarConstants.MAX_WEEK;
-
-        for (var i = 0; i < intervals.length; i++) {
-            var iv = intervals[i];
-            if (!iv || typeof iv !== 'object') { continue; }
-
-            var start = iv.startWeek;
-            if (typeof start !== 'number' || !isFinite(start)) {
-                continue;
-            }
-            if (start < minW) { start = minW; }
-            if (start > maxW) { continue; }
-
-            var end;
-            if (iv.endWeek === null || iv.endWeek === undefined) {
-                end = maxW;
-            } else if (typeof iv.endWeek === 'number' &&
-                       isFinite(iv.endWeek)) {
-                end = iv.endWeek;
-            } else {
-                continue;
-            }
-
-            if (end < minW) { continue; }
-            if (end > maxW) { end = maxW; }
-            if (end < start) { continue; }
-
-            for (var w = start; w <= end; w++) {
-                var key = String(w);
-                if (seen[key]) { continue; }
-                seen[key] = true;
-                result.push(w);
-            }
-        }
-
-        result.sort(function(a, b) { return a - b; });
-        return result;
-    }
-
-    /**
-     * Collapse a sorted array of weeks into contiguous ranges.
-     */
-    function collapseWeeksToRanges(weeks) {
-        var ranges = [];
-        if (!Array.isArray(weeks) || weeks.length === 0) {
-            return ranges;
-        }
-
-        var start = weeks[0];
-        var prev = weeks[0];
-
-        for (var i = 1; i < weeks.length; i++) {
-            var w = weeks[i];
-            if (w === prev + 1) {
-                prev = w;
-                continue;
-            }
-            ranges.push({ start: start, end: prev });
-            start = w;
-            prev = w;
-        }
-        ranges.push({ start: start, end: prev });
-        return ranges;
-    }
-
-    // ============================================================
-    // INSTRUCTOR DISCIPLINES
-    // ============================================================
-
-    function getClassInstructorDisciplines(classId, instructorId, week) {
-        if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(instructorId)) {
-            return [];
-        }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        var char = CharacterQueries.getCharacterById(instructorId);
-        if (!char || char.mode !== 'instructor') {
-            return [];
-        }
-
-        var targetClass = String(classId);
-        var targetChar = String(instructorId);
-
-        var markers = AcademyClassDisciplinesQueries
-            .getClassDisciplinesForClass(targetClass) || [];
-
-        var result = [];
-
-        for (var i = 0; i < markers.length; i++) {
-            var marker = markers[i];
-            if (!marker || !marker.disciplineId) { continue; }
-
-            var disciplineId = String(marker.disciplineId);
-
-            var enrolled = AcademyEnrolments.isEnrolledInWeek(
-                targetChar,
-                targetClass,
-                disciplineId,
-                weekNum
-            ) === true;
-
-            if (!enrolled) { continue; }
-
-            var disc = AcademyDisciplines.getDiscipline(disciplineId);
-            if (!disc) { continue; }
-
-            result.push({
-                id: String(disc.id),
-                name: isNonEmptyString(disc.name)
-                    ? disc.name
-                    : 'Unnamed Discipline',
-                type: disc.type || 'mandatory'
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // INSTRUCTOR GROUP PICKER
-    // ============================================================
-
-    function getInstructorGroupPickerViewModel(
-        classId,
-        instructorId,
-        disciplineId,
-        week
-    ) {
-        if (!isNonEmptyString(classId) ||
-            !isNonEmptyString(instructorId) ||
-            !isNonEmptyString(disciplineId)) {
-            return { groups: [] };
-        }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) {
-            return { groups: [] };
-        }
-
-        var targetClass = String(classId);
-        var targetInstructor = String(instructorId);
-        var targetDiscipline = String(disciplineId);
-
-        var ATG = requireAcademyTeachingGroups(
-            'getInstructorGroupPickerViewModel'
-        );
-        var ATS = requireAcademyTeachingSessions(
-            'getInstructorGroupPickerViewModel'
-        );
-
-        var rawGroups = ATG.getGroupsForClassDisciplineInstructor(
-            targetClass,
-            targetDiscipline,
-            targetInstructor
-        ) || [];
-
-        if (!Array.isArray(rawGroups)) {
-            rawGroups = [];
-        }
-
-        var discipline = AcademyDisciplines.getDiscipline(
-            targetDiscipline
-        );
-        var disciplineName = (discipline &&
-                              isNonEmptyString(discipline.name))
-            ? discipline.name
-            : 'Unnamed Discipline';
-
-        var result = [];
-
-        for (var i = 0; i < rawGroups.length; i++) {
-            var group = rawGroups[i];
-            if (!group || !group.id) { continue; }
-
-            var startOk = true;
-            if (group.startWeek !== undefined &&
-                group.startWeek !== null &&
-                group.startWeek !== '') {
-                if (typeof group.startWeek !== 'number' ||
-                    !isFinite(group.startWeek)) {
-                    startOk = false;
-                } else if (weekNum < group.startWeek) {
-                    startOk = false;
-                }
-            }
-
-            var endOk = true;
-            if (startOk &&
-                group.endWeek !== undefined &&
-                group.endWeek !== null &&
-                group.endWeek !== '') {
-                if (typeof group.endWeek !== 'number' ||
-                    !isFinite(group.endWeek)) {
-                    endOk = false;
-                } else if (weekNum > group.endWeek) {
-                    endOk = false;
-                }
-            }
-
-            if (!startOk || !endOk) { continue; }
-
-            var groupNumber = isFiniteNumber(group.groupNumber)
-                ? group.groupNumber
-                : 0;
-
-            var customName = isNonEmptyString(group.customName)
-                ? String(group.customName).trim()
-                : null;
-
-            var displayName;
-            if (customName !== null) {
-                displayName = customName;
-            } else if (groupNumber > 0) {
-                displayName = disciplineName + ' ' + groupNumber;
-            } else {
-                displayName = disciplineName;
-            }
-
-            var members = ATG.getActiveMembers(group.id, weekNum) || [];
-            var memberCount = Array.isArray(members)
-                ? members.length
-                : 0;
-
-            var sessions = ATS.getSessionsForGroup(group.id) || [];
-            var sessionCount = Array.isArray(sessions)
-                ? sessions.length
-                : 0;
-
-            result.push({
-                groupId: String(group.id),
-                groupNumber: groupNumber,
-                displayName: displayName,
-                memberCount: memberCount,
-                sessionCount: sessionCount
-            });
-        }
-
-        result.sort(function(a, b) {
-            if (a.groupNumber !== b.groupNumber) {
-                return a.groupNumber - b.groupNumber;
-            }
-            return a.groupId.localeCompare(b.groupId);
-        });
-
-        return { groups: result };
-    }
-
-    // ============================================================
-    // REBALANCE INPUT (v32)
-    // ============================================================
-
-    function getRebalanceInputViewModel(
-        classId,
-        disciplineId,
-        week,
-        options
-    ) {
-        if (!isNonEmptyString(classId)) { return null; }
-        if (!isNonEmptyString(disciplineId)) { return null; }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) { return null; }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) { return null; }
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) { return null; }
-
-        options = (options && typeof options === 'object')
-            ? options
-            : {};
-
-        var targetClass = String(classId);
-        var targetDiscipline = String(disciplineId);
-
-        var ATG = requireAcademyTeachingGroups(
-            'getRebalanceInputViewModel'
-        );
-        var ATS = requireAcademyTeachingSessions(
-            'getRebalanceInputViewModel'
-        );
-        var ATP = requireAcademyTeachingProjector(
-            'getRebalanceInputViewModel'
-        );
-
-        var excludedStudentSet = buildIdSet(
-            Array.isArray(options.excludedStudentIds)
-                ? options.excludedStudentIds
-                : []
-        );
-
-        var groupFilter = null;
-        if (Array.isArray(options.groupIds)) {
-            groupFilter = buildIdSet(options.groupIds);
-        }
-
-        var EQ = getEliminationQueries();
-        var eliminationCheckAvailable = EQ &&
-            typeof EQ.isCharacterEliminatedByWeek === 'function';
-
-        var enrolledStudentIds = [];
+        var roster = [];
         try {
-            enrolledStudentIds = AcademyEnrolments.getEnrolledStudents(
-                targetClass, targetDiscipline, weekNum
-            ) || [];
+            roster = resolveClassStudentIds(classId);
         } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getEnrolledStudents failed:', e
-            );
-            enrolledStudentIds = [];
+            roster = [];
         }
-
-        if (!Array.isArray(enrolledStudentIds)) {
-            enrolledStudentIds = [];
-        }
-
-        var rawGroups = [];
-        try {
-            rawGroups = ATG.getGroupsForDiscipline(
-                targetClass, targetDiscipline
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getGroupsForDiscipline failed:', e
-            );
-            rawGroups = [];
-        }
-
-        if (!Array.isArray(rawGroups)) {
-            rawGroups = [];
-        }
-
-        var disciplineName = isNonEmptyString(discipline.name)
-            ? discipline.name
-            : 'Unnamed Discipline';
-
-        var groupVMs = [];
-
-        for (var gi = 0; gi < rawGroups.length; gi++) {
-            var rawGroup = rawGroups[gi];
-            if (!rawGroup || !rawGroup.id) { continue; }
-
-            var groupId = String(rawGroup.id);
-
-            if (groupFilter !== null &&
-                groupFilter[groupId] !== true) {
-                continue;
-            }
-
-            var instructorId = isNonEmptyString(rawGroup.instructorId)
-                ? String(rawGroup.instructorId)
-                : null;
-            var instructorName = instructorId
-                ? getCharacterDisplayName(instructorId)
-                : '';
-
-            var groupNumber = isFiniteNumber(rawGroup.groupNumber)
-                ? rawGroup.groupNumber
-                : 0;
-            var customName = isNonEmptyString(rawGroup.customName)
-                ? String(rawGroup.customName).trim()
-                : null;
-
-            var groupDisplayName;
-            if (customName !== null) {
-                groupDisplayName = customName;
-            } else if (groupNumber > 0) {
-                groupDisplayName = disciplineName + ' ' + groupNumber;
-            } else {
-                groupDisplayName = disciplineName;
-            }
-
-            var activeMembers = [];
-            try {
-                activeMembers = ATG.getActiveMembers(
-                    groupId, weekNum
-                ) || [];
-            } catch (e) {
-                activeMembers = [];
-            }
-            var memberCount = Array.isArray(activeMembers)
-                ? activeMembers.length
-                : 0;
-
-            var rawSessions = [];
-            try {
-                rawSessions = ATS.getSessionsForGroup(groupId) || [];
-            } catch (e) {
-                rawSessions = [];
-            }
-            if (!Array.isArray(rawSessions)) {
-                rawSessions = [];
-            }
-
-            var sessionVMs = [];
-            for (var si = 0; si < rawSessions.length; si++) {
-                var s = rawSessions[si];
-                if (!s) { continue; }
-
-                var sStart = isFiniteNumber(s.startWeek)
-                    ? s.startWeek : null;
-                var sEnd = (s.endWeek !== undefined &&
-                            s.endWeek !== null)
-                    ? s.endWeek : null;
-
-                if (sStart !== null && weekNum < sStart) { continue; }
-                if (sEnd !== null && weekNum > sEnd) { continue; }
-
-                if (typeof s.day !== 'number') { continue; }
-                if (typeof s.startTime !== 'number') { continue; }
-
-                sessionVMs.push({
-                    day: s.day,
-                    startTime: s.startTime,
-                    duration: isFiniteNumber(s.duration) && s.duration > 0
-                        ? s.duration
-                        : 1
-                });
-            }
-
-            groupVMs.push({
-                groupId: groupId,
-                displayName: groupDisplayName,
-                instructorId: instructorId,
-                instructorName: instructorName,
-                memberCount: memberCount,
-                sessions: sessionVMs
-            });
-        }
-
-        groupVMs.sort(function(a, b) {
-            return a.displayName.localeCompare(b.displayName);
-        });
-
-        var studentVMs = [];
-
-        for (var sti = 0; sti < enrolledStudentIds.length; sti++) {
-            var studentIdRaw = enrolledStudentIds[sti];
-            if (!isNonEmptyString(studentIdRaw)) { continue; }
-
-            var studentId = String(studentIdRaw);
-
-            if (excludedStudentSet[studentId] === true) {
-                continue;
-            }
-
-            var char = CharacterQueries.getCharacterById(studentId);
-            if (!char) { continue; }
-
-            if (char.mode === 'instructor') { continue; }
-
-            if (eliminationCheckAvailable) {
-                var eliminatedNow = false;
-                try {
-                    eliminatedNow = EQ.isCharacterEliminatedByWeek(
-                        studentId, weekNum
-                    ) === true;
-                } catch (e) {
-                    eliminatedNow = true;
-                }
-                if (eliminatedNow) { continue; }
-            }
-
-            var occupied = [];
-            var occupiedUnavailable = false;
-
-            try {
-                var occurrences = ATP.projectForStudent(
-                    studentId, weekNum
-                ) || [];
-                if (!Array.isArray(occurrences)) {
-                    occurrences = [];
-                    occupiedUnavailable = true;
-                }
-                for (var oi = 0; oi < occurrences.length; oi++) {
-                    var occ = occurrences[oi];
-                    if (!occ) { continue; }
-                    if (typeof occ.day !== 'number') { continue; }
-                    if (typeof occ.startTime !== 'number') { continue; }
-                    occupied.push({
-                        day: occ.day,
-                        startTime: occ.startTime,
-                        duration: isFiniteNumber(occ.duration) &&
-                                  occ.duration > 0
-                            ? occ.duration
-                            : 1
-                    });
-                }
-            } catch (e) {
-                console.warn(
-                    '[AcademyAggregator] projectForStudent failed for ' +
-                    studentId + ':', e
-                );
-                occupied = [];
-                occupiedUnavailable = true;
-            }
-
-            var currentGroupId = null;
-            try {
-                if (typeof ATG.getGroupForStudentInClassDiscipline ===
-                    'function') {
-                    var currentGroup =
-                        ATG.getGroupForStudentInClassDiscipline(
-                            targetClass,
-                            targetDiscipline,
-                            studentId,
-                            weekNum
-                        );
-                    if (currentGroup && currentGroup.id) {
-                        currentGroupId = String(currentGroup.id);
-                    }
-                }
-            } catch (e) {
-                currentGroupId = null;
-            }
-
-            studentVMs.push({
-                id: studentId,
-                name: CharacterQueries.getDisplayName(char),
-                status: CharacterQueries.getCurrentStatus(char),
-                occupied: occupied,
-                currentGroupId: currentGroupId,
-                occupiedUnavailable: occupiedUnavailable
-            });
-        }
-
-        studentVMs.sort(function(a, b) {
-            var an = String(a.name || '');
-            var bn = String(b.name || '');
-            if (an !== bn) {
-                return an.localeCompare(bn);
-            }
-            return a.id.localeCompare(b.id);
-        });
-
-        return {
-            classId: targetClass,
-            className: isNonEmptyString(cls.name)
-                ? cls.name
-                : 'Unnamed Class',
-            disciplineId: targetDiscipline,
-            disciplineName: disciplineName,
-            week: weekNum,
-
-            students: studentVMs,
-            groups: groupVMs,
-
-            studentCount: studentVMs.length,
-            groupCount: groupVMs.length,
-
-            unavailableStudentCount: countUnavailable(studentVMs)
-        };
-    }
-
-    function countUnavailable(studentVMs) {
-        var n = 0;
-        for (var i = 0; i < studentVMs.length; i++) {
-            if (studentVMs[i].occupiedUnavailable === true) {
-                n++;
-            }
-        }
-        return n;
-    }
-
-    // ============================================================
-    // FREE SLOT CANDIDATE STUDENTS (v33)
-    // ============================================================
-
-    function getFreeSlotCandidateStudentsViewModel(
-        classId,
-        disciplineId,
-        week
-    ) {
-        if (!isNonEmptyString(classId)) { return null; }
-        if (!isNonEmptyString(disciplineId)) { return null; }
-
-        var weekNum = resolveWeek(week);
-        if (weekNum === null) { return null; }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) { return null; }
-
-        var discipline = AcademyDisciplines.getDiscipline(disciplineId);
-        if (!discipline) { return null; }
-
-        var targetClass = String(classId);
-        var targetDiscipline = String(disciplineId);
-
-        var ATG = requireAcademyTeachingGroups(
-            'getFreeSlotCandidateStudentsViewModel'
-        );
-
-        var enrolledStudentIds = [];
-        try {
-            enrolledStudentIds = AcademyEnrolments.getEnrolledStudents(
-                targetClass, targetDiscipline, weekNum
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getEnrolledStudents failed:', e
-            );
-            enrolledStudentIds = [];
-        }
-
-        if (!Array.isArray(enrolledStudentIds)) {
-            enrolledStudentIds = [];
-        }
-
-        var assignedSet = Object.create(null);
-
-        var groups = [];
-        try {
-            groups = ATG.getGroupsForDiscipline(
-                targetClass, targetDiscipline
-            ) || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getGroupsForDiscipline failed:', e
-            );
-            groups = [];
-        }
-
-        if (!Array.isArray(groups)) {
-            groups = [];
-        }
-
-        for (var g = 0; g < groups.length; g++) {
-            var group = groups[g];
-            if (!group || !group.id) { continue; }
-
-            var activeMembers = [];
-            try {
-                activeMembers = ATG.getActiveMembers(
-                    group.id, weekNum
-                ) || [];
-            } catch (e) {
-                activeMembers = [];
-            }
-            if (!Array.isArray(activeMembers)) {
-                activeMembers = [];
-            }
-
-            for (var m = 0; m < activeMembers.length; m++) {
-                if (isNonEmptyString(activeMembers[m])) {
-                    assignedSet[String(activeMembers[m])] = true;
-                }
-            }
-        }
-
-        var EQ = getEliminationQueries();
-        if (!EQ ||
-            typeof EQ.isCharacterEliminatedByWeek !== 'function') {
-            console.warn(
-                '[AcademyAggregator] ' +
-                'getFreeSlotCandidateStudentsViewModel requires ' +
-                'EliminationQueries.isCharacterEliminatedByWeek. ' +
-                'Returning an empty candidate list rather than ' +
-                'presenting unverified students.'
-            );
-            return {
-                classId: targetClass,
-                className: isNonEmptyString(cls.name)
-                    ? cls.name
-                    : 'Unnamed Class',
-                disciplineId: targetDiscipline,
-                disciplineName: isNonEmptyString(discipline.name)
-                    ? discipline.name
-                    : 'Unnamed Discipline',
-                week: weekNum,
-                students: [],
-                studentCount: 0
-            };
-        }
-
-        var result = [];
-
-        for (var i = 0; i < enrolledStudentIds.length; i++) {
-            var studentIdRaw = enrolledStudentIds[i];
-            if (!isNonEmptyString(studentIdRaw)) { continue; }
-
-            var studentId = String(studentIdRaw);
-
-            if (assignedSet[studentId] === true) { continue; }
-
-            var char = CharacterQueries.getCharacterById(studentId);
-            if (!char) { continue; }
-
-            if (char.mode === 'instructor') { continue; }
-
-            if (char.deceased === true) { continue; }
-
-            var eliminated = false;
-            try {
-                eliminated = EQ.isCharacterEliminatedByWeek(
-                    studentId, weekNum
-                ) === true;
-            } catch (e) {
-                eliminated = true;
-            }
-            if (eliminated) { continue; }
-
-            result.push({
-                id: studentId,
-                name: CharacterQueries.getDisplayName(char),
-                status: CharacterQueries.getCurrentStatus(char)
-            });
-        }
-
-        result.sort(function(a, b) {
-            var an = String(a.name || '');
-            var bn = String(b.name || '');
-            if (an !== bn) {
-                return an.localeCompare(bn);
-            }
-            return a.id.localeCompare(b.id);
-        });
-
-        return {
-            classId: targetClass,
-            className: isNonEmptyString(cls.name)
-                ? cls.name
-                : 'Unnamed Class',
-            disciplineId: targetDiscipline,
-            disciplineName: isNonEmptyString(discipline.name)
-                ? discipline.name
-                : 'Unnamed Discipline',
-            week: weekNum,
-            students: result,
-            studentCount: result.length
-        };
-    }
-
-    // ============================================================
-    // SHARED GROUPS (v34, revised)
-    // ============================================================
-    //
-    // See the header for the full contract. Summary:
-    //
-    //   Input:   charIds (>=2 distinct), options { classId?, week? }
-    //   Output:  rows, one per (class, discipline, group) that
-    //            contains EVERY selected character, with the weeks
-    //            all of them are present in that group together.
-    //
-    //   ALL-CHARACTERS SEMANTICS (this revision):
-    //     A group is reported only when EVERY selected character
-    //     is present in it. The earlier "any two of the selection"
-    //     semantics are gone.
-    //
-    //     The `weeks` list on a row is the weeks during which ALL
-    //     selected characters are present in the group at once. A
-    //     week where only some of the selection is present is
-    //     excluded.
-    //
-    //   INSTRUCTOR EXCLUSION (this revision):
-    //     A character who is an instructor of a class is excluded
-    //     from that class's shared-groups query — entirely. The
-    //     exclusion is CLASS-SCOPED: a character can be an
-    //     instructor of Class A and a student of Class B, and they
-    //     participate in B's query normally.
-    //
-    //     The exclusion is year-level: it uses
-    //     AcademyClasses.getClassInstructorIdsAllTime. A character
-    //     who taught the class once is excluded from the query for
-    //     that class, regardless of whether they are currently
-    //     teaching it.
-    //
-    //     The per-interval `role === 'instructor'` check remains as
-    //     a guard against interval-level corruption.
-    //
-    //   Failure policy: empty VM for missing/insufficient input;
-    //   throws for missing AcademyTeachingGroups or
-    //   CharacterQueries.
-
-    function getSharedGroupsViewModel(charIds, options) {
-        options = (options && typeof options === 'object')
-            ? options
-            : {};
-
-        var emptyVM = {
-            charIds: [],
-            characters: [],
-            rows: [],
-            totalRows: 0
-        };
-
-        if (!Array.isArray(charIds)) {
-            return emptyVM;
-        }
-
-        // ---- Deduplicate and normalise the selection ----
-        var selectedIds = [];
-        var seenSelected = Object.create(null);
-        for (var i = 0; i < charIds.length; i++) {
-            if (!isNonEmptyString(charIds[i])) { continue; }
-            var id = String(charIds[i]);
-            if (seenSelected[id]) { continue; }
-            seenSelected[id] = true;
-            selectedIds.push(id);
-        }
-
-        // ---- Resolve character names (used by picker and rows) ----
-        var characterVMs = [];
-        var characterNameById = Object.create(null);
-        for (var c = 0; c < selectedIds.length; c++) {
-            var charLookupId = selectedIds[c];
-            var resolvedChar =
-                CharacterQueries.getCharacterById(charLookupId);
-            if (!resolvedChar) { continue; }
-            var resolvedName =
-                CharacterQueries.getDisplayName(resolvedChar);
-            characterNameById[charLookupId] = resolvedName;
-            characterVMs.push({
-                id: charLookupId,
-                name: resolvedName
-            });
-        }
-
-        if (selectedIds.length < 2) {
-            return {
-                charIds: selectedIds,
-                characters: characterVMs,
-                rows: [],
-                totalRows: 0
-            };
-        }
-
-        // ---- Resolve the domain helper (mandatory) ----
-        var ATG = requireAcademyTeachingGroups(
-            'getSharedGroupsViewModel'
-        );
-
-        var classFilter = isNonEmptyString(options.classId)
-            ? String(options.classId)
-            : null;
-
-        var weekFilter = resolveWeek(options.week);
-
-        // ---- Instructor-of-class lookup, cached per class ----
-        //
-        // Year-level. See the INSTRUCTOR EXCLUSION note above.
-        var instructorSetByClass = Object.create(null);
-
-        function getInstructorSet(classId) {
-            if (instructorSetByClass[classId]) {
-                return instructorSetByClass[classId];
-            }
-            var set = Object.create(null);
-            try {
-                var ids = AcademyClasses.getClassInstructorIdsAllTime(
-                    classId
-                ) || [];
-                if (Array.isArray(ids)) {
-                    for (var k = 0; k < ids.length; k++) {
-                        if (ids[k] === undefined || ids[k] === null) {
-                            continue;
-                        }
-                        var key = String(ids[k]);
-                        if (key === '') { continue; }
-                        set[key] = true;
-                    }
-                }
-            } catch (e) {
-                set = Object.create(null);
-            }
-            instructorSetByClass[classId] = set;
-            return set;
-        }
-
-        // ---- Build the (class, discipline, group) index ----
-        //
-        // Shape:
-        //   index[classId][disciplineId][groupId] = {
-        //     charId -> { weeks: Set-like object of week strings }
-        //   }
-
-        var index = Object.create(null);
-
-        for (var pi = 0; pi < selectedIds.length; pi++) {
-            var cid = selectedIds[pi];
-
-            var cChar = CharacterQueries.getCharacterById(cid);
-            if (!cChar) { continue; }
-
-            var classIds = Array.isArray(cChar.classIds)
-                ? cChar.classIds
-                : [];
-
-            for (var cli = 0; cli < classIds.length; cli++) {
-                var classId = String(classIds[cli]);
-                if (classFilter !== null && classId !== classFilter) {
-                    continue;
-                }
-
-                // ---- Instructor exclusion (CLASS-SCOPED) ----
-                var instructorSet = getInstructorSet(classId);
-                if (instructorSet[cid]) {
-                    continue;
-                }
-
-                var disciplineIds = [];
-                try {
-                    disciplineIds =
-                        AcademyEnrolments.getStudentDisciplineIds(
-                            cid, classId, { role: 'student' }
-                        ) || [];
-                } catch (e) {
-                    disciplineIds = [];
-                }
-
-                if (!Array.isArray(disciplineIds)) {
-                    disciplineIds = [];
-                }
-
-                // Cache enrolment intervals per class once.
-                var classIntervals = [];
-                try {
-                    classIntervals =
-                        AcademyEnrolments.getStudentDisciplines(
-                            cid, classId
-                        ) || [];
-                } catch (e) {
-                    classIntervals = [];
-                }
-                if (!Array.isArray(classIntervals)) {
-                    classIntervals = [];
-                }
-
-                for (var di = 0; di < disciplineIds.length; di++) {
-                    var disciplineId = String(disciplineIds[di]);
-
-                    // Filter intervals to this discipline and to
-                    // student-role only (belt-and-braces).
-                    var disciplineIntervals = [];
-                    for (var ci = 0; ci < classIntervals.length; ci++) {
-                        var iv = classIntervals[ci];
-                        if (!iv) { continue; }
-                        if (String(iv.disciplineId) !== disciplineId) {
-                            continue;
-                        }
-                        if (iv.role === 'instructor') { continue; }
-                        disciplineIntervals.push(iv);
-                    }
-
-                    if (disciplineIntervals.length === 0) { continue; }
-
-                    // Which weeks to inspect?
-                    var weeksToCheck;
-                    if (weekFilter !== null) {
-                        var covered = false;
-                        for (var cw = 0;
-                             cw < disciplineIntervals.length;
-                             cw++) {
-                            if (RangeUtils.containsWeek(
-                                weekFilter,
-                                disciplineIntervals[cw].startWeek,
-                                disciplineIntervals[cw].endWeek
-                            )) {
-                                covered = true;
-                                break;
-                            }
-                        }
-                        if (!covered) { continue; }
-                        weeksToCheck = [weekFilter];
-                    } else {
-                        weeksToCheck = enumerateWeeksOfIntervals(
-                            disciplineIntervals
-                        );
-                    }
-
-                    for (var wi = 0; wi < weeksToCheck.length; wi++) {
-                        var weekNum = weeksToCheck[wi];
-
-                        var group = null;
-                        try {
-                            group = ATG.getGroupForStudentInClassDiscipline(
-                                classId, disciplineId, cid, weekNum
-                            );
-                        } catch (e) {
-                            group = null;
-                        }
-                        if (!group || !group.id) { continue; }
-
-                        var groupId = String(group.id);
-
-                        if (!index[classId]) {
-                            index[classId] = Object.create(null);
-                        }
-                        if (!index[classId][disciplineId]) {
-                            index[classId][disciplineId] =
-                                Object.create(null);
-                        }
-                        if (!index[classId][disciplineId][groupId]) {
-                            index[classId][disciplineId][groupId] =
-                                Object.create(null);
-                        }
-                        var groupBucket =
-                            index[classId][disciplineId][groupId];
-
-                        if (!groupBucket[cid]) {
-                            groupBucket[cid] = Object.create(null);
-                        }
-
-                        groupBucket[cid][String(weekNum)] = true;
-                    }
-                }
-            }
-        }
-
-        // ---- Walk the index and build rows ----
-        //
-        // A row is emitted only for group buckets that contain EVERY
-        // selected character. The weeks list on the row is the
-        // weeks during which ALL selected characters are present at
-        // once.
-
-        var rows = [];
-
-        var classIdKeys = Object.keys(index);
-
-        for (var ki = 0; ki < classIdKeys.length; ki++) {
-            var rowClassId = classIdKeys[ki];
-            var classRecord = null;
-            try {
-                classRecord = AcademyClasses.getClass(rowClassId);
-            } catch (e) {
-                classRecord = null;
-            }
-            var className = classRecord && isNonEmptyString(classRecord.name)
-                ? classRecord.name
-                : 'Unnamed Class';
-
-            var disciplineMap = index[rowClassId];
-            var disciplineKeys = Object.keys(disciplineMap);
-
-            for (var dki = 0; dki < disciplineKeys.length; dki++) {
-                var rowDisciplineId = disciplineKeys[dki];
-                var disciplineRecord = null;
-                try {
-                    disciplineRecord = AcademyDisciplines.getDiscipline(
-                        rowDisciplineId
-                    );
-                } catch (e) {
-                    disciplineRecord = null;
-                }
-                var disciplineName =
-                    disciplineRecord &&
-                    isNonEmptyString(disciplineRecord.name)
-                        ? disciplineRecord.name
-                        : 'Unnamed Discipline';
-
-                var groupMap = disciplineMap[rowDisciplineId];
-                var groupKeys = Object.keys(groupMap);
-
-                for (var gki = 0; gki < groupKeys.length; gki++) {
-                    var rowGroupId = groupKeys[gki];
-                    var charBucket = groupMap[rowGroupId];
-
-                    var presentCharIds = Object.keys(charBucket);
-
-                    // ---- ALL-character check ----
-                    if (presentCharIds.length < selectedIds.length) {
-                        continue;
-                    }
-
-                    // ---- Week intersection: all present together ----
-                    var weekPresence = Object.create(null);
-                    for (var sci = 0;
-                         sci < presentCharIds.length;
-                         sci++) {
-                        var perCharWeeks = charBucket[presentCharIds[sci]];
-                        var weekKeys = Object.keys(perCharWeeks);
-                        for (var wki = 0; wki < weekKeys.length; wki++) {
-                            var wk = weekKeys[wki];
-                            if (!weekPresence[wk]) {
-                                weekPresence[wk] = 0;
-                            }
-                            weekPresence[wk] += 1;
-                        }
-                    }
-
-                    var sharedWeeks = [];
-                    var allWeekKeys = Object.keys(weekPresence);
-                    for (var wki2 = 0;
-                         wki2 < allWeekKeys.length;
-                         wki2++) {
-                        var wk2 = allWeekKeys[wki2];
-                        if (weekPresence[wk2] >= selectedIds.length) {
-                            sharedWeeks.push(parseInt(wk2, 10));
-                        }
-                    }
-
-                    if (sharedWeeks.length === 0) { continue; }
-
-                    sharedWeeks.sort(function(a, b) { return a - b; });
-
-                    // Resolve group display info.
-                    var groupRecord = null;
-                    try {
-                        if (typeof ATG.getGroup === 'function') {
-                            groupRecord = ATG.getGroup(rowGroupId);
-                        }
-                    } catch (e) {
-                        groupRecord = null;
-                    }
-
-                    var groupNumber = groupRecord &&
-                        isFiniteNumber(groupRecord.groupNumber)
-                        ? groupRecord.groupNumber
-                        : 0;
-                    var customName = groupRecord &&
-                        isNonEmptyString(groupRecord.customName)
-                        ? String(groupRecord.customName).trim()
-                        : null;
-
-                    var groupName;
-                    if (customName !== null) {
-                        groupName = customName;
-                    } else if (groupNumber > 0) {
-                        groupName = disciplineName + ' ' + groupNumber;
-                    } else {
-                        groupName = disciplineName;
-                    }
-
-                    var rowInstructorId = groupRecord &&
-                        isNonEmptyString(groupRecord.instructorId)
-                        ? String(groupRecord.instructorId)
-                        : null;
-                    var rowInstructorName = rowInstructorId
-                        ? getCharacterDisplayName(rowInstructorId)
-                        : '';
-
-                    var rowMemberCount = 0;
-                    try {
-                        var activeMembers = ATG.getActiveMembers(
-                            rowGroupId,
-                            sharedWeeks[sharedWeeks.length - 1]
-                        );
-                        if (Array.isArray(activeMembers)) {
-                            rowMemberCount = activeMembers.length;
-                        }
-                    } catch (e) {
-                        rowMemberCount = 0;
-                    }
-
-                    var sharedCharIds = [];
-                    var sharedCharNames = [];
-                    for (var sni = 0;
-                         sni < selectedIds.length;
-                         sni++) {
-                        var scid = selectedIds[sni];
-                        if (presentCharIds.indexOf(scid) === -1) {
-                            continue;
-                        }
-                        var sname = characterNameById[scid];
-                        if (!isNonEmptyString(sname)) {
-                            sname = getCharacterDisplayName(scid);
-                        }
-                        sharedCharIds.push(scid);
-                        sharedCharNames.push(sname);
-                    }
-
-                    var paired = [];
-                    for (var ppi = 0;
-                         ppi < sharedCharIds.length;
-                         ppi++) {
-                        paired.push({
-                            id: sharedCharIds[ppi],
-                            name: sharedCharNames[ppi]
-                        });
-                    }
-                    paired.sort(function(a, b) {
-                        if (a.name !== b.name) {
-                            return a.name.localeCompare(b.name);
-                        }
-                        return a.id.localeCompare(b.id);
-                    });
-                    sharedCharIds = paired.map(function(p) {
-                        return p.id;
-                    });
-                    sharedCharNames = paired.map(function(p) {
-                        return p.name;
-                    });
-
-                    rows.push({
-                        classId: rowClassId,
-                        className: className,
-                        disciplineId: rowDisciplineId,
-                        disciplineName: disciplineName,
-                        groupId: rowGroupId,
-                        groupName: groupName,
-                        instructorId: rowInstructorId,
-                        instructorName: rowInstructorName,
-                        memberCount: rowMemberCount,
-                        sharedCharIds: sharedCharIds,
-                        sharedCharNames: sharedCharNames,
-                        weeks: sharedWeeks,
-                        weekRanges: collapseWeeksToRanges(sharedWeeks)
-                    });
-                }
-            }
-        }
-
-        rows.sort(function(a, b) {
-            if (a.className !== b.className) {
-                return a.className.localeCompare(b.className);
-            }
-            if (a.disciplineName !== b.disciplineName) {
-                return a.disciplineName.localeCompare(b.disciplineName);
-            }
-            return a.groupName.localeCompare(b.groupName);
-        });
-
-        return {
-            charIds: selectedIds,
-            characters: characterVMs,
-            rows: rows,
-            totalRows: rows.length
-        };
-    }
-
-    // ============================================================
-    // ELIMINATION PROJECTION
-    // ============================================================
-
-    function readEliminationState(charId, week) {
-        var result = {
-            eliminated: false,
-            eliminationWeek: null,
-            eliminationReason: ''
-        };
-
-        if (week === null) {
-            return result;
-        }
-
-        var EQ = getEliminationQueries();
-        if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
-            return result;
-        }
-
-        result.eliminated = EQ.isCharacterEliminatedByWeek(charId, week) === true;
-
-        if (result.eliminated) {
-            if (typeof EQ.getEliminationWeek === 'function') {
-                result.eliminationWeek = EQ.getEliminationWeek(charId);
-            }
-            if (typeof EQ.getEliminationReason === 'function') {
-                var reason = EQ.getEliminationReason(charId);
-                if (typeof reason === 'string' && reason !== 'Unknown') {
-                    result.eliminationReason = reason;
-                }
-            }
-        }
-
-        return result;
-    }
-
-    // ============================================================
-    // ROSTER DERIVATION
-    // ============================================================
-
-    function deriveClassRoster(classId, week) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) {
-            return [];
-        }
-
-        var weekNum = resolveWeek(week);
-
-        var instructorSet = getClassInstructorSetForClass(classId);
-
-        var all = CharacterQueries.getCharacters() || [];
-        var target = String(classId);
-        var result = [];
-
-        for (var i = 0; i < all.length; i++) {
-            var c = all[i];
-            if (!c || !c.id) { continue; }
-
-            if (instructorSet[String(c.id)]) {
-                continue;
-            }
-
-            var classIds = Array.isArray(c.classIds) ? c.classIds : [];
-            var found = false;
-            for (var j = 0; j < classIds.length; j++) {
-                if (String(classIds[j]) === target) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) { continue; }
-
-            var elim = readEliminationState(c.id, weekNum);
-
-            result.push({
-                id: c.id,
-                name: CharacterQueries.getDisplayName(c),
-                status: CharacterQueries.getCurrentStatus(c),
-                age: CharacterQueries.getCharacterAge(c),
-                deceased: c.deceased === true,
-                eliminated: elim.eliminated,
-                eliminationWeek: elim.eliminationWeek,
-                eliminationReason: elim.eliminationReason,
-                role: 'student'
-            });
-        }
-
-        result.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // CLASS LIST
-    // ============================================================
-
-    function getClassListViewModel() {
-        var classes = AcademyClasses.getClasses() || [];
-        classes = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        return classes.map(function(c) {
-            return {
-                id: c.id,
-                name: c.name || 'Unnamed Class',
-                status: c.status || 'active',
-                year: c.year || null
-            };
-        });
-    }
-
-    // ============================================================
-    // CLASS STUDENTS
-    // ============================================================
-
-    function getClassStudentsViewModel(classId, week) {
-        return deriveClassRoster(classId, week);
-    }
-
-    // ============================================================
-    // CLASS VIEW MODEL
-    // ============================================================
-
-    function getClassViewModel(classId, week) {
-        if (!classId) { return null; }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) { return null; }
-
-        var roster = deriveClassRoster(classId, week);
-        var studentCount = roster.length;
-
-        return {
-            id: cls.id,
-            name: cls.name || 'Unnamed Class',
-            status: cls.status || 'active',
-            year: cls.year || null,
-            description: cls.description || '',
-            studentCount: studentCount,
-            createdAt: cls.createdAt || ''
-        };
-    }
-
-    // ============================================================
-    // PEOPLE VIEW MODEL
-    // ============================================================
-
-    function getPeopleViewModel(classId, options) {
-        options = options || {};
-
-        var filters = options.filters && typeof options.filters === 'object'
-            ? options.filters
-            : { search: '', role: 'all', status: 'active' };
-
-        var selectedCharacterId = isNonEmptyString(options.selectedCharacterId)
-            ? String(options.selectedCharacterId)
-            : null;
-
-        var weekNum = resolveWeek(options.week);
-
-        var classList = getClassListViewModel();
-
-        var selectedClass = null;
-        if (isNonEmptyString(classId)) {
-            for (var i = 0; i < classList.length; i++) {
-                if (String(classList[i].id) === String(classId)) {
-                    selectedClass = classList[i];
-                    break;
-                }
-            }
-        }
-
-        if (!selectedClass) {
-            return {
-                classList: classList,
-                classId: null,
-                className: null,
-                week: weekNum,
-                filters: filters,
-                people: [],
-                totalCount: 0,
-                filteredCount: 0
-            };
-        }
-
-        var students = getClassStudentsViewModel(
-            selectedClass.id,
-            weekNum
-        );
-
-        var instructorSet = getClassInstructorSetForClass(
-            selectedClass.id
-        );
-
-        var alreadyPresent = buildIdSet(
-            students.map(function(s) { return s.id; })
-        );
-
-        var instructorIds = Object.keys(instructorSet);
-        for (var ii = 0; ii < instructorIds.length; ii++) {
-            var instrId = String(instructorIds[ii]);
-            if (alreadyPresent[instrId]) { continue; }
-
-            var instructorChar = CharacterQueries.getCharacterById(instrId);
-            if (!instructorChar) { continue; }
-
-            var instrElim = readEliminationState(instrId, weekNum);
-            students = students.concat([{
-                id: instructorChar.id,
-                name: CharacterQueries.getDisplayName(instructorChar),
-                status: CharacterQueries.getCurrentStatus(instructorChar),
-                age: CharacterQueries.getCharacterAge(instructorChar),
-                deceased: instructorChar.deceased === true,
-                eliminated: instrElim.eliminated,
-                eliminationWeek: instrElim.eliminationWeek,
-                eliminationReason: instrElim.eliminationReason,
-                role: 'instructor'
-            }]);
-        }
-
-        var search = (filters.search || '').toLowerCase().trim();
-        var roleFilter = filters.role || 'all';
-        var statusFilter = filters.status || 'active';
-
-        var filtered = students.filter(function(person) {
-            if (search && person.name.toLowerCase().indexOf(search) === -1) {
-                return false;
-            }
-            if (roleFilter !== 'all' && person.role !== roleFilter) {
-                return false;
-            }
-            if (statusFilter !== 'all') {
-                var isDeceased = person.deceased === true;
-                var isEliminated = person.eliminated === true;
-
-                if (statusFilter === 'deceased' && !isDeceased) {
-                    return false;
-                }
-                if (statusFilter === 'eliminated' && !isEliminated) {
-                    return false;
-                }
-                if (statusFilter === 'active' &&
-                    (isDeceased || isEliminated)) {
-                    return false;
-                }
-            }
-            return true;
-        });
-
-        filtered.sort(function(a, b) {
-            if (a.role !== b.role) {
-                return a.role === 'student' ? -1 : 1;
-            }
-            return a.name.localeCompare(b.name);
-        });
-
-        var people = filtered.map(function(person) {
-            return {
-                id: person.id,
-                name: person.name,
-                status: person.status,
-                role: person.role,
-                deceased: person.deceased === true,
-                eliminated: person.eliminated === true,
-                eliminationWeek: person.eliminationWeek,
-                eliminationReason: person.eliminationReason,
-                isSelected: selectedCharacterId !== null &&
-                    String(person.id) === selectedCharacterId
-            };
-        });
-
-        return {
-            classList: classList,
-            classId: selectedClass.id,
-            className: selectedClass.name,
-            week: weekNum,
-            filters: filters,
-            people: people,
-            totalCount: students.length,
-            filteredCount: people.length
-        };
-    }
-
-    // ============================================================
-    // CHARACTER PROJECTIONS
-    // ============================================================
-
-    function getStudentViewModel(studentId, options) {
-        if (!studentId) { return null; }
-
-        options = options || {};
-        var week = options.week !== undefined ? options.week : null;
-
-        var student = CharacterQueries.getCharacterById(studentId);
-        if (!student) { return null; }
-
-        var classes = AcademyClasses.getCharacterClasses(student) || [];
-
-        return {
-            id: student.id,
-            name: CharacterQueries.getDisplayName(student),
-            fullName: typeof CharacterQueries.getFullName === 'function'
-                ? CharacterQueries.getFullName(student)
-                : CharacterQueries.getDisplayName(student),
-            status: CharacterQueries.getCurrentStatus(student),
-            age: CharacterQueries.getCharacterAge(student),
-            deceased: student.deceased === true,
-            birthYear: student.birthYear || '',
-            gender: student.gender || '',
-            week: week,
-            classes: classes.map(function(cls) {
-                return {
-                    id: cls.id,
-                    name: cls.name || 'Unnamed Class',
-                    status: cls.status || 'active'
-                };
-            }),
-            classCount: classes.length
-        };
-    }
-
-    function getInstructorViewModel(instructorId, options) {
-        if (!instructorId) { return null; }
-
-        options = options || {};
-        var week = options.week !== undefined ? options.week : null;
-
-        var instructor = CharacterQueries.getCharacterById(instructorId);
-        if (!instructor) { return null; }
-
-        return {
-            id: instructor.id,
-            name: CharacterQueries.getDisplayName(instructor),
-            status: CharacterQueries.getCurrentStatus(instructor),
-            age: CharacterQueries.getCharacterAge(instructor),
-            deceased: instructor.deceased === true,
-            week: week
-        };
-    }
-
-    // ============================================================
-    // DISCIPLINE LIST
-    // ============================================================
-
-    function getDisciplineListViewModel(filters) {
-        filters = filters || {};
-
-        var disciplines = AcademyDisciplines.getDisciplines() || [];
-        var type = filters.type || 'all';
-        var search = (filters.search || '').toLowerCase().trim();
-
-        var filtered = disciplines.filter(function(d) {
-            if (!d || !d.id) { return false; }
-            if (type !== 'all' && d.type !== type) { return false; }
-            if (search && (d.name || '').toLowerCase().indexOf(search) === -1) {
-                return false;
-            }
-            return true;
-        });
-
-        var listVM = filtered.map(function(d) {
-            return {
-                id: d.id,
-                name: d.name,
-                type: d.type,
-                typeLabel: getDisciplineTypeLabel(d.type),
-                startWeek: d.startWeek,
-                endWeek: d.endWeek,
-                weeklyHours: d.weeklyHours,
-                weight: d.weight
-            };
-        });
-
-        return {
-            disciplines: listVM,
-            filters: filters,
-            total: listVM.length
-        };
-    }
-
-    function getDisciplineTypeLabel(type) {
-        if (type === 'mandatory') { return 'Mandatory'; }
-        if (type === 'optional') { return 'Optional'; }
-        return 'Unknown';
-    }
-
-    // ============================================================
-    // DISCIPLINE EDITOR VIEW MODEL
-    // ============================================================
-
-    function getDisciplineEditorViewModel(options) {
-        options = options || {};
-
-        var draft = options.draft;
-        if (!draft) {
-            return null;
-        }
-
-        var isNew = options.isNew === true;
-        var errors = options.errors && typeof options.errors === 'object'
-            ? options.errors
-            : {};
-
-        var GradeSchemes = getGradeSchemes();
-        var schemePreview = '';
-        var schemePresetId = 'numeric';
-        var schemePresets = [
-            { id: 'letter',    label: 'Letter Grade' },
-            { id: 'pass_fail', label: 'Pass / Fail' },
-            { id: 'numeric',   label: 'Numeric' },
-            { id: 'custom',    label: 'Custom' }
-        ];
-
-        if (GradeSchemes) {
-            if (typeof GradeSchemes.getRangeLabel === 'function') {
-                schemePreview = GradeSchemes.getRangeLabel(draft.gradeScheme) || '';
-            }
-            if (typeof GradeSchemes.getPresets === 'function') {
-                var presets = GradeSchemes.getPresets() || [];
-                schemePresets = presets.map(function(p) {
-                    return { id: p.id, label: p.label };
-                });
-            }
-        }
-
-        if (draft.gradeScheme && typeof draft.gradeScheme.id === 'string') {
-            schemePresetId = draft.gradeScheme.id;
-        }
-
-        var assessmentTypes = [];
-        var defaultAssessmentWeights = {};
-        if (typeof AcademyDisciplines.getValidAssessmentTypes === 'function') {
-            assessmentTypes = AcademyDisciplines.getValidAssessmentTypes() || [];
-        }
-        if (typeof AcademyDisciplines.getDefaultAssessmentWeights === 'function') {
-            defaultAssessmentWeights = AcademyDisciplines.getDefaultAssessmentWeights() || {};
-        }
-
-        var assessmentWeights = draft.assessmentWeights &&
-            typeof draft.assessmentWeights === 'object'
-            ? draft.assessmentWeights
-            : defaultAssessmentWeights;
-
-        return {
-            id: isNew ? null : draft.id,
-            name: draft.name || '',
-            type: draft.type || 'mandatory',
-            startWeek: typeof draft.startWeek === 'number' ? draft.startWeek : 1,
-            endWeek: typeof draft.endWeek === 'number' ? draft.endWeek : 52,
-            weeklyHours: typeof draft.weeklyHours === 'number' ? draft.weeklyHours : 1,
-            weight: typeof draft.weight === 'number' ? draft.weight : 1,
-            gradeScheme: draft.gradeScheme || null,
-            schemePresetId: schemePresetId,
-            schemePreview: schemePreview,
-            schemePresets: schemePresets,
-            assessmentTypes: assessmentTypes,
-            assessmentWeights: assessmentWeights,
-            defaultAssessmentWeights: defaultAssessmentWeights,
-            fieldErrors: errors,
-            isNew: isNew
-        };
-    }
-
-    // ============================================================
-    // CLASS-DISCIPLINE PICKER VIEW MODEL (v27)
-    // ============================================================
-
-    function getClassDisciplinesPickerViewModel(classId, options) {
-        options = options || {};
-
-        if (!isNonEmptyString(classId)) {
-            return null;
-        }
-
-        var cls = AcademyClasses.getClass(classId);
-        if (!cls) {
-            return null;
-        }
-
-        var weekNum = resolveWeek(options.week);
-
-        var allDisciplines = AcademyDisciplines.getDisciplines() || [];
-
-        allDisciplines = allDisciplines.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        var rows = [];
-
-        for (var i = 0; i < allDisciplines.length; i++) {
-            var d = allDisciplines[i];
-            if (!d || !d.id) { continue; }
-
-            var offered = AcademyClassDisciplinesQueries.hasClassDiscipline(
-                classId, d.id
-            );
-
-            var activeInWeek = false;
-            if (weekNum !== null) {
-                activeInWeek =
-                    AcademyClassDisciplinesQueries.isActiveInWeek(
-                        classId, d.id, weekNum
-                    );
-            }
-
-            var mandatory = false;
-            if (offered) {
-                var marker =
-                    AcademyClassDisciplinesQueries.getClassDiscipline(
-                        classId, d.id
-                    );
-                mandatory = marker && marker.mandatory === true;
-            }
-
-            rows.push({
-                id: d.id,
-                name: d.name || 'Unnamed Discipline',
-                type: d.type || 'mandatory',
-                typeLabel: getDisciplineTypeLabel(d.type),
-                startWeek: isFiniteNumber(d.startWeek) ? d.startWeek : null,
-                endWeek: (d.endWeek === null || d.endWeek === undefined)
-                    ? null
-                    : (isFiniteNumber(d.endWeek) ? d.endWeek : null),
-                activeInWeek: activeInWeek,
-                offered: offered,
-                mandatory: mandatory
-            });
-        }
-
-        return {
-            classId: cls.id,
-            className: cls.name || 'Unnamed Class',
-            disciplines: rows
-        };
-    }
-
-    // ============================================================
-    // RANKING VIEW MODEL
-    // ============================================================
-
-    function getRankingViewModel(classId, week) {
-        var classList = getClassListViewModel();
-
-        var selectedClass = null;
-        if (classId) {
-            for (var i = 0; i < classList.length; i++) {
-                if (String(classList[i].id) === String(classId)) {
-                    selectedClass = classList[i];
-                    break;
-                }
-            }
-        }
-
-        if (!selectedClass) {
-            return {
-                classes: classList,
-                classId: null,
-                className: null,
-                week: week,
-                entries: [],
-                total: 0
-            };
-        }
-
-        var entries = buildRankingEntries(selectedClass.id, week);
-
-        return {
-            classes: classList,
-            classId: selectedClass.id,
-            className: selectedClass.name,
-            week: week,
-            entries: entries,
-            total: entries.length
-        };
-    }
-
-    function buildRankingEntries(classId, week) {
-        var Ranking = getAcademyRanking();
-        if (!Ranking || typeof Ranking.getClassRankings !== 'function') {
-            return [];
-        }
-
-        var ranked;
-        try {
-            ranked = Ranking.getClassRankings(classId, week) || [];
-        } catch (e) {
-            return [];
-        }
-
-        var weekNum = resolveWeek(week);
-        var instructorIds = getClassInstructorIds(classId, weekNum);
-        var instructorSet = buildIdSet(instructorIds);
-
-        var entries = ranked.map(function(r) {
-            var studentId = r.studentId || r.characterId;
-            var name = r.studentName || getCharacterDisplayName(studentId);
-
-            var average = null;
-            if (isFiniteNumber(r.average)) {
-                average = r.average;
-            } else if (isFiniteNumber(r.academicAverage)) {
-                average = r.academicAverage;
-            } else if (isFiniteNumber(r.overallScore)) {
-                average = r.overallScore;
-            }
-
-            var rank = isFiniteNumber(r.rank) ? r.rank : null;
-            var gradeCount = isFiniteNumber(r.gradeCount) ? r.gradeCount : null;
-
-            return {
-                characterId: studentId,
-                characterName: name,
-                rank: rank,
-                rankDisplay: rank !== null ? '#' + rank : '\u2014',
-                average: average,
-                averageDisplay: average !== null ? String(average) : '\u2014',
-                gradeCount: gradeCount,
-                gradeCountDisplay: gradeCount !== null ? String(gradeCount) : '\u2014',
-                isInstructor: instructorSet[String(studentId)] === true
-            };
-        });
-
-        entries.sort(function(a, b) {
-            var ar = a.rank !== null ? a.rank : 999999;
-            var br = b.rank !== null ? b.rank : 999999;
-            return ar - br;
-        });
-
-        return entries;
-    }
-
-    // ============================================================
-    // LOCATION VIEW MODEL
-    // ============================================================
-
-    function getLocationViewModel(filters, week, selectedLocationId) {
-        filters = filters || {};
-
-        var allLocations = AcademyLocations.getLocations() || [];
-
-        var type = filters.type || 'all';
-        var search = (filters.search || '').toLowerCase().trim();
-
-        var filtered = allLocations.filter(function(l) {
-            if (!l || !l.id) { return false; }
-            if (type !== 'all' && l.type !== type) { return false; }
-            if (search && (l.name || '').toLowerCase().indexOf(search) === -1) {
-                return false;
-            }
-            return true;
-        });
-
-        var selected = null;
-        if (selectedLocationId) {
-            for (var i = 0; i < filtered.length; i++) {
-                if (String(filtered[i].id) === String(selectedLocationId)) {
-                    selected = buildLocationDetailVM(filtered[i], week);
-                    break;
-                }
-            }
-        }
-
-        var listVM = filtered.map(function(l) {
-            return buildLocationListRowVM(l, week);
-        });
-
-        return {
-            locations: listVM,
-            selected: selected,
-            filters: filters,
-            week: week,
-            total: listVM.length
-        };
-    }
-
-    function buildLocationListRowVM(location, week) {
-        var schedule = getLocationScheduleForWeek(location.id, week);
-        return {
-            id: location.id,
-            name: location.name,
-            type: location.type,
-            typeLabel: getLocationTypeLabel(location.type),
-            capacity: location.capacity !== undefined ? location.capacity : null,
-            scheduleCount: schedule.length
-        };
-    }
-
-    function buildLocationDetailVM(location, week) {
-        var schedule = getLocationScheduleForWeek(location.id, week);
-        return {
-            id: location.id,
-            name: location.name,
-            type: location.type,
-            typeLabel: getLocationTypeLabel(location.type),
-            capacity: location.capacity !== undefined ? location.capacity : null,
-            schedule: schedule
-        };
-    }
-
-    function getLocationTypeLabel(type) {
-        if (!isNonEmptyString(type)) { return 'Other'; }
-        return type.charAt(0).toUpperCase() + type.slice(1);
-    }
-
-    function getLocationScheduleForWeek(locationId, week) {
-        if (!locationId || week === undefined || week === null) {
-            return [];
-        }
-
-        var ACA = getAcademyCalendarAggregator();
-        if (!ACA || typeof ACA.getLocationScheduleViewModel !== 'function') {
-            return [];
-        }
-
-        var vm;
-        try {
-            vm = ACA.getLocationScheduleViewModel(locationId, week);
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getLocationScheduleViewModel failed:',
-                e
-            );
-            return [];
-        }
-
-        if (!vm || !vm.schedule) {
-            return [];
-        }
-
-        return flattenScheduleMap(vm.schedule);
-    }
-
-    function flattenScheduleMap(scheduleMap) {
-        var result = [];
-        if (!scheduleMap || typeof scheduleMap !== 'object') {
-            return result;
-        }
-
-        var dayKeys = Object.keys(scheduleMap);
-        for (var i = 0; i < dayKeys.length; i++) {
-            var dayKey = dayKeys[i];
-            var dayNum = parseInt(dayKey, 10);
-            if (isNaN(dayNum)) { continue; }
-
-            var daySchedule = scheduleMap[dayKey];
-            if (!daySchedule || typeof daySchedule !== 'object') { continue; }
-
-            var hourKeys = Object.keys(daySchedule);
-            for (var j = 0; j < hourKeys.length; j++) {
-                var hourKey = hourKeys[j];
-                var hourNum = parseInt(hourKey, 10);
-                if (isNaN(hourNum)) { continue; }
-
-                var slot = daySchedule[hourKey];
-                if (!slot) { continue; }
-
-                result.push({
-                    day: dayNum,
-                    hour: hourNum,
-                    disciplineId: slot.disciplineId || null,
-                    disciplineName: slot.disciplineName || 'Unknown',
-                    duration: isFiniteNumber(slot.duration) ? slot.duration : 1,
-                    label: isNonEmptyString(slot.label) ? slot.label : ''
-                });
-            }
-        }
-
-        result.sort(function(a, b) {
-            if (a.day !== b.day) { return a.day - b.day; }
-            return a.hour - b.hour;
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // WEEKLY TEAMS VIEW MODEL
-    // ============================================================
-
-    function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
-        var classList = getClassListViewModel();
-
-        var selectedClass = null;
-        if (classId) {
-            for (var i = 0; i < classList.length; i++) {
-                if (String(classList[i].id) === String(classId)) {
-                    selectedClass = classList[i];
-                    break;
-                }
-            }
-        }
-
-        var orphanTeams = getUnassignedTeamsViewModel().orphanTeams;
-
-        var orphanClasses = classList.map(function(c) {
-            return { id: c.id, name: c.name };
-        });
-
-        if (!selectedClass) {
-            return {
-                classes: classList,
-                classId: null,
-                className: null,
-                week: week,
-                teams: [],
-                selectedTeamId: null,
-                selectedTeam: null,
-                orphanTeams: orphanTeams,
-                orphanClasses: orphanClasses
-            };
-        }
-
-        var AWT = getAcademyWeeklyTeams();
-        var scheduledTeamIds = Object.create(null);
-        if (AWT && typeof AWT.getWeeklyTeams === 'function') {
-            var assignments;
-            try {
-                assignments = AWT.getWeeklyTeams(selectedClass.id, week) || {};
-            } catch (e) {
-                assignments = {};
-            }
-            var scheduledKeys = Object.keys(assignments);
-            for (var k = 0; k < scheduledKeys.length; k++) {
-                scheduledTeamIds[String(scheduledKeys[k])] = true;
-            }
-        }
-
-        var teams = buildWeeklyTeamsList(
-            selectedClass.id,
-            week,
-            scheduledTeamIds
-        );
-
-        var selectedTeamVM = null;
-        var resolvedSelectedTeamId = null;
-        if (selectedTeamId) {
-            for (var j = 0; j < teams.length; j++) {
-                if (String(teams[j].id) === String(selectedTeamId)) {
-                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week);
-                    resolvedSelectedTeamId = teams[j].id;
-                    break;
-                }
-            }
-        }
-
-        var teamsVM = teams.map(function(t) {
-            return {
-                id: t.id,
-                name: t.name,
-                type: t.type,
-                typeLabel: t.typeLabel,
-                status: t.status,
-                statusLabel: t.statusLabel,
-                periodLabel: t.periodLabel,
-                periodDisplay: t.periodDisplay,
-                memberCount: t.memberCount
-            };
-        });
-
-        return {
-            classes: classList,
-            classId: selectedClass.id,
-            className: selectedClass.name,
-            week: week,
-            teams: teamsVM,
-            selectedTeamId: resolvedSelectedTeamId,
-            selectedTeam: selectedTeamVM,
-            orphanTeams: orphanTeams,
-            orphanClasses: orphanClasses
-        };
-    }
-
-    function buildWeeklyTeamsList(classId, week, scheduledTeamIds) {
-        if (!TeamQueries || typeof TeamQueries.getTeamsByClass !== 'function') {
-            return [];
-        }
-
-        var raw = TeamQueries.getTeamsByClass(classId) || [];
-        if (!Array.isArray(raw)) {
-            return [];
-        }
-
-        var items = [];
-
-        for (var i = 0; i < raw.length; i++) {
-            var team = raw[i];
-            if (!team || !team.id) { continue; }
-            if (team.type !== 'academic') { continue; }
-
-            if (typeof TeamQueries.isTeamActiveAtPeriod === 'function') {
-                if (!TeamQueries.isTeamActiveAtPeriod(team, week)) {
-                    continue;
-                }
-            }
-
-            if (scheduledTeamIds &&
-                scheduledTeamIds[String(team.id)] !== true) {
-                continue;
-            }
-
-            var activeMembers = TeamQueries.getActiveTeamMembers(
-                team,
-                week
-            ) || [];
-
-            items.push({
-                id: team.id,
-                name: team.name || 'Unnamed Team',
-                type: team.type,
-                typeLabel: TeamConstants.getTypeLabel(team.type),
-                status: team.status || 'active',
-                statusLabel: getTeamStatusLabel(team.status),
-                periodLabel: TeamConstants.getPeriodLabel(team.type),
-                periodDisplay: getTeamPeriodDisplay(team),
-                memberCount: activeMembers.length,
-                _team: team
-            });
-        }
-
-        items.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        return items;
-    }
-
-    function getTeamStatusLabel(status) {
-        if (!isNonEmptyString(status)) { return 'Active'; }
-        return status.charAt(0).toUpperCase() + status.slice(1);
-    }
-
-    function buildWeeklyTeamDetail(team, week) {
-        if (!team) { return null; }
-
-        var activeMembers = TeamQueries.getActiveTeamMembers(
-            team,
-            week
-        ) || [];
-
-        var members = buildTeamMembersVM(activeMembers, team.type);
-
-        return {
-            id: team.id,
-            name: team.name || 'Unnamed Team',
-            type: team.type,
-            typeLabel: TeamConstants.getTypeLabel(team.type),
-            status: team.status || 'active',
-            statusLabel: getTeamStatusLabel(team.status),
-            periodLabel: TeamConstants.getPeriodLabel(team.type),
-            periodDisplay: getTeamPeriodDisplay(team),
-            temporaryMission: team.temporaryMission || null,
-            memberCount: members.length,
-            members: members
-        };
-    }
-
-    // ============================================================
-    // MEMBER PERIOD DISPLAY
-    // ============================================================
-
-    function formatMemberPeriodDisplay(joinPeriod, leavePeriod, teamType) {
-        var isAcademic = String(teamType) === 'academic';
-        var prefix = isAcademic ? 'Wk ' : '';
-
-        var hasJoin = joinPeriod !== undefined &&
-                      joinPeriod !== null &&
-                      joinPeriod !== '';
-        var hasLeave = leavePeriod !== undefined &&
-                       leavePeriod !== null &&
-                       leavePeriod !== '';
-
-        var joinStr = hasJoin ? String(joinPeriod) : '';
-        var leaveStr = hasLeave ? String(leavePeriod) : '';
-
-        if (joinStr && leaveStr) {
-            return prefix + joinStr + ' \u2013 ' + prefix + leaveStr;
-        }
-        if (joinStr) {
-            return prefix + joinStr + ' \u2013';
-        }
-        if (leaveStr) {
-            return 'Until ' + prefix + leaveStr;
-        }
-        return '';
-    }
-
-    // ============================================================
-    // TEAM MEMBERS VIEW MODEL
-    // ============================================================
-
-    function buildTeamMembersVM(activeMemberRecords, teamType) {
-        if (!Array.isArray(activeMemberRecords)) {
-            return [];
-        }
-
-        var result = [];
-
-        for (var i = 0; i < activeMemberRecords.length; i++) {
-            var record = activeMemberRecords[i];
-            if (!record) { continue; }
-
-            var charId = record.characterId;
-            if (!charId) { continue; }
-
-            var memberId = isNonEmptyString(record.memberId)
-                ? String(record.memberId)
-                : '';
-
-            var intervalsVM = [];
-            var summaryParts = [];
-            if (Array.isArray(record.intervals)) {
-                for (var j = 0; j < record.intervals.length; j++) {
-                    var iv = record.intervals[j];
-                    if (!iv || typeof iv !== 'object') { continue; }
-
-                    var ivJoin = (iv.joinPeriod !== undefined &&
-                                  iv.joinPeriod !== null)
-                        ? String(iv.joinPeriod)
-                        : '';
-                    var ivLeave = (iv.leavePeriod !== undefined &&
-                                   iv.leavePeriod !== null)
-                        ? String(iv.leavePeriod)
-                        : '';
-
-                    var ivDisplay = formatMemberPeriodDisplay(
-                        ivJoin, ivLeave, teamType
-                    );
-
-                    intervalsVM.push({
-                        joinPeriod: ivJoin,
-                        leavePeriod: ivLeave,
-                        periodDisplay: ivDisplay
-                    });
-
-                    if (ivDisplay) {
-                        summaryParts.push(ivDisplay);
-                    }
-                }
-            }
-
-            var periodDisplay = summaryParts.join('; ');
-
-            var char = CharacterQueries.getCharacterById(charId);
-            if (!char) {
-                result.push({
-                    memberId: memberId,
-                    characterId: charId,
-                    name: 'Unknown',
-                    role: record.role || 'Member',
-                    roleLabel: '',
-                    age: '',
-                    statusLabel: '',
-                    deceased: false,
-                    intervals: intervalsVM,
-                    periodDisplay: periodDisplay
-                });
-                continue;
-            }
-
-            result.push({
-                memberId: memberId,
-                characterId: charId,
-                name: CharacterQueries.getDisplayName(char),
-                role: record.role || 'Member',
-                roleLabel: '',
-                age: CharacterQueries.getCharacterAge(char),
-                statusLabel: CharacterQueries.getCurrentStatus(char),
-                deceased: char.deceased === true,
-                intervals: intervalsVM,
-                periodDisplay: periodDisplay
-            });
-        }
-
-        result.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-
-        return result;
-    }
-
-    // ============================================================
-    // MEMBER PARTITION (active / former)
-    // ============================================================
-
-    function partitionTeamMembers(team, weekNum) {
-        var activeRecords = TeamQueries.getActiveTeamMembers(team, weekNum) || [];
-
-        var activeKeys = Object.create(null);
-        for (var i = 0; i < activeRecords.length; i++) {
-            var rec = activeRecords[i];
-            if (!rec) { continue; }
-
-            if (isNonEmptyString(rec.memberId)) {
-                activeKeys['id:' + String(rec.memberId)] = true;
-            }
-            var cid = rec.characterId !== undefined && rec.characterId !== null
-                ? String(rec.characterId)
-                : '';
-            var firstJoin = '';
-            if (Array.isArray(rec.intervals) && rec.intervals.length > 0) {
-                var first = rec.intervals[0];
-                if (first && first.joinPeriod !== undefined &&
-                    first.joinPeriod !== null) {
-                    firstJoin = String(first.joinPeriod);
-                }
-            }
-            activeKeys['composite:' + cid + '::' + firstJoin] = true;
-        }
-
-        var allRecords = TeamQueries.getAllTeamMemberRecords(team) || [];
-        var formerRecords = [];
-
-        for (var j = 0; j < allRecords.length; j++) {
-            var m = allRecords[j];
-            if (!m) { continue; }
-
-            if (isNonEmptyString(m.memberId) &&
-                activeKeys['id:' + String(m.memberId)]) {
-                continue;
-            }
-            var mCid = m.characterId !== undefined && m.characterId !== null
-                ? String(m.characterId)
-                : '';
-            var mFirstJoin = '';
-            if (Array.isArray(m.intervals) && m.intervals.length > 0) {
-                var mFirst = m.intervals[0];
-                if (mFirst && mFirst.joinPeriod !== undefined &&
-                    mFirst.joinPeriod !== null) {
-                    mFirstJoin = String(mFirst.joinPeriod);
-                }
-            }
-            if (activeKeys['composite:' + mCid + '::' + mFirstJoin]) {
-                continue;
-            }
-
-            if (!Array.isArray(m.intervals)) { continue; }
-
-            var isFormer = false;
-            for (var k = 0; k < m.intervals.length; k++) {
-                var iv = m.intervals[k];
-                if (!iv || typeof iv !== 'object') { continue; }
-
-                var hasLeave = iv.leavePeriod !== undefined &&
-                               iv.leavePeriod !== null &&
-                               iv.leavePeriod !== '';
-                if (!hasLeave) { continue; }
-
-                var leaveNum = TeamConstants.parsePeriod(iv.leavePeriod);
-                if (leaveNum === null) { continue; }
-
-                if (leaveNum < weekNum) {
-                    isFormer = true;
-                    break;
-                }
-            }
-
-            if (isFormer) {
-                formerRecords.push(m);
-            }
-        }
-
-        return {
-            activeRecords: activeRecords,
-            formerRecords: formerRecords
-        };
-    }
-
-    // ============================================================
-    // UNASSIGNED (ORPHAN) ACADEMIC TEAMS
-    // ============================================================
-
-    function getUnassignedTeamsViewModel(options) {
-        options = options || {};
-
-        var AWT = getAcademyWeeklyTeams();
-        if (!AWT || typeof AWT.getOrphanAcademicTeams !== 'function') {
-            return { orphanTeams: [] };
-        }
-
-        var orphans = [];
-        try {
-            orphans = AWT.getOrphanAcademicTeams() || [];
-        } catch (e) {
-            console.warn(
-                '[AcademyAggregator] getOrphanAcademicTeams failed:', e
-            );
-            return { orphanTeams: [] };
-        }
-
-        var result = orphans.map(function(o) {
-            return {
-                id: o.id,
-                name: o.name || 'Unnamed Team',
-                memberCount: isFiniteNumber(o.memberCount) ? o.memberCount : 0,
-                suggestedClassId: isNonEmptyString(o.suggestedClassId)
-                    ? o.suggestedClassId
-                    : null
-            };
-        });
-
-        return { orphanTeams: result };
-    }
-
-    // ============================================================
-    // WEEKLY TEAM MEMBER MANAGER VIEW MODEL
-    // ============================================================
-
-    function getWeeklyTeamMemberManagerViewModel(options) {
-        if (!options || typeof options !== 'object') {
-            return null;
-        }
-
-        var classId = isNonEmptyString(options.classId)
-            ? String(options.classId)
-            : null;
-        var teamId = isNonEmptyString(options.teamId)
-            ? String(options.teamId)
-            : null;
-        var weekNum = resolveWeek(options.week);
-
-        if (!classId || !teamId || weekNum === null) {
-            return null;
-        }
-
-        var EQ = getEliminationQueries();
-        if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
-            throw new Error(
-                '[AcademyAggregator] getWeeklyTeamMemberManagerViewModel ' +
-                'requires EliminationQueries.isCharacterEliminatedByWeek. ' +
-                'The candidate pool cannot be built without it.'
-            );
-        }
-
-        var team = TeamQueries.getTeamById(teamId);
-        if (!team) {
-            return null;
-        }
-        if (team.classId === null ||
-            team.classId === undefined ||
-            team.classId === '') {
-            return null;
-        }
-        if (String(team.classId) !== classId) {
-            return null;
-        }
-
-        var partition = partitionTeamMembers(team, weekNum);
-
-        var members = buildTeamMembersVM(partition.activeRecords, team.type);
-        var formerMembers = buildTeamMembersVM(
-            partition.formerRecords, team.type
-        );
-
-        var allCurrentIds = Object.create(null);
-        if (Array.isArray(team.members)) {
-            for (var c = 0; c < team.members.length; c++) {
-                var m = team.members[c];
-                if (m && m.characterId) {
-                    allCurrentIds[String(m.characterId)] = true;
-                }
-            }
-        }
-
-        var assignedElsewhere = Object.create(null);
-        var classTeams = TeamQueries.getTeamsByClass(classId, 'operational') || [];
-        for (var t = 0; t < classTeams.length; t++) {
-            var sibling = classTeams[t];
-            if (!sibling || String(sibling.id) === teamId) continue;
-            if (TeamConstants.normalizeTeamType(sibling.type) !== 'academic') continue;
-            var siblingMembers = TeamQueries.getActiveTeamMembers(sibling, weekNum) || [];
-            for (var s = 0; s < siblingMembers.length; s++) {
-                var sm = siblingMembers[s];
-                if (sm && sm.characterId) {
-                    assignedElsewhere[String(sm.characterId)] = true;
-                }
-            }
-        }
-
-        var instructorSet = getClassInstructorSetForClass(classId);
-
-        var roster = deriveClassRoster(classId, weekNum);
-
-        var candidates = [];
-
+        var rosterSet = Object.create(null);
         for (var r = 0; r < roster.length; r++) {
-            var student = roster[r];
-            if (!student || !student.id) continue;
-
-            var studentId = String(student.id);
-
-            if (instructorSet[studentId]) {
-                continue;
-            }
-            if (allCurrentIds[studentId]) {
-                continue;
-            }
-            if (assignedElsewhere[studentId]) {
-                continue;
-            }
-
-            if (EQ.isCharacterEliminatedByWeek(studentId, weekNum) === true) {
-                continue;
-            }
-
-            candidates.push({
-                id: studentId,
-                name: student.name,
-                status: student.status || ''
-            });
+            rosterSet[String(roster[r])] = true;
         }
 
-        candidates.sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
+        for (var i = 0; i < orderedCharIds.length; i++) {
+            if (!isNonEmptyString(orderedCharIds[i])) { continue; }
+            var id = String(orderedCharIds[i]);
+            if (seen[id]) { continue; }
+            if (rosterSet[id] !== true) { continue; }
+            seen[id] = true;
+            result.push(id);
+        }
+
+        return result;
+    }
+
+    function setRanking(classId, week, orderedCharIds) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+
+        var classValidation = validateClassExists(classId);
+        if (!classValidation.valid) {
+            return Promise.resolve(failure(classValidation.message));
+        }
+
+        var targetClass = String(classId);
+        var order = normaliseOrderedCharIds(targetClass, orderedCharIds);
+        var total = order.length;
+
+        // Snapshot current records so we can diff inside mutate.
+        var existingRecords = getClassRankingsInternal(
+            targetClass, weekNum
+        );
+        var existingByStudent = Object.create(null);
+        for (var e = 0; e < existingRecords.length; e++) {
+            var er = existingRecords[e];
+            if (er && er.studentId) {
+                existingByStudent[String(er.studentId)] = er;
+            }
+        }
+
+        // Plan records: every ordered character gets rank = index+1.
+        var planned = [];
+        var plannedIds = Object.create(null);
+        for (var i = 0; i < order.length; i++) {
+            var sid = order[i];
+            var existing = existingByStudent[sid] || null;
+            var record = buildManualRankingRecord(
+                targetClass, sid, weekNum, i + 1, total, existing
+            );
+            planned.push(record);
+            plannedIds[String(record.id)] = true;
+        }
+
+        // Any record in the bucket not covered by the new order is
+        // removed (the student was dragged out).
+        var removeIds = [];
+        for (var existingStudent in existingByStudent) {
+            if (!Object.prototype.hasOwnProperty.call(
+                existingByStudent, existingStudent
+            )) { continue; }
+            var existingRec = existingByStudent[existingStudent];
+            if (!plannedIds[String(existingRec.id)]) {
+                removeIds.push(String(existingRec.id));
+            }
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                if (!findClassInSnapshot(appData, targetClass)) {
+                    return { valid: false, message: 'Class no longer exists.' };
+                }
+
+                // Every planned record must survive the snapshot checks.
+                for (var vi = 0; vi < planned.length; vi++) {
+                    var pRec = planned[vi];
+                    var pCheck = validateCandidate(pRec);
+                    if (!pCheck.valid) { return pCheck; }
+
+                    if (!findCharacterInSnapshot(appData, pRec.studentId)) {
+                        return {
+                            valid: false,
+                            message: 'Student no longer exists: ' +
+                                pRec.studentId
+                        };
+                    }
+                }
+
+                // Rank uniqueness across the bucket, excluding the
+                // records we are about to rewrite or remove.
+                var excludeSet = Object.create(null);
+                for (var pi = 0; pi < planned.length; pi++) {
+                    excludeSet[String(planned[pi].id)] = true;
+                }
+                for (var ri = 0; ri < removeIds.length; ri++) {
+                    excludeSet[String(removeIds[ri])] = true;
+                }
+
+                var seenRanks = Object.create(null);
+                for (var rk = 0; rk < planned.length; rk++) {
+                    var rankKey = String(parseStrictInteger(planned[rk].rank));
+                    if (seenRanks[rankKey]) {
+                        return {
+                            valid: false,
+                            message: 'Rank ' + rankKey +
+                                ' is assigned to more than one student.'
+                        };
+                    }
+                    seenRanks[rankKey] = true;
+                }
+
+                // Collision with records we are not touching.
+                if (appData.academy.rankings) {
+                    for (var otherId in appData.academy.rankings) {
+                        if (!Object.prototype.hasOwnProperty.call(
+                            appData.academy.rankings, otherId
+                        )) { continue; }
+                        if (excludeSet[String(otherId)]) { continue; }
+                        var otherRec = appData.academy.rankings[otherId];
+                        if (!otherRec) { continue; }
+                        if (String(otherRec.classId) !== targetClass) { continue; }
+                        if (parseWeekStrict(otherRec.week) !== weekNum) { continue; }
+                        var otherRankKey =
+                            String(parseStrictInteger(otherRec.rank));
+                        if (seenRanks[otherRankKey]) {
+                            return {
+                                valid: false,
+                                message: 'Rank ' + otherRankKey +
+                                    ' is already held by a record this ' +
+                                    'operation does not rewrite.'
+                            };
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings ||
+                    typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+                var rankings = appData.academy.rankings;
+
+                // Remove stale records (removed from the order).
+                for (var ri = 0; ri < removeIds.length; ri++) {
+                    delete rankings[removeIds[ri]];
+                }
+
+                // Upsert planned records.
+                for (var pi = 0; pi < planned.length; pi++) {
+                    rankings[planned[pi].id] = deepClone(planned[pi]);
+                }
+
+                var finalRankings = getClassRankingsFromSnapshot(
+                    appData, targetClass, weekNum
+                );
+
+                return {
+                    classId: targetClass,
+                    week: weekNum,
+                    orderedCharIds: order.slice(),
+                    totalStudents: total,
+                    rankings: finalRankings
+                };
+            },
+            logMessage: 'Set ranking for class ' + targetClass +
+                ', week ' + weekNum + ' (' + total + ' ranked)',
+            successMessage: 'Ranking updated successfully!',
+            failureMessage: 'Failed to update ranking.'
+        });
+    }
+
+    function insertRankingAt(classId, week, charId, position) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        for (var i = 0; i < current.length; i++) {
+            if (current[i] && current[i].studentId) {
+                order.push(String(current[i].studentId));
+            }
+        }
+
+        // If the character is already ranked, move rather than insert.
+        var existingIdx = order.indexOf(targetChar);
+        if (existingIdx !== -1) {
+            order.splice(existingIdx, 1);
+        }
+
+        var pos = parseStrictInteger(position);
+        var insertAt;
+        if (pos === null || pos < 1) {
+            insertAt = order.length;
+        } else if (pos > order.length) {
+            insertAt = order.length;
+        } else {
+            insertAt = pos - 1;
+        }
+
+        order.splice(insertAt, 0, targetChar);
+
+        return setRanking(targetClass, weekNum, order);
+    }
+
+    function removeRankingAt(classId, week, charId) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        var found = false;
+        for (var i = 0; i < current.length; i++) {
+            if (!current[i] || !current[i].studentId) { continue; }
+            var sid = String(current[i].studentId);
+            if (sid === targetChar) {
+                found = true;
+                continue;
+            }
+            order.push(sid);
+        }
+
+        if (!found) {
+            return Promise.resolve(failure('That student is not ranked at this week.'));
+        }
+
+        // setRanking with an empty order also removes all records.
+        return setRanking(targetClass, weekNum, order);
+    }
+
+    function moveRanking(classId, week, charId, toPosition) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        if (!isNonEmptyString(charId)) {
+            return Promise.resolve(failure('Character ID is required.'));
+        }
+        var pos = parseStrictInteger(toPosition);
+        if (pos === null || pos < 1) {
+            return Promise.resolve(failure('Target position must be an integer >= 1.'));
+        }
+
+        var targetClass = String(classId);
+        var targetChar = String(charId);
+
+        var current = getClassRankingsInternal(targetClass, weekNum);
+        var order = [];
+        var found = false;
+        for (var i = 0; i < current.length; i++) {
+            if (!current[i] || !current[i].studentId) { continue; }
+            var sid = String(current[i].studentId);
+            if (sid === targetChar) {
+                found = true;
+                continue;
+            }
+            order.push(sid);
+        }
+
+        if (!found) {
+            return Promise.resolve(failure('That student is not ranked at this week.'));
+        }
+
+        var insertAt = pos - 1;
+        if (insertAt > order.length) {
+            insertAt = order.length;
+        }
+        order.splice(insertAt, 0, targetChar);
+
+        return setRanking(targetClass, weekNum, order);
+    }
+
+    // ============================================================
+    // CASCADE HELPERS
+    // ============================================================
+
+    function readRankingsStoreForCascade(appData, helperName) {
+        if (!appData || !appData.academy) {
+            return null;
+        }
+
+        var rankings = appData.academy.rankings;
+
+        if (rankings === undefined || rankings === null) {
+            return null;
+        }
+
+        if (typeof rankings !== 'object' || Array.isArray(rankings)) {
+            throw new Error(
+                '[AcademyRanking] ' + helperName + ' found a malformed ' +
+                'academy.rankings store on the snapshot. Expected a ' +
+                'plain object; got ' +
+                (Array.isArray(rankings) ? 'array' : typeof rankings) +
+                '. The cascade cannot proceed against corrupted state.'
+            );
+        }
+
+        return rankings;
+    }
+
+    function stripCharacterRefs(appData, charId) {
+        var result = { rankingsRemoved: 0 };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        var rankings = readRankingsStoreForCascade(
+            appData, 'stripCharacterRefs'
+        );
+        if (!rankings) {
+            return result;
+        }
+
+        var target = String(charId);
+        var keysToRemove = [];
+
+        Object.keys(rankings).forEach(function(id) {
+            var rank = rankings[id];
+            if (rank && String(rank.studentId) === target) {
+                keysToRemove.push(id);
+            }
         });
 
-        return {
-            teamId: teamId,
-            teamName: team.name || 'Unnamed Team',
-            week: weekNum,
-            members: members,
-            formerMembers: formerMembers,
-            candidates: candidates
-        };
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete rankings[keysToRemove[i]];
+        }
+
+        result.rankingsRemoved = keysToRemove.length;
+        return result;
+    }
+
+    function stripClassRefs(appData, classId) {
+        var result = { rankingsRemoved: 0 };
+
+        if (!appData || !classId) {
+            return result;
+        }
+
+        var rankings = readRankingsStoreForCascade(
+            appData, 'stripClassRefs'
+        );
+        if (!rankings) {
+            return result;
+        }
+
+        var target = String(classId);
+        var keysToRemove = [];
+
+        Object.keys(rankings).forEach(function(id) {
+            var rank = rankings[id];
+            if (rank && String(rank.classId) === target) {
+                keysToRemove.push(id);
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete rankings[keysToRemove[i]];
+        }
+
+        result.rankingsRemoved = keysToRemove.length;
+        return result;
+    }
+
+    // ============================================================
+    // BULK OPERATIONS - Via MutationPipeline
+    // ============================================================
+
+    function saveRankings(rankingDataArray, options) {
+        if (!Array.isArray(rankingDataArray) || rankingDataArray.length === 0) {
+            return Promise.resolve(failure('Ranking data array is required.'));
+        }
+
+        options = options || {};
+        var overwrite = options.overwrite !== false;
+
+        var planned = [];
+        var errors = [];
+        var seenKeys = {};
+
+        for (var i = 0; i < rankingDataArray.length; i++) {
+            var data = rankingDataArray[i];
+            if (!isObject(data)) {
+                errors.push({ index: i, error: 'Invalid ranking data.' });
+                continue;
+            }
+
+            if (!data.classId || !data.studentId || !data.week || data.rank === undefined) {
+                errors.push({
+                    index: i,
+                    error: 'Missing required fields: classId, studentId, week, rank'
+                });
+                continue;
+            }
+
+            var validation = validateRankingData(data, false);
+            if (!validation.valid) {
+                errors.push({ index: i, studentId: data.studentId, error: validation.message });
+                continue;
+            }
+
+            var key = makeUniqueKey(data.classId, data.studentId, data.week);
+            if (seenKeys[key]) {
+                errors.push({
+                    index: i,
+                    studentId: data.studentId,
+                    error: 'Duplicate entry for the same (class, student, week).'
+                });
+                continue;
+            }
+            seenKeys[key] = true;
+
+            var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
+
+            if (existing && !overwrite) {
+                planned.push({ action: 'skip' });
+                continue;
+            }
+
+            if (existing) {
+                var candidate;
+                try {
+                    candidate = buildRankingRecord(data, existing.id, existing.createdAt);
+                } catch (e) {
+                    errors.push({ index: i, error: e.message });
+                    continue;
+                }
+                var candidateCheck = validateCandidate(candidate);
+                if (!candidateCheck.valid) {
+                    errors.push({ index: i, error: candidateCheck.message });
+                    continue;
+                }
+                planned.push({ action: 'update', record: candidate, matchId: existing.id });
+            } else {
+                var newRecord;
+                try {
+                    newRecord = buildRankingRecord(data, null, null);
+                } catch (e) {
+                    errors.push({ index: i, error: e.message });
+                    continue;
+                }
+                var newCheck = validateCandidate(newRecord);
+                if (!newCheck.valid) {
+                    errors.push({ index: i, error: newCheck.message });
+                    continue;
+                }
+                planned.push({ action: 'create', record: newRecord });
+            }
+        }
+
+        var creates = planned.filter(function(p) { return p.action === 'create'; });
+        var updates = planned.filter(function(p) { return p.action === 'update'; });
+        var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
+
+        if (creates.length === 0 && updates.length === 0) {
+            return Promise.resolve(success({
+                total: rankingDataArray.length,
+                created: 0,
+                updated: 0,
+                skipped: skipped,
+                errors: errors,
+                successCount: 0
+            }));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+
+                for (var i = 0; i < planned.length; i++) {
+                    var item = planned[i];
+
+                    if (item.action === 'create') {
+                        if (findRankingInSnapshot(appData, item.record.id)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking ID collision during ' +
+                                    'save: ' + item.record.id
+                            };
+                        }
+                        var createCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, null
+                        );
+                        if (!createCheck.valid) {
+                            return createCheck;
+                        }
+                    } else if (item.action === 'update') {
+                        if (!findRankingInSnapshot(appData, item.matchId)) {
+                            return {
+                                valid: false,
+                                message: 'Ranking no longer exists: ' +
+                                    item.matchId
+                            };
+                        }
+                        var updateCheck = validateCandidateAgainstSnapshot(
+                            item.record, appData, item.matchId
+                        );
+                        if (!updateCheck.valid) {
+                            return updateCheck;
+                        }
+                    }
+                }
+
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+
+                var created = 0;
+                var updated = 0;
+
+                for (var k = 0; k < planned.length; k++) {
+                    var item = planned[k];
+                    if (item.action === 'create') {
+                        appData.academy.rankings[item.record.id] = deepClone(item.record);
+                        created++;
+                    } else if (item.action === 'update') {
+                        if (!appData.academy.rankings[item.matchId]) {
+                            throw new Error('Ranking no longer exists: ' + item.matchId);
+                        }
+                        appData.academy.rankings[item.matchId] = deepClone(item.record);
+                        updated++;
+                    }
+                }
+
+                return {
+                    total: rankingDataArray.length,
+                    created: created,
+                    updated: updated,
+                    skipped: skipped,
+                    errors: errors,
+                    successCount: created + updated
+                };
+            },
+            logMessage: 'Saved ' + (creates.length + updates.length) + ' ranking(s)',
+            successMessage: 'Rankings saved successfully!',
+            failureMessage: 'Failed to save rankings.'
+        });
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.AcademyAggregator = Object.freeze({
-        // Class projections
-        getClassListViewModel: getClassListViewModel,
-        getClassViewModel: getClassViewModel,
-        getClassStudentsViewModel: getClassStudentsViewModel,
+    window.AcademyRanking = {
+        // ---- Mutations (Promise-based) ----
+        create: create,
+        update: update,
+        delete: deleteRanking,
+        deleteClassRankings: deleteClassRankings,
+        autoGenerate: autoGenerate,
+        saveRankings: saveRankings,
 
-        // People
-        getPeopleViewModel: getPeopleViewModel,
+        // ---- Manual ranking (v35) ----
+        setRanking: setRanking,
+        insertRankingAt: insertRankingAt,
+        removeRankingAt: removeRankingAt,
+        moveRanking: moveRanking,
 
-        // Character projections
-        getStudentViewModel: getStudentViewModel,
-        getInstructorViewModel: getInstructorViewModel,
+        // ---- Public queries (synchronous, CLONES) ----
+        //
+        // Base records, decorated with a derived percentile.
+        // Names are NOT attached. See the ENRICHED QUERY VARIANTS
+        // REMOVED note in the header.
+        getClassRankings: getClassRankings,
+        getStudentRank: getStudentRank,
+        getRankings: getRankings,
+        getRanking: getRanking,
 
-        // Instructor projections
-        getClassInstructorDisciplines: getClassInstructorDisciplines,
-        getInstructorGroupPickerViewModel: getInstructorGroupPickerViewModel,
+        // ---- Calculations (synchronous, pure) ----
+        calculateRankingSummary: calculateRankingSummary,
+        calculateRankDistribution: calculateRankDistribution,
+        calculatePercentile: calculatePercentile,
 
-        // Discipline projections
-        getDisciplineListViewModel: getDisciplineListViewModel,
-        getDisciplineEditorViewModel: getDisciplineEditorViewModel,
+        // ---- Derived field helpers ----
+        decorateRanking: decorateRanking,
+        decorateRankings: decorateRankings,
 
-        // Class-discipline picker
-        getClassDisciplinesPickerViewModel: getClassDisciplinesPickerViewModel,
+        // ---- Cascade helpers (for cross-domain cleanup) ----
+        stripCharacterRefs: stripCharacterRefs,
+        stripClassRefs: stripClassRefs,
 
-        // Ranking
-        getRankingViewModel: getRankingViewModel,
+        // ---- Internal (LIVE REFERENCES) ----
+        getClassRankingsInternal: getClassRankingsInternal,
+        getStudentRankInternal: getStudentRankInternal,
+        getRankingRecords: getRankingRecords,
+        getRankingRecord: getRankingRecord,
 
-        // Location
-        getLocationViewModel: getLocationViewModel,
-
-        // Weekly teams
-        getWeeklyTeamsViewModel: getWeeklyTeamsViewModel,
-        getWeeklyTeamMemberManagerViewModel: getWeeklyTeamMemberManagerViewModel,
-        getUnassignedTeamsViewModel: getUnassignedTeamsViewModel,
-
-        // Rebalance input (v32)
-        getRebalanceInputViewModel: getRebalanceInputViewModel,
-
-        // Free slot candidates (v33)
-        getFreeSlotCandidateStudentsViewModel:
-            getFreeSlotCandidateStudentsViewModel,
-
-        // Shared groups (v34)
-        getSharedGroupsViewModel: getSharedGroupsViewModel,
-
-        // Instructor-of-class (YEAR-LEVEL rule).
-        getClassInstructorSetForClass: getClassInstructorSetForClass
-    });
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.AcademyAggregator;
-        var missing = [];
-
-        var required = [
-            'getClassListViewModel',
-            'getClassViewModel',
-            'getClassStudentsViewModel',
-            'getPeopleViewModel',
-            'getStudentViewModel',
-            'getInstructorViewModel',
-            'getClassInstructorDisciplines',
-            'getInstructorGroupPickerViewModel',
-            'getDisciplineListViewModel',
-            'getDisciplineEditorViewModel',
-            'getClassDisciplinesPickerViewModel',
-            'getRankingViewModel',
-            'getLocationViewModel',
-            'getWeeklyTeamsViewModel',
-            'getWeeklyTeamMemberManagerViewModel',
-            'getUnassignedTeamsViewModel',
-            'getRebalanceInputViewModel',
-            'getFreeSlotCandidateStudentsViewModel',
-            'getSharedGroupsViewModel',
-            'getClassInstructorSetForClass'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        try {
-            if (RangeUtils.containsWeek(5, 1, 10) !== true) {
-                missing.push('RangeUtils.containsWeek active-in-range failed');
-            }
-            if (RangeUtils.containsWeek(10, 1, 10) !== true) {
-                missing.push('RangeUtils.containsWeek inclusive end failed');
-            }
-            if (RangeUtils.containsWeek(11, 1, 10) !== false) {
-                missing.push('RangeUtils.containsWeek past-end failed');
-            }
-            if (RangeUtils.containsWeek(52, 1, null) !== true) {
-                missing.push('RangeUtils.containsWeek open end failed');
-            }
-        } catch (e) {
-            missing.push('range-delegation smoke test threw: ' + e.message);
-        }
-
-        if (missing.length > 0) {
-            console.warn(
-                '[AcademyAggregator] Verification - some exports may be ' +
-                'missing:', missing.join(', ')
-            );
-        }
-    })();
+        // ---- Constants ----
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK,
+        MIN_RANK: MIN_RANK,
+        MIN_SCORE: MIN_SCORE,
+        MAX_SCORE: MAX_SCORE
+    };
 
 })();
