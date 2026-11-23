@@ -28,7 +28,7 @@
  *   Class-discipline picker (v27):
  *     getClassDisciplinesPickerViewModel(classId, options)
  *
- *   Rankings:
+ *   Rankings (v35 — manual ranking support):
  *     getRankingViewModel(classId, week)
  *
  *   Locations:
@@ -196,6 +196,51 @@
  *   The team list for a given (class, week) is filtered by the
  *   PERSISTENT Team entity's own startPeriod / endPeriod AND by the
  *   weekly-team window record. Both must contain the week.
+ *
+ * RANKING VIEW MODEL (v35 — manual ranking support):
+ *   getRankingViewModel(classId, week) is the projection the
+ *   ranking tab renders. It reads AcademyRanking.getClassRankings
+ *   (public, decorated clones) and derives:
+ *
+ *     entries           one entry per stored ranking record, in
+ *                       rank order. Each entry carries
+ *                       totalStudents, percentile (both from the
+ *                       decorated record), and manuallyRanked,
+ *                       plus the legacy average/gradeCount fields.
+ *
+ *     rankedCharIds     the ordered list of character IDs in rank
+ *                       order. This is what the drag handler POSTs
+ *                       back to AcademyRanking.setRanking. It is
+ *                       DERIVED from entries, not stored, so the
+ *                       view and the aggregator cannot disagree
+ *                       about order.
+ *
+ *     unrankedStudents  roster students with no ranking record
+ *                       for this week, minus instructors and
+ *                       eliminated characters. Shape: { id, name,
+ *                       status }. The view renders these in an
+ *                       "Insert into ranking" strip, mirroring the
+ *                       teams unrankedTeams pattern.
+ *
+ *     manuallyRankedCount  how many entries carry manuallyRanked.
+ *
+ *   The aggregator still does NOT mutate. The write path lives in
+ *   AcademyRanking (setRanking / insertRankingAt / removeRankingAt
+ *   / moveRanking).
+ *
+ *   DANGLING RECORDS:
+ *     A stored ranking whose characterId no longer resolves is
+ *     emitted with characterName = 'Unknown' rather than dropped.
+ *     The cascade should have removed it; if it slipped through,
+ *     a visible "Unknown — Rank 4" row is a bug report, whereas a
+ *     silently dropped row is a data loss.
+ *
+ *   AVERAGE BAND:
+ *     averageBand is emitted as null. Manual rankings have no
+ *     grade data, so there is nothing to band. The existing
+ *     ranking view treats null as the neutral class. If bands are
+ *     wanted later, compute them here from average and the
+ *     discipline's grade scheme.
  *
  * DEPENDENCIES (MANDATORY):
  *   - AcademyClasses
@@ -2330,8 +2375,23 @@
     }
 
     // ============================================================
-    // RANKING VIEW MODEL
+    // RANKING VIEW MODEL (v35 — manual ranking support)
     // ============================================================
+    //
+    // See the RANKING VIEW MODEL note in the header. Summary:
+    //
+    //   entries           one per stored ranking record, in rank
+    //                     order, with totalStudents and percentile.
+    //   rankedCharIds     ordered list of character IDs. The drag
+    //                     handler POSTs this back to
+    //                     AcademyRanking.setRanking.
+    //   unrankedStudents  roster minus ranked, minus instructors,
+    //                     minus eliminated. Powers the insert strip.
+    //   manuallyRankedCount  how many entries are hand-tuned.
+    //
+    // The aggregator does NOT mutate. The write path lives in
+    // AcademyRanking (setRanking / insertRankingAt / removeRankingAt
+    // / moveRanking).
 
     function getRankingViewModel(classId, week) {
         var classList = getClassListViewModel();
@@ -2353,21 +2413,113 @@
                 className: null,
                 week: week,
                 entries: [],
-                total: 0
+                total: 0,
+                rankedCharIds: [],
+                unrankedStudents: [],
+                manuallyRankedCount: 0
             };
         }
 
+        var weekNum = resolveWeek(week);
         var entries = buildRankingEntries(selectedClass.id, week);
+
+        var rankedCharIds = [];
+        var manuallyRankedCount = 0;
+        var rankedSet = Object.create(null);
+        for (var e = 0; e < entries.length; e++) {
+            var entry = entries[e];
+            if (!entry || !entry.characterId) { continue; }
+            rankedCharIds.push(String(entry.characterId));
+            rankedSet[String(entry.characterId)] = true;
+            if (entry.manuallyRanked === true) {
+                manuallyRankedCount++;
+            }
+        }
+
+        var unrankedStudents = buildUnrankedStudentsForRanking(
+            selectedClass.id,
+            weekNum,
+            rankedSet
+        );
 
         return {
             classes: classList,
             classId: selectedClass.id,
             className: selectedClass.name,
-            week: week,
+            week: weekNum,
             entries: entries,
-            total: entries.length
+            total: entries.length,
+            rankedCharIds: rankedCharIds,
+            unrankedStudents: unrankedStudents,
+            manuallyRankedCount: manuallyRankedCount
         };
     }
+
+    // ------------------------------------------------------------
+    // UNRANKED STUDENTS (for the insert strip)
+    // ------------------------------------------------------------
+    //
+    // The roster minus the ranked set, minus instructors, minus
+    // eliminated/deceased students at this week. Mirrors the
+    // candidate-pool shape used by
+    // getFreeSlotCandidateStudentsViewModel and
+    // getWeeklyTeamMemberManagerViewModel: a sorted list of
+    // { id, name, status }.
+    //
+    // deriveClassRoster already applies the class-scoped
+    // instructor exclusion and the elimination projection, so this
+    // helper only has to subtract the ranked set.
+
+    function buildUnrankedStudentsForRanking(classId, weekNum, rankedSet) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var roster = deriveClassRoster(classId, weekNum);
+        if (!Array.isArray(roster)) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < roster.length; i++) {
+            var student = roster[i];
+            if (!student || !student.id) { continue; }
+            var sid = String(student.id);
+            if (rankedSet[sid] === true) { continue; }
+            if (student.eliminated === true) { continue; }
+            if (student.deceased === true) { continue; }
+            result.push({
+                id: sid,
+                name: student.name || 'Unknown',
+                status: student.status || ''
+            });
+        }
+
+        result.sort(function(a, b) {
+            var an = String(a.name || '');
+            var bn = String(b.name || '');
+            if (an !== bn) { return an.localeCompare(bn); }
+            return a.id.localeCompare(b.id);
+        });
+
+        return result;
+    }
+
+    // ------------------------------------------------------------
+    // RANKING ENTRIES
+    // ------------------------------------------------------------
+    //
+    // One entry per stored ranking record, in rank order. The
+    // underlying record now carries manuallyRanked and
+    // totalStudents; the VM surfaces both, plus the derived
+    // percentile that AcademyRanking.decorateRanking already
+    // attaches.
+    //
+    // Entries whose studentId no longer resolves are still
+    // emitted, with characterName = 'Unknown', so a dangling
+    // ranking record is visible in the UI rather than silently
+    // dropped. The aggregator does not repair state; it reports
+    // it.
 
     function buildRankingEntries(classId, week) {
         var Ranking = getAcademyRanking();
@@ -2379,6 +2531,13 @@
         try {
             ranked = Ranking.getClassRankings(classId, week) || [];
         } catch (e) {
+            console.warn(
+                '[AcademyAggregator] getClassRankings failed:', e
+            );
+            return [];
+        }
+
+        if (!Array.isArray(ranked)) {
             return [];
         }
 
@@ -2387,8 +2546,20 @@
         var instructorSet = buildIdSet(instructorIds);
 
         var entries = ranked.map(function(r) {
-            var studentId = r.studentId || r.characterId;
+            var studentId = r.studentId || r.characterId || '';
             var name = r.studentName || getCharacterDisplayName(studentId);
+
+            var rank = isFiniteNumber(r.rank) ? r.rank : null;
+            var totalStudents = isFiniteNumber(r.totalStudents)
+                ? r.totalStudents
+                : null;
+            var percentile = isFiniteNumber(r.percentile)
+                ? r.percentile
+                : (rank !== null && totalStudents !== null &&
+                   totalStudents > 0 &&
+                   typeof Ranking.calculatePercentile === 'function'
+                    ? Ranking.calculatePercentile(rank, totalStudents)
+                    : null);
 
             var average = null;
             if (isFiniteNumber(r.average)) {
@@ -2399,18 +2570,33 @@
                 average = r.overallScore;
             }
 
-            var rank = isFiniteNumber(r.rank) ? r.rank : null;
-            var gradeCount = isFiniteNumber(r.gradeCount) ? r.gradeCount : null;
+            var gradeCount = isFiniteNumber(r.gradeCount)
+                ? r.gradeCount
+                : null;
 
             return {
                 characterId: studentId,
                 characterName: name,
                 rank: rank,
                 rankDisplay: rank !== null ? '#' + rank : '\u2014',
+                totalStudents: totalStudents,
+                totalDisplay: totalStudents !== null
+                    ? String(totalStudents)
+                    : '\u2014',
+                percentile: percentile,
+                percentileDisplay: percentile !== null
+                    ? String(percentile) + '%'
+                    : '\u2014',
                 average: average,
-                averageDisplay: average !== null ? String(average) : '\u2014',
+                averageDisplay: average !== null
+                    ? String(average)
+                    : '\u2014',
+                averageBand: null,
                 gradeCount: gradeCount,
-                gradeCountDisplay: gradeCount !== null ? String(gradeCount) : '\u2014',
+                gradeCountDisplay: gradeCount !== null
+                    ? String(gradeCount)
+                    : '\u2014',
+                manuallyRanked: r.manuallyRanked === true,
                 isInstructor: instructorSet[String(studentId)] === true
             };
         });
