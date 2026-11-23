@@ -2023,20 +2023,20 @@
 }
 
 .planner-body {
-    display: grid;
-    grid-template-columns: minmax(240px, 1fr) minmax(320px, 1.6fr);
-    gap: 12px;
-    /* Fill the content box, not a viewport-relative height. The
-       content box's height is set by .planner-content's
-       max-height and the header's natural height. */
+    /* The active renderer is a summary, one matrix, and actions.
+       Keep that structure in one vertical flow; the old two-panel
+       grid belonged to the retired planner renderer. */
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     flex: 1 1 auto;
-    min-height: 0;      /* allow children to scroll */
-    overflow: hidden;   /* children scroll, not this element */
+    min-height: 0;
+    overflow: hidden;
 }
 
 .planner-summary {
-    grid-column: 1 / -1;
-    margin: 0 0 4px 0;
+    margin: 0;
+    flex: 0 0 auto;
     padding: 6px 10px;
     background: var(--panel-alt);
     border: 1px solid var(--border);
@@ -2258,10 +2258,10 @@
     transition: background 0.12s, border-color 0.12s;
 }
 
-/* When a cell's radio is checked, lift the whole cell. */
-.planner-team-cell:has(.planner-assoc-radio:checked) {
+/* The active matrix renderer places each radio inside its table cell. */
+.planner-matrix-cell:has(.planner-assoc-radio:checked) {
     background: var(--accent-soft);
-    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .planner-team-cell-label {
@@ -2327,16 +2327,19 @@
 }
 
 .planner-actions {
-    grid-column: 1 / -1;
-    margin-top: 8px;
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 0;
     padding-top: 10px;
     border-top: 1px solid var(--border-soft);
     flex: 0 0 auto;
 }
 
 .planner-body > .empty-state {
-    grid-column: 1 / -1;
     margin: 0;
+    flex: 1 1 auto;
 }
 
 /* ---------- Mobile: stacked layout, tighter cells ---------- */
@@ -2347,52 +2350,38 @@
     }
 
     .planner-body {
-        /* Single column. Both panels share the available
-           vertical space evenly, and each scrolls its own
-           content. */
-        grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr 1fr auto;
+        gap: 6px;
     }
 
-    .planner-summary { grid-row: 1; }
-    .planner-teams-panel { grid-row: 2; min-height: 120px; }
-    .planner-candidates-panel { grid-row: 3; min-height: 200px; }
-    .planner-actions { grid-row: 4; }
-
-    .planner-teams-list,
-    .planner-candidates-list {
-        /* Each panel is bounded by its grid row, and the list
-           scrolls inside. Do not cap with vh; let the grid do
-           it. */
-        max-height: none;
+    .planner-matrix-wrap {
+        width: 100%;
+        min-height: 0;
     }
 
-    .planner-team-cell-name {
-        max-width: 70px;
+    .planner-matrix-row-header {
+        min-width: 140px;
+        padding: 7px 8px;
     }
 
-    /* Keep the cell horizontal so a candidate's team options
-       read as a compact chip row rather than a tall stack.
-       Each chip is a full tap target. */
-    .planner-candidate-teams {
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: stretch;
+    .planner-matrix-team-header {
+        min-width: 92px;
+        padding: 7px 8px;
     }
 
-    .planner-team-cell {
-        flex: 0 1 auto;
-        padding: 4px 8px;
-        font-size: 0.65rem;
-        min-height: 32px;   /* touch target */
+    .planner-matrix-details-cell {
+        padding: 8px;
     }
 
-    /* Years hidden on mobile: the radio + team name is the
-       decision, the years are a refinement. The inputs remain
-       in the DOM (display:none), so the commit path still
-       reads their default values. */
-    .planner-team-cell-years {
-        display: none;
+    .planner-row-details {
+        gap: 6px;
+    }
+
+    .planner-row-details-label {
+        flex: 1 1 100%;
+    }
+
+    .planner-actions button {
+        flex: 1 1 auto;
     }
 }
 
@@ -2409,9 +2398,12 @@
 
 .planner-matrix-wrap {
     width: 100%;
-    overflow-x: auto;
-    overflow-y: visible;
-    margin-top: 10px;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    overscroll-behavior: contain;
+    margin-top: 0;
     padding-bottom: 8px;
 }
 
@@ -2553,6 +2545,32 @@
 .planner-matrix-details-cell {
     padding: 8px 12px;
     text-align: left;
+}
+
+.planner-row-details {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.planner-row-details-label {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+.planner-row-details-label strong {
+    color: var(--text);
+}
+
+.planner-row-details-dash {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+.planner-row-details-clear {
+    margin-left: 4px;
 }
 
 /* ============================================================
