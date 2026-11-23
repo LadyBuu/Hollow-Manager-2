@@ -175,7 +175,7 @@
 
 @media (max-width: 768px) {
     #toggle-char-list {
-        display: inline-flex;
+        display: flex;
         align-items: center;
         justify-content: center;
         position: relative;
@@ -267,6 +267,12 @@
 
 .characters-backdrop {
     display: none;
+}
+
+@media (max-width: 768px) {
+    .characters-backdrop {
+        display: block;
+    }
 }
 
 /* ============================================================
