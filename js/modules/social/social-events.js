@@ -787,37 +787,34 @@
     // ============================================================
 
     function bindFilters() {
+        var searchFilter = document.getElementById('social-search-filter');
         var charFilter = document.getElementById('social-character-filter');
-        if (charFilter) {
-            addEventListener(charFilter, 'change', function() {
-                SocialViews.renderRelationships();
-                if (SocialGraph.isGraphVisible()) {
-                    SocialGraph.renderGraph();
-                }
-            });
+        var typeFilter = document.getElementById('social-type-filter');
+
+        function refreshFilteredViews() {
+            SocialViews.renderRelationships();
+            if (SocialGraph.isGraphVisible()) {
+                SocialGraph.renderGraph();
+            }
         }
 
-        var typeFilter = document.getElementById('social-type-filter');
+        if (searchFilter) {
+            addEventListener(searchFilter, 'input', refreshFilteredViews);
+        }
+        if (charFilter) {
+            addEventListener(charFilter, 'change', refreshFilteredViews);
+        }
         if (typeFilter) {
-            addEventListener(typeFilter, 'change', function() {
-                SocialViews.renderRelationships();
-                if (SocialGraph.isGraphVisible()) {
-                    SocialGraph.renderGraph();
-                }
-            });
+            addEventListener(typeFilter, 'change', refreshFilteredViews);
         }
 
         var clearBtn = document.getElementById('clear-social-filters');
         if (clearBtn) {
             addEventListener(clearBtn, 'click', function() {
-                var charFilterEl = document.getElementById('social-character-filter');
-                var typeFilterEl = document.getElementById('social-type-filter');
-                if (charFilterEl) { charFilterEl.value = 'all'; }
-                if (typeFilterEl) { typeFilterEl.value = 'all'; }
-                SocialViews.renderRelationships();
-                if (SocialGraph.isGraphVisible()) {
-                    SocialGraph.renderGraph();
-                }
+                if (searchFilter) { searchFilter.value = ''; }
+                if (charFilter) { charFilter.value = 'all'; }
+                if (typeFilter) { typeFilter.value = 'all'; }
+                refreshFilteredViews();
             });
         }
     }
