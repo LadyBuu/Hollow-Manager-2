@@ -267,16 +267,18 @@
             <div id="social-content">
                 <div id="social-list-view">
                     <div class="filter-section">
+                        <label class="social-search-label" for="social-search-filter">Search:</label>
+                        <input id="social-search-filter" type="search" placeholder="Names, roles or notes…" autocomplete="off">
                         <label for="social-character-filter">Character:</label>
-                        <select id="social-character-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;min-width:150px;">
+                        <select id="social-character-filter">
                             <option value="all">All Characters</option>
                         </select>
-                        <label for="social-type-filter" style="margin-left:8px;">Type:</label>
-                        <select id="social-type-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <label for="social-type-filter">Type:</label>
+                        <select id="social-type-filter">
                             <option value="all">All Types</option>
                         </select>
-                        <button id="clear-social-filters" class="small secondary">\u2715 Clear</button>
-                        <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Relationships: <span id="relationship-count">0</span></span>
+                        <button id="clear-social-filters" class="small secondary" type="button">\u2715 Clear</button>
+                        <span class="social-filter-count" id="relationship-count" aria-live="polite">0 relationships</span>
                     </div>
                     <div id="relationships-container">
                         <p class="empty-state">No relationships created yet. Add your first relationship!</p>
@@ -841,22 +843,33 @@
 
         var charFilter = document.getElementById('social-character-filter');
         var typeFilter = document.getElementById('social-type-filter');
+        var searchFilter = document.getElementById('social-search-filter');
 
         var charId = charFilter ? charFilter.value : 'all';
         var typeId = typeFilter ? typeFilter.value : 'all';
+        var searchTerm = searchFilter ? searchFilter.value : '';
 
         var groups = SocialAggregator.getAllGroupedRelationshipsViewModel({
             characterFilter: charId,
-            typeFilter: typeId
+            typeFilter: typeId,
+            search: searchTerm
         }) || [];
 
         var totalCount = 0;
         groups.forEach(function(g) { totalCount += g.total; });
+        var totalAvailable = (SocialQueries.getAllRelationships() || []).length;
 
-        if (countDisplay) { countDisplay.textContent = totalCount; }
+        if (countDisplay) {
+            countDisplay.textContent = searchTerm.trim() || charId !== 'all' || typeId !== 'all'
+                ? 'Showing ' + totalCount + ' of ' + totalAvailable
+                : totalCount + ' relationships';
+        }
 
         if (totalCount === 0) {
-            container.innerHTML = '<p class="empty-state">No relationships found. Add your first relationship!</p>';
+            var hasFilters = !!(searchTerm.trim() || charId !== 'all' || typeId !== 'all');
+            container.innerHTML = '<p class="empty-state">' +
+                (hasFilters ? 'No relationships match these filters.' : 'No relationships created yet. Add your first relationship!') +
+                '</p>';
             return;
         }
 
@@ -906,7 +919,6 @@
         }
 
         html += '</div>';
-        html += '</button>';
         html += '</div>';
 
         return html;
