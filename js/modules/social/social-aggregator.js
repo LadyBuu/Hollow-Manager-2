@@ -679,6 +679,7 @@
         options = options || {};
         var charFilter = options.characterFilter || 'all';
         var typeFilter = options.typeFilter || 'all';
+        var searchTerm = String(options.search || '').trim().toLocaleLowerCase();
 
         var relationships = SocialQueries.getAllRelationships();
 
@@ -699,6 +700,16 @@
         var viewModels = relationships.map(function(rel) {
             return getRelationshipViewModel(rel, contextCharId);
         }).filter(function(vm) { return vm !== null; });
+
+        if (searchTerm) {
+            viewModels = viewModels.filter(function(vm) {
+                var searchable = [
+                    vm.name1, vm.name2, vm.typeLabel,
+                    vm.clarification1, vm.clarification2, vm.notes
+                ].join(' ').toLocaleLowerCase();
+                return searchable.indexOf(searchTerm) !== -1;
+            });
+        }
 
         var groupMap = Object.create(null);
         viewModels.forEach(function(vm) {
