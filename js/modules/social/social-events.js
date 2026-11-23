@@ -810,6 +810,7 @@
                 if (SocialGraph.isGraphVisible()) {
                     SocialGraph.setFocus(charFilter.value === 'all' ? null : charFilter.value);
                     renderGraphBreadcrumb();
+                    return;
                 }
                 refreshFilteredViews();
             });
