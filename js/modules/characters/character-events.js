@@ -1797,27 +1797,8 @@
 
     function bindCharacterList(container) {
         addSafeDelegatedListener(
-            container, '.char-list-item', 'click',
+            container, '.char-list-open', 'click',
             function(e, target) {
-                var t = e.target;
-                if (t && typeof t.closest === 'function' &&
-                    t.closest('.char-list-checkbox-cell')) {
-                    return;
-                }
-
-                var id = target.dataset.id;
-                if (id) { handleCharacterSelect(id); }
-            }
-        );
-
-        addSafeDelegatedListener(
-            container, '.char-list-item', 'keydown',
-            function(e, target) {
-                if (e.target !== target ||
-                    (e.key !== 'Enter' && e.key !== ' ')) {
-                    return;
-                }
-                e.preventDefault();
                 var id = target.dataset.id;
                 if (id) { handleCharacterSelect(id); }
             }
