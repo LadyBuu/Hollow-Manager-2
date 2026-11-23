@@ -653,6 +653,24 @@
         return result;
     }
 
+    function isEliminatedForClassWeek(studentId, classId, weekNum) {
+        var cls = AcademyClasses.getClass(classId);
+        var classYear = cls && parseStrictInteger(cls.year);
+        if (classYear === null || classYear === undefined) {
+            return false;
+        }
+
+        var EQ = window.EliminationQueries;
+        if (!EQ || typeof EQ.getEarliestElimination !== 'function') {
+            return false;
+        }
+
+        var elimination = EQ.getEarliestElimination(studentId);
+        return !!(elimination &&
+            Number(elimination.year) === classYear &&
+            Number(elimination.week) <= weekNum);
+    }
+
     function getClassRankingsInternal(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -663,7 +681,45 @@
             return [];
         }
 
-        return getRankingRecords(classId, weekNum);
+        // A ranking is a weekly snapshot. Use the most recent snapshot
+        // at or before the selected week, just as the Teams timeline does.
+        var academy = getAcademyStore();
+        if (!academy || !isObject(academy.rankings)) {
+            return [];
+        }
+
+        var latestWeek = null;
+        for (var id in academy.rankings) {
+            if (!Object.prototype.hasOwnProperty.call(academy.rankings, id)) continue;
+            var record = academy.rankings[id];
+            if (!record || String(record.classId) !== String(classId)) continue;
+            var recordWeek = parseWeekStrict(record.week);
+            if (recordWeek === null || recordWeek > weekNum) continue;
+            if (latestWeek === null || recordWeek > latestWeek) latestWeek = recordWeek;
+        }
+
+        if (latestWeek === null) return [];
+
+        var snapshot = getRankingRecords(classId, latestWeek);
+        var result = [];
+        for (var i = 0; i < snapshot.length; i++) {
+            var item = deepClone(snapshot[i]);
+            if (!item || isEliminatedForClassWeek(item.studentId, classId, weekNum)) {
+                continue;
+            }
+            result.push(item);
+        }
+
+        // Eliminations are exclusive from their recorded week onward.
+        // Compact the remaining list so no rank gaps are displayed.
+        result.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+        for (var j = 0; j < result.length; j++) {
+            result[j].rank = j + 1;
+            result[j].totalStudents = result.length;
+        }
+        return result;
     }
 
     function getStudentRankInternal(classId, studentId, week) {
@@ -1535,6 +1591,15 @@
             return Promise.resolve(failure('No students found in this class.'));
         }
 
+        // Eliminated students stop participating from their elimination
+        // week onward. Keep the class-year boundary explicit.
+        studentIds = studentIds.filter(function(studentId) {
+            return !isEliminatedForClassWeek(studentId, classId, weekNum);
+        });
+        if (studentIds.length === 0) {
+            return Promise.resolve(failure('No eligible students found for this class and week.'));
+        }
+
         // ---- Ask performance for the per-student aggregates ----
         var aggregates;
         try {
@@ -1866,7 +1931,7 @@
      * cannot be ranked; the drag UI can race a roster change, so
      * we drop rather than throw.
      */
-    function normaliseOrderedCharIds(classId, orderedCharIds) {
+    function normaliseOrderedCharIds(classId, weekNum, orderedCharIds) {
         if (!Array.isArray(orderedCharIds)) { return []; }
 
         var seen = Object.create(null);
@@ -1888,6 +1953,7 @@
             var id = String(orderedCharIds[i]);
             if (seen[id]) { continue; }
             if (rosterSet[id] !== true) { continue; }
+            if (isEliminatedForClassWeek(id, classId, weekNum)) { continue; }
             seen[id] = true;
             result.push(id);
         }
@@ -1912,13 +1978,13 @@
         }
 
         var targetClass = String(classId);
-        var order = normaliseOrderedCharIds(targetClass, orderedCharIds);
+        var order = normaliseOrderedCharIds(targetClass, weekNum, orderedCharIds);
         var total = order.length;
 
         // Snapshot current records so we can diff inside mutate.
-        var existingRecords = getClassRankingsInternal(
-            targetClass, weekNum
-        );
+        // Only reuse records already stored in this exact week. An inherited
+        // prior-week snapshot must remain intact as historical data.
+        var existingRecords = getRankingRecords(targetClass, weekNum);
         var existingByStudent = Object.create(null);
         for (var e = 0; e < existingRecords.length; e++) {
             var er = existingRecords[e];
