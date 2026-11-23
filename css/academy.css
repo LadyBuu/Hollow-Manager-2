@@ -1,62 +1,55 @@
 /**
- * css/academy.css - Academy tab shell
- *
- * The outer chrome shared by every Academy sub-view:
- *   - View switcher (People / Exams / Weekly Teams / Rankings /
- *     Disciplines / Locations / Shared Groups)
- *   - Top bar (class selector, week input)
- *   - Two-panel layout (sidebar + detail)
- *   - Sidebar (list container + filters)
- *   - Detail panel frame
- *   - Shared badges used across sub-views
- *   - Rankings table + drag-and-drop indicators (v35)
- *
- * Load order:
- *   shared.css
- *   academy.css           <- this file
- *   academy/<subview>.css
- *
- * Sub-view files must NOT redefine the classes in this file. If a
- * sub-view needs a more specific version, it narrows the selector
- * (.academy-ranking-panel .academy-something) rather than
- * redeclaring the shared rule.
- *
- * CONSOLIDATION TARGETS:
- *   Three rule blocks in this file — the shared detail header, the
- *   shared detail section, and the detail placeholder — are
- *   currently NOT emitted by any renderer. Each of the four detail
- *   panels (character, class, location, discipline) declares its
- *   own prefixed copy of the same shape in its sub-file. The blocks
- *   here are the intended canonical shape for a future pass that
- *   collapses the four copies into these base rules. Until that
- *   pass, they are documentation, not active CSS.
- *
- *   The duplication is marked at each block so a future reader does
- *   not mistake it for dead code to delete.
- *
- * ROLE BADGES:
- *   .academy-role-badge and its variants are declared here AND in
- *   academy/character-detail.css. The character-detail copy loads
- *   later and wins the cascade for every shared property. The copy
- *   here is retained as the base shape; the character-detail copy
- *   is authoritative for the character detail panel. When the base
- *   shape and the character-detail shape are eventually reconciled,
- *   keep the more specific values and delete the other copy.
- *
- * RANKINGS (v35):
- *   The Rankings table and its drag-and-drop indicators live in
- *   this file because the table reuses the .rankings-* class names
- *   from teams.css (same grid, same column layout), and the
- *   academy-specific additions (drag handle, drop-before/after,
- *   manual badge, insert strip) are small. If a future pass moves
- *   the .rankings-* base into shared.css, this section narrows to
- *   just the .academy-ranking-* additions.
- */
-
+css/academy.css - Academy tab shell
+The outer chrome shared by every Academy sub-view:
+View switcher (People / Exams / Weekly Teams / Rankings /
+Disciplines / Locations / Shared Groups)
+Top bar (class selector, week input)
+Two-panel layout (sidebar + detail)
+Sidebar (list container + filters)
+Detail panel frame
+Shared badges used across sub-views
+Rankings table + drag-and-drop indicators (v36)
+Load order:
+shared.css
+academy.css           <- this file
+academy/<subview>.css
+Sub-view files must NOT redefine the classes in this file. If a
+sub-view needs a more specific version, it narrows the selector
+(.academy-ranking-panel .academy-something) rather than
+redeclaring the shared rule.
+CONSOLIDATION TARGETS:
+Three rule blocks in this file — the shared detail header, the
+shared detail section, and the detail placeholder — are
+currently NOT emitted by any renderer. Each of the four detail
+panels (character, class, location, discipline) declares its
+own prefixed copy of the same shape in its sub-file. The blocks
+here are the intended canonical shape for a future pass that
+collapses the four copies into these base rules. Until that
+pass, they are documentation, not active CSS.
+The duplication is marked at each block so a future reader does
+not mistake it for dead code to delete.
+ROLE BADGES:
+.academy-role-badge and its variants are declared here AND in
+academy/character-detail.css. The character-detail copy loads
+later and wins the cascade for every shared property. The copy
+here is retained as the base shape; the character-detail copy
+is authoritative for the character detail panel. When the base
+shape and the character-detail shape are eventually reconciled,
+keep the more specific values and delete the other copy.
+RANKINGS (v36 — aligned with teams.css):
+The Rankings table now reuses the exact same grid structure as
+the Teams Rankings tab: .rankings-container, .rankings-header,
+.rankings-table, .rankings-table-header, .rankings-table-row,
+and .rankings-col-* columns. The academy-specific additions
+(drag handle, drop-before/after indicators, manual badge,
+instructor badge, insert strip, and gold/silver/bronze rank
+badges) are layered on top.
+If a future pass moves the .rankings-* base into shared.css,
+this section narrows to just the .academy-ranking-* additions.
+*/
 /* ============================================================
-   VIEW SWITCHER
-   ============================================================ */
-
+VIEW SWITCHER
+============================================================ */
 .academy-view-nav {
     display: flex;
     flex-wrap: wrap;
@@ -65,7 +58,6 @@
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border);
 }
-
 .academy-view-btn {
     background: transparent;
     border: 1px solid transparent;
@@ -78,34 +70,28 @@
     transition: 0.2s;
     white-space: nowrap;
 }
-
 .academy-view-btn:hover {
     color: var(--text);
     background: var(--panel-alt);
 }
-
 .academy-view-btn.active {
     color: var(--accent);
     border-color: var(--accent);
     background: var(--accent-soft);
     font-weight: 600;
 }
-
 @media (max-width: 480px) {
     .academy-view-btn {
         font-size: 0.6rem;
         padding: 4px 8px;
     }
 }
-
 /* ============================================================
-   TOP BAR
-   ============================================================
-   Every sub-view uses the same top bar shape: a class selector
-   on the left, a week input on the right. Sub-views that need
-   extra controls add them inside .academy-top-left / -right.
- */
-
+TOP BAR
+Every sub-view uses the same top bar shape: a class selector
+on the left, a week input on the right. Sub-views that need
+extra controls add them inside .academy-top-left / -right.
+*/
 .academy-top-bar {
     display: flex;
     flex-wrap: wrap;
@@ -118,7 +104,6 @@
     border-radius: var(--radius);
     margin-bottom: 10px;
 }
-
 .academy-top-left,
 .academy-top-right {
     display: flex;
@@ -126,13 +111,11 @@
     gap: 6px;
     flex-wrap: wrap;
 }
-
 .academy-top-label {
     font-size: 0.65rem;
     color: var(--text-dim);
     font-weight: 500;
 }
-
 .academy-class-select,
 .academy-week-input {
     padding: 4px 8px;
@@ -143,21 +126,17 @@
     font-size: 0.72rem;
     font-family: 'Inter', sans-serif;
 }
-
 .academy-class-select {
     min-width: 180px;
 }
-
 .academy-week-input {
     width: 70px;
 }
-
 .academy-class-select:focus,
 .academy-week-input:focus {
     outline: none;
     border-color: var(--accent);
 }
-
 @media (max-width: 480px) {
     .academy-top-bar {
         flex-direction: column;
@@ -172,39 +151,32 @@
         flex: 1;
     }
 }
-
 /* ============================================================
-   BODY WRAPPERS
-   ============================================================ */
-
+BODY WRAPPERS
+============================================================ */
 .academy-body {
     min-width: 0;
 }
-
 /*
- * .academy-body-placeholder IS emitted: academy-view.js's
- * renderPlaceholder wraps its empty state in it.
- *
- * .academy-body-empty is not currently emitted. It is retained
- * alongside the placeholder rule because the two describe the same
- * empty-body shape and a caller may reasonably reach for either
- * name. If one is ever removed, remove both.
- */
+.academy-body-placeholder IS emitted: academy-view.js's
+renderPlaceholder wraps its empty state in it.
+.academy-body-empty is not currently emitted. It is retained
+alongside the placeholder rule because the two describe the same
+empty-body shape and a caller may reasonably reach for either
+name. If one is ever removed, remove both.
+*/
 .academy-body-empty,
 .academy-body-placeholder {
     padding: 20px;
     text-align: center;
 }
-
 /* ============================================================
-   TWO-PANEL LAYOUT
-   ============================================================
-   People, Disciplines, Locations, and Shared Groups share the same
-   grid: 320px sidebar + flexible detail. Sub-views with their own
-   layout (Exams, Weekly Teams, Rankings) define their own grid
-   in their sub-file.
- */
-
+TWO-PANEL LAYOUT
+People, Disciplines, Locations, and Shared Groups share the same
+grid: 320px sidebar + flexible detail. Sub-views with their own
+layout (Exams, Weekly Teams, Rankings) define their own grid
+in their sub-file.
+*/
 .academy-people-layout,
 .academy-discipline-layout,
 .academy-location-layout,
@@ -214,7 +186,6 @@
     gap: 12px;
     align-items: start;
 }
-
 @media (max-width: 768px) {
     .academy-people-layout,
     .academy-discipline-layout,
@@ -224,11 +195,9 @@
         gap: 10px;
     }
 }
-
 /* ============================================================
-   SIDEBAR
-   ============================================================ */
-
+SIDEBAR
+============================================================ */
 .academy-people-sidebar,
 .academy-discipline-sidebar,
 .academy-location-sidebar,
@@ -240,7 +209,6 @@
     max-height: 640px;
     overflow-y: auto;
 }
-
 @media (max-width: 768px) {
     .academy-people-sidebar,
     .academy-discipline-sidebar,
@@ -249,11 +217,9 @@
         max-height: 320px;
     }
 }
-
 /* ============================================================
-   FILTERS (sidebar controls)
-   ============================================================ */
-
+FILTERS (sidebar controls)
+============================================================ */
 .academy-character-filters,
 .academy-discipline-filters,
 .academy-location-filters {
@@ -262,7 +228,6 @@
     gap: 4px;
     margin-bottom: 8px;
 }
-
 .academy-people-search,
 .academy-discipline-search,
 .academy-location-search,
@@ -276,7 +241,6 @@
     font-size: 0.7rem;
     font-family: 'Inter', sans-serif;
 }
-
 .academy-people-search:focus,
 .academy-discipline-search:focus,
 .academy-location-search:focus,
@@ -284,13 +248,11 @@
     outline: none;
     border-color: var(--accent);
 }
-
 .academy-filter-label {
     font-size: 0.6rem;
     color: var(--text-dim);
     margin-top: 2px;
 }
-
 .academy-people-role,
 .academy-people-status,
 .academy-discipline-type-filter,
@@ -304,7 +266,6 @@
     font-size: 0.7rem;
     font-family: 'Inter', sans-serif;
 }
-
 .academy-people-role:focus,
 .academy-people-status:focus,
 .academy-discipline-type-filter:focus,
@@ -312,11 +273,9 @@
     outline: none;
     border-color: var(--accent);
 }
-
 /* ============================================================
-   LIST (sidebar)
-   ============================================================ */
-
+LIST (sidebar)
+============================================================ */
 .academy-character-list,
 .academy-discipline-list,
 .academy-location-list {
@@ -324,7 +283,6 @@
     flex-direction: column;
     gap: 2px;
 }
-
 .academy-character-row,
 .academy-discipline-row,
 .academy-location-row {
@@ -334,13 +292,11 @@
     cursor: pointer;
     transition: 0.15s;
 }
-
 .academy-character-row:hover,
 .academy-discipline-row:hover,
 .academy-location-row:hover {
     background: var(--panel-alt);
 }
-
 .academy-character-row.selected,
 .academy-discipline-row.selected,
 .academy-location-row.selected {
@@ -348,25 +304,22 @@
     border-left: 3px solid var(--accent);
     padding-left: 6px;
 }
-
 .academy-character-row.deceased {
     opacity: 0.5;
 }
-
 /*
- * NOTE: .academy-character-row.eliminated is styled here but the
- * People view renderer (academy-people-view.js) does not currently
- * apply the class. The VM carries `person.eliminated`, and the
- * roster projection sets it, so the flag is present; the renderer
- * just doesn't read it. Fixing that is a renderer change, not a
- * CSS change. The rule stays here so the fix is a one-line change
- * on the renderer side.
- */
+NOTE: .academy-character-row.eliminated is styled here but the
+People view renderer (academy-people-view.js) does not currently
+apply the class. The VM carries `person.eliminated`, and the
+roster projection sets it, so the flag is present; the renderer
+just doesn't read it. Fixing that is a renderer change, not a
+CSS change. The rule stays here so the fix is a one-line change
+on the renderer side.
+*/
 .academy-character-row.eliminated {
     border-left: 3px solid var(--danger);
     padding-left: 6px;
 }
-
 .academy-character-row-main,
 .academy-discipline-row-main,
 .academy-location-row-main {
@@ -376,7 +329,6 @@
     gap: 6px;
     flex-wrap: wrap;
 }
-
 .academy-character-name,
 .academy-discipline-name,
 .academy-location-name {
@@ -384,7 +336,6 @@
     font-weight: 500;
     color: var(--text);
 }
-
 .academy-character-row-status,
 .academy-discipline-row-meta,
 .academy-location-row-meta {
@@ -392,20 +343,18 @@
     color: var(--text-dim);
     margin-top: 2px;
 }
-
 .academy-character-row-warning {
     font-size: 0.6rem;
     color: var(--danger);
     margin-top: 2px;
     font-weight: 600;
 }
-
 /*
- * .academy-character-role-badge is emitted by the People view
- * list. It is a DIFFERENT class from .academy-role-badge (used
- * inside the character detail panel), which lives further down.
- * Do not merge them.
- */
+.academy-character-role-badge is emitted by the People view
+list. It is a DIFFERENT class from .academy-role-badge (used
+inside the character detail panel), which lives further down.
+Do not merge them.
+*/
 .academy-character-role-badge {
     font-size: 0.5rem;
     color: var(--accent);
@@ -416,11 +365,9 @@
     font-weight: 600;
     white-space: nowrap;
 }
-
 /* ============================================================
-   DETAIL PANEL
-   ============================================================ */
-
+DETAIL PANEL
+============================================================ */
 .academy-people-detail,
 .academy-discipline-detail,
 .academy-location-detail,
@@ -433,7 +380,6 @@
     max-height: 640px;
     overflow-y: auto;
 }
-
 @media (max-width: 768px) {
     .academy-people-detail,
     .academy-discipline-detail,
@@ -442,49 +388,41 @@
         max-height: none;
     }
 }
-
 /*
- * .academy-detail-empty IS emitted: by academy-class-detail.js
- * and academy-character-detail.js when no panel is selected. The
- * class wraps a nested .empty-state paragraph; this rule provides
- * the padding and centring; shared.css's .empty-state provides
- * the type treatment.
- */
+.academy-detail-empty IS emitted: by academy-class-detail.js
+and academy-character-detail.js when no panel is selected. The
+class wraps a nested .empty-state paragraph; this rule provides
+the padding and centring; shared.css's .empty-state provides
+the type treatment.
+*/
 .academy-detail-empty {
     padding: 30px 12px;
     text-align: center;
     color: var(--text-dim);
     font-size: 0.75rem;
 }
-
 /* ============================================================
-   SHARED DETAIL HEADER (CONSOLIDATION TARGET)
-   ============================================================
-   NOT CURRENTLY EMITTED. The four detail panels (character,
-   class, location, discipline) each declare their own prefixed
-   copy of this shape in their sub-file:
-
-     .academy-character-detail-header    (character-detail.css)
-     .academy-class-detail-header        (class-detail.css)
-     .academy-location-detail-header     (location.css)
-     .academy-discipline-editor-header   (discipline.css)
-
-   Each of those copies is a near-duplicate of the rules below.
-   The intent of this block is to become the canonical shape so
-   the four copies can be narrowed to only their differences.
-
-   Until that consolidation happens, these rules do nothing.
-   Do not delete them without also deciding whether to keep the
-   consolidation intent. If the intent is dropped, delete the
-   whole block in the same pass.
- */
-
+SHARED DETAIL HEADER (CONSOLIDATION TARGET)
+NOT CURRENTLY EMITTED. The four detail panels (character,
+class, location, discipline) each declare their own prefixed
+copy of this shape in their sub-file:
+ .academy-character-detail-header    (character-detail.css)
+ .academy-class-detail-header        (class-detail.css)
+ .academy-location-detail-header     (location.css)
+ .academy-discipline-editor-header   (discipline.css)
+Each of those copies is a near-duplicate of the rules below.
+The intent of this block is to become the canonical shape so
+the four copies can be narrowed to only their differences.
+Until that consolidation happens, these rules do nothing.
+Do not delete them without also deciding whether to keep the
+consolidation intent. If the intent is dropped, delete the
+whole block in the same pass.
+*/
 .academy-detail-header {
     padding-bottom: 10px;
     border-bottom: 1px solid var(--border-soft);
     margin-bottom: 10px;
 }
-
 .academy-detail-title-row {
     display: flex;
     align-items: center;
@@ -492,70 +430,56 @@
     flex-wrap: wrap;
     margin-bottom: 6px;
 }
-
 .academy-detail-title {
     font-size: 1.1rem;
     color: var(--accent);
     margin: 0;
 }
-
 .academy-detail-meta {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
     font-size: 0.7rem;
 }
-
 .academy-detail-meta-item .meta-label {
     color: var(--text-dim);
     font-size: 0.65rem;
 }
-
 .academy-meta-muted {
     opacity: 0.7;
 }
-
 .academy-meta-danger {
     color: var(--danger);
     font-weight: 600;
 }
-
 .academy-detail-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-top: 6px;
 }
-
 /*
- * NOTE on .academy-meta-muted and .academy-meta-danger:
- * Unlike the rest of this block, these two ARE emitted —
- * academy-class-detail.js applies both. They live here because
- * they are vocabulary shared by every detail panel's meta row,
- * not because they belong to the consolidation target. If this
- * block is ever deleted, these two must be preserved elsewhere.
- */
-
+NOTE on .academy-meta-muted and .academy-meta-danger:
+Unlike the rest of this block, these two ARE emitted —
+academy-class-detail.js applies both. They live here because
+they are vocabulary shared by every detail panel's meta row,
+not because they belong to the consolidation target. If this
+block is ever deleted, these two must be preserved elsewhere.
+*/
 /* ============================================================
-   SHARED SECTION (CONSOLIDATION TARGET)
-   ============================================================
-   NOT CURRENTLY EMITTED. Each detail panel declares its own
-   prefixed copy:
-
-     .academy-character-detail-section-*  (character-detail.css)
-     .academy-location-detail-section-*   (location.css)
-
-   The discipline and class panels do not use this shape (the
-   discipline editor uses .academy-discipline-editor-section-*,
-   which is a different structure entirely).
-
-   Same consolidation intent as the block above.
- */
-
+SHARED SECTION (CONSOLIDATION TARGET)
+NOT CURRENTLY EMITTED. Each detail panel declares its own
+prefixed copy:
+ .academy-character-detail-section-*  (character-detail.css)
+ .academy-location-detail-section-*   (location.css)
+The discipline and class panels do not use this shape (the
+discipline editor uses .academy-discipline-editor-section-*,
+which is a different structure entirely).
+Same consolidation intent as the block above.
+*/
 .academy-detail-section {
     margin-bottom: 14px;
 }
-
 .academy-detail-section-header {
     display: flex;
     justify-content: space-between;
@@ -566,23 +490,19 @@
     margin-bottom: 6px;
     border-bottom: 1px solid var(--border-soft);
 }
-
 .academy-detail-section-title {
     font-size: 0.8rem;
     color: var(--accent);
     margin: 0;
 }
-
 .academy-detail-section-subtitle,
 .academy-detail-section-count {
     font-size: 0.65rem;
     color: var(--text-dim);
 }
-
 /* ============================================================
-   SHARED BADGES
-   ============================================================ */
-
+SHARED BADGES
+============================================================ */
 .class-status-badge {
     display: inline-block;
     font-size: 0.55rem;
@@ -592,52 +512,43 @@
     border: 1px solid;
     white-space: nowrap;
 }
-
 .class-status-active {
     color: var(--accent);
     background: var(--accent-soft);
     border-color: var(--accent);
 }
-
 .class-status-archived {
     color: var(--text-dim);
     background: var(--panel-alt);
     border-color: var(--border);
 }
-
 .class-status-graduated {
     color: var(--info);
     background: var(--info-soft);
     border-color: var(--info);
 }
-
 .class-status-unknown {
     color: var(--text-dim);
     background: var(--panel-alt);
     border-color: var(--border);
 }
-
 /* ============================================================
-   ROLE BADGES
-   ============================================================
-   These are emitted by academy-character-detail.js (mode badge in
-   the panel header). The same three selectors are ALSO declared
-   in academy/character-detail.css, which loads after this file
-   and wins the cascade for every shared property.
-
-   The copy here is retained as the base shape. The
-   character-detail copy is authoritative for the character detail
-   panel. When the two are eventually reconciled, keep the more
-   specific values from character-detail.css and delete this
-   block, OR keep the base here and delete the character-detail
-   copy. Do not leave both indefinitely.
-
-   .academy-role-trainee is dead vocabulary. 'trainee' has not
-   been a valid role since v27; nothing emits it. It is retained
-   alongside the two live variants so the selector group stays
-   whole if the role ever returns.
- */
-
+ROLE BADGES
+These are emitted by academy-character-detail.js (mode badge in
+the panel header). The same three selectors are ALSO declared
+in academy/character-detail.css, which loads after this file
+and wins the cascade for every shared property.
+The copy here is retained as the base shape. The
+character-detail copy is authoritative for the character detail
+panel. When the two are eventually reconciled, keep the more
+specific values from character-detail.css and delete this
+block, OR keep the base here and delete the character-detail
+copy. Do not leave both indefinitely.
+.academy-role-trainee is dead vocabulary. 'trainee' has not
+been a valid role since v27; nothing emits it. It is retained
+alongside the two live variants so the selector group stays
+whole if the role ever returns.
+*/
 .academy-role-badge {
     display: inline-block;
     font-size: 0.5rem;
@@ -646,40 +557,36 @@
     font-weight: 600;
     white-space: nowrap;
 }
-
 .academy-role-instructor {
     color: var(--info);
     background: var(--info-soft);
     border: 1px solid var(--info);
 }
-
 .academy-role-student,
 .academy-role-trainee {
     color: var(--accent);
     background: var(--accent-soft);
     border: 1px solid var(--accent);
 }
-
 /* ============================================================
-   RANKINGS — TABLE + DRAG-AND-DROP (v35)
-   ============================================================
-   The base .rankings-table / .rankings-table-row / .rankings-col-*
-   grid is shared with the Teams Rankings tab and lives in
-   teams.css. This section adds only the academy-specific pieces:
-
-     - The rank cell's drag handle (☰) shown on hover.
-     - The .drop-before / .drop-after indicator applied by
-       AcademyRankingController at drag time.
-     - The "manual" badge on hand-tuned rows.
-     - The insert strip below the table.
-     - The academy rank badge (gold / silver / bronze / default).
-
-   None of these redefine the teams grid. If teams.css moves the
-   .rankings-* base into shared.css, this section is unchanged.
- */
-
+RANKINGS — TABLE + DRAG-AND-DROP (v36)
+Aligned with teams.css. The base .rankings-container,
+.rankings-header, .rankings-table, .rankings-table-row, and
+.rankings-col-* grid are shared with the Teams Rankings tab
+and live in teams.css. This section adds only the academy-
+specific pieces:
+ - The academy rank badge (gold / silver / bronze / default)
+   applied inside the rank cell.
+ - The rank cell's drag handle (☰) shown on hover.
+ - The .drop-before / .drop-after indicator applied by
+   AcademyRankingController at drag time.
+ - The "manual" badge on hand-tuned rows.
+ - The "instructor" badge on instructor rows.
+ - The insert strip below the table.
+None of these redefine the teams grid. If teams.css moves the
+.rankings-* base into shared.css, this section is unchanged.
+*/
 /* ---- Academy rank badge (rank cell number) ---- */
-
 .academy-rank-badge {
     display: inline-block;
     min-width: 2.2em;
@@ -691,39 +598,32 @@
     font-variant-numeric: tabular-nums;
     line-height: 1.1;
 }
-
 .academy-rank-gold {
     color: #7a5a00;
     background: #fff3c4;
     border: 1px solid #e8c14b;
 }
-
 .academy-rank-silver {
     color: #4a4a4a;
     background: #eef0f4;
     border: 1px solid #b6bcc6;
 }
-
 .academy-rank-bronze {
     color: #6b3a12;
     background: #f8e2cf;
     border: 1px solid #c98b5a;
 }
-
 .academy-rank-default {
     color: var(--text-dim);
     background: var(--panel-alt);
     border: 1px solid var(--border);
 }
-
 .academy-rank-unknown {
     color: var(--text-dim);
     background: transparent;
     border: 1px dashed var(--border);
 }
-
 /* ---- Drag handle ---- */
-
 .rankings-drag-handle {
     display: inline-block;
     margin-left: 6px;
@@ -734,64 +634,52 @@
     opacity: 0.45;
     transition: opacity 0.15s, color 0.15s;
 }
-
 .rankings-table-row:hover .rankings-drag-handle {
     opacity: 0.9;
     color: var(--text);
 }
-
 .rankings-drag-handle:active {
     cursor: grabbing;
 }
-
 /* ---- Row is a drag source only via the handle ---- */
-
 .academy-ranking-row {
     /* The row is draggable="true" for the handle, but we do not
-       want the browser's default text-selection drag on the row
-       body. The handle is the only intended grab point; the
-       controller also cancels dragstart when it does not see
-       .rankings-drag-handle. */
+    want the browser's default text-selection drag on the row
+    body. The handle is the only intended grab point; the
+    controller also cancels dragstart when it does not see
+    .rankings-drag-handle. */
     transition: background-color 0.15s, box-shadow 0.15s;
 }
-
 .academy-ranking-row.is-manual {
     /* Subtle tint so a hand-tuned rank is visually distinct from
-       a generated one. */
+    a generated one. */
     background: rgba(255, 243, 196, 0.08);
 }
-
 .academy-ranking-row-instructor {
     /* Kept parallel with the prior view: instructors shown in
-       the ranking are visually distinguished. */
+    the ranking are visually distinguished. */
     font-style: italic;
 }
-
 /* ---- Drop indicator ---- */
 /* Applied by AcademyRankingController.handleDragOver and cleared
-   by handleDrop / handleDragEnd / handleDragLeave. The row is
-   position-relative by default in the grid layout; the pseudo-
-   element lines the top or bottom edge. */
-
+by handleDrop / handleDragEnd / handleDragLeave. The row is
+position-relative by default in the grid layout; the pseudo-
+element lines the top or bottom edge. */
 .academy-ranking-row.drop-before {
     box-shadow: inset 0 3px 0 0 var(--accent);
 }
-
 .academy-ranking-row.drop-after {
     box-shadow: inset 0 -3px 0 0 var(--accent);
 }
-
 /* The renderer emits an empty .rankings-drop-marker as a child of
-   each row. It is not used for layout — the indicator is drawn
-   via box-shadow on the row — but keeping the element present
-   means a future redesign can switch to an absolutely-positioned
-   line without touching the renderer. */
+each row. It is not used for layout — the indicator is drawn
+via box-shadow on the row — but keeping the element present
+means a future redesign can switch to an absolutely-positioned
+line without touching the renderer. */
 .rankings-drop-marker {
     display: none;
 }
-
 /* ---- Manual badge ---- */
-
 .academy-ranking-manual-badge {
     display: inline-block;
     font-size: 0.5rem;
@@ -803,9 +691,7 @@
     font-weight: 600;
     white-space: nowrap;
 }
-
 /* ---- Instructor badge in the name cell ---- */
-
 .academy-ranking-instructor-badge {
     display: inline-block;
     font-size: 0.5rem;
@@ -817,9 +703,7 @@
     font-weight: 600;
     white-space: nowrap;
 }
-
 /* ---- Name button (keyboard-accessible row activation) ---- */
-
 .academy-ranking-name-btn {
     background: transparent;
     border: none;
@@ -830,38 +714,30 @@
     cursor: pointer;
     text-align: left;
 }
-
 .academy-ranking-name-btn:hover,
 .academy-ranking-name-btn:focus-visible {
     color: var(--accent);
     text-decoration: underline;
     outline: none;
 }
-
 /* ---- Ranked average (legacy column, kept for compatibility) ---- */
-
 .academy-ranking-average {
     font-variant-numeric: tabular-nums;
     font-size: 0.7rem;
 }
-
 .academy-ranking-average-unknown {
     color: var(--text-dim);
 }
-
 /* ---- Panel wrapper + header ---- */
-
 .academy-ranking-layout {
     min-width: 0;
 }
-
 .academy-ranking-panel {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 12px;
 }
-
 .academy-ranking-header {
     display: flex;
     flex-wrap: wrap;
@@ -869,21 +745,17 @@
     gap: 10px;
     margin-bottom: 10px;
 }
-
 .academy-ranking-title {
     font-size: 0.9rem;
     color: var(--accent);
     margin: 0;
 }
-
 .academy-ranking-subtitle,
 .academy-ranking-count {
     font-size: 0.65rem;
     color: var(--text-dim);
 }
-
 /* ---- Insert strip ---- */
-
 .academy-ranking-insert-strip {
     display: flex;
     flex-wrap: wrap;
@@ -893,13 +765,11 @@
     padding-top: 10px;
     border-top: 1px solid var(--border-soft);
 }
-
 .academy-ranking-insert-label {
     font-size: 0.65rem;
     color: var(--text-dim);
     font-weight: 500;
 }
-
 .academy-ranking-insert-select {
     padding: 4px 8px;
     background: var(--bg);
@@ -910,12 +780,10 @@
     font-family: 'Inter', sans-serif;
     min-width: 160px;
 }
-
 .academy-ranking-insert-select:focus {
     outline: none;
     border-color: var(--accent);
 }
-
 .academy-ranking-insert-position {
     width: 70px;
     padding: 4px 8px;
@@ -926,29 +794,23 @@
     font-size: 0.72rem;
     font-family: 'Inter', sans-serif;
 }
-
 .academy-ranking-insert-position:focus {
     outline: none;
     border-color: var(--accent);
 }
-
 .academy-ranking-insert-select:disabled,
 .academy-ranking-insert-position:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
-
 /* ---- Empty state (no class / no entries) ---- */
-
 .academy-ranking-empty {
     padding: 30px 12px;
     text-align: center;
     color: var(--text-dim);
     font-size: 0.75rem;
 }
-
 /* ---- Responsive: collapse the insert strip stack ---- */
-
 @media (max-width: 480px) {
     .academy-ranking-insert-select {
         min-width: 0;
@@ -961,11 +823,9 @@
         padding: 8px;
     }
 }
-
 /* ============================================================
-   MOBILE
-   ============================================================ */
-
+MOBILE
+============================================================ */
 @media (max-width: 480px) {
     .academy-people-detail,
     .academy-discipline-detail,
@@ -973,7 +833,6 @@
     .academy-shared-groups-results {
         padding: 8px;
     }
-
     .academy-detail-title {
         font-size: 0.95rem;
     }
