@@ -388,6 +388,32 @@
 
         // ---- Gather relationships involving the focused character ----
         var relationships = SocialQueries.getCharacterRelationships(focusedId) || [];
+        var typeFilter = document.getElementById('social-type-filter');
+        var searchFilter = document.getElementById('social-search-filter');
+        var selectedType = typeFilter ? typeFilter.value : 'all';
+        var searchTerm = searchFilter ? searchFilter.value.trim().toLocaleLowerCase() : '';
+
+        relationships = relationships.filter(function(rel) {
+            if (selectedType !== 'all' && rel.typeId !== selectedType) {
+                return false;
+            }
+            if (!searchTerm) { return true; }
+            var vm = SocialAggregator.getRelationshipViewModel(rel, focusedId);
+            if (!vm) { return false; }
+            var searchable = [
+                vm.name1, vm.name2, vm.typeLabel,
+                vm.clarification1, vm.clarification2, vm.notes
+            ].join(' ').toLocaleLowerCase();
+            return searchable.indexOf(searchTerm) !== -1;
+        });
+
+        var countDisplay = document.getElementById('relationship-count');
+        if (countDisplay) {
+            var total = (SocialQueries.getCharacterRelationships(focusedId) || []).length;
+            countDisplay.textContent = searchTerm || selectedType !== 'all'
+                ? 'Showing ' + relationships.length + ' of ' + total + ' for this character'
+                : relationships.length + ' relationships for this character';
+        }
 
         // ---- Build the ring: one entry per distinct OTHER character ----
         var ringIds = [];
@@ -403,6 +429,17 @@
             if (ringSeen[otherId]) { continue; }
             ringSeen[otherId] = true;
             ringIds.push(otherId);
+        }
+
+        if (ringIds.length === 0) {
+            var emptyMessage = searchTerm || selectedType !== 'all'
+                ? 'No connections match the current filters'
+                : 'No recorded relationships for this character';
+            transformGroup.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" ' +
+                'text-anchor="middle" fill="var(--text-dim)" font-size="14">' +
+                escapeHtml(emptyMessage) + '</text>';
+            updateLegend();
+            return;
         }
 
         // ---- Focused character display data ----
@@ -436,12 +473,12 @@
         html += '<text x="' + (width / 2) + '" y="' + (height / 2 - 10) + '" ' +
                 'text-anchor="middle" fill="var(--text-dim)" ' +
                 'font-size="16" font-weight="600">' +
-                'Select a character to focus' +
+                'Choose a character using the Character filter above' +
                 '</text>';
         html += '<text x="' + (width / 2) + '" y="' + (height / 2 + 16) + '" ' +
                 'text-anchor="middle" fill="var(--text-dim)" ' +
                 'font-size="12">' +
-                'Click any node in a focused view to drill into that character.' +
+                'Use the Character filter to start, then select a connected node to explore further.' +
                 '</text>';
         transformGroup.innerHTML = html;
     }
