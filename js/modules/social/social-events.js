@@ -773,8 +773,12 @@
         }
 
         if (graphActive) {
+            var selectedCharacter = document.getElementById('social-character-filter');
+            var selectedId = selectedCharacter && selectedCharacter.value !== 'all'
+                ? selectedCharacter.value
+                : null;
             // setGraphVisible schedules layout after the graph becomes measurable.
-            SocialGraph.setGraphVisible(true);
+            SocialGraph.setGraphVisible(true, selectedId);
             renderGraphBreadcrumb();
         } else {
             SocialGraph.setGraphVisible(false);
@@ -802,7 +806,13 @@
             addEventListener(searchFilter, 'input', refreshFilteredViews);
         }
         if (charFilter) {
-            addEventListener(charFilter, 'change', refreshFilteredViews);
+            addEventListener(charFilter, 'change', function() {
+                if (SocialGraph.isGraphVisible()) {
+                    SocialGraph.setFocus(charFilter.value === 'all' ? null : charFilter.value);
+                    renderGraphBreadcrumb();
+                }
+                refreshFilteredViews();
+            });
         }
         if (typeFilter) {
             addEventListener(typeFilter, 'change', refreshFilteredViews);
@@ -868,6 +878,10 @@
                 SocialGraph.pushFocus(nodeId);
             }
 
+            var characterFilter = document.getElementById('social-character-filter');
+            if (characterFilter) {
+                characterFilter.value = SocialGraph.getFocusedCharacterId() || 'all';
+            }
             renderGraphBreadcrumb();
         });
 
@@ -876,6 +890,20 @@
             addEventListener(backBtn, 'click', function(e) {
                 e.preventDefault();
                 SocialGraph.popFocus();
+                var characterFilter = document.getElementById('social-character-filter');
+                if (characterFilter) {
+                    characterFilter.value = SocialGraph.getFocusedCharacterId() || 'all';
+                }
+                renderGraphBreadcrumb();
+            });
+        }
+
+        var resetBtn = document.getElementById('graph-reset-btn');
+        if (resetBtn) {
+            addEventListener(resetBtn, 'click', function() {
+                SocialGraph.resetFocus();
+                var characterFilter = document.getElementById('social-character-filter');
+                if (characterFilter) { characterFilter.value = 'all'; }
                 renderGraphBreadcrumb();
             });
         }
@@ -888,6 +916,8 @@
             if (!charId) { return; }
 
             jumpFocusTo(charId);
+            var characterFilter = document.getElementById('social-character-filter');
+            if (characterFilter) { characterFilter.value = charId; }
             renderGraphBreadcrumb();
         });
     }
@@ -923,12 +953,13 @@
         var path = SocialGraph.getFocusPath();
 
         if (backBtn) {
-            backBtn.style.display = path.length > 1 ? 'inline-block' : 'none';
+            backBtn.hidden = path.length <= 1;
         }
 
         container.textContent = '';
 
         if (path.length === 0) {
+            container.textContent = 'Choose a character above to explore their connections';
             return;
         }
 
