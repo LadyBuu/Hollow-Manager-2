@@ -72,28 +72,26 @@
         transform: translateX(0);
     }
 
-    .characters-sidebar::before {
-        content: "";
+    .characters-backdrop {
+        display: block;
         position: fixed;
         inset: 0;
+        z-index: 140;
         background: rgba(0, 0, 0, 0.45);
         opacity: 0;
         pointer-events: none;
         transition: opacity 0.22s ease;
-        z-index: -1;
     }
 
-    .characters-sidebar.open::before {
+    .characters-backdrop.open {
         opacity: 1;
         pointer-events: auto;
     }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .characters-sidebar {
-        transition: none;
-    }
-    .characters-sidebar::before {
+    .characters-sidebar,
+    .characters-backdrop {
         transition: none;
     }
 }
@@ -180,13 +178,12 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        position: fixed;
-        top: 8px;
-        left: 8px;
+        position: relative;
         z-index: 200;
         width: 34px;
         height: 34px;
         padding: 0;
+        margin: 0 0 -34px auto;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
     }
 }
@@ -268,6 +265,10 @@
     gap: 2px;
 }
 
+.characters-backdrop {
+    display: none;
+}
+
 /* ============================================================
    SELECTION BAR
    ============================================================ */
@@ -307,17 +308,58 @@
    CHARACTER LIST ROWS
    ============================================================ */
 
-.char-list-item {
+ .char-list-item {
     display: flex;
+    width: 100%;
     align-items: flex-start;
     gap: 6px;
     padding: 6px 8px;
     background: transparent;
-    border-radius: 4px;
+    border: 0;
     border-bottom: 1px solid var(--border-soft);
+    border-radius: 4px;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     transition: background 0.15s;
 }
+
+.char-list-item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.char-list-age {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.char-list-name {
+    font-size: 0.75rem;
+}
+
+.char-list-status {
+    color: var(--text-dim);
+    font-size: 0.55rem;
+}
+
+.char-list-item-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.char-list-team-badge,
+.char-list-deceased-badge,
+.char-list-eliminated-badge {
+    font-size: 0.5rem;
+}
+
+.char-list-team-badge { color: var(--info); }
+.char-list-deceased-badge { color: var(--danger); }
+.char-list-eliminated-badge { color: var(--warning); }
 
 .char-list-item:hover {
     background: var(--panel-alt);
@@ -326,8 +368,7 @@
 .char-list-item.selected,
 .char-list-item.active {
     background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-    padding-left: 6px;
+    box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .char-list-item.deceased {
@@ -335,8 +376,11 @@
 }
 
 .char-list-item.eliminated {
-    border-left: 3px solid var(--danger);
-    padding-left: 6px;
+    box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.char-list-item.selected.eliminated {
+    box-shadow: inset 3px 0 0 var(--danger), inset 5px 0 0 var(--accent);
 }
 
 .char-list-item.char-list-item-ticked {
@@ -411,9 +455,15 @@
     overflow-y: auto;
 }
 
+@media (max-width: 768px) {
+    .characters-form-container {
+        max-height: none;
+        overflow: visible;
+    }
+}
+
 @media (max-width: 480px) {
     .characters-form-container {
-        max-height: 500px;
         padding: 6px;
     }
 }
