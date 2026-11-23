@@ -526,3 +526,97 @@
         min-width: 0;
     }
 }
+
+
+/* ============================================================
+   RELATIONSHIP ROW LAYOUT
+   ============================================================ */
+
+#tab-social .relationship-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 8px 8px 18px;
+    border-bottom: 1px solid var(--border-soft);
+    min-width: 0;
+}
+
+#tab-social .relationship-main {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#tab-social .relationship-people {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+    min-width: 0;
+    font-size: 0.78rem;
+}
+
+#tab-social .relationship-person {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+#tab-social .relationship-direction {
+    color: var(--text-dim);
+    flex: 0 0 auto;
+}
+
+#tab-social .relationship-clarifications {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+#tab-social .relationship-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+#tab-social .relationship-period {
+    color: var(--text-dim);
+    font-size: 0.68rem;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+#tab-social .relationship-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+#tab-social .relationship-actions button {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 3px 7px;
+}
+
+@media (max-width: 600px) {
+    #tab-social .relationship-row {
+        align-items: stretch;
+        flex-direction: column;
+        padding: 9px 6px 9px 12px;
+        gap: 7px;
+    }
+
+    #tab-social .relationship-meta {
+        justify-content: space-between;
+        width: 100%;
+    }
+
+    #tab-social .relationship-actions {
+        margin-left: auto;
+    }
+}
