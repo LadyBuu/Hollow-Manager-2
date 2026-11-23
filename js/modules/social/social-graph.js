@@ -381,6 +381,10 @@
 
         // ---- Entry prompt ----
         if (!focusedId) {
+            var countDisplay = document.getElementById('relationship-count');
+            if (countDisplay) {
+                countDisplay.textContent = 'Choose a character to view connections';
+            }
             renderEntryPrompt(width, height, transformGroup);
             updateLegend();
             return;
