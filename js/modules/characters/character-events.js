@@ -1809,6 +1809,19 @@
                 if (id) { handleCharacterSelect(id); }
             }
         );
+
+        addSafeDelegatedListener(
+            container, '.char-list-item', 'keydown',
+            function(e, target) {
+                if (e.target !== target ||
+                    (e.key !== 'Enter' && e.key !== ' ')) {
+                    return;
+                }
+                e.preventDefault();
+                var id = target.dataset.id;
+                if (id) { handleCharacterSelect(id); }
+            }
+        );
     }
 
     // ============================================================
