@@ -814,6 +814,10 @@
                 if (searchFilter) { searchFilter.value = ''; }
                 if (charFilter) { charFilter.value = 'all'; }
                 if (typeFilter) { typeFilter.value = 'all'; }
+                if (SocialGraph.isGraphVisible()) {
+                    SocialGraph.resetFocus();
+                    renderGraphBreadcrumb();
+                }
                 refreshFilteredViews();
             });
         }
