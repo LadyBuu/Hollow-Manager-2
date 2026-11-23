@@ -1377,11 +1377,12 @@
                     break;
 
                 case 'priority':
+                    // Descending means highest severity first.
                     var priorityOrder = {
-                        'critical': 0,
-                        'high': 1,
-                        'medium': 2,
-                        'low': 3
+                        'low': 0,
+                        'medium': 1,
+                        'high': 2,
+                        'critical': 3
                     };
                     av = priorityOrder[a.priority];
                     bv = priorityOrder[b.priority];
