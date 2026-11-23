@@ -36,8 +36,8 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!SocialConstants || typeof SocialConstants.getRelationshipType !== 'function') {
-            missing.push('SocialConstants.getRelationshipType');
+        if (!SocialConstants || typeof SocialConstants.getType !== 'function') {
+            missing.push('SocialConstants.getType');
         }
         if (!SocialConstants || typeof SocialConstants.isDirectional !== 'function') {
             missing.push('SocialConstants.isDirectional');
@@ -296,7 +296,7 @@
     }
 
     function getRelationshipType(typeId) {
-        return SocialConstants.getRelationshipType(typeId);
+        return SocialConstants.getType(typeId);
     }
 
     function getRelationshipTypeLabel(typeId) {
@@ -316,7 +316,7 @@
     }
 
     function getValidRelationshipTypeIds() {
-        return SocialConstants.getValidTypeIds();
+        return SocialConstants.getRelationshipTypes().map(function(type) { return type.id; });
     }
 
     function getDefaultRelationshipTypeId() {
