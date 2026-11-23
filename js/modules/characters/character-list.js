@@ -816,9 +816,10 @@
         if (isTicked) { rowClass += ' char-list-item-ticked'; }
 
         var html = '';
-        html += '<button type="button" class="' + rowClass + '" ' +
+        html += '<div class="' + rowClass + '" ' +
                     'data-id="' + safeId + '" ' +
-                    'aria-label="Edit ' + escapeAttribute(item.name || 'character') + '">';
+                    'role="group" tabindex="0" ' +
+                    'aria-label="Character: ' + escapeAttribute(item.name || 'character') + '">';
 
         // ---- Checkbox cell ----
         html += '<span class="char-list-checkbox-cell">';
@@ -850,7 +851,7 @@
 
         html += '</span>';
 
-        html += '</button>';
+        html += '</div>';
         return html;
     }
 
