@@ -287,7 +287,7 @@ if (window.__missionRenderLoaded) {
      }
      html += '</select>';
      var sortDirection = vm.sortDirection === 'asc' ? 'asc' : 'desc';
-     var sortArrow = sortDirection === 'desc' ? '\\u25bc' : '\\u25b2';
+     var sortArrow = sortDirection === 'desc' ? '\u25bc' : '\u25b2';
      var sortDirectionLabel = sortDirection === 'desc'
          ? 'Sort descending (click to switch to ascending)'
          : 'Sort ascending (click to switch to descending)';
