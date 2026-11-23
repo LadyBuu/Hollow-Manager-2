@@ -276,8 +276,7 @@
         _populatingRelationshipForm = false;
         _relationshipFormBound = false;
 
-        SocialViews.renderSocialView(container);
-
+        // The module entry point owns the initial render. Events only bind handlers.
         bindAddRelationship();
         bindViewModeButtons();
         bindRelationshipForm();
@@ -733,8 +732,9 @@
             var caret = group.querySelector('.relationship-group-caret');
             if (!body) { return; }
 
-            var isHidden = body.style.display === 'none';
-            body.style.display = isHidden ? 'block' : 'none';
+            var isHidden = body.hidden;
+            body.hidden = !isHidden;
+            target.setAttribute('aria-expanded', String(isHidden));
             if (caret) { caret.textContent = isHidden ? '\u25be' : '\u25b8'; }
         });
     }
@@ -760,8 +760,8 @@
 
     function handleViewModeChange(mode) {
         if (mode === 'graph') {
+            // setGraphVisible schedules layout after the graph becomes measurable.
             SocialGraph.setGraphVisible(true);
-            SocialGraph.renderGraph();
             renderGraphBreadcrumb();
         } else {
             SocialGraph.setGraphVisible(false);
