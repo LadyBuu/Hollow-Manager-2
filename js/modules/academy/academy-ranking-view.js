@@ -486,8 +486,7 @@
 
         html += '<div class="' + rowClasses + '" ' +
                     'data-character-id="' + characterIdAttr + '" ' +
-                    'data-position="' + positionAttr + '" ' +
-                    'draggable="true">';
+                    'data-position="' + positionAttr + '">';
 
         // ---- Rank / drag handle ----
         html += '<span class="rankings-col-rank">';
@@ -496,6 +495,8 @@
                 '</span>';
         html += '<span class="rankings-drag-handle" ' +
                     'title="Drag to reorder" ' +
+                    'draggable="true" ' +
+                    'style="touch-action:none; user-select:none;" ' +
                     'aria-hidden="true">' +
                     '\u2630' +
                 '</span>';
