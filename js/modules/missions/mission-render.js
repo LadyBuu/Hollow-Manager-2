@@ -266,6 +266,37 @@ if (window.__missionRenderLoaded) {
      html += renderFilterOption('completed', 'Completed', filter);
      html += renderFilterOption('cancelled', 'Cancelled', filter);
      html += '</select>';
+     html += '<label for="mission-sort">Sort by:</label>';
+     html += '<select id="mission-sort">';
+     var sortOptions = isArray(vm.sortOptions) ? vm.sortOptions : [
+         'date', 'title', 'priority', 'status', 'progress',
+         'tier', 'type', 'team', 'difficulty'
+     ];
+     var sortLabels = {
+         date: 'Date', title: 'Name', priority: 'Priority',
+         status: 'Status', progress: 'Progress',
+         tier: 'Escalation tier', type: 'Mission type',
+         team: 'Team', difficulty: 'Difficulty'
+     };
+     for (var si = 0; si < sortOptions.length; si++) {
+         var sortKey = sortOptions[si];
+         if (!Object.prototype.hasOwnProperty.call(sortLabels, sortKey)) {
+             continue;
+         }
+         html += renderSortOption(sortKey, sortLabels[sortKey], vm.sort || 'date');
+     }
+     html += '</select>';
+     var sortDirection = vm.sortDirection === 'asc' ? 'asc' : 'desc';
+     var sortArrow = sortDirection === 'desc' ? '\\u25bc' : '\\u25b2';
+     var sortDirectionLabel = sortDirection === 'desc'
+         ? 'Sort descending (click to switch to ascending)'
+         : 'Sort ascending (click to switch to descending)';
+     html += '<button type="button" class="secondary mission-sort-direction" ' +
+         'id="mission-sort-direction" data-action="mission-sort-direction" ' +
+         'data-direction="' + sortDirection + '" ' +
+         'aria-label="' + escapeAttribute(sortDirectionLabel) + '" ' +
+         'title="' + escapeAttribute(sortDirectionLabel) + '">' +
+         sortArrow + '</button>';
      html += '<span class="mission-count">' +
                  '<span id="mission-count-total">' +
                      escapeHtml(String(counts.total || 0)) +
@@ -307,6 +338,13 @@ if (window.__missionRenderLoaded) {
      return html;
  }
  function renderFilterOption(value, label, current) {
+     var selected = current === value ? ' selected' : '';
+     return '<option value="' + escapeAttribute(value) + '"' +
+                 selected + '>' +
+                 escapeHtml(label) +
+             '</option>';
+ }
+ function renderSortOption(value, label, current) {
      var selected = current === value ? ' selected' : '';
      return '<option value="' + escapeAttribute(value) + '"' +
                  selected + '>' +
