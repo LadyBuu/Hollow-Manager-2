@@ -1997,13 +1997,10 @@
 /* ============================================================
    MATCHMAKING PLANNER
    ============================================================
-   Two-column planner on desktop: teams on the left, candidates
-   on the right. Each panel scrolls independently.
-
-   On mobile the layout collapses to a single-column grid with
-   two equal-height rows, each panel scrolling its own content.
-   This is what makes it usable on a phone: you do not have to
-   scroll past the entire teams list to reach the candidates.
+   The active planner is a single matrix: candidate row headers,
+   team column headers, selectable intersections, and an
+   expandable details strip beneath each candidate. The matrix
+   scrolls horizontally and vertically inside the modal.
 
    Candidate cells carry a RADIO (not a checkbox), scoped per
    candidate via the group name. Selecting a team for a
@@ -2043,7 +2040,6 @@
     border-radius: var(--radius);
     font-size: 0.72rem;
     color: var(--text-dim);
-    flex: 0 0 auto;
 }
 
 .planner-summary strong {
