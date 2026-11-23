@@ -944,24 +944,29 @@
         }
 
         var html = '';
-        html += '<div class="relationship-row" data-rel-id="' + escapeHtml(vm.id) + '" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
+        html += '<div class="relationship-row" data-rel-id="' + escapeHtml(vm.id) + '">';
 
-        html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
-        html += '<span style="font-weight:600;">' + escapeHtml(vm.name1) + '</span>';
-        html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + escapeHtml(arrow) + '</span>';
-        html += '<span style="font-weight:600;">' + escapeHtml(vm.name2) + '</span>';
-        html += chipsHtml;
-        html += '</span>';
-
-        if (period) {
-            html += '<span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(period) + '</span>';
+        html += '<div class="relationship-main">';
+        html += '<div class="relationship-people">';
+        html += '<span class="relationship-person">' + escapeHtml(vm.name1) + '</span>';
+        html += '<span class="relationship-direction">' + escapeHtml(arrow) + '</span>';
+        html += '<span class="relationship-person">' + escapeHtml(vm.name2) + '</span>';
+        html += '</div>';
+        if (chipsHtml) {
+            html += '<div class="relationship-clarifications">' + chipsHtml + '</div>';
         }
+        html += '</div>';
 
-        html += '<span style="display:flex;gap:4px;">';
+        html += '<div class="relationship-meta">';
+        if (period) {
+            html += '<span class="relationship-period">' + escapeHtml(period) + '</span>';
+        }
+        html += '<div class="relationship-actions">';
         html += childBtnHtml;
-        html += '<button type="button" class="edit-relationship small" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">\u270e</button>';
-        html += '<button type="button" class="delete-relationship small danger" data-id="' + escapeHtml(vm.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">\u2715</button>';
-        html += '</span>';
+        html += '<button type="button" class="edit-relationship small" data-id="' + escapeHtml(vm.id) + '" title="Edit" aria-label="Edit relationship">✎</button>';
+        html += '<button type="button" class="delete-relationship small danger" data-id="' + escapeHtml(vm.id) + '" title="Delete" aria-label="Delete relationship">✕</button>';
+        html += '</div>';
+        html += '</div>';
 
         html += '</div>';
 
