@@ -671,6 +671,30 @@
             return;
         }
 
+        var focusedCheckboxId = null;
+        var activeElement = document.activeElement;
+        if (activeElement &&
+            activeElement.classList &&
+            activeElement.classList.contains('char-list-checkbox')) {
+            focusedCheckboxId = activeElement.dataset
+                ? activeElement.dataset.characterId
+                : null;
+        }
+
+        function replaceRenderedList(html) {
+            container.innerHTML = html;
+            if (!focusedCheckboxId) { return; }
+            var checkboxes = container.querySelectorAll(
+                '.char-list-checkbox'
+            );
+            for (var focusIndex = 0; focusIndex < checkboxes.length; focusIndex++) {
+                if (checkboxes[focusIndex].dataset.characterId === focusedCheckboxId) {
+                    checkboxes[focusIndex].focus();
+                    break;
+                }
+            }
+        }
+
         var html = '';
 
         // The selection bar renders FIRST, before the empty-state
@@ -683,7 +707,7 @@
 
         if (items.length === 0) {
             html += '<p class="empty-state">No characters found.</p>';
-            container.innerHTML = html;
+            replaceRenderedList(html);
             return;
         }
 
@@ -693,7 +717,7 @@
             html += renderRow(items[i], currentEditId);
         }
 
-        container.innerHTML = html;
+        replaceRenderedList(html);
     }
 
     // ============================================================
@@ -780,8 +804,7 @@
         var nameLine = safeName;
         if (item.ageDisplay) {
             nameLine +=
-                ' <span style="color:var(--text-dim);' +
-                    'font-size:0.65rem;">(' +
+                ' <span class="char-list-age">(' +
                     escapeHtml(item.ageDisplay) +
                 ')</span>';
         }
@@ -792,25 +815,10 @@
         if (item.eliminated) { rowClass += ' eliminated'; }
         if (isTicked) { rowClass += ' char-list-item-ticked'; }
 
-        var rowStyle = 'padding:4px 6px;' +
-            'border-bottom:1px solid var(--border-soft);' +
-            'cursor:pointer;';
-        if (isCurrent) {
-            rowStyle += 'background:var(--accent-soft);' +
-                'border-left:3px solid var(--accent);';
-        }
-        // Deceased rows dim when hideDeceased is off. When
-        // hideDeceased is on (the default), deceased rows are
-        // filtered out before render, so this branch does not
-        // fire.
-        if (item.deceased) {
-            rowStyle += 'opacity:0.4;';
-        }
-
         var html = '';
-        html += '<div class="' + rowClass + '" ' +
+        html += '<button type="button" class="' + rowClass + '" ' +
                     'data-id="' + safeId + '" ' +
-                    'style="' + rowStyle + '">';
+                    'aria-label="Edit ' + escapeAttribute(item.name || 'character') + '">';
 
         // ---- Checkbox cell ----
         html += '<span class="char-list-checkbox-cell">';
@@ -827,11 +835,10 @@
         html += '<span class="char-list-content">';
 
         html += '<span class="char-list-line">';
-        html += '<span style="font-size:0.75rem;">' +
+        html += '<span class="char-list-name">' +
                     nameLine +
                 '</span>';
-        html += '<span style="font-size:0.55rem;' +
-                    'color:var(--text-dim);">' +
+        html += '<span class="char-list-status">' +
                     safeStatus +
                 '</span>';
         html += '</span>';
@@ -843,7 +850,7 @@
 
         html += '</span>';
 
-        html += '</div>';
+        html += '</button>';
         return html;
     }
 
@@ -857,8 +864,7 @@
             var team = teams[t];
             if (!team || !team.name) { continue; }
             badges.push(
-                '<span style="font-size:0.5rem;' +
-                    'color:var(--info);">' +
+                '<span class="char-list-team-badge">' +
                     escapeHtml(team.name) +
                 '</span>'
             );
@@ -866,8 +872,7 @@
 
         if (item.deceased) {
             badges.push(
-                '<span style="font-size:0.5rem;' +
-                    'color:var(--danger);">' +
+                '<span class="char-list-deceased-badge">' +
                     'Deceased' +
                 '</span>'
             );
@@ -887,8 +892,7 @@
                     escapeHtml(String(item.eliminationWeek));
             }
             badges.push(
-                '<span style="font-size:0.5rem;' +
-                    'color:var(--warning);">' +
+                '<span class="char-list-eliminated-badge">' +
                     elimText +
                 '</span>'
             );
@@ -896,8 +900,7 @@
 
         if (badges.length === 0) { return ''; }
 
-        return '<span style="display:flex;flex-wrap:wrap;' +
-                    'gap:4px;margin-top:2px;">' +
+        return '<span class="char-list-item-badges">' +
                     badges.join(' ') +
                 '</span>';
     }
