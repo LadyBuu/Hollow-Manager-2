@@ -234,6 +234,8 @@
     var _dragCharId = null;
     var _dragDropTarget = null;
     var _dragDropAfter = false;
+    var _pointerDragCharId = null;
+    var _pointerDragId = null;
 
     // ============================================================
     // CONTEXT NORMALISATION
@@ -627,6 +629,88 @@
         _dragDropAfter = after === true;
     }
 
+
+    // Touch devices do not consistently implement native HTML drag-and-drop.
+    // Use Pointer Events for touch input; mouse continues through native DnD.
+    function handlePointerDown(e) {
+        if (!e || e.pointerType !== 'touch' || _pointerDragCharId) {
+            return;
+        }
+
+        var target = e.target;
+        if (!target || typeof target.closest !== 'function' ||
+            !target.closest('.rankings-drag-handle')) {
+            return;
+        }
+
+        var row = findRowFromEvent(e);
+        if (!row || !row.dataset ||
+            !isNonEmptyString(row.dataset.characterId)) {
+            return;
+        }
+
+        _pointerDragCharId = String(row.dataset.characterId);
+        _pointerDragId = e.pointerId;
+        _dragDropTarget = null;
+        _dragDropAfter = false;
+
+        if (typeof target.setPointerCapture === 'function') {
+            try { target.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        }
+        if (e.preventDefault) { e.preventDefault(); }
+    }
+
+    function handlePointerMove(e) {
+        if (!_pointerDragCharId || e.pointerId !== _pointerDragId) {
+            return;
+        }
+        if (e.preventDefault) { e.preventDefault(); }
+
+        var pointed = document.elementFromPoint(e.clientX, e.clientY);
+        var row = pointed && typeof pointed.closest === 'function'
+            ? pointed.closest('.academy-ranking-row')
+            : null;
+
+        if (!row || !row.dataset ||
+            !isNonEmptyString(row.dataset.characterId)) {
+            clearDropIndicator();
+            return;
+        }
+
+        var rect = row.getBoundingClientRect();
+        applyDropIndicator(row, e.clientY > rect.top + rect.height / 2);
+    }
+
+    function finishPointerDrag(e, shouldDrop) {
+        if (!_pointerDragCharId || e.pointerId !== _pointerDragId) {
+            return;
+        }
+
+        var dragged = _pointerDragCharId;
+        var targetRow = _dragDropTarget;
+        var targetCharId = targetRow && targetRow.dataset
+            ? String(targetRow.dataset.characterId || '')
+            : '';
+        var after = _dragDropAfter;
+
+        _pointerDragCharId = null;
+        _pointerDragId = null;
+        clearDropIndicator();
+
+        if (shouldDrop && isNonEmptyString(targetCharId) &&
+            targetCharId !== dragged) {
+            performDrop(dragged, targetCharId, after);
+        }
+    }
+
+    function handlePointerUp(e) {
+        finishPointerDrag(e, true);
+    }
+
+    function handlePointerCancel(e) {
+        finishPointerDrag(e, false);
+    }
+
     function handleDragStart(e) {
         var target = e.target;
         if (!target || typeof target.closest !== 'function') {
@@ -855,6 +939,8 @@
         // host on the next render.
         clearDropIndicator();
         _dragCharId = null;
+        _pointerDragCharId = null;
+        _pointerDragId = null;
 
         _host = null;
         _context = null;
@@ -875,6 +961,10 @@
         handleDragLeave: handleDragLeave,
         handleDrop: handleDrop,
         handleDragEnd: handleDragEnd,
+        handlePointerDown: handlePointerDown,
+        handlePointerMove: handlePointerMove,
+        handlePointerUp: handlePointerUp,
+        handlePointerCancel: handlePointerCancel,
         unmount: unmount
     });
 
