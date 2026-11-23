@@ -1643,7 +1643,17 @@
             }
             seenKeys[uniqueKey] = true;
 
-            var existing = getStudentRankInternal(classId, data.studentId, weekNum);
+            // Auto-generation may only update a record in this exact
+            // week. The public lookup now resolves inherited snapshots,
+            // which must never cause an earlier week's record to be rewritten.
+            var exactWeekRecords = getRankingRecords(classId, weekNum);
+            var existing = null;
+            for (var ex = 0; ex < exactWeekRecords.length; ex++) {
+                if (String(exactWeekRecords[ex].studentId) === String(data.studentId)) {
+                    existing = exactWeekRecords[ex];
+                    break;
+                }
+            }
 
             // v35 — preserve manually-ranked records unless the caller
             // opts in to overwriting them.
