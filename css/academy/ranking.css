@@ -339,3 +339,121 @@
         font-size: 0.6rem;
     }
 }
+
+
+/* ============================================================
+   RANKINGS GRID — MATCH THE TEAMS RANKINGS LAYOUT
+   The Academy rows have seven data cells rather than the Teams
+   view's six. Keep the same compact grid/table treatment while
+   giving each Academy metric its own aligned column.
+   ============================================================ */
+
+.academy-ranking-table .rankings-table-header,
+.academy-ranking-table .rankings-table-row {
+    grid-template-columns: 64px minmax(180px, 2fr) 52px 90px 80px 60px 36px;
+}
+
+.academy-ranking-table .rankings-col-total,
+.academy-ranking-table .rankings-col-pct,
+.academy-ranking-table .rankings-col-avg,
+.academy-ranking-table .rankings-col-grades {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.academy-ranking-table .rankings-col-total,
+.academy-ranking-table .rankings-col-pct,
+.academy-ranking-table .rankings-col-grades {
+    text-align: center;
+}
+
+.academy-ranking-table .rankings-col-avg {
+    text-align: right;
+}
+
+.academy-ranking-table .rankings-col-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.academy-ranking-table .academy-ranking-row {
+    cursor: default;
+}
+
+@media (max-width: 700px) {
+    .academy-ranking-table .rankings-table-header {
+        display: none;
+    }
+
+    .academy-ranking-table .rankings-table-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "name    rank"
+            "total   pct"
+            "avg     grades"
+            "actions actions";
+        gap: 4px 8px;
+        padding: 10px 12px;
+    }
+
+    .academy-ranking-table .rankings-col-rank {
+        grid-area: rank;
+        justify-self: end;
+    }
+
+    .academy-ranking-table .rankings-col-name {
+        grid-area: name;
+        min-width: 0;
+        white-space: normal;
+    }
+
+    .academy-ranking-table .rankings-col-total {
+        grid-area: total;
+        text-align: left;
+    }
+
+    .academy-ranking-table .rankings-col-total::before {
+        content: "Of: ";
+        color: var(--text-dim);
+    }
+
+    .academy-ranking-table .rankings-col-pct {
+        grid-area: pct;
+        text-align: right;
+    }
+
+    .academy-ranking-table .rankings-col-pct::before {
+        content: "Percentile: ";
+        color: var(--text-dim);
+    }
+
+    .academy-ranking-table .rankings-col-avg {
+        grid-area: avg;
+        text-align: left;
+    }
+
+    .academy-ranking-table .rankings-col-avg::before {
+        content: "Average: ";
+        color: var(--text-dim);
+    }
+
+    .academy-ranking-table .rankings-col-grades {
+        grid-area: grades;
+        text-align: right;
+    }
+
+    .academy-ranking-table .rankings-col-grades::before {
+        content: "Grades: ";
+        color: var(--text-dim);
+    }
+
+    .academy-ranking-table .rankings-col-actions {
+        grid-area: actions;
+        justify-content: flex-end;
+        padding-top: 4px;
+        border-top: 1px solid var(--border-soft);
+    }
+}
