@@ -704,3 +704,56 @@
         text-align: left;
     }
 }
+
+
+/* ============================================================
+   SOCIAL NETWORK TOOLBAR
+   ============================================================ */
+
+#tab-social .social-graph-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+#tab-social .social-graph-breadcrumb,
+#tab-social .social-graph-zoom {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+
+#tab-social .social-graph-breadcrumb button[hidden] {
+    display: none;
+}
+
+#tab-social #graph-container {
+    min-height: 360px;
+}
+
+@media (max-width: 600px) {
+    #tab-social .social-graph-toolbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    #tab-social .social-graph-breadcrumb,
+    #tab-social .social-graph-zoom {
+        width: 100%;
+    }
+
+    #tab-social .social-graph-zoom button {
+        flex: 1;
+    }
+
+    #tab-social #graph-container {
+        height: 480px !important;
+        min-height: 320px;
+    }
+}
