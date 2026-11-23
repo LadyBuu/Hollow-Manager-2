@@ -325,10 +325,8 @@
                 _focusStack = [String(charId)];
             }
             updateZoomDisplay();
-            // Defer the render by one frame so the container has
-            // non-zero clientWidth/clientHeight by the time we read
-            // them. Without this, a graph shown by unhiding a
-            // display:none ancestor measures 0x0 and lays out wrong.
+            // Defer until the newly visible container has measurable dimensions.
+            // Callers must not render immediately as well, or the graph is built twice.
             setTimeout(function() { renderGraph(); }, 50);
         }
     }
