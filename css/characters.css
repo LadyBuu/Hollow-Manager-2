@@ -156,12 +156,8 @@
    expected.
 
    Desktop: hidden. The sidebar is always visible.
-   Mobile:  pinned to the top-left of the viewport, above the
-            sidebar (z-index 200 vs the sidebar's 150).
-
-   The same mobile rule is also emitted inline by
-   characters/index.js as a defensive copy, so the burger keeps
-   working if this stylesheet fails to load. */
+   Mobile:  positioned in the character tab above the form, clear
+            of the application's sticky header and drawer. */
 
 #toggle-char-list {
     font-size: 1rem;
