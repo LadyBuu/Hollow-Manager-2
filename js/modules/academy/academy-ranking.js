@@ -1629,6 +1629,7 @@
         var planned = [];
         var errors = [];
         var seenKeys = {};
+        var exactWeekRecords = getRankingRecords(classId, weekNum);
 
         for (var j = 0; j < rankedEntries.length; j++) {
             var data = rankedEntries[j];
@@ -1646,7 +1647,6 @@
             // Auto-generation may only update a record in this exact
             // week. The public lookup now resolves inherited snapshots,
             // which must never cause an earlier week's record to be rewritten.
-            var exactWeekRecords = getRankingRecords(classId, weekNum);
             var existing = null;
             for (var ex = 0; ex < exactWeekRecords.length; ex++) {
                 if (String(exactWeekRecords[ex].studentId) === String(data.studentId)) {
