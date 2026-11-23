@@ -759,7 +759,20 @@
     }
 
     function handleViewModeChange(mode) {
-        if (mode === 'graph') {
+        var graphActive = mode === 'graph';
+        var graphBtn = document.getElementById('view-graph-btn');
+        var listBtn = document.getElementById('view-list-btn');
+
+        if (graphBtn) {
+            graphBtn.classList.toggle('is-active', graphActive);
+            graphBtn.setAttribute('aria-pressed', String(graphActive));
+        }
+        if (listBtn) {
+            listBtn.classList.toggle('is-active', !graphActive);
+            listBtn.setAttribute('aria-pressed', String(!graphActive));
+        }
+
+        if (graphActive) {
             // setGraphVisible schedules layout after the graph becomes measurable.
             SocialGraph.setGraphVisible(true);
             renderGraphBreadcrumb();
