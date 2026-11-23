@@ -452,6 +452,10 @@
         var dragLeaveHandler = function(e) { onDelegatedDragLeave(e); };
         var dropHandler = function(e) { onDelegatedDrop(e); };
         var dragEndHandler = function(e) { onDelegatedDragEnd(e); };
+        var pointerDownHandler = function(e) { onDelegatedPointerDown(e); };
+        var pointerMoveHandler = function(e) { onDelegatedPointerMove(e); };
+        var pointerUpHandler = function(e) { onDelegatedPointerUp(e); };
+        var pointerCancelHandler = function(e) { onDelegatedPointerCancel(e); };
 
         container.addEventListener('click', clickHandler);
         container.addEventListener('change', changeHandler);
@@ -462,6 +466,10 @@
         container.addEventListener('dragleave', dragLeaveHandler);
         container.addEventListener('drop', dropHandler);
         container.addEventListener('dragend', dragEndHandler);
+        container.addEventListener('pointerdown', pointerDownHandler);
+        container.addEventListener('pointermove', pointerMoveHandler);
+        container.addEventListener('pointerup', pointerUpHandler);
+        container.addEventListener('pointercancel', pointerCancelHandler);
 
         _boundHandlers = {
             click: clickHandler,
@@ -472,7 +480,11 @@
             dragover: dragOverHandler,
             dragleave: dragLeaveHandler,
             drop: dropHandler,
-            dragend: dragEndHandler
+            dragend: dragEndHandler,
+            pointerdown: pointerDownHandler,
+            pointermove: pointerMoveHandler,
+            pointerup: pointerUpHandler,
+            pointercancel: pointerCancelHandler
         };
     }
 
@@ -505,6 +517,10 @@
             _boundContainer.removeEventListener(
                 'dragend', _boundHandlers.dragend
             );
+            _boundContainer.removeEventListener('pointerdown', _boundHandlers.pointerdown);
+            _boundContainer.removeEventListener('pointermove', _boundHandlers.pointermove);
+            _boundContainer.removeEventListener('pointerup', _boundHandlers.pointerup);
+            _boundContainer.removeEventListener('pointercancel', _boundHandlers.pointercancel);
         }
         _boundHandlers = null;
     }
@@ -766,6 +782,19 @@
 
     function onDelegatedDragEnd(e) {
         routeEventToActiveController('handleDragEnd', e);
+    }
+
+    function onDelegatedPointerDown(e) {
+        routeEventToActiveController('handlePointerDown', e);
+    }
+    function onDelegatedPointerMove(e) {
+        routeEventToActiveController('handlePointerMove', e);
+    }
+    function onDelegatedPointerUp(e) {
+        routeEventToActiveController('handlePointerUp', e);
+    }
+    function onDelegatedPointerCancel(e) {
+        routeEventToActiveController('handlePointerCancel', e);
     }
 
     // ============================================================
