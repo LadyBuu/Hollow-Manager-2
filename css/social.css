@@ -620,3 +620,87 @@
         margin-left: auto;
     }
 }
+
+
+/* ============================================================
+   SOCIAL FILTERS
+   ============================================================ */
+
+#tab-social .filter-section {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1.5fr) auto minmax(130px, 1fr) auto minmax(120px, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+
+#tab-social .filter-section input[type="search"],
+#tab-social .filter-section select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 6px 9px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 0.75rem;
+}
+
+#tab-social .filter-section input[type="search"]:focus,
+#tab-social .filter-section select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#tab-social .filter-section .social-filter-count {
+    justify-self: end;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+    #tab-social .filter-section {
+        grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+    }
+
+    #tab-social .filter-section .social-search-label {
+        grid-column: 1;
+    }
+
+    #tab-social .filter-section input[type="search"] {
+        grid-column: 2 / -1;
+    }
+
+    #tab-social .filter-section .social-filter-count {
+        justify-self: start;
+    }
+}
+
+@media (max-width: 600px) {
+    #tab-social .filter-section {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    #tab-social .filter-section .social-search-label,
+    #tab-social .filter-section input[type="search"],
+    #tab-social .filter-section label,
+    #tab-social .filter-section select,
+    #tab-social .filter-section button,
+    #tab-social .filter-section .social-filter-count {
+        grid-column: 1;
+        width: 100%;
+    }
+
+    #tab-social .filter-section label {
+        margin: 2px 0 0;
+        text-align: left;
+    }
+
+    #tab-social .filter-section .social-filter-count {
+        text-align: left;
+    }
+}
