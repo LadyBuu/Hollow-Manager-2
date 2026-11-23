@@ -2543,6 +2543,42 @@
 
     function bindPlannerEvents(modal, contentEl) {
         contentEl.addEventListener('click', function(e) {
+            var clearEl = e.target.closest
+                ? e.target.closest('.planner-row-details-clear')
+                : null;
+            if (clearEl && contentEl.contains(clearEl)) {
+                e.preventDefault();
+
+                var clearCandidateId = clearEl.dataset.characterId;
+                var clearTeamId = clearEl.dataset.teamId;
+                if (!clearCandidateId || !clearTeamId) { return; }
+
+                var selectedRadio = contentEl.querySelector(
+                    '.planner-assoc-radio' +
+                    '[data-character-id="' +
+                        cssEscape(clearCandidateId) + '"]' +
+                    '[data-team-id="' +
+                        cssEscape(clearTeamId) + '"]'
+                );
+                if (selectedRadio) {
+                    selectedRadio.checked = false;
+                }
+
+                var detailsRow = findStripForCandidate(
+                    contentEl, clearCandidateId
+                );
+                if (detailsRow) {
+                    var detailsInner = detailsRow.querySelector(
+                        '.planner-row-details'
+                    );
+                    if (detailsInner) {
+                        detailsInner.innerHTML = '';
+                    }
+                    detailsRow.setAttribute('hidden', '');
+                }
+                return;
+            }
+
             var actionEl = e.target.closest
                 ? e.target.closest('[data-action]')
                 : null;
