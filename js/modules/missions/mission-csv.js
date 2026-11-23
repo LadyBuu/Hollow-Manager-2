@@ -1,96 +1,48 @@
 /**
  * js/modules/missions/mission-csv.js - Mission CSV
- * Canonical source for all mission CSV operations
- * 
- * This module consolidates:
- *   - Mission CSV schema (column definitions, field mapping)
- *   - Mission CSV export (serialization)
- *   - Mission CSV import (parsing)
- *   - Mission CSV template generation
- * 
+ * Canonical source for all mission CSV operations.
+ *
+ * Consolidates: CSV schema (columns, field map), export, import
+ * (parsing to candidates), template generation.
+ *
  * IMPORTANT:
- *   - This is the SINGLE SOURCE OF TRUTH for mission CSV
- *   - All mission CSV operations use this module
- *   - PURE functions - no side effects, no mutations
- *   - No persistence, no DOM, no state
- *   - Import returns candidates (does NOT mutate)
- *   - Export is read-only (does NOT access window.data directly)
- * 
- * SECTION MARKER HANDLING:
- *   The section marker is compared via normalizeSectionMarker, which:
- *     - strips a leading UTF-8 BOM if one survived the CSV parser
- *     - trims surrounding whitespace
- *     - collapses the space between '#' and the section name
- *     - uppercases the result
- *   This makes "# MISSIONS", "#MISSIONS", "# missions", and
- *   "﻿# MISSIONS" all match. The old strict `===` comparison failed
- *   on any variation, silently skipping every row in the file.
- * 
- * ROW ACCEPTANCE:
- *   A data row is accepted when at least one cell has content. The
- *   MissionId column may be empty — that is the normal case for a
- *   newly exported template or a hand-authored file, where the ID is
- *   assigned at import time. The old check required the first cell
- *   (MissionId) to be non-empty, which dropped every fresh row.
- * 
- * STRICT MODE:
- *   Strict mode is a policy decision that belongs to the CONSUMER
- *   of the ImportResult, not to this module. importMissions returns
- *   a result carrying every valid record, every error (with row
- *   metadata), and every warning. A strict caller filters
- *   getValid(true) against getErrorsForRow() itself. This module
- *   does not pre-filter the result or reach into the ImportResult's
- *   private state.
- * 
- * PARTICIPANTS COLUMN (this revision):
- *   The schema gained a Participants column. Its value is a JSON
- *   array of participant records:
- * 
- *     [
- *       { "characterId": "char_x", "teamId": "team_y", "source": "team" },
- *       { "characterId": "char_z", "teamId": null,     "source": "rookie" }
- *     ]
- * 
- *   The column is parsed with the same JSON discipline the
- *   Objectives column uses: an empty value yields [], a malformed
- *   value produces a warning and yields [], and every entry is
- *   structurally checked against the participant shape
- *   (characterId, teamId, source). Entries that violate the
- *   source/teamId contract are dropped with a warning. The schema
- *   layer (MissionSchema.validateMission via MissionCore) will
- *   reject the whole row if a malformed participant survives; this
- *   module does not pre-reject on shape, it reports.
- * 
- *   The column is serialised as a compact JSON string, matching the
- *   Objectives column's convention. An empty participant list
- *   serialises as '[]'.
- * 
- *   Older CSV files exported by a previous version of this module
- *   have no Participants column. The parser tolerates that: a row
- *   with fewer cells than COLUMNS.length treats the missing
- *   trailing cells as empty, so participants come through as [].
- * 
- * DEPENDENCIES:
- *   - window.CSV (from csv-parser.js) - MANDATORY
- *   - window.ImportResult (from import-result.js) - MANDATORY
- *   - window.ExportUtils (from export-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- * 
- * USAGE:
- *   var MissionCSV = window.MissionCSV;
- *   
- *   // Export
- *   var result = MissionCSV.export(missions);
- *   // or
- *   var result = MissionCSV.exportFromData();
- *   
- *   // Import
- *   var result = MissionCSV.import(csvText);
- *   var candidates = result.getValid();
- *   
- *   // Template
- *   var result = MissionCSV.exportTemplate();
- *   var content = MissionCSV.getTemplateContent();
+ *   - PURE functions: no persistence, no DOM, no state mutation.
+ *   - Import returns candidates (does NOT mutate); MissionImport
+ *     routes them through MissionCore.
+ *   - Export never reads window.data directly (exportFromData goes
+ *     through MissionQueries).
+ *
+ * REVISION NOTES (fixes in this version):
+ *   - Allowed values for Status / Priority / Difficulty / Escalation /
+ *     Billing now come from MissionConstants. The retired 'extreme'
+ *     and 'on_hold' values are gone from the vocabulary and the
+ *     template. An unknown value is a row ERROR (it used to be
+ *     silently blanked or accepted and then rejected later).
+ *   - Export no longer loses data. Columns appended (older files
+ *     without them still parse): Year, Month, Day, Escalation,
+ *     Billing, BasePay, SurchargePay. A round trip keeps the mission
+ *     date instead of re-dating it to the current year.
+ *   - Teams: the TeamId column holds one or more team ids separated by
+ *     ';' (',' is also accepted on import). toRow reads the canonical
+ *     `assignedTeamIds` (falling back to the legacy `assignedTeamId`).
+ *     The parsed candidate carries both `assignedTeamIds` (array) and
+ *     `assignedTeamId` (first id or null) for compatibility.
+ *   - Pay: the Pay column keeps the stored total string for humans;
+ *     BasePay / SurchargePay are the authoritative inputs. MissionImport
+ *     prefers BasePay and falls back to Pay.
+ *
+ * SECTION MARKER: compared via normalizeSectionMarker (BOM-tolerant,
+ *   whitespace-tolerant, case-insensitive).
+ * ROW ACCEPTANCE: any non-blank row; MissionId may be empty.
+ * STRICT MODE: policy for the ImportResult consumer; this module only
+ *   skips error rows when options.strict is true.
+ *
+ * PARTICIPANTS COLUMN: JSON array of { characterId, teamId, source }.
+ *   Empty => []; malformed => warning + []; individual bad entries are
+ *   dropped with a warning; duplicate pairs keep the first.
+ *
+ * DEPENDENCIES (all mandatory): CSV, ImportResult, ExportUtils,
+ *   IdUtils, MissionConstants.
  */
 
 (function() {
@@ -109,17 +61,22 @@
     if (!window.ImportResult || typeof window.ImportResult !== 'function') {
         throw new Error('[MissionCSV] ImportResult is required.');
     }
-    if (!window.ExportUtils || typeof window.ExportUtils.downloadBlob !== 'function') {
+    if (!window.ExportUtils ||
+        typeof window.ExportUtils.downloadBlob !== 'function') {
         throw new Error('[MissionCSV] ExportUtils is required.');
     }
     if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
         throw new Error('[MissionCSV] IdUtils is required.');
     }
+    if (!window.MissionConstants ||
+        !Array.isArray(window.MissionConstants.VALID_STATUSES)) {
+        throw new Error('[MissionCSV] MissionConstants is required.');
+    }
 
     var CSV = window.CSV;
     var ImportResult = window.ImportResult;
     var ExportUtils = window.ExportUtils;
-    var IdUtils = window.IdUtils;
+    var MC = window.MissionConstants;
 
     // ============================================================
     // CONSTANTS
@@ -128,36 +85,43 @@
     var SECTION = '# MISSIONS';
     var MAX_ROWS = 10000;
     var BOM_CHAR_CODE = 0xFEFF;
+    var TEAM_ID_SEPARATOR = ';';
 
-    var VALID_STATUSES = ['active', 'completed', 'cancelled', 'on_hold', ''];
-    var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical', ''];
-    var VALID_DIFFICULTIES = ['easy', 'medium', 'hard', 'extreme', ''];
-
+    // Allowed values, '' included (blank = "use the default").
+    var VALID_STATUSES = MC.VALID_STATUSES.concat(['']);
+    var VALID_PRIORITIES = MC.VALID_PRIORITIES.concat(['']);
+    var VALID_DIFFICULTIES = MC.VALID_DIFFICULTIES.concat(['']);
+    var VALID_ESCALATIONS = MC.VALID_ESCALATION_TIERS.concat(['']);
+    var VALID_BILLINGS = MC.VALID_BILLING_TYPES.concat(['']);
     var VALID_PARTICIPANT_SOURCES = ['team', 'rookie'];
 
     // ============================================================
     // COLUMN DEFINITIONS
     // ============================================================
     //
-    // Participants is the last column. Appending is the safe
-    // position: older files that lack the column still parse, and
-    // files written by this revision carry the column at the end
-    // where a future addition can append after it without
-    // renumbering.
+    // New columns are APPENDED so older files (fewer cells) still
+    // parse: missing trailing cells read as empty.
 
     var COLUMNS = [
-        'MissionId',
-        'Title',
-        'Status',
-        'Priority',
-        'Difficulty',
-        'TeamId',
-        'Location',
-        'Duration',
-        'Pay',
-        'Progress',
-        'Objectives',
-        'Participants'
+        'MissionId',      // 0
+        'Title',          // 1
+        'Status',         // 2
+        'Priority',       // 3
+        'Difficulty',     // 4
+        'TeamId',         // 5  one or more ids, ';'-separated
+        'Location',       // 6
+        'Duration',       // 7
+        'Pay',            // 8  stored total (informational)
+        'Progress',       // 9
+        'Objectives',     // 10 JSON
+        'Participants',   // 11 JSON
+        'Year',           // 12
+        'Month',          // 13
+        'Day',            // 14
+        'Escalation',     // 15
+        'Billing',        // 16
+        'BasePay',        // 17
+        'SurchargePay'    // 18
     ];
 
     var FIELD_MAP = {
@@ -172,181 +136,131 @@
         8: 'pay',
         9: 'progress',
         10: 'objectives',
-        11: 'participants'
+        11: 'participants',
+        12: 'year',
+        13: 'month',
+        14: 'day',
+        15: 'escalation',
+        16: 'billing',
+        17: 'basePay',
+        18: 'surchargePay'
     };
 
     // ============================================================
     // SECTION MARKER NORMALIZATION
     // ============================================================
-    //
-    // The section marker in the file may appear in several equivalent
-    // forms. This normalization produces a single canonical string
-    // for comparison.
-    //
-    //   "﻿# MISSIONS"  → "#MISSIONS"
-    //   "# MISSIONS"   → "#MISSIONS"
-    //   "#MISSIONS"    → "#MISSIONS"
-    //   "# missions"   → "#MISSIONS"
-    //   "  #MISSIONS " → "#MISSIONS"
-    //
-    // Returns '' for null, undefined, or empty input.
 
     function normalizeSectionMarker(value) {
-        var str = String(value == null ? '' : value);
+        var s = String(value == null ? '' : value);
 
-        // Strip a leading BOM that may have survived the CSV parser.
-        if (str.length > 0 && str.charCodeAt(0) === BOM_CHAR_CODE) {
-            str = str.substring(1);
+        if (s.length > 0 && s.charCodeAt(0) === BOM_CHAR_CODE) {
+            s = s.substring(1);
         }
 
-        str = str.trim();
-        if (str === '') { return ''; }
+        s = s.trim();
+        if (s === '') { return ''; }
 
-        // Collapse whitespace between '#' and the section name.
-        if (str.charAt(0) === '#') {
-            str = '#' + str.substring(1).trim();
+        if (s.charAt(0) === '#') {
+            s = '#' + s.substring(1).trim();
         }
 
-        return str.toUpperCase();
+        return s.toUpperCase();
     }
 
-    /**
-     * Does this cell look like the start of a section?
-     * Any cell beginning with '#' (after normalization) counts.
-     * Used to detect when the MISSIONS section ends and another
-     * section begins.
-     */
     function isSectionMarker(value) {
-        var normalized = normalizeSectionMarker(value);
-        return normalized.length > 0 && normalized.charAt(0) === '#';
+        var n = normalizeSectionMarker(value);
+        return n.length > 0 && n.charAt(0) === '#';
     }
 
-    // Pre-computed canonical target marker for this module's section.
     var TARGET_SECTION_MARKER = normalizeSectionMarker(SECTION);
-
-    // Pre-computed canonical header marker for the first column.
     var HEADER_MARKER_FIRST_COLUMN = 'MISSIONID';
 
     // ============================================================
     // SCHEMA HELPERS
     // ============================================================
 
-    function getColumns() {
-        return COLUMNS.slice();
-    }
-
-    function getHeader() {
-        return COLUMNS.slice();
-    }
+    function getColumns() { return COLUMNS.slice(); }
+    function getHeader() { return COLUMNS.slice(); }
 
     function getColumnIndex(fieldName) {
         for (var key in FIELD_MAP) {
-            if (FIELD_MAP.hasOwnProperty(key) && FIELD_MAP[key] === fieldName) {
+            if (Object.prototype.hasOwnProperty.call(FIELD_MAP, key) &&
+                FIELD_MAP[key] === fieldName) {
                 return parseInt(key, 10);
             }
         }
         return null;
     }
 
-    function getFieldName(index) {
-        return FIELD_MAP[index] || null;
-    }
+    function getFieldName(index) { return FIELD_MAP[index] || null; }
+    function getSection() { return SECTION; }
 
-    function getSection() {
-        return SECTION;
-    }
+    function getValidStatuses() { return VALID_STATUSES.slice(); }
+    function getValidPriorities() { return VALID_PRIORITIES.slice(); }
+    function getValidDifficulties() { return VALID_DIFFICULTIES.slice(); }
 
-    function getValidStatuses() {
-        return VALID_STATUSES.slice();
+    function isValidStatus(v) { return VALID_STATUSES.indexOf(v) !== -1; }
+    function isValidPriority(v) { return VALID_PRIORITIES.indexOf(v) !== -1; }
+    function isValidDifficulty(v) {
+        return VALID_DIFFICULTIES.indexOf(v) !== -1;
     }
-
-    function getValidPriorities() {
-        return VALID_PRIORITIES.slice();
+    function isValidEscalation(v) {
+        return VALID_ESCALATIONS.indexOf(v) !== -1;
     }
+    function isValidBilling(v) { return VALID_BILLINGS.indexOf(v) !== -1; }
 
-    function getValidDifficulties() {
-        return VALID_DIFFICULTIES.slice();
-    }
-
-    function isValidStatus(value) {
-        return VALID_STATUSES.indexOf(value) !== -1;
-    }
-
-    function isValidPriority(value) {
-        return VALID_PRIORITIES.indexOf(value) !== -1;
-    }
-
-    function isValidDifficulty(value) {
-        return VALID_DIFFICULTIES.indexOf(value) !== -1;
+    function nonBlank(list) {
+        return list.filter(function(x) { return x !== ''; });
     }
 
     // ============================================================
     // PARSING HELPERS
     // ============================================================
 
-    /**
-     * Parse a JSON-encoded field from a CSV cell.
-     *
-     * Delegates to ExportUtils.parseJSON, which owns the shared
-     * parsing behaviour (empty -> fallback, malformed -> warn and
-     * fallback). Kept as a named export on MissionCSV so callers
-     * that previously reached for this alias keep working.
-     *
-     * @param {string} value - Raw cell value
-     * @param {*} fallback - Fallback when value is empty or invalid
-     * @param {Function} warnFn - Optional warning callback
-     * @param {string} fieldName - Field name for the warning message
-     * @returns {*} Parsed value or fallback
-     */
-    function parseJSONField(value, fallback, warnFn, fieldName) {
-        var str = String(value == null ? '' : value).trim();
-        if (str === '') {
-            return fallback;
-        }
+    function cell(row, index) {
+        var v = row[index];
+        return String(v == null ? '' : v).trim();
+    }
 
-        var row = [str];
-        var wrappedWarnFn = (typeof warnFn === 'function')
+    /** Wrap ExportUtils.parseJSON; kept for API compatibility. */
+    function parseJSONField(value, fallback, warnFn, fieldName) {
+        var s = String(value == null ? '' : value).trim();
+        if (s === '') { return fallback; }
+
+        var wrapped = (typeof warnFn === 'function')
             ? function(msg) { warnFn(msg, fieldName); }
             : undefined;
 
         return ExportUtils.parseJSON(
-            row,
-            0,
-            fieldName || 'JSON field',
-            fallback,
-            wrappedWarnFn
+            [s], 0, fieldName || 'JSON field', fallback, wrapped
         );
     }
 
     function parseProgressField(value, warnFn) {
-        var str = String(value == null ? '' : value).trim();
+        var s = String(value == null ? '' : value).trim();
+        if (s === '') { return 0; }
 
-        if (str === '') {
-            return 0;
-        }
-
-        // Strict non-negative integer. Negative signs, decimals,
-        // and trailing characters are rejected here; the clamp
-        // below only needs to handle the upper bound.
-        if (!/^\d+$/.test(str)) {
+        if (!/^\d+$/.test(s)) {
             if (typeof warnFn === 'function') {
-                warnFn('Invalid progress value "' + str + '" - using 0', 'Progress');
+                warnFn('Invalid progress value "' + s + '" - using 0',
+                    'Progress');
             }
             return 0;
         }
 
-        var parsed = parseInt(str, 10);
-
+        var parsed = parseInt(s, 10);
         if (!Number.isSafeInteger(parsed)) {
             if (typeof warnFn === 'function') {
-                warnFn('Progress value "' + str + '" is outside safe range - using 0', 'Progress');
+                warnFn('Progress value "' + s +
+                    '" is outside safe range - using 0', 'Progress');
             }
             return 0;
         }
 
         if (parsed > 100) {
             if (typeof warnFn === 'function') {
-                warnFn('Progress value "' + str + '" is above 100 - clamping to 100', 'Progress');
+                warnFn('Progress value "' + s +
+                    '" is above 100 - clamping to 100', 'Progress');
             }
             return 100;
         }
@@ -354,106 +268,112 @@
         return parsed;
     }
 
+    /** Positive integer or undefined (blank). Invalid => warning + undefined. */
+    function parseIntegerField(value, fieldName, warnFn) {
+        var s = String(value == null ? '' : value).trim();
+        if (s === '') { return undefined; }
+
+        if (!/^\d+$/.test(s)) {
+            if (typeof warnFn === 'function') {
+                warnFn('Invalid ' + fieldName + ' "' + s +
+                    '" - using the default', fieldName);
+            }
+            return undefined;
+        }
+
+        var n = parseInt(s, 10);
+        if (!Number.isSafeInteger(n) || n < 1) {
+            if (typeof warnFn === 'function') {
+                warnFn('Invalid ' + fieldName + ' "' + s +
+                    '" - using the default', fieldName);
+            }
+            return undefined;
+        }
+        return n;
+    }
+
+    /** "a;b" or "a,b" -> ['a','b'] (trimmed, deduped, blanks dropped). */
+    function parseTeamIdsField(value) {
+        var s = String(value == null ? '' : value).trim();
+        if (s === '') { return []; }
+
+        var parts = s.split(/[;,]/);
+        var seen = Object.create(null);
+        var out = [];
+        for (var i = 0; i < parts.length; i++) {
+            var id = parts[i].trim();
+            if (id === '' || seen[id]) { continue; }
+            seen[id] = true;
+            out.push(id);
+        }
+        return out;
+    }
+
     function parseObjectivesField(value, warnFn) {
         var raw = String(value == null ? '' : value).trim();
-
-        if (raw === '') {
-            return [];
-        }
+        if (raw === '') { return []; }
 
         try {
             var parsed = JSON.parse(raw);
 
             if (!Array.isArray(parsed)) {
                 if (typeof warnFn === 'function') {
-                    warnFn('Objectives must be a JSON array - using empty array', 'Objectives');
+                    warnFn('Objectives must be a JSON array - using ' +
+                        'empty array', 'Objectives');
                 }
                 return [];
             }
 
-            var validObjectives = [];
+            var valid = [];
             for (var i = 0; i < parsed.length; i++) {
                 var obj = parsed[i];
                 if (!obj || typeof obj !== 'object') {
                     if (typeof warnFn === 'function') {
-                        warnFn('Objective at index ' + i + ' is not an object - skipping', 'Objectives');
+                        warnFn('Objective at index ' + i +
+                            ' is not an object - skipping', 'Objectives');
                     }
                     continue;
                 }
-
                 if (typeof obj.text !== 'string' || obj.text.trim() === '') {
                     if (typeof warnFn === 'function') {
-                        warnFn('Objective at index ' + i + ' has no text - skipping', 'Objectives');
+                        warnFn('Objective at index ' + i +
+                            ' has no text - skipping', 'Objectives');
                     }
                     continue;
                 }
-
-                validObjectives.push(obj);
+                valid.push(obj);
             }
-
-            return validObjectives;
+            return valid;
         } catch (e) {
             if (typeof warnFn === 'function') {
-                warnFn('Invalid JSON in Objectives: ' + e.message + ' - using empty array', 'Objectives');
+                warnFn('Invalid JSON in Objectives: ' + e.message +
+                    ' - using empty array', 'Objectives');
             }
             return [];
         }
     }
 
-    /**
-     * Parse the Participants column.
-     *
-     * Shape expected:
-     *   [ { characterId, teamId, source }, ... ]
-     *
-     * Rules:
-     *   - empty cell -> []
-     *   - malformed JSON -> warning, []
-     *   - non-array JSON -> warning, []
-     *   - an entry that is not an object -> warning, skip
-     *   - an entry with a bad/missing characterId -> warning, skip
-     *   - an entry with a bad source -> warning, skip
-     *   - an entry whose source/teamId combination is incoherent
-     *     ('team' without a teamId, 'rookie' with a teamId) ->
-     *     warning, skip
-     *   - duplicate (characterId, teamId) entries -> warning,
-     *     keep the first
-     *
-     * The parser is deliberately forgiving of individual malformed
-     * entries: a single bad row inside the JSON does not throw the
-     * whole cell away. The consumer (MissionImport) will pass the
-     * resulting array through MissionSchema, which will reject the
-     * whole mission if the cell could not be salvaged — but this
-     * module does its best to salvage first.
-     */
     function parseParticipantsField(value, warnFn) {
         var raw = String(value == null ? '' : value).trim();
+        if (raw === '') { return []; }
 
-        if (raw === '') {
-            return [];
+        function warn(msg) {
+            if (typeof warnFn === 'function') {
+                warnFn(msg, 'Participants');
+            }
         }
 
         var parsed;
         try {
             parsed = JSON.parse(raw);
         } catch (e) {
-            if (typeof warnFn === 'function') {
-                warnFn(
-                    'Invalid JSON in Participants: ' + e.message +
-                    ' - using empty array',
-                    'Participants'
-                );
-            }
+            warn('Invalid JSON in Participants: ' + e.message +
+                ' - using empty array');
             return [];
         }
 
         if (!Array.isArray(parsed)) {
-            if (typeof warnFn === 'function') {
-                warnFn(
-                    'Participants must be a JSON array - using empty array',
-                    'Participants'
-                );
-            }
+            warn('Participants must be a JSON array - using empty array');
             return [];
         }
 
@@ -464,92 +384,52 @@
             var p = parsed[i];
 
             if (!p || typeof p !== 'object' || Array.isArray(p)) {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Participant at index ' + i +
-                        ' is not an object - skipping',
-                        'Participants'
-                    );
-                }
+                warn('Participant at index ' + i +
+                    ' is not an object - skipping');
                 continue;
             }
 
             var characterId = (typeof p.characterId === 'string')
                 ? p.characterId.trim()
                 : '';
-
             if (characterId === '') {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Participant at index ' + i +
-                        ' has no characterId - skipping',
-                        'Participants'
-                    );
-                }
+                warn('Participant at index ' + i +
+                    ' has no characterId - skipping');
                 continue;
             }
 
             var source = p.source;
             if (VALID_PARTICIPANT_SOURCES.indexOf(source) === -1) {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Participant at index ' + i +
-                        ' has invalid source - skipping',
-                        'Participants'
-                    );
-                }
+                warn('Participant at index ' + i +
+                    ' has invalid source - skipping');
                 continue;
             }
 
             var teamId = null;
-            var hasTeamId = p.teamId !== undefined &&
-                            p.teamId !== null &&
-                            p.teamId !== '';
-
-            if (hasTeamId) {
+            if (p.teamId !== undefined && p.teamId !== null &&
+                p.teamId !== '') {
                 teamId = (typeof p.teamId === 'string')
                     ? p.teamId.trim()
                     : String(p.teamId);
-                if (teamId === '') {
-                    teamId = null;
-                    hasTeamId = false;
-                }
+                if (teamId === '') { teamId = null; }
             }
 
-            if (source === 'team' && !hasTeamId) {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Participant at index ' + i +
-                        ' source "team" requires a teamId - skipping',
-                        'Participants'
-                    );
-                }
+            if (source === 'team' && teamId === null) {
+                warn('Participant at index ' + i +
+                    ' source "team" requires a teamId - skipping');
                 continue;
             }
-
-            if (source === 'rookie' && hasTeamId) {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Participant at index ' + i +
-                        ' source "rookie" must have teamId null - ' +
-                        'skipping',
-                        'Participants'
-                    );
-                }
+            if (source === 'rookie' && teamId !== null) {
+                warn('Participant at index ' + i +
+                    ' source "rookie" must have teamId null - skipping');
                 continue;
             }
 
             var key = characterId + '::' +
                 (teamId === null ? '__null__' : teamId);
-
             if (seen[key]) {
-                if (typeof warnFn === 'function') {
-                    warnFn(
-                        'Duplicate participant at index ' + i +
-                        ' - keeping the first',
-                        'Participants'
-                    );
-                }
+                warn('Duplicate participant at index ' + i +
+                    ' - keeping the first');
                 continue;
             }
             seen[key] = true;
@@ -571,12 +451,9 @@
     }
 
     function isBlankRow(row) {
-        if (!row || row.length === 0) {
-            return true;
-        }
+        if (!row || row.length === 0) { return true; }
         for (var i = 0; i < row.length; i++) {
-            var cell = String(row[i] == null ? '' : row[i]).trim();
-            if (cell !== '') {
+            if (String(row[i] == null ? '' : row[i]).trim() !== '') {
                 return false;
             }
         }
@@ -587,133 +464,140 @@
     // ROW PARSING
     // ============================================================
 
+    function checkEnum(value, validator, label, allowed, errors) {
+        if (value !== '' && !validator(value)) {
+            errors.push('Invalid ' + label + ' "' + value +
+                '". Allowed: ' + nonBlank(allowed).join(', '));
+        }
+    }
+
     /**
-     * Parse a CSV row into a mission candidate object.
-     * 
-     * @param {Array} row - CSV row as array of strings
-     * @param {Function} warnFn - Optional warning callback
-     * @returns {Object} { valid: boolean, mission: object|null, errors: string[], warnings: string[] }
+     * Parse a CSV row into a mission candidate.
+     *
+     * An unknown enum value makes the row invalid (an error), it is
+     * not silently blanked. Blank enum cells are fine: MissionCore
+     * applies the defaults.
+     *
+     * @returns {{valid, mission, errors, warnings}}
      */
     function parseRow(row, warnFn) {
         var errors = [];
         var warnings = [];
 
-        var title = String(row[1] || '').trim();
+        var title = cell(row, 1);
         if (!title) {
             errors.push('Mission row missing title');
-            return { valid: false, mission: null, errors: errors, warnings: warnings };
+            return { valid: false, mission: null,
+                errors: errors, warnings: warnings };
         }
 
-        var id = String(row[0] || '').trim() || null;
+        var status = cell(row, 2);
+        var priority = cell(row, 3);
+        var difficulty = cell(row, 4);
+        var escalation = cell(row, 15);
+        var billing = cell(row, 16);
 
-        var status = String(row[2] || '').trim();
-        if (status && VALID_STATUSES.indexOf(status) === -1) {
-            if (typeof warnFn === 'function') {
-                warnFn('Invalid status "' + status + '" - using empty', 'Status');
-            }
-            status = '';
+        checkEnum(status, isValidStatus, 'status', VALID_STATUSES, errors);
+        checkEnum(priority, isValidPriority, 'priority',
+            VALID_PRIORITIES, errors);
+        checkEnum(difficulty, isValidDifficulty, 'difficulty',
+            VALID_DIFFICULTIES, errors);
+        checkEnum(escalation, isValidEscalation, 'escalation',
+            VALID_ESCALATIONS, errors);
+        checkEnum(billing, isValidBilling, 'billing',
+            VALID_BILLINGS, errors);
+
+        if (errors.length > 0) {
+            return { valid: false, mission: null,
+                errors: errors, warnings: warnings };
         }
 
-        var priority = String(row[3] || '').trim();
-        if (priority && VALID_PRIORITIES.indexOf(priority) === -1) {
-            if (typeof warnFn === 'function') {
-                warnFn('Invalid priority "' + priority + '" - using empty', 'Priority');
-            }
-            priority = '';
-        }
-
-        var difficulty = String(row[4] || '').trim();
-        if (difficulty && VALID_DIFFICULTIES.indexOf(difficulty) === -1) {
-            if (typeof warnFn === 'function') {
-                warnFn('Invalid difficulty "' + difficulty + '" - using empty', 'Difficulty');
-            }
-            difficulty = '';
-        }
-
-        var teamId = String(row[5] || '').trim() || null;
-        var progress = parseProgressField(row[9], warnFn);
-        var objectives = parseObjectivesField(row[10], warnFn);
-
-        // Participants column may be absent in older files. A row
-        // with fewer cells than COLUMNS.length simply yields
-        // undefined at row[11], which parseParticipantsField
-        // treats as the empty string.
-        var participants = parseParticipantsField(row[11], warnFn);
+        var teamIds = parseTeamIdsField(row[5]);
 
         var mission = {
-            id: id,
+            id: cell(row, 0) || null,
             title: title,
             status: status,
             priority: priority,
             difficulty: difficulty,
-            assignedTeamId: teamId,
-            location: String(row[6] || '').trim(),
-            duration: String(row[7] || '').trim(),
-            pay: String(row[8] || '').trim(),
-            progress: progress,
-            objectives: objectives,
-            participants: participants
+            assignedTeamIds: teamIds,
+            assignedTeamId: teamIds.length > 0 ? teamIds[0] : null,
+            location: cell(row, 6),
+            duration: cell(row, 7),
+            pay: cell(row, 8),
+            progress: parseProgressField(row[9], warnFn),
+            objectives: parseObjectivesField(row[10], warnFn),
+            participants: parseParticipantsField(row[11], warnFn),
+            year: parseIntegerField(row[12], 'Year', warnFn),
+            month: parseIntegerField(row[13], 'Month', warnFn),
+            day: parseIntegerField(row[14], 'Day', warnFn),
+            escalation: escalation,
+            billing: billing,
+            basePay: cell(row, 17),
+            surchargePay: cell(row, 18)
         };
 
-        return {
-            valid: true,
-            mission: mission,
-            errors: errors,
-            warnings: warnings
-        };
+        return { valid: true, mission: mission,
+            errors: errors, warnings: warnings };
     }
 
     // ============================================================
     // ROW SERIALIZATION
     // ============================================================
 
-    /**
-     * Convert a mission object to a CSV row.
-     * 
-     * @param {Object} mission - Mission object
-     * @returns {Array} CSV row as array of strings
-     */
+    function getTeamIdsOf(mission) {
+        if (Array.isArray(mission.assignedTeamIds)) {
+            return mission.assignedTeamIds;
+        }
+        if (mission.assignedTeamId !== undefined &&
+            mission.assignedTeamId !== null &&
+            mission.assignedTeamId !== '') {
+            return [mission.assignedTeamId];
+        }
+        return [];
+    }
+
+    function orBlank(v) { return v != null ? v : ''; }
+
     function toRow(mission) {
         if (!mission || typeof mission !== 'object') {
             return COLUMNS.map(function() { return ''; });
         }
 
         return [
-            mission.id != null ? mission.id : '',
-            mission.title != null ? mission.title : '',
-            mission.status != null ? mission.status : '',
-            mission.priority != null ? mission.priority : '',
-            mission.difficulty != null ? mission.difficulty : '',
-            mission.assignedTeamId != null ? mission.assignedTeamId : '',
-            mission.location != null ? mission.location : '',
-            mission.duration != null ? mission.duration : '',
-            mission.pay != null ? mission.pay : '',
+            orBlank(mission.id),
+            orBlank(mission.title),
+            orBlank(mission.status),
+            orBlank(mission.priority),
+            orBlank(mission.difficulty),
+            getTeamIdsOf(mission).join(TEAM_ID_SEPARATOR),
+            orBlank(mission.location),
+            orBlank(mission.duration),
+            orBlank(mission.pay),
             mission.progress != null ? mission.progress : 0,
-            JSON.stringify(mission.objectives != null ? mission.objectives : []),
-            JSON.stringify(mission.participants != null ? mission.participants : [])
+            JSON.stringify(mission.objectives != null
+                ? mission.objectives : []),
+            JSON.stringify(mission.participants != null
+                ? mission.participants : []),
+            orBlank(mission.year),
+            orBlank(mission.month),
+            orBlank(mission.day),
+            orBlank(mission.escalation),
+            orBlank(mission.billing),
+            orBlank(mission.basePay),
+            orBlank(mission.surchargePay)
         ];
     }
 
-    /**
-     * Convert an array of mission objects to CSV rows.
-     * 
-     * @param {Array} missions - Array of mission objects
-     * @returns {Array} Array of CSV rows (including section and header)
-     */
     function toRows(missions) {
         if (!Array.isArray(missions)) {
             throw new TypeError('Missions must be an array.');
         }
 
-        var rows = [
-            [SECTION],
-            COLUMNS.slice()
-        ];
-
+        var rows = [[SECTION], COLUMNS.slice()];
         for (var i = 0; i < missions.length; i++) {
             rows.push(toRow(missions[i]));
         }
-
         return rows;
     }
 
@@ -721,14 +605,6 @@
     // EXPORT
     // ============================================================
 
-    /**
-     * Export missions to CSV and download.
-     * 
-     * @param {Array} missions - Array of mission objects
-     * @param {Object} options - Export options
-     * @param {string} options.filename - Custom filename
-     * @returns {Object} { count: number, filename: string }
-     */
     function exportMissions(missions, options) {
         options = options || {};
 
@@ -736,8 +612,7 @@
             throw new TypeError('Missions must be an array.');
         }
 
-        var rows = toRows(missions);
-        var csvContent = CSV.arrayToCSV(rows);
+        var csvContent = CSV.arrayToCSV(toRows(missions));
 
         var blob = new Blob(['\uFEFF' + csvContent], {
             type: 'text/csv;charset=utf-8;'
@@ -748,33 +623,22 @@
 
         ExportUtils.downloadBlob(blob, filename);
 
-        return {
-            count: missions.length,
-            filename: filename
-        };
+        return { count: missions.length, filename: filename };
     }
 
-    /**
-     * Export missions from the current application data.
-     * 
-     * @param {Object} options - Export options
-     * @returns {Object} { count: number, filename: string, message: string|null }
-     */
     function exportFromData(options) {
         options = options || {};
 
-        if (!window.MissionQueries || typeof window.MissionQueries.getMissions !== 'function') {
+        if (!window.MissionQueries ||
+            typeof window.MissionQueries.getMissions !== 'function') {
             throw new Error('MissionQueries not available.');
         }
 
         var missions = window.MissionQueries.getMissions();
 
         if (missions.length === 0) {
-            return {
-                count: 0,
-                filename: null,
-                message: 'No missions to export.'
-            };
+            return { count: 0, filename: null,
+                message: 'No missions to export.' };
         }
 
         var result = exportMissions(missions, options);
@@ -782,19 +646,11 @@
         return result;
     }
 
-    /**
-     * Get CSV content as a string without downloading.
-     * 
-     * @param {Array} missions - Array of mission objects
-     * @returns {string} CSV content
-     */
     function getCSVContent(missions) {
         if (!Array.isArray(missions)) {
             throw new TypeError('Missions must be an array.');
         }
-
-        var rows = toRows(missions);
-        return CSV.arrayToCSV(rows);
+        return CSV.arrayToCSV(toRows(missions));
     }
 
     // ============================================================
@@ -802,22 +658,8 @@
     // ============================================================
 
     /**
-     * Extract mission rows from parsed CSV records.
-     *
-     * SEMANTICS:
-     *   - Skips rows until the "# MISSIONS" section marker is found.
-     *     The marker comparison is normalized (BOM-tolerant, whitespace-
-     *     tolerant, case-insensitive).
-     *   - Skips the header row (whose first cell normalizes to
-     *     "MISSIONID").
-     *   - Accepts any non-blank row as a mission row. The first cell
-     *     (MissionId) may be empty — that is the normal case for
-     *     newly-created missions in a fresh template.
-     *   - Stops when a different section marker (# at the start of a
-     *     cell) is encountered.
-     *
-     * @param {Array} records - All CSV records (2D array of strings)
-     * @returns {Array} Array of mission data rows
+     * Extract mission rows: skip to the "# MISSIONS" marker, skip the
+     * header row, accept any non-blank row, stop at the next section.
      */
     function extractRows(records) {
         var rows = [];
@@ -825,33 +667,24 @@
 
         for (var i = 0; i < records.length; i++) {
             var row = records[i];
-
-            if (isBlankRow(row)) {
-                continue;
-            }
+            if (isBlankRow(row)) { continue; }
 
             var first = String(row[0] == null ? '' : row[0]);
 
             if (!inSection) {
-                // Looking for the MISSIONS section marker.
                 if (normalizeSectionMarker(first) === TARGET_SECTION_MARKER) {
                     inSection = true;
                 }
                 continue;
             }
 
-            // We are inside the MISSIONS section.
-            // A new section marker terminates us.
-            if (isSectionMarker(first)) {
-                break;
-            }
+            if (isSectionMarker(first)) { break; }
 
-            // Skip the header row.
-            if (normalizeSectionMarker(first) === HEADER_MARKER_FIRST_COLUMN) {
+            if (normalizeSectionMarker(first) ===
+                HEADER_MARKER_FIRST_COLUMN) {
                 continue;
             }
 
-            // Accept any non-blank row.
             rows.push(row);
         }
 
@@ -860,23 +693,19 @@
 
     /**
      * Parse CSV text into mission candidates.
-     * 
-     * @param {string} csvText - CSV file content
-     * @param {Object} options - Import options
-     * @param {boolean} options.strict - Reject rows with errors (default: false)
-     * @param {boolean} options.validateEnums - Validate enum values (default: true)
-     * @param {number} options.maxRows - Maximum rows to parse (default: 10000)
-     * @returns {ImportResult} ImportResult with valid candidates, errors, warnings
+     *
+     * @param {string} csvText
+     * @param {object} [options] - { strict, maxRows }
+     *   strict: skip (rather than add) rows that produced errors.
+     * @returns {ImportResult}
      */
     function importMissions(csvText, options) {
         options = options || {};
         var strict = options.strict === true;
-        var validateEnums = options.validateEnums !== false;
         var maxRows = options.maxRows || MAX_ROWS;
 
         var result = new ImportResult();
 
-        // Parse CSV
         var records;
         try {
             records = CSV.parse(csvText);
@@ -890,161 +719,56 @@
             return result;
         }
 
-        // Extract mission rows
         var missionRows = extractRows(records);
         if (missionRows.length === 0) {
-            result.addError('No mission data found. Expected "' + SECTION + '" section.');
+            result.addError('No mission data found. Expected "' +
+                SECTION + '" section.');
             return result;
         }
 
         if (missionRows.length > maxRows) {
-            result.addError('Too many rows (' + missionRows.length + '). Maximum is ' + maxRows + '.');
+            result.addError('Too many rows (' + missionRows.length +
+                '). Maximum is ' + maxRows + '.');
             return result;
         }
 
-        // Parse each row
         for (var i = 0; i < missionRows.length; i++) {
             var row = missionRows[i];
             var rowNumber = i + 1;
 
-            if (isBlankRow(row)) {
+            if (isBlankRow(row)) { continue; }
+
+            var parsed = parseRow(row, function(warning, fieldName) {
+                var msg = fieldName ? fieldName + ': ' + warning : warning;
+                result.addWarning(msg,
+                    { row: rowNumber, field: fieldName });
+            });
+
+            if (!parsed.valid) {
+                for (var k = 0; k < parsed.errors.length; k++) {
+                    result.addError(parsed.errors[k], { row: rowNumber });
+                }
+                if (strict && parsed.mission) {
+                    result.addSkipped(parsed.mission, 'Row had errors',
+                        { row: rowNumber });
+                }
                 continue;
             }
 
-            var parsed = parseRow(row, function(warning, fieldName) {
-                var msg = warning;
-                if (fieldName) {
-                    msg = fieldName + ': ' + warning;
-                }
-                result.addWarning(msg, { row: rowNumber, field: fieldName });
-            });
+            var mission = parsed.mission;
 
-            if (parsed.valid) {
-                var mission = parsed.mission;
-                var hasError = false;
-
-                // Additional enum validation if requested
-                if (validateEnums) {
-                    if (mission.status && !isValidStatus(mission.status)) {
-                        result.addError(
-                            'Invalid status "' + mission.status + '". Allowed: ' +
-                            VALID_STATUSES.filter(function(s) { return s !== ''; }).join(', '),
-                            { row: rowNumber, field: 'Status' }
-                        );
-                        hasError = true;
-                    }
-
-                    if (mission.priority && !isValidPriority(mission.priority)) {
-                        result.addError(
-                            'Invalid priority "' + mission.priority + '". Allowed: ' +
-                            VALID_PRIORITIES.filter(function(p) { return p !== ''; }).join(', '),
-                            { row: rowNumber, field: 'Priority' }
-                        );
-                        hasError = true;
-                    }
-
-                    if (mission.difficulty && !isValidDifficulty(mission.difficulty)) {
-                        result.addError(
-                            'Invalid difficulty "' + mission.difficulty + '". Allowed: ' +
-                            VALID_DIFFICULTIES.filter(function(d) { return d !== ''; }).join(', '),
-                            { row: rowNumber, field: 'Difficulty' }
-                        );
-                        hasError = true;
-                    }
-
-                    // Validate progress range
-                    if (typeof mission.progress === 'number') {
-                        if (mission.progress < 0 || mission.progress > 100) {
-                            result.addWarning(
-                                'Progress must be between 0 and 100 - got ' + mission.progress,
-                                { row: rowNumber, field: 'Progress' }
-                            );
-                        }
-                    }
-
-                    // Validate objectives structure
-                    if (Array.isArray(mission.objectives)) {
-                        for (var j = 0; j < mission.objectives.length; j++) {
-                            var obj = mission.objectives[j];
-                            if (!obj || typeof obj !== 'object') {
-                                result.addWarning(
-                                    'Objective at index ' + j + ' is not an object',
-                                    { row: rowNumber, field: 'Objectives' }
-                                );
-                            } else if (!obj.text || typeof obj.text !== 'string') {
-                                result.addWarning(
-                                    'Objective at index ' + j + ' has no text',
-                                    { row: rowNumber, field: 'Objectives' }
-                                );
-                            }
-                        }
-                    }
-
-                    // Validate participants structure. The parser
-                    // already dropped entries that violate the shape
-                    // rules; this pass is a belt-and-braces check
-                    // that any entry which survived is coherent.
-                    if (Array.isArray(mission.participants)) {
-                        for (var pi = 0;
-                             pi < mission.participants.length;
-                             pi++) {
-                            var part = mission.participants[pi];
-                            if (!part || typeof part !== 'object') {
-                                result.addWarning(
-                                    'Participant at index ' + pi +
-                                    ' is not an object',
-                                    { row: rowNumber, field: 'Participants' }
-                                );
-                                continue;
-                            }
-                            if (typeof part.characterId !== 'string' ||
-                                part.characterId.trim() === '') {
-                                result.addWarning(
-                                    'Participant at index ' + pi +
-                                    ' has no characterId',
-                                    { row: rowNumber, field: 'Participants' }
-                                );
-                            }
-                            if (VALID_PARTICIPANT_SOURCES.indexOf(
-                                part.source
-                            ) === -1) {
-                                result.addWarning(
-                                    'Participant at index ' + pi +
-                                    ' has invalid source',
-                                    { row: rowNumber, field: 'Participants' }
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if (strict && hasError) {
-                    result.addSkipped(mission, 'Row had errors', { row: rowNumber });
-                    continue;
-                }
-
-                if (isValidCandidate(mission)) {
-                    result.addValid(mission, { row: rowNumber });
-                } else {
-                    result.addError('Invalid mission data (missing title)', { row: rowNumber });
-                }
+            if (!isValidCandidate(mission)) {
+                result.addError('Invalid mission data (missing title)',
+                    { row: rowNumber });
+                continue;
             }
 
-            for (var k = 0; k < parsed.errors.length; k++) {
-                result.addError(parsed.errors[k], { row: rowNumber });
-            }
+            result.addValid(mission, { row: rowNumber });
         }
 
         return result;
     }
 
-    /**
-     * Parse a mission CSV file from a File object.
-     * 
-     * @param {File} file - CSV file
-     * @param {Object} options - Import options
-     * @returns {Promise<ImportResult>} Promise resolving to ImportResult
-     */
     function importFromFile(file, options) {
         options = options || {};
 
@@ -1053,15 +777,17 @@
 
             reader.onload = function(e) {
                 try {
-                    var result = importMissions(e.target.result, options);
-                    resolve(result);
+                    resolve(importMissions(e.target.result, options));
                 } catch (err) {
-                    reject(new Error('Failed to import missions: ' + err.message));
+                    reject(new Error(
+                        'Failed to import missions: ' + err.message));
                 }
             };
 
             reader.onerror = function() {
-                reject(new Error('Failed to read file: ' + (reader.error ? reader.error.message : 'Unknown error')));
+                reject(new Error('Failed to read file: ' +
+                    (reader.error ? reader.error.message
+                        : 'Unknown error')));
             };
 
             reader.readAsText(file);
@@ -1072,14 +798,6 @@
     // TEMPLATE
     // ============================================================
 
-    /**
-     * Get template missions as objects.
-     * 
-     * @param {Object} options - Template options
-     * @param {number} options.count - Number of examples (default: 2)
-     * @param {boolean} options.includeAllStatuses - Include all statuses (default: false)
-     * @returns {Array} Array of mission objects
-     */
     function getTemplateMissions(options) {
         options = options || {};
         var count = options.count || 2;
@@ -1091,21 +809,25 @@
                 status: 'active',
                 priority: 'high',
                 difficulty: 'hard',
-                assignedTeamId: null,
+                assignedTeamIds: [],
                 location: 'Berlin',
                 duration: '2 weeks',
-                pay: '5000',
+                pay: '',
+                basePay: '5000',
+                surchargePay: '',
                 progress: 50,
+                year: 1926,
+                month: 3,
+                day: 14,
+                escalation: 'tier_iii',
+                billing: 'original',
                 objectives: [
                     { text: 'Infiltrate base', done: true },
                     { text: 'Retrieve documents', done: true }
                 ],
                 participants: [
-                    {
-                        characterId: 'char_example_1',
-                        teamId: 'team_example_1',
-                        source: 'team'
-                    }
+                    { characterId: 'char_example_1',
+                      teamId: 'team_example_1', source: 'team' }
                 ]
             },
             {
@@ -1114,125 +836,97 @@
                 status: 'active',
                 priority: 'medium',
                 difficulty: 'medium',
-                assignedTeamId: null,
+                assignedTeamIds: [],
                 location: 'London',
                 duration: '3 days',
-                pay: '2000',
+                pay: '',
+                basePay: '2000',
+                surchargePay: '',
                 progress: 0,
+                year: 1926,
+                month: 5,
+                day: 2,
+                escalation: 'tier_ii',
+                billing: 'original',
                 objectives: [
                     { text: 'Find hostages', done: false },
                     { text: 'Extract safely', done: false }
                 ],
                 participants: [
-                    {
-                        characterId: 'char_example_2',
-                        teamId: null,
-                        source: 'rookie'
-                    }
+                    { characterId: 'char_example_2', teamId: null,
+                      source: 'rookie' }
                 ]
             }
         ];
 
-        var result = templates.slice(0, count);
-
-        // If includeAllStatuses, generate more examples
         if (options.includeAllStatuses) {
-            var allExamples = [];
-            var statuses = ['active', 'completed', 'cancelled', 'on_hold'];
+            var statuses = nonBlank(VALID_STATUSES);
+            var all = [];
             for (var i = 0; i < Math.min(statuses.length, count); i++) {
-                var base = templates[i % templates.length];
-                if (base) {
-                    var copy = JSON.parse(JSON.stringify(base));
-                    copy.status = statuses[i];
-                    copy.title = statuses[i].charAt(0).toUpperCase() + statuses[i].slice(1) + ' Mission';
-                    copy.progress = statuses[i] === 'completed' ? 100 :
-                                    statuses[i] === 'cancelled' ? 0 :
-                                    50;
-                    allExamples.push(copy);
-                }
+                var copy = JSON.parse(
+                    JSON.stringify(templates[i % templates.length]));
+                copy.status = statuses[i];
+                copy.title = statuses[i].charAt(0).toUpperCase() +
+                    statuses[i].slice(1) + ' Mission';
+                copy.progress = statuses[i] === 'completed' ? 100 :
+                                statuses[i] === 'cancelled' ? 0 : 50;
+                all.push(copy);
             }
-            return allExamples;
+            return all;
         }
 
-        return result;
+        return templates.slice(0, count);
     }
 
-    /**
-     * Generate comprehensive template rows with all variations.
-     * 
-     * @param {Object} options - Template options
-     * @param {boolean} options.includeAllStatuses - Include all statuses
-     * @param {boolean} options.includeAllPriorities - Include all priorities
-     * @param {boolean} options.includeAllDifficulties - Include all difficulties
-     * @param {number} options.maxExamples - Maximum examples (default: 20)
-     * @returns {Array} Array of CSV rows
-     */
     function getComprehensiveTemplateRows(options) {
         options = options || {};
         var maxExamples = options.maxExamples || 20;
 
-        var rows = [
-            [SECTION],
-            COLUMNS.slice()
-        ];
+        var rows = [[SECTION], COLUMNS.slice()];
 
-        var statuses = options.includeAllStatuses ?
-            ['active', 'completed', 'cancelled', 'on_hold'] :
-            ['active'];
+        var statuses = options.includeAllStatuses
+            ? nonBlank(VALID_STATUSES) : ['active'];
+        var priorities = options.includeAllPriorities
+            ? nonBlank(VALID_PRIORITIES) : ['medium'];
+        var difficulties = options.includeAllDifficulties
+            ? nonBlank(VALID_DIFFICULTIES) : ['medium'];
 
-        var priorities = options.includeAllPriorities ?
-            ['low', 'medium', 'high', 'critical'] :
-            ['medium'];
+        var n = 0;
 
-        var difficulties = options.includeAllDifficulties ?
-            ['easy', 'medium', 'hard', 'extreme'] :
-            ['medium'];
-
-        var exampleCount = 0;
-
-        for (var s = 0; s < Math.min(statuses.length, 4) && exampleCount < maxExamples; s++) {
-            for (var p = 0; p < Math.min(priorities.length, 4) && exampleCount < maxExamples; p++) {
-                for (var d = 0; d < Math.min(difficulties.length, 4) && exampleCount < maxExamples; d++) {
+        for (var s = 0; s < statuses.length && n < maxExamples; s++) {
+            for (var p = 0; p < priorities.length && n < maxExamples; p++) {
+                for (var d = 0; d < difficulties.length &&
+                     n < maxExamples; d++) {
                     var status = statuses[s];
                     var priority = priorities[p];
                     var difficulty = difficulties[d];
 
-                    var title = status.charAt(0).toUpperCase() + status.slice(1) + ' ' +
-                                priority.charAt(0).toUpperCase() + priority.slice(1) + ' ' +
-                                difficulty.charAt(0).toUpperCase() + difficulty.slice(1) + ' Mission';
+                    function cap(x) {
+                        return x.charAt(0).toUpperCase() + x.slice(1);
+                    }
 
-                    // Deterministic example progress. Replaces the
-                    // previous Math.random() call, which produced a
-                    // different template every time the button was
-                    // clicked. A stable example is easier to reason
-                    // about and easier to test against.
-                    var progress = status === 'completed' ? '100' :
-                                   status === 'cancelled' ? '0' :
-                                   status === 'on_hold'  ? '25' :
-                                   String(10 + ((exampleCount * 7) % 80));
+                    var title = cap(status) + ' ' + cap(priority) + ' ' +
+                        cap(difficulty) + ' Mission';
 
-                    var objectives = status === 'completed' ?
-                        '[{"text":"Primary objective","done":true},{"text":"Secondary objective","done":true}]' :
-                        '[{"text":"Primary objective","done":false},{"text":"Secondary objective","done":false}]';
+                    var done = status === 'completed';
+                    var progress = done ? '100' :
+                        status === 'cancelled' ? '0' :
+                        String(10 + ((n * 7) % 80));
 
-                    var participants = '[]';
+                    var objectives = '[{"text":"Primary objective",' +
+                        '"done":' + done + '},{"text":"Secondary ' +
+                        'objective","done":' + done + '}]';
 
                     rows.push([
-                        '',
-                        title,
-                        status,
-                        priority,
-                        difficulty,
-                        '',
-                        'Location ' + (exampleCount + 1),
-                        (Math.floor(exampleCount / 2) % 4 + 1) + ' weeks',
-                        String(((exampleCount % 8) + 2) * 1000),
-                        progress,
-                        objectives,
-                        participants
+                        '', title, status, priority, difficulty, '',
+                        'Location ' + (n + 1),
+                        (Math.floor(n / 2) % 4 + 1) + ' weeks',
+                        '', progress, objectives, '[]',
+                        '1926', '1', '1', '', '',
+                        String(((n % 8) + 2) * 1000), ''
                     ]);
 
-                    exampleCount++;
+                    n++;
                 }
             }
         }
@@ -1240,15 +934,6 @@
         return rows;
     }
 
-    /**
-     * Get template rows as an array.
-     * 
-     * @param {Object} options - Template options
-     * @param {Array} options.exampleData - Custom example data
-     * @param {number} options.exampleCount - Number of examples (default: 2)
-     * @param {boolean} options.comprehensive - Include all enum variations (default: false)
-     * @returns {Array} Array of CSV rows
-     */
     function getTemplateRows(options) {
         options = options || {};
 
@@ -1256,61 +941,68 @@
             return getComprehensiveTemplateRows(options);
         }
 
-        var missions;
-        if (options.exampleData && Array.isArray(options.exampleData)) {
-            missions = options.exampleData;
-        } else {
-            missions = getTemplateMissions({ count: options.exampleCount || 2 });
-        }
+        var missions = (options.exampleData &&
+                        Array.isArray(options.exampleData))
+            ? options.exampleData
+            : getTemplateMissions({ count: options.exampleCount || 2 });
 
         return toRows(missions);
     }
 
-    /**
-     * Get template CSV content as a string.
-     * 
-     * @param {Object} options - Template options
-     * @returns {string} CSV content
-     */
     function getTemplateContent(options) {
-        var rows = getTemplateRows(options);
-        return CSV.arrayToCSV(rows);
+        return CSV.arrayToCSV(getTemplateRows(options));
     }
 
-    /**
-     * Export mission CSV template.
-     * 
-     * @param {Object} options - Template options
-     * @param {string} options.filename - Custom filename
-     * @param {Array} options.exampleData - Custom example data
-     * @param {boolean} options.comprehensive - Include all enum variations
-     * @returns {Object} { exported: boolean, filename: string }
-     */
     function exportTemplate(options) {
         options = options || {};
 
-        var content = getTemplateContent(options);
-
-        var blob = new Blob(['\uFEFF' + content], {
+        var blob = new Blob(['\uFEFF' + getTemplateContent(options)], {
             type: 'text/csv;charset=utf-8;'
         });
 
         var filename = options.filename || 'missions-template.csv';
         ExportUtils.downloadBlob(blob, filename);
 
+        return { exported: true, filename: filename };
+    }
+
+    function getColumnDescriptions() {
         return {
-            exported: true,
-            filename: filename
+            'MissionId': 'Leave blank. Every CSV row creates a new ' +
+                'mission; use JSON import to update existing ones',
+            'Title': 'Required. The mission name',
+            'Status': 'Optional. One of: ' +
+                nonBlank(VALID_STATUSES).join(', '),
+            'Priority': 'Optional. One of: ' +
+                nonBlank(VALID_PRIORITIES).join(', '),
+            'Difficulty': 'Optional. One of: ' +
+                nonBlank(VALID_DIFFICULTIES).join(', '),
+            'TeamId': 'Optional. One or more team ids separated by ' +
+                '"' + TEAM_ID_SEPARATOR + '"',
+            'Location': 'Optional. Mission location',
+            'Duration': 'Optional. Mission duration (e.g., 2 weeks)',
+            'Pay': 'Optional. Informational total; BasePay is used when ' +
+                'present',
+            'Progress': 'Optional. Derived from objectives on import',
+            'Objectives': 'Optional. JSON array: ' +
+                '[{"text":"...","done":true/false}]',
+            'Participants': 'Optional. JSON array: ' +
+                '[{"characterId":"...","teamId":"...","source":"team"}] ' +
+                'or [{"characterId":"...","teamId":null,' +
+                '"source":"rookie"}]',
+            'Year': 'Optional. Positive integer (defaults to the ' +
+                'current year)',
+            'Month': 'Optional. Month number in the active calendar',
+            'Day': 'Optional. Day of the month in the active calendar',
+            'Escalation': 'Optional. One of: ' +
+                nonBlank(VALID_ESCALATIONS).join(', '),
+            'Billing': 'Optional. One of: ' +
+                nonBlank(VALID_BILLINGS).join(', '),
+            'BasePay': 'Optional. Number, e.g. 5000',
+            'SurchargePay': 'Optional. Number, e.g. 500'
         };
     }
 
-    /**
-     * Get template preview for display.
-     * 
-     * @param {Object} options - Template options
-     * @param {number} options.previewRows - Number of example rows to show (default: 2)
-     * @returns {Object} { headers: Array, examples: Array, columnDescriptions: Object }
-     */
     function getTemplatePreview(options) {
         options = options || {};
         var previewRows = options.previewRows || 2;
@@ -1328,34 +1020,12 @@
             examples: examples,
             columnDescriptions: getColumnDescriptions(),
             allowedValues: {
-                Status: VALID_STATUSES.filter(function(s) { return s !== ''; }),
-                Priority: VALID_PRIORITIES.filter(function(p) { return p !== ''; }),
-                Difficulty: VALID_DIFFICULTIES.filter(function(d) { return d !== ''; })
+                Status: nonBlank(VALID_STATUSES),
+                Priority: nonBlank(VALID_PRIORITIES),
+                Difficulty: nonBlank(VALID_DIFFICULTIES),
+                Escalation: nonBlank(VALID_ESCALATIONS),
+                Billing: nonBlank(VALID_BILLINGS)
             }
-        };
-    }
-
-    /**
-     * Get column descriptions for UI help.
-     * 
-     * @returns {Object} Map of column name to description
-     */
-    function getColumnDescriptions() {
-        return {
-            'MissionId': 'Leave blank to create a new mission, or provide an existing ID to update',
-            'Title': 'Required. The mission name',
-            'Status': 'Optional. One of: active, completed, cancelled, on_hold',
-            'Priority': 'Optional. One of: low, medium, high, critical',
-            'Difficulty': 'Optional. One of: easy, medium, hard, extreme',
-            'TeamId': 'Optional. ID of the team assigned to this mission',
-            'Location': 'Optional. Mission location',
-            'Duration': 'Optional. Mission duration (e.g., 2 weeks, 3 days)',
-            'Pay': 'Optional. Mission payment (e.g., 5000)',
-            'Progress': 'Optional. Number between 0 and 100',
-            'Objectives': 'Optional. JSON array of objectives: [{"text":"...","done":true/false}]',
-            'Participants': 'Optional. JSON array of participants: ' +
-                '[{"characterId":"...","teamId":"...","source":"team"}] or ' +
-                '[{"characterId":"...","teamId":null,"source":"rookie"}]'
         };
     }
 
@@ -1363,14 +1033,6 @@
     // VALIDATION HELPERS
     // ============================================================
 
-    /**
-     * Validate mission candidates against the schema.
-     * 
-     * @param {Array} candidates - Mission candidates
-     * @param {Object} options - Validation options
-     * @param {boolean} options.validateEnums - Validate enum values (default: true)
-     * @returns {Object} { valid: Array, invalid: Array, warnings: Array }
-     */
     function validateCandidates(candidates, options) {
         options = options || {};
         var validateEnums = options.validateEnums !== false;
@@ -1383,131 +1045,93 @@
         var invalid = [];
         var warnings = [];
 
-        for (var i = 0; i < candidates.length; i++) {
-            var candidate = candidates[i];
+        function warn(i, candidate, field, value, message) {
+            warnings.push({
+                index: i, candidate: candidate, field: field,
+                value: value, message: message
+            });
+        }
 
-            if (!isValidCandidate(candidate)) {
+        for (var i = 0; i < candidates.length; i++) {
+            var c = candidates[i];
+
+            if (!isValidCandidate(c)) {
                 invalid.push({
-                    index: i,
-                    candidate: candidate,
+                    index: i, candidate: c,
                     reason: 'Missing required field: title'
                 });
                 continue;
             }
 
             if (validateEnums) {
-                if (candidate.status && !isValidStatus(candidate.status)) {
-                    warnings.push({
-                        index: i,
-                        candidate: candidate,
-                        field: 'status',
-                        value: candidate.status,
-                        message: 'Invalid status "' + candidate.status + '"'
-                    });
+                var enumChecks = [
+                    ['status', isValidStatus],
+                    ['priority', isValidPriority],
+                    ['difficulty', isValidDifficulty],
+                    ['escalation', isValidEscalation],
+                    ['billing', isValidBilling]
+                ];
+                for (var e = 0; e < enumChecks.length; e++) {
+                    var f = enumChecks[e][0];
+                    if (c[f] && !enumChecks[e][1](c[f])) {
+                        warn(i, c, f, c[f],
+                            'Invalid ' + f + ' "' + c[f] + '"');
+                    }
                 }
 
-                if (candidate.priority && !isValidPriority(candidate.priority)) {
-                    warnings.push({
-                        index: i,
-                        candidate: candidate,
-                        field: 'priority',
-                        value: candidate.priority,
-                        message: 'Invalid priority "' + candidate.priority + '"'
-                    });
+                if (typeof c.progress === 'number' &&
+                    (c.progress < 0 || c.progress > 100)) {
+                    warn(i, c, 'progress', c.progress,
+                        'Progress must be between 0 and 100');
                 }
 
-                if (candidate.difficulty && !isValidDifficulty(candidate.difficulty)) {
-                    warnings.push({
-                        index: i,
-                        candidate: candidate,
-                        field: 'difficulty',
-                        value: candidate.difficulty,
-                        message: 'Invalid difficulty "' + candidate.difficulty + '"'
-                    });
-                }
-
-                if (typeof candidate.progress === 'number' && (candidate.progress < 0 || candidate.progress > 100)) {
-                    warnings.push({
-                        index: i,
-                        candidate: candidate,
-                        field: 'progress',
-                        value: candidate.progress,
-                        message: 'Progress must be between 0 and 100'
-                    });
-                }
-
-                if (Array.isArray(candidate.objectives)) {
-                    for (var j = 0; j < candidate.objectives.length; j++) {
-                        var obj = candidate.objectives[j];
+                if (Array.isArray(c.objectives)) {
+                    for (var j = 0; j < c.objectives.length; j++) {
+                        var obj = c.objectives[j];
                         if (!obj || typeof obj !== 'object') {
-                            warnings.push({
-                                index: i,
-                                candidate: candidate,
-                                field: 'objectives',
-                                value: obj,
-                                message: 'Objective at index ' + j + ' is not an object'
-                            });
-                        } else if (!obj.text || typeof obj.text !== 'string') {
-                            warnings.push({
-                                index: i,
-                                candidate: candidate,
-                                field: 'objectives',
-                                value: obj,
-                                message: 'Objective at index ' + j + ' has no text'
-                            });
+                            warn(i, c, 'objectives', obj,
+                                'Objective at index ' + j +
+                                ' is not an object');
+                        } else if (!obj.text ||
+                                   typeof obj.text !== 'string') {
+                            warn(i, c, 'objectives', obj,
+                                'Objective at index ' + j +
+                                ' has no text');
                         }
                     }
                 }
 
-                if (Array.isArray(candidate.participants)) {
-                    for (var p = 0; p < candidate.participants.length; p++) {
-                        var part = candidate.participants[p];
+                if (Array.isArray(c.participants)) {
+                    for (var p = 0; p < c.participants.length; p++) {
+                        var part = c.participants[p];
                         if (!part || typeof part !== 'object') {
-                            warnings.push({
-                                index: i,
-                                candidate: candidate,
-                                field: 'participants',
-                                value: part,
-                                message: 'Participant at index ' + p + ' is not an object'
-                            });
+                            warn(i, c, 'participants', part,
+                                'Participant at index ' + p +
+                                ' is not an object');
                             continue;
                         }
                         if (typeof part.characterId !== 'string' ||
                             part.characterId.trim() === '') {
-                            warnings.push({
-                                index: i,
-                                candidate: candidate,
-                                field: 'participants',
-                                value: part,
-                                message: 'Participant at index ' + p + ' has no characterId'
-                            });
+                            warn(i, c, 'participants', part,
+                                'Participant at index ' + p +
+                                ' has no characterId');
                         }
-                        if (VALID_PARTICIPANT_SOURCES.indexOf(part.source) === -1) {
-                            warnings.push({
-                                index: i,
-                                candidate: candidate,
-                                field: 'participants',
-                                value: part,
-                                message: 'Participant at index ' + p + ' has invalid source'
-                            });
+                        if (VALID_PARTICIPANT_SOURCES.indexOf(
+                            part.source) === -1) {
+                            warn(i, c, 'participants', part,
+                                'Participant at index ' + p +
+                                ' has invalid source');
                         }
                     }
                 }
             }
 
-            valid.push(candidate);
+            valid.push(c);
         }
 
         return { valid: valid, invalid: invalid, warnings: warnings };
     }
 
-    /**
-     * Get a preview of the import result.
-     * 
-     * @param {ImportResult} result - Import result
-     * @param {number} limit - Number of records to preview (default: 5)
-     * @returns {Object} { preview: Array, total: number, hasMore: boolean }
-     */
     function getImportPreview(result, limit) {
         limit = limit || 5;
 
@@ -1516,21 +1140,13 @@
         }
 
         var valid = result.getValid();
-        var preview = valid.slice(0, limit);
-
         return {
-            preview: preview,
+            preview: valid.slice(0, limit),
             total: valid.length,
             hasMore: valid.length > limit
         };
     }
 
-    /**
-     * Get a summary of the import result for display.
-     * 
-     * @param {ImportResult} result - Import result
-     * @returns {Object} Formatted summary
-     */
     function getImportSummary(result) {
         if (!(result instanceof ImportResult)) {
             throw new TypeError('Result must be an ImportResult');
@@ -1568,15 +1184,15 @@
     // ============================================================
 
     window.MissionCSV = {
-        // ---- Constants ----
         SECTION: SECTION,
         COLUMNS: COLUMNS,
         VALID_STATUSES: VALID_STATUSES,
         VALID_PRIORITIES: VALID_PRIORITIES,
         VALID_DIFFICULTIES: VALID_DIFFICULTIES,
+        VALID_ESCALATIONS: VALID_ESCALATIONS,
+        VALID_BILLINGS: VALID_BILLINGS,
         VALID_PARTICIPANT_SOURCES: VALID_PARTICIPANT_SOURCES,
 
-        // ---- Schema helpers ----
         getColumns: getColumns,
         getHeader: getHeader,
         getColumnIndex: getColumnIndex,
@@ -1589,29 +1205,25 @@
         isValidPriority: isValidPriority,
         isValidDifficulty: isValidDifficulty,
 
-        // ---- Parsing ----
         parseRow: parseRow,
         parseProgressField: parseProgressField,
         parseJSONField: parseJSONField,
         parseObjectivesField: parseObjectivesField,
         parseParticipantsField: parseParticipantsField,
+        parseTeamIdsField: parseTeamIdsField,
         isValidCandidate: isValidCandidate,
         extractRows: extractRows,
 
-        // ---- Serialization ----
         toRow: toRow,
         toRows: toRows,
 
-        // ---- Export ----
-        export: exportMissions,
+        'export': exportMissions,
         exportFromData: exportFromData,
         getCSVContent: getCSVContent,
 
-        // ---- Import ----
-        import: importMissions,
+        'import': importMissions,
         importFromFile: importFromFile,
 
-        // ---- Template ----
         getTemplateMissions: getTemplateMissions,
         getTemplateRows: getTemplateRows,
         getTemplateContent: getTemplateContent,
@@ -1620,7 +1232,6 @@
         getColumnDescriptions: getColumnDescriptions,
         getComprehensiveTemplateRows: getComprehensiveTemplateRows,
 
-        // ---- Validation ----
         validateCandidates: validateCandidates,
         getImportPreview: getImportPreview,
         getImportSummary: getImportSummary
@@ -1637,122 +1248,120 @@
         var required = [
             'export', 'exportFromData', 'getCSVContent',
             'import', 'importFromFile',
-            'exportTemplate', 'getTemplateContent', 'getTemplateRows', 'getTemplatePreview',
+            'exportTemplate', 'getTemplateContent', 'getTemplateRows',
+            'getTemplatePreview',
             'validateCandidates', 'getImportPreview', 'getImportSummary',
             'parseRow', 'toRow', 'toRows',
             'getColumns', 'getHeader', 'getSection',
-            'getValidStatuses', 'getValidPriorities', 'getValidDifficulties',
+            'getValidStatuses', 'getValidPriorities',
+            'getValidDifficulties',
             'isValidStatus', 'isValidPriority', 'isValidDifficulty',
-            'parseParticipantsField'
+            'parseParticipantsField', 'parseTeamIdsField'
         ];
-
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
         }
 
-        // Smoke test: participants round-trip through parse + toRow.
+        function check(cond, label) {
+            if (!cond) { missing.push(label); }
+        }
+
         try {
-            // Parse a well-formed cell.
-            var parsedOk = parseParticipantsField(
+            // participants
+            var ok = parseParticipantsField(
                 '[{"characterId":"c1","teamId":"t1","source":"team"},' +
                 '{"characterId":"c2","teamId":null,"source":"rookie"}]',
-                null
-            );
-            if (parsedOk.length !== 2) {
-                missing.push(
-                    'parseParticipantsField: expected 2 entries, got ' +
-                    parsedOk.length
-                );
-            } else if (parsedOk[0].source !== 'team' ||
-                       parsedOk[0].teamId !== 't1' ||
-                       parsedOk[1].source !== 'rookie' ||
-                       parsedOk[1].teamId !== null) {
-                missing.push(
-                    'parseParticipantsField: entries did not round-trip'
-                );
-            }
-
-            // Empty cell yields [].
-            var parsedEmpty = parseParticipantsField('', null);
-            if (parsedEmpty.length !== 0) {
-                missing.push(
-                    'parseParticipantsField: empty cell should yield []'
-                );
-            }
-
-            // Malformed JSON yields [].
-            var parsedBad = parseParticipantsField('not json', null);
-            if (parsedBad.length !== 0) {
-                missing.push(
-                    'parseParticipantsField: bad JSON should yield []'
-                );
-            }
-
-            // Incoherent source/teamId combinations are dropped.
-            var parsedIncoherent = parseParticipantsField(
+                null);
+            check(ok.length === 2 && ok[0].teamId === 't1' &&
+                ok[1].teamId === null, 'participants did not round-trip');
+            check(parseParticipantsField('', null).length === 0,
+                'empty participants');
+            check(parseParticipantsField('not json', null).length === 0,
+                'bad-JSON participants');
+            check(parseParticipantsField(
                 '[{"characterId":"c1","teamId":null,"source":"team"},' +
                 '{"characterId":"c2","teamId":"t1","source":"rookie"}]',
-                null
-            );
-            if (parsedIncoherent.length !== 0) {
-                missing.push(
-                    'parseParticipantsField: incoherent combos should be dropped'
-                );
-            }
-
-            // Duplicate pairs are dropped.
-            var parsedDup = parseParticipantsField(
+                null).length === 0, 'incoherent participants kept');
+            check(parseParticipantsField(
                 '[{"characterId":"c1","teamId":"t1","source":"team"},' +
                 '{"characterId":"c1","teamId":"t1","source":"team"}]',
-                null
-            );
-            if (parsedDup.length !== 1) {
-                missing.push(
-                    'parseParticipantsField: duplicate pairs should be deduped'
-                );
-            }
+                null).length === 1, 'duplicate participants kept');
 
-            // toRow serialises participants as JSON.
+            // teams
+            var t = parseTeamIdsField(' a ; b,a ;; c ');
+            check(t.length === 3 && t[0] === 'a' && t[2] === 'c',
+                'parseTeamIdsField');
+
+            // vocabulary comes from MissionConstants
+            check(!isValidDifficulty('extreme'),
+                '"extreme" should no longer be valid');
+            check(!isValidStatus('on_hold'),
+                '"on_hold" should no longer be valid');
+            check(isValidStatus('') && isValidDifficulty('expert'),
+                'blank / expert should be valid');
+
+            // toRow keeps teams, date and escalation
             var row = toRow({
-                id: 'm1',
-                title: 'Test',
-                status: 'active',
-                priority: 'medium',
-                difficulty: 'medium',
-                assignedTeamId: null,
-                location: '',
-                duration: '',
-                pay: '',
-                progress: 0,
+                id: 'm1', title: 'T', status: 'active',
+                priority: 'medium', difficulty: 'medium',
+                assignedTeamIds: ['t1', 't2'], progress: 0,
                 objectives: [],
                 participants: [
                     { characterId: 'c1', teamId: 't1', source: 'team' }
-                ]
+                ],
+                year: 1920, month: 12, day: 8, escalation: 'tier_iii',
+                billing: 'original', basePay: '500', surchargePay: '50'
             });
-            if (typeof row[11] !== 'string' ||
-                row[11].indexOf('"characterId":"c1"') === -1) {
-                missing.push(
-                    'toRow: participants column was not serialised as JSON'
-                );
+            check(row.length === COLUMNS.length, 'toRow width mismatch');
+            check(row[5] === 't1;t2', 'toRow lost the team ids');
+            check(row[12] === 1920 && row[13] === 12 && row[14] === 8,
+                'toRow lost the date');
+            check(row[15] === 'tier_iii', 'toRow lost escalation');
+            check(row[11].indexOf('"characterId":"c1"') !== -1,
+                'toRow participants not JSON');
+
+            // parseRow round-trips a row it wrote
+            var parsed = parseRow(row.map(String), null);
+            check(parsed.valid, 'parseRow rejected its own output: ' +
+                parsed.errors.join('; '));
+            if (parsed.valid) {
+                check(parsed.mission.assignedTeamIds.length === 2,
+                    'round trip lost teams');
+                check(parsed.mission.year === 1920 &&
+                    parsed.mission.month === 12 &&
+                    parsed.mission.day === 8, 'round trip lost the date');
+                check(parsed.mission.basePay === '500',
+                    'round trip lost basePay');
             }
 
-            // Column count is consistent with FIELD_MAP.
-            var columns = getColumns();
-            var expectedField = getFieldName(columns.length - 1);
-            if (expectedField !== 'participants') {
-                missing.push(
-                    'COLUMNS/FIELD_MAP mismatch: last field is "' +
-                    expectedField + '"'
-                );
+            // an unknown enum is an error, not a silent blank
+            var bad = parseRow(['', 'T', 'active', 'medium', 'extreme'],
+                null);
+            check(!bad.valid && bad.errors.length > 0,
+                'unknown difficulty was not rejected');
+
+            // an older, shorter row still parses
+            var old = parseRow(['', 'Old', '', '', '', 'team_x'], null);
+            check(old.valid && old.mission.assignedTeamId === 'team_x' &&
+                old.mission.year === undefined,
+                'older shorter row did not parse');
+
+            check(getFieldName(COLUMNS.length - 1) === 'surchargePay',
+                'COLUMNS / FIELD_MAP mismatch');
+            for (var c = 0; c < COLUMNS.length; c++) {
+                if (!FIELD_MAP[c]) {
+                    missing.push('FIELD_MAP missing index ' + c);
+                }
             }
         } catch (e) {
             missing.push('smoke test threw: ' + e.message);
         }
 
         if (missing.length > 0) {
-            console.warn('[MissionCSV] Verification - some exports may be missing:', missing.join(', '));
+            console.warn('[MissionCSV] Verification - some exports may ' +
+                'be missing:', missing.join(', '));
         }
     })();
 
