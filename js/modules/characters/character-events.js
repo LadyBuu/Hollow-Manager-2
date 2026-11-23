@@ -1569,6 +1569,10 @@
                 toggleSidebar();
             });
         }
+
+        addSafeEventListener(window, 'resize', function() {
+            if (!isMobile()) { closeSidebar(); }
+        });
     }
 
     function bindAddCharacter(container) {
