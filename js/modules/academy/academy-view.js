@@ -46,6 +46,11 @@
  *     handleChange(e)
  *     handleInput(e)
  *     handleKeydown(e)
+ *     handleDragStart(e)
+ *     handleDragOver(e)
+ *     handleDragLeave(e)
+ *     handleDrop(e)
+ *     handleDragEnd(e)
  *     unmount()
  *
  *   The shell invokes optional methods through
@@ -124,6 +129,26 @@
  *   AcademyUI.setSelectedView('sharedGroups'), then calls
  *   AcademyView.refreshView(). See that controller for the
  *   routing.
+ *
+ * DRAG-AND-DROP (v35):
+ *   The shell owns five more delegated listeners — dragstart,
+ *   dragover, dragleave, drop, dragend — alongside the existing
+ *   click/change/input/keydown set. They are routed to the active
+ *   controller through AcademyControllerContract.invoke, exactly
+ *   like every other delegated event.
+ *
+ *   Only the Ranking view currently implements the five handlers;
+ *   every other controller's handleDragStart (etc.) is absent and
+ *   the Contract's invoke is a no-op for missing methods. This
+ *   keeps the shell generic: a future draggable view binds nothing
+ *   in the shell, it just implements the handlers.
+ *
+ *   The shell does NOT interpret drag payloads, compute drop
+ *   positions, or mutate ranking state. It only forwards the raw
+ *   DOM event. The controller owns the drag state machine
+ *   (which row is being dragged, which row the pointer is over,
+ *   what the resulting order is) and calls
+ *   AcademyRanking.setRanking(...) itself.
  */
 
 (function() {
@@ -415,16 +440,39 @@
         var inputHandler = function(e) { onDelegatedInput(e); };
         var keydownHandler = function(e) { onDelegatedKeydown(e); };
 
+        // v35 — drag-and-drop delegation. Routed to the active
+        // controller's handleDragStart / handleDragOver /
+        // handleDragLeave / handleDrop / handleDragEnd, exactly
+        // like the four above. Only the Ranking controller
+        // implements them today; every other controller's
+        // corresponding method is absent and the Contract's
+        // invoke is a no-op.
+        var dragStartHandler = function(e) { onDelegatedDragStart(e); };
+        var dragOverHandler = function(e) { onDelegatedDragOver(e); };
+        var dragLeaveHandler = function(e) { onDelegatedDragLeave(e); };
+        var dropHandler = function(e) { onDelegatedDrop(e); };
+        var dragEndHandler = function(e) { onDelegatedDragEnd(e); };
+
         container.addEventListener('click', clickHandler);
         container.addEventListener('change', changeHandler);
         container.addEventListener('input', inputHandler);
         container.addEventListener('keydown', keydownHandler);
+        container.addEventListener('dragstart', dragStartHandler);
+        container.addEventListener('dragover', dragOverHandler);
+        container.addEventListener('dragleave', dragLeaveHandler);
+        container.addEventListener('drop', dropHandler);
+        container.addEventListener('dragend', dragEndHandler);
 
         _boundHandlers = {
             click: clickHandler,
             change: changeHandler,
             input: inputHandler,
-            keydown: keydownHandler
+            keydown: keydownHandler,
+            dragstart: dragStartHandler,
+            dragover: dragOverHandler,
+            dragleave: dragLeaveHandler,
+            drop: dropHandler,
+            dragend: dragEndHandler
         };
     }
 
@@ -441,6 +489,21 @@
             );
             _boundContainer.removeEventListener(
                 'keydown', _boundHandlers.keydown
+            );
+            _boundContainer.removeEventListener(
+                'dragstart', _boundHandlers.dragstart
+            );
+            _boundContainer.removeEventListener(
+                'dragover', _boundHandlers.dragover
+            );
+            _boundContainer.removeEventListener(
+                'dragleave', _boundHandlers.dragleave
+            );
+            _boundContainer.removeEventListener(
+                'drop', _boundHandlers.drop
+            );
+            _boundContainer.removeEventListener(
+                'dragend', _boundHandlers.dragend
             );
         }
         _boundHandlers = null;
@@ -504,6 +567,11 @@
                 return;
 
             case 'rankings':
+                // v35 — the Ranking controller reads the same
+                // context shape as before. It owns the drag state
+                // machine and calls AcademyRanking.setRanking
+                // itself; the shell only forwards the raw drag
+                // events.
                 mountControllerForView(
                     'rankings',
                     'academy-rankings-host',
@@ -678,6 +746,26 @@
 
     function onDelegatedKeydown(e) {
         routeEventToActiveController('handleKeydown', e);
+    }
+
+    function onDelegatedDragStart(e) {
+        routeEventToActiveController('handleDragStart', e);
+    }
+
+    function onDelegatedDragOver(e) {
+        routeEventToActiveController('handleDragOver', e);
+    }
+
+    function onDelegatedDragLeave(e) {
+        routeEventToActiveController('handleDragLeave', e);
+    }
+
+    function onDelegatedDrop(e) {
+        routeEventToActiveController('handleDrop', e);
+    }
+
+    function onDelegatedDragEnd(e) {
+        routeEventToActiveController('handleDragEnd', e);
     }
 
     // ============================================================
