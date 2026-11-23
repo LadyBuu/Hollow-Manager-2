@@ -253,11 +253,15 @@
         return `
             <div class="page-header">
                 <h2>Social Network</h2>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <button id="add-relationship-btn" class="primary">+ Add Relationship</button>
-                    <button id="suggest-pairs-btn" class="secondary" title="Suggest Pairs">\u2665 Suggest Pairs</button>
-                    <button id="view-graph-btn" class="secondary">\u25ca View Network</button>
-                    <button id="view-list-btn" class="secondary">\u2630 View List</button>
+                <div class="social-header-actions">
+                    <div class="social-primary-actions">
+                        <button id="add-relationship-btn" class="primary">+ Add Relationship</button>
+                        <button id="suggest-pairs-btn" class="secondary" title="Suggest Pairs">\u2665 Suggest Pairs</button>
+                    </div>
+                    <div class="social-view-toggle" role="group" aria-label="Social view">
+                        <button id="view-list-btn" class="secondary is-active" type="button" aria-pressed="true">\u2630 List</button>
+                        <button id="view-graph-btn" class="secondary" type="button" aria-pressed="false">\u25ca Network</button>
+                    </div>
                 </div>
             </div>
             <div id="social-content">
