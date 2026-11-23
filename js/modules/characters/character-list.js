@@ -113,11 +113,10 @@
  *   A caller holding a returned object sees a stable snapshot.
  *
  * RENDER BEHAVIOUR:
- *   The list rebuilds via innerHTML on every render, which drops
- *   focus and scroll position. character-events.js calls render()
- *   after each checkbox tick, so a keyboard user will lose focus
- *   after ticking. Addressing this would require per-row DOM
- *   updates or focus restoration by id; left as a known trade-off.
+ *   The list rebuilds via innerHTML on every render. When a
+ *   checkbox triggers a selection render, focus is restored to
+ *   the checkbox with the same character ID. Other renders still
+ *   replace the list normally.
  *
  * DECEASED-ROW STYLING:
  *   Deceased rows render at 40% opacity, but deceased rows are
