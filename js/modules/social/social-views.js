@@ -883,7 +883,7 @@
         html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
         html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeHtml(color) + ';">' + escapeHtml(label) + '</span>';
         html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + group.total + ')</span>';
-        html += '</div>';
+        html += '</button>';
 
         html += '<div class="relationship-group-body"' + bodyHidden + ' style="padding:6px 10px;">';
 
