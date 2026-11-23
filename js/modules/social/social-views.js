@@ -265,7 +265,6 @@
                 </div>
             </div>
             <div id="social-content">
-                <div id="social-list-view">
                     <div class="filter-section">
                         <label class="social-search-label" for="social-search-filter">Search:</label>
                         <input id="social-search-filter" type="search" placeholder="Names, roles or notes…" autocomplete="off">
@@ -280,17 +279,24 @@
                         <button id="clear-social-filters" class="small secondary" type="button">\u2715 Clear</button>
                         <span class="social-filter-count" id="relationship-count" aria-live="polite">0 relationships</span>
                     </div>
+                <div id="social-list-view">
                     <div id="relationships-container">
                         <p class="empty-state">No relationships created yet. Add your first relationship!</p>
                     </div>
                 </div>
                 <div id="social-graph-view" style="display:none;">
-                    <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                        <span style="font-size:0.75rem;color:var(--text-dim);">Zoom: <span id="zoom-display">100%</span></span>
-                        <button id="zoom-in-btn" class="small secondary">+</button>
-                        <button id="zoom-out-btn" class="small secondary">-</button>
-                        <button id="reset-zoom-btn" class="small secondary">\u27f2</button>
-                        <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Click a node to view character details</span>
+                    <div class="social-graph-toolbar">
+                        <div class="social-graph-breadcrumb" aria-label="Network focus path">
+                            <span id="social-graph-breadcrumb" aria-live="polite">Choose a character above to explore their connections</span>
+                            <button id="graph-back-btn" class="small secondary" type="button" hidden>Back</button>
+                            <button id="graph-reset-btn" class="small secondary" type="button">Reset focus</button>
+                        </div>
+                        <div class="social-graph-zoom">
+                            <span>Zoom: <span id="zoom-display">100%</span></span>
+                            <button id="zoom-in-btn" class="small secondary" type="button" aria-label="Zoom in">+</button>
+                            <button id="zoom-out-btn" class="small secondary" type="button" aria-label="Zoom out">−</button>
+                            <button id="reset-zoom-btn" class="small secondary" type="button">Reset zoom</button>
+                        </div>
                     </div>
                     <div id="graph-container" style="width:100%;height:600px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative;cursor:grab;">
                         <svg id="social-svg" width="100%" height="100%" style="display:block;background:var(--bg);">
