@@ -874,18 +874,18 @@
 
         var isCollapsed = isTypeCollapsed(typeId);
         var caret = isCollapsed ? '\u25b8' : '\u25be';
-        var bodyDisplay = isCollapsed ? 'none' : 'block';
+        var bodyHidden = isCollapsed ? ' hidden' : '';
 
         var html = '';
         html += '<div class="relationship-group" data-type="' + escapeHtml(typeId) + '" style="background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;overflow:hidden;">';
 
-        html += '<div class="relationship-group-header" data-type="' + escapeHtml(typeId) + '" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border-left:3px solid ' + escapeHtml(color) + ';">';
+        html += '<button type="button" class="relationship-group-header" data-type="' + escapeHtml(typeId) + '" aria-expanded="' + (!isCollapsed) + '" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border:0;border-left:3px solid ' + escapeHtml(color) + ';width:100%;text-align:left;color:inherit;">';
         html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
         html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeHtml(color) + ';">' + escapeHtml(label) + '</span>';
         html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + group.total + ')</span>';
         html += '</div>';
 
-        html += '<div class="relationship-group-body" style="display:' + bodyDisplay + ';padding:6px 10px;">';
+        html += '<div class="relationship-group-body"' + bodyHidden + ' style="padding:6px 10px;">';
 
         if (group.ongoing.length > 0) {
             html += '<div class="relationship-subheader" style="font-size:0.6rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;padding:4px 0;border-bottom:1px solid var(--border-soft);margin-bottom:4px;">Ongoing</div>';
@@ -902,6 +902,7 @@
         }
 
         html += '</div>';
+        html += '</button>';
         html += '</div>';
 
         return html;
