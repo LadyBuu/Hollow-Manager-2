@@ -24,7 +24,7 @@
        cluster a bit when it holds three buttons side by side. */
 }
 
-.page-header > div {
+#tab-social .page-header > div {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
@@ -127,8 +127,17 @@
     flex: 0 0 auto;
 }
 
+.relationship-group-header:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
 .relationship-group-body {
     padding: 6px 10px;
+}
+
+.relationship-group-body[hidden] {
+    display: none;
 }
 
 /* Subsection label inside a group body */
