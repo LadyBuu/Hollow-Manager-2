@@ -39,28 +39,18 @@
  *
  *   The toggle button is only visible on mobile.
  *
- * MOBILE BURGER ESCAPE:
- *   #toggle-char-list is a SIBLING of .characters-sidebar in the
- *   markup, not a child of it.
+ * MOBILE DRAWER TOGGLE:
+ *   #toggle-char-list is a sibling of .characters-sidebar in the
+ *   markup, not a child of it. The sidebar slides off-screen with
+ *   a transform, while the toggle stays in the tab above the form
+ *   and below the application's sticky header.
  *
- *   WHY IT MUST BE A SIBLING:
- *     On mobile, .characters-sidebar is translated off-screen via
- *     `transform: translateX(-100%)` until `.open` is added. A
- *     fixed-positioned descendant of a transformed ancestor does
- *     NOT escape that ancestor's clip: the transformed element
- *     becomes the containing block for its fixed descendants
- *     (CSS Transforms spec). So a burger rendered inside the
- *     sidebar would be dragged off-screen with it, and no amount
- *     of `position: fixed` on the burger itself would help.
+ *   The backdrop is a separate sibling rather than a pseudo-
+ *   element of the transformed sidebar, so it can cover the
+ *   viewport. CharacterEvents synchronizes the drawer, backdrop,
+ *   aria-expanded state, and body scroll lock.
  *
- *     The only reliable fix is to place the burger outside the
- *     transformed subtree. It lives as a direct child of
- *     .characters-layout, which has no transform, so its
- *     containing block is the viewport and `position: fixed`
- *     behaves as expected.
- *
- *   Positioning and visibility live entirely in
- *   css/characters.css.
+ *   Positioning and visibility live in css/characters.css.
  *
  * RELATIONSHIP MODAL SHELL REMOVED:
  *   The character tab used to carry its own relationship form
