@@ -163,7 +163,7 @@
     }
 
     function isMobileViewport() {
-        return window.innerWidth < getMobileBreakpoint();
+        return window.innerWidth <= getMobileBreakpoint();
     }
 
     // ============================================================
@@ -557,8 +557,11 @@
                 <button id="toggle-char-list"
                         class="secondary small"
                         title="Toggle character list"
-                        aria-label="Toggle character list">\u2630</button>
-                <div class="characters-sidebar">
+                        aria-label="Toggle character list"
+                        aria-controls="characters-sidebar"
+                        aria-expanded="false">\u2630</button>
+                <div class="characters-backdrop" aria-hidden="true"></div>
+                <div id="characters-sidebar" class="characters-sidebar">
                     <div class="characters-header">
                         <h2>Characters</h2>
                         <div class="characters-header-actions">
