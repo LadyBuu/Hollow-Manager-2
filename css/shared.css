@@ -3224,3 +3224,14 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
     --r-e: var(--text-dim);
     --r-f: var(--danger);
 }
+
+/* Theme-specific body typography, using system fallbacks rather than requiring remote fonts */
+[data-theme="illuminated"] body,
+[data-theme="rococo"] body,
+[data-theme="ukiyo-e"] body,
+[data-theme="nautical-tile"] body { font-family: Georgia, "Times New Roman", serif; }
+
+[data-theme="discowing"] body { font-family: "Trebuchet MS", Arial, sans-serif; }
+[data-theme="choc-cake"] body,
+[data-theme="dada"] body,
+[data-theme="orchestrion"] body { font-family: "Courier New", Courier, monospace; }
