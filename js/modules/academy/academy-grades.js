@@ -2134,7 +2134,7 @@
             },
             logMessage: 'Created group assignment "' + title + '" for ' +
                 grades.length + ' student(s)',
-            successMessage: 'Group assignment created successfully!',
+            skipNotification: true,
             failureMessage: 'Failed to create group assignment.'
         });
     }
