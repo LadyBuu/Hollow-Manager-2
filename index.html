@@ -74,8 +74,30 @@
 
             <div class="header-actions">
                 <div class="theme-controls">
-                    <span id="theme-label">Dark</span>
-                    <button id="theme-toggle-btn" class="small" title="Toggle theme" aria-label="Toggle theme">☀</button>
+                    <label class="sr-only" for="theme-select">Choose theme</label>
+                    <select id="theme-select" class="theme-select" aria-label="Choose theme">
+                        <option value="dark">Dark</option>
+                        <option value="light">Light</option>
+                        <option value="vaporwave">Vaporwave</option>
+                        <option value="pastel">Pastel</option>
+                        <option value="carnival">Carnival</option>
+                        <option value="maximal">Maximal</option>
+                        <option value="gits">GITS</option>
+                        <option value="stained-glass">Stained Glass</option>
+                        <option value="stained-glass-dark">Stained Glass Dark</option>
+                        <option value="deco-nouveau">Deco Nouveau</option>
+                        <option value="grotesque">Grotesque</option>
+                        <option value="illuminated">Illuminated</option>
+                        <option value="discowing">Discowing</option>
+                        <option value="choc-cake">Choc Cake</option>
+                        <option value="dada">Dada</option>
+                        <option value="ukiyo-e">Ukiyo-e</option>
+                        <option value="brutalist">Brutalist</option>
+                        <option value="orchestrion">Orchestrion</option>
+                        <option value="rococo">Rococo</option>
+                        <option value="nautical-tile">Nautical Tile</option>
+                    </select>
+                    <button id="theme-toggle-btn" class="small" title="Switch between dark and light themes" aria-label="Switch between dark and light themes">☼</button>
                 </div>
                 <button id="export-json-btn" class="small" title="Export JSON" aria-label="Export JSON">↓</button>
                 <button id="manage-backups-btn" class="small" title="Manage local backups" aria-label="Manage local backups">Backups</button>
