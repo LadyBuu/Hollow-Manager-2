@@ -668,7 +668,7 @@
         var elimination = EQ.getEarliestElimination(studentId);
         return !!(elimination &&
             Number(elimination.year) === classYear &&
-            Number(elimination.week) <= weekNum);
+            Number(elimination.week) < weekNum);
     }
 
     function getClassRankingsInternal(classId, week) {
