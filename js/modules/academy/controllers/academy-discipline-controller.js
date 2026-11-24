@@ -484,6 +484,8 @@
 
     var _openDisciplineSessionsGroupId = null;
     var _openDisciplineSessionsCandidates = null;
+    var _openDisciplineAssignmentGroupId = null;
+    var _disciplineAssignmentPreview = null;
 
     var _scheduleHighlight = null;
 
@@ -1042,6 +1044,11 @@
                 group.isPickerOpen = false;
                 group.pickerCandidates = null;
             }
+
+            group.isAssignmentFormOpen =
+                _openDisciplineAssignmentGroupId !== null &&
+                String(group.groupId) ===
+                    String(_openDisciplineAssignmentGroupId);
         }
     }
 
@@ -1218,6 +1225,22 @@
                 e.preventDefault();
                 handleDisciplineSessionsRemoveStudent(actionEl);
                 return;
+            case 'discipline-assignment-open':
+                e.preventDefault();
+                handleDisciplineAssignmentOpen(actionEl);
+                return;
+            case 'discipline-assignment-cancel':
+                e.preventDefault();
+                handleDisciplineAssignmentCancel();
+                return;
+            case 'discipline-assignment-preview':
+                e.preventDefault();
+                handleDisciplineAssignmentPreview(actionEl);
+                return;
+            case 'discipline-assignment-submit':
+                e.preventDefault();
+                handleDisciplineAssignmentSubmit(actionEl);
+                return;
             case 'schedule-discipline-assign':
                 e.preventDefault();
                 handleScheduleDisciplineAssign(actionEl);
@@ -1307,6 +1330,16 @@
             return;
         }
 
+        var assignmentField = target.dataset &&
+            target.dataset.assignmentField;
+        if (assignmentField) {
+            invalidateDisciplineAssignmentPreview(target);
+            if (assignmentField === 'type') {
+                updateDisciplineAssignmentSlotVisibility(target);
+            }
+            return;
+        }
+
         // ---- Candidate picker checkbox ----
         //
         // The picker's Add button ships disabled. Ticking a checkbox
@@ -1330,6 +1363,14 @@
     function handleInput(e) {
         var target = e.target;
         if (!target) { return; }
+
+        if (target.dataset && target.dataset.assignmentField) {
+            invalidateDisciplineAssignmentPreview(target);
+            if (target.dataset.assignmentField === 'type') {
+                updateDisciplineAssignmentSlotVisibility(target);
+            }
+            return;
+        }
 
         if (target.dataset && target.dataset.assessmentWeightType) {
             handleAssessmentWeightChange(target);
@@ -1950,6 +1991,8 @@
             return;
         }
 
+        _openDisciplineAssignmentGroupId = null;
+        _disciplineAssignmentPreview = null;
         _openDisciplineSessionsGroupId = String(groupId);
         _openDisciplineSessionsCandidates = {
             candidates: Array.isArray(vm.candidates)
@@ -2081,6 +2124,295 @@
             var ctx = getContext();
             ctx.onChange();
         });
+    }
+
+    function handleDisciplineAssignmentOpen(actionEl) {
+        var groupId = actionEl && actionEl.dataset
+            ? actionEl.dataset.groupId
+            : null;
+        if (!isNonEmptyString(groupId)) { return; }
+
+        var TG = window.AcademyTeachingGroups;
+        var week = resolveScheduleWeek();
+        var group = TG && typeof TG.getGroup === 'function'
+            ? TG.getGroup(groupId)
+            : null;
+        if (!group || week === null) {
+            notify('Teaching group or schedule week is unavailable.', 'error');
+            return;
+        }
+
+        var members = TG.getActiveMembers(groupId, week) || [];
+        if (!Array.isArray(members) || members.length === 0) {
+            notify('Add students to this group before creating an assignment.', 'warning');
+            return;
+        }
+
+        _openDisciplineSessionsGroupId = null;
+        _openDisciplineSessionsCandidates = null;
+        _openDisciplineAssignmentGroupId = String(groupId);
+        _disciplineAssignmentPreview = null;
+
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function handleDisciplineAssignmentCancel() {
+        _openDisciplineAssignmentGroupId = null;
+        _disciplineAssignmentPreview = null;
+        var ctx = getContext();
+        ctx.onChange();
+    }
+
+    function getDisciplineAssignmentForm(actionEl) {
+        if (!actionEl || !actionEl.dataset ||
+            !isNonEmptyString(actionEl.dataset.groupId)) {
+            return null;
+        }
+        return document.querySelector(
+            '.academy-discipline-assignment-form[data-group-id="' +
+            cssEscapeLocal(actionEl.dataset.groupId) + '"]'
+        );
+    }
+
+    function readDisciplineAssignmentField(form, field) {
+        var el = form ? form.querySelector(
+            '[data-assignment-field="' + field + '"]'
+        ) : null;
+        return el || null;
+    }
+
+    function invalidateDisciplineAssignmentPreview(target) {
+        var form = target && typeof target.closest === 'function'
+            ? target.closest('.academy-discipline-assignment-form')
+            : null;
+        if (!form) { return; }
+
+        var groupId = form.dataset.groupId;
+        if (_disciplineAssignmentPreview &&
+            String(_disciplineAssignmentPreview.groupId) === String(groupId)) {
+            _disciplineAssignmentPreview = null;
+        }
+
+        var preview = form.querySelector('[data-assignment-preview]');
+        var submit = form.querySelector(
+            '[data-action="discipline-assignment-submit"]'
+        );
+        if (preview) { preview.textContent = 'Settings changed. Generate a new preview.'; }
+        if (submit) { submit.disabled = true; }
+    }
+
+    function updateDisciplineAssignmentSlotVisibility(typeSelect) {
+        var form = typeSelect && typeof typeSelect.closest === 'function'
+            ? typeSelect.closest('.academy-discipline-assignment-form')
+            : null;
+        if (!form) { return; }
+
+        var field = form.querySelector(
+            '.academy-discipline-assignment-session-field'
+        );
+        var sessionSelect = readDisciplineAssignmentField(form, 'session');
+        var isHome = typeSelect.value === 'homeAssignment';
+        if (field) { field.style.display = isHome ? 'none' : ''; }
+        if (sessionSelect) { sessionSelect.disabled = isHome || sessionSelect.options.length === 0; }
+    }
+
+    function handleDisciplineAssignmentPreview(actionEl) {
+        var form = getDisciplineAssignmentForm(actionEl);
+        if (!form) { return; }
+
+        var groupId = String(actionEl.dataset.groupId);
+        var titleEl = readDisciplineAssignmentField(form, 'title');
+        var typeEl = readDisciplineAssignmentField(form, 'type');
+        var sessionEl = readDisciplineAssignmentField(form, 'session');
+        var maxEl = readDisciplineAssignmentField(form, 'max-score');
+        var minEl = readDisciplineAssignmentField(form, 'min-score');
+        var highEl = readDisciplineAssignmentField(form, 'max-random-score');
+
+        var title = titleEl ? titleEl.value.trim() : '';
+        var type = typeEl ? typeEl.value : '';
+        var maxScore = maxEl ? parseStrictInteger(maxEl.value) : null;
+        var minScore = minEl ? parseStrictInteger(minEl.value) : null;
+        var highScore = highEl ? parseStrictInteger(highEl.value) : null;
+        var Grades = window.AcademyGrades;
+
+        if (!title || title.length > 120) {
+            notify('Enter an assignment name (maximum 120 characters).', 'warning');
+            if (titleEl) { titleEl.focus(); }
+            return;
+        }
+        if (!Grades || !Array.isArray(Grades.VALID_GRADE_TYPES) ||
+            Grades.VALID_GRADE_TYPES.indexOf(type) === -1) {
+            notify('Choose a valid assessment type.', 'warning');
+            return;
+        }
+        if (maxScore === null || maxScore < 1 || maxScore > 1000 ||
+            minScore === null || highScore === null ||
+            minScore < 0 || highScore < minScore || highScore > maxScore) {
+            notify('Use whole-number scores with 0 ≤ minimum ≤ maximum ≤ maximum score.', 'warning');
+            return;
+        }
+
+        var week = resolveScheduleWeek();
+        var classId = AcademyUI.getSelectedClassId();
+        if (week === null || !isNonEmptyString(classId) ||
+            !_disciplineDraft || !isNonEmptyString(_disciplineDraft.id)) {
+            notify('Class, discipline, or schedule week is unavailable.', 'error');
+            return;
+        }
+
+        var slot = null;
+        if (type !== 'homeAssignment') {
+            var selected = sessionEl && sessionEl.options
+                ? sessionEl.options[sessionEl.selectedIndex]
+                : null;
+            var day = selected ? parseStrictInteger(selected.dataset.day) : null;
+            var startTime = selected
+                ? parseStrictInteger(selected.dataset.startTime)
+                : null;
+            if (!selected || !selected.value || day === null || startTime === null) {
+                notify('Choose a scheduled class session, or use Home Assignment.', 'warning');
+                return;
+            }
+            slot = { day: day, startTime: startTime, groupId: groupId };
+        }
+
+        var roster = form.closest('.academy-discipline-session-group');
+        roster = roster ? roster.querySelectorAll(
+            '.academy-discipline-session-roster-row'
+        ) : [];
+        if (!roster || roster.length === 0) {
+            notify('This group has no students to grade.', 'warning');
+            return;
+        }
+
+        var assignmentId = _disciplineAssignmentPreview &&
+            String(_disciplineAssignmentPreview.groupId) === groupId
+            ? _disciplineAssignmentPreview.assignmentId
+            : window.IdUtils.generateId('assignment');
+
+        var records = [];
+        var previewRows = [];
+        for (var i = 0; i < roster.length; i++) {
+            var studentId = roster[i].dataset.characterId;
+            var nameEl = roster[i].querySelector(
+                '.academy-discipline-session-roster-name'
+            );
+            var score = Math.floor(Math.random() * (highScore - minScore + 1)) +
+                minScore;
+            if (!isNonEmptyString(studentId)) { continue; }
+
+            records.push({
+                studentId: String(studentId),
+                classId: String(classId),
+                disciplineId: String(_disciplineDraft.id),
+                week: week,
+                score: score,
+                maxScore: maxScore,
+                type: type,
+                slot: slot,
+                assignmentId: assignmentId,
+                assignmentTitle: title
+            });
+            previewRows.push({
+                name: nameEl ? nameEl.textContent : 'Unknown student',
+                score: score
+            });
+        }
+
+        if (records.length === 0) {
+            notify('No valid group members were found.', 'warning');
+            return;
+        }
+
+        _disciplineAssignmentPreview = {
+            groupId: groupId,
+            assignmentId: assignmentId,
+            title: title,
+            records: records
+        };
+
+        var previewEl = form.querySelector('[data-assignment-preview]');
+        var submitBtn = form.querySelector(
+            '[data-action="discipline-assignment-submit"]'
+        );
+        var html = '<div class="academy-discipline-assignment-preview-heading">' +
+            'Preview · ' + records.length + ' students · ' +
+            Grades.getGradeTypeLabel(type) + '</div><ul>';
+        for (var r = 0; r < previewRows.length; r++) {
+            html += '<li><span>' +
+                DomUtils.escapeHtml(previewRows[r].name) +
+                '</span><strong>' + previewRows[r].score + ' / ' +
+                maxScore + '</strong></li>';
+        }
+        html += '</ul><p>Regenerate to roll a different set of scores.</p>';
+        if (previewEl) { previewEl.innerHTML = html; }
+        if (submitBtn) { submitBtn.disabled = false; }
+    }
+
+    function handleDisciplineAssignmentSubmit(actionEl) {
+        var form = getDisciplineAssignmentForm(actionEl);
+        var preview = _disciplineAssignmentPreview;
+        if (!form || !preview ||
+            String(preview.groupId) !== String(actionEl.dataset.groupId) ||
+            !Array.isArray(preview.records) || preview.records.length === 0) {
+            notify('Generate a preview before saving the assignment.', 'warning');
+            return;
+        }
+
+        var Grades = window.AcademyGrades;
+        if (!Grades || typeof Grades.saveGrades !== 'function') {
+            notify('Academy grades module is unavailable.', 'error');
+            return;
+        }
+
+        var submitBtn = form.querySelector(
+            '[data-action="discipline-assignment-submit"]'
+        );
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Saving…';
+        }
+
+        Grades.saveGrades(preview.records, { overwrite: false })
+            .then(function(result) {
+                var data = result && result.data ? result.data : result;
+                var saved = data && typeof data.successCount === 'number'
+                    ? data.successCount
+                    : 0;
+                if (!result || result.success !== true || saved !== preview.records.length) {
+                    var detail = result && result.message
+                        ? result.message
+                        : 'Only ' + saved + ' of ' + preview.records.length + ' grades were saved.';
+                    notify('Assignment was not fully saved: ' + detail, 'error');
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Save grades';
+                    }
+                    return;
+                }
+
+                notify(
+                    'Created "' + preview.title + '" for ' + saved +
+                    ' student' + (saved === 1 ? '' : 's') + '.',
+                    'success'
+                );
+                _openDisciplineAssignmentGroupId = null;
+                _disciplineAssignmentPreview = null;
+                var ctx = getContext();
+                ctx.onChange();
+            })
+            .catch(function(err) {
+                console.warn(
+                    '[AcademyDisciplineController] group assignment save failed:',
+                    err
+                );
+                notify('Failed to save group assignment.', 'error');
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Save grades';
+                }
+            });
     }
 
     function handleDisciplineSessionsRemoveStudent(actionEl) {
