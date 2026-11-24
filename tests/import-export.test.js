@@ -38,7 +38,10 @@ function loadImportPipeline() {
         },
         ActivityLog: { record: () => {} },
         ObjectUtils: { deepClone: value => JSON.parse(JSON.stringify(value)) },
-        IdUtils: { generateId: () => 'generated-id' }
+        IdUtils: {
+            generateId: () => 'generated-id',
+            normaliseId: value => value === null || value === undefined ? '' : String(value)
+        }
     };
 
     const context = { window, console, Promise, Date, JSON, Object, Array, String, Number, Math };
