@@ -284,7 +284,7 @@
      * @param {object} data - Extracted data from envelope
      * @returns {object} Complete candidate state
      */
-    function buildCandidateState(data) {
+    function buildCandidateState(data, sourceDataVersion) {
         if (!data || typeof data !== 'object') {
             return {};
         }
@@ -317,35 +317,24 @@
             candidate.currentWeek = 1;
         }
 
-        // These fields are intentionally local and are not part of the
-        // portable export contract. Preserve them across a full import
-        // replacement rather than silently deleting the activity history
-        // or making the next startup replay database migrations from v1.
-        var liveData = window.data && typeof window.data === 'object'
-            ? window.data
-            : null;
-        var currentDataVersion = liveData && liveData._dataVersion;
-
-        if ((!Number.isInteger(currentDataVersion) || currentDataVersion < 1) &&
-            window.db && typeof window.db.getEmptyData === 'function') {
-            try {
-                var emptyData = window.db.getEmptyData();
-                currentDataVersion = emptyData && emptyData._dataVersion;
-            } catch (versionError) {
-                // The explicit guard below reports the unavailable version.
-            }
-        }
-
-        if (!Number.isInteger(currentDataVersion) || currentDataVersion < 1) {
+        // Run the same internal DATA_VERSION migrations used by the
+        // database loader. Export format migrations are a separate version
+        // system and cannot repair old application data structures.
+        if (!window.db || typeof window.db.migrateImportedData !== 'function') {
             throw new Error(
-                'Cannot import safely: the current database version is unavailable.'
+                'Cannot import safely: database migration support is unavailable.'
             );
         }
 
-        candidate._dataVersion = currentDataVersion;
-        candidate.activities = liveData && Array.isArray(liveData.activities)
+        var liveData = window.data && typeof window.data === 'object'
+            ? window.data
+            : null;
+        var localActivities = liveData && Array.isArray(liveData.activities)
             ? deepClone(liveData.activities)
             : [];
+
+        candidate = window.db.migrateImportedData(candidate, sourceDataVersion);
+        candidate.activities = localActivities;
 
         return candidate;
     }
@@ -1030,7 +1019,24 @@
         var extractedData = Envelope.extract(envelopeToImport);
 
         // ---- STAGE 4: Build candidate state ----
-        var candidate = buildCandidateState(extractedData);
+        var sourceDataVersion = envelopeToImport.metadata &&
+            envelopeToImport.metadata.dataVersion;
+        var candidate;
+        try {
+            candidate = buildCandidateState(extractedData, sourceDataVersion);
+        } catch (migrationError) {
+            return Promise.resolve(createFailureResult(
+                ['Internal data migration failed: ' + migrationError.message],
+                allWarnings,
+                'Import failed: source data could not be migrated safely.'
+            ));
+        }
+        if (sourceDataVersion < Schema.DATA_VERSION) {
+            allWarnings.push(
+                'Internal data migrated from version ' + sourceDataVersion +
+                ' to the current database version.'
+            );
+        }
 
         // ---- STAGE 5: Ensure unique IDs ----
         var idResult = ensureUniqueIds(candidate, {
