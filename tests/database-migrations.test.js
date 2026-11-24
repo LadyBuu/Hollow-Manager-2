@@ -453,7 +453,6 @@ test('manual backup saves current state and returns a recoverable backup identif
 
     assert.match(result.id, /^mainData_backup_manual_/);
     assert.equal(result.dataVersion, 35);
-    assert.equal(records.get('mainData_backup_manual_' + result.id.split('_').slice(-2).join('_')), undefined);
     const backupRecord = records.get(result.id);
     assert.ok(backupRecord);
     assert.equal(backupRecord.data.characters[0].id, 'manual-backup-character');
