@@ -807,8 +807,9 @@
         }
         if (candidate.assignmentTitle !== undefined &&
             candidate.assignmentTitle !== null &&
-            typeof candidate.assignmentTitle !== 'string') {
-            return { valid: false, message: 'Candidate assignmentTitle is invalid.' };
+            (typeof candidate.assignmentTitle !== 'string' ||
+             candidate.assignmentTitle.length > 120)) {
+            return { valid: false, message: 'Candidate assignmentTitle must be a string of at most 120 characters.' };
         }
         if (isNonEmptyString(candidate.assignmentId) &&
             !isNonEmptyString(candidate.assignmentTitle)) {
