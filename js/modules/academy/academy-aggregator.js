@@ -2839,7 +2839,7 @@
         if (selectedTeamId) {
             for (var j = 0; j < teams.length; j++) {
                 if (String(teams[j].id) === String(selectedTeamId)) {
-                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week, selectedClass.id);
+                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week, selectedClass.id, teams[j].ranking);
                     resolvedSelectedTeamId = teams[j].id;
                     break;
                 }
@@ -2870,7 +2870,8 @@
             selectedTeamId: resolvedSelectedTeamId,
             selectedTeam: selectedTeamVM,
             orphanTeams: orphanTeams,
-            orphanClasses: orphanClasses
+            orphanClasses: orphanClasses,
+            sortMode: sortMode === 'ranking' ? 'ranking' : 'name'
         };
     }
 
@@ -2964,7 +2965,7 @@
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
-    function buildWeeklyTeamDetail(team, week, classId) {
+    function buildWeeklyTeamDetail(team, week, classId, rankingSummary) {
         if (!team) { return null; }
 
         var activeMembers = TeamQueries.getActiveTeamMembers(
@@ -2973,7 +2974,7 @@
         ) || [];
 
         var members = buildTeamMembersVM(activeMembers, team.type);
-        var ranking = getTeamRankingSummary(team, classId, week);
+        var ranking = rankingSummary || getTeamRankingSummary(team, classId, week);
         members.forEach(function(member) {
             var record = getIndividualRanking(classId, member.characterId, week);
             member.individualRank = record ? record.rank : null;
