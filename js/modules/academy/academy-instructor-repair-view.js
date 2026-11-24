@@ -385,9 +385,12 @@
                     'border:1px solid var(--border);border-radius:var(--radius);">' +
                     '<strong style="font-size:0.8rem;">Elimination data repair</strong>' +
                     '<p class="field-hint" style="font-size:0.7rem;margin:5px 0 9px;">' +
-                    'Rebuilds each character’s derived eliminated-weeks cache from their elimination records. ' +
-                    'It does not change elimination dates or remove records.' +
+                    'Removes legacy elimination records that have no valid record ID. ' +
+                    'Modern elimination records are kept. This does not normalise or recreate records.' +
                     '</p>' +
+                    '<button type="button" class="small secondary academy-legacy-elimination-repair-btn">' +
+                    'Strip legacy eliminations' +
+                    '</button> ' +
                     '<button type="button" class="small secondary academy-elimination-cache-repair-btn">' +
                     'Rebuild elimination caches' +
                     '</button>' +
@@ -535,6 +538,13 @@
                 return;
             }
 
+            var legacyRepairBtn = target.closest('.academy-legacy-elimination-repair-btn');
+            if (legacyRepairBtn) {
+                e.preventDefault();
+                handleLegacyEliminationRepair();
+                return;
+            }
+
             var cacheRepairBtn = target.closest('.academy-elimination-cache-repair-btn');
             if (cacheRepairBtn) {
                 e.preventDefault();
@@ -557,6 +567,42 @@
 
         _container.addEventListener('click', handler);
         _container.__instructorRepairClickHandler = handler;
+    }
+
+    function handleLegacyEliminationRepair() {
+        if (_busy) { return; }
+        var API = getAcademyEliminations();
+        if (!API || typeof API.stripLegacyEliminations !== 'function') {
+            notify('AcademyEliminations legacy cleanup is unavailable. Check script loading.', 'error');
+            return;
+        }
+
+        var confirmed = window.confirm(
+            'Permanently remove every character elimination record without a valid record ID? ' +
+            'Modern records will be kept. This cannot be undone except by restoring a backup.'
+        );
+        if (!confirmed) { return; }
+
+        _busy = true;
+        Promise.resolve(API.stripLegacyEliminations())
+            .then(function(result) {
+                _busy = false;
+                if (!result || result.success === false) {
+                    notify((result && result.message) || 'Legacy elimination cleanup failed.', 'error');
+                    return;
+                }
+                var data = result.data || {};
+                notify('Removed ' + (data.removed || 0) + ' legacy elimination record' +
+                    ((data.removed || 0) === 1 ? '' : 's') + ' from ' +
+                    (data.charactersAffected || 0) + ' character' +
+                    ((data.charactersAffected || 0) === 1 ? '' : 's') + '.', 'success');
+                render(_container);
+            })
+            .catch(function(err) {
+                _busy = false;
+                console.warn('[AcademyInstructorRepairView] legacy elimination cleanup failed:', err);
+                notify('Legacy elimination cleanup failed. See console for details.', 'error');
+            });
     }
 
     function handleEliminationCacheRepair() {
