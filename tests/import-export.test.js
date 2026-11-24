@@ -69,3 +69,35 @@ test('future export format is refused before migration, validation, or mutation'
     assert.deepEqual(calls, { migration: 0, mutation: 0, validation: 0 });
 });
 
+
+
+test('duplicate imported IDs do not redirect references away from the first record', function() {
+    const { pipeline } = loadImportPipeline();
+    const source = {
+        characters: [
+            { id: 'char-shared', firstName: 'First' },
+            { id: 'char-shared', firstName: 'Duplicate' }
+        ],
+        teams: [
+            { id: 'team-1', members: [{ characterId: 'char-shared' }] }
+        ],
+        departments: [],
+        tournaments: [],
+        missions: [],
+        classes: [],
+        locations: []
+    };
+
+    const idResult = pipeline.ensureUniqueIds(source);
+    assert.equal(idResult.changes.length, 1);
+    assert.equal(idResult.changes[0].reason, 'Duplicate ID');
+
+    const updated = pipeline.updateReferences(idResult.candidate, idResult.changes);
+    assert.equal(updated.characters[0].id, 'char-shared');
+    assert.notEqual(updated.characters[1].id, 'char-shared');
+    assert.equal(
+        updated.teams[0].members[0].characterId,
+        'char-shared',
+        'existing references must continue pointing to the first record'
+    );
+});
