@@ -369,6 +369,169 @@
         });
     }
 
+    /**
+     * List recoverable database snapshots without exposing their data.
+     * Includes pre-migration and pre-restore backups.
+     */
+    function listBackups() {
+        return new Promise(function(resolve, reject) {
+            if (!_indexedDB || _dbStatus !== 'ready') {
+                reject(new Error('Database not available'));
+                return;
+            }
+            try {
+                var tx = _indexedDB.transaction([STORE_NAME], 'readonly');
+                var store = tx.objectStore(STORE_NAME);
+                var request = store.openCursor();
+                var backups = [];
+
+                request.onsuccess = function() {
+                    var cursor = request.result;
+                    if (!cursor) return;
+                    var record = cursor.value;
+                    if (record && typeof record.id === 'string' &&
+                        record.id.indexOf('mainData_backup_') === 0) {
+                        backups.push({
+                            id: record.id,
+                            createdAt: record.createdAt || null,
+                            dataVersion: record.dataVersion ||
+                                (record.data && record.data._dataVersion) || null
+                        });
+                    }
+                    cursor.continue();
+                };
+                request.onerror = function(event) {
+                    reject(event.target.error || new Error('Could not read database backups'));
+                };
+                tx.oncomplete = function() {
+                    backups.sort(function(a, b) {
+                        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+                    });
+                    resolve(backups);
+                };
+                tx.onerror = function(event) {
+                    reject(event.target.error || new Error('Could not list database backups'));
+                };
+                tx.onabort = function(event) {
+                    reject(event.target.error || new Error('Backup listing transaction aborted'));
+                };
+            } catch (err) {
+                reject(err);
+            }
+        });
+    }
+
+    /**
+     * Restore a stored snapshot atomically. The current main record is
+     * copied to a pre-restore backup in the same transaction before the
+     * restored candidate replaces it. The source backup is never modified.
+     */
+    function restoreBackup(backupId) {
+        return new Promise(function(resolve, reject) {
+            if (!_indexedDB || _dbStatus !== 'ready') {
+                reject(new Error('Database not available'));
+                return;
+            }
+            if (typeof backupId !== 'string' ||
+                backupId.indexOf('mainData_backup_') !== 0) {
+                reject(new Error('Invalid backup identifier'));
+                return;
+            }
+
+            var settled = false;
+            var restoredData = null;
+            function fail(error, tx) {
+                if (settled) return;
+                settled = true;
+                try { if (tx) tx.abort(); } catch (abortError) {}
+                reject(error instanceof Error ? error : new Error('Backup restoration failed'));
+            }
+
+            try {
+                var tx = _indexedDB.transaction([STORE_NAME], 'readwrite');
+                var store = tx.objectStore(STORE_NAME);
+                var backupRequest = store.get(backupId);
+                var currentRequest = store.get('mainData');
+                var backupReady = false;
+                var currentReady = false;
+                var writesStarted = false;
+                var backupRecord = null;
+                var currentRecord = null;
+
+                function prepareRestore() {
+                    if (!backupReady || !currentReady || writesStarted) return;
+                    writesStarted = true;
+
+                    if (!backupRecord || !backupRecord.data ||
+                        typeof backupRecord.data !== 'object' ||
+                        Array.isArray(backupRecord.data)) {
+                        fail(new Error('The selected backup is missing or contains invalid data.'), tx);
+                        return;
+                    }
+
+                    try {
+                        restoredData = createSafeCopy(backupRecord.data);
+                        migrateData(restoredData);
+                        normaliseDataStructure(restoredData);
+                        restoredData._dataVersion = DATA_VERSION;
+
+                        if (currentRecord && currentRecord.data) {
+                            var rollbackId = BACKUP_KEY_PREFIX + 'restore_' + Date.now();
+                            store.put({
+                                id: rollbackId,
+                                data: currentRecord.data,
+                                createdAt: new Date().toISOString(),
+                                dataVersion: currentRecord.data._dataVersion || null
+                            });
+                        }
+
+                        store.put({
+                            id: 'mainData',
+                            data: restoredData,
+                            updatedAt: new Date().toISOString()
+                        });
+                    } catch (err) {
+                        fail(err, tx);
+                    }
+                }
+
+                backupRequest.onsuccess = function() {
+                    backupRecord = backupRequest.result || null;
+                    backupReady = true;
+                    prepareRestore();
+                };
+                currentRequest.onsuccess = function() {
+                    currentRecord = currentRequest.result || null;
+                    currentReady = true;
+                    prepareRestore();
+                };
+                backupRequest.onerror = function(event) {
+                    fail(event.target.error || new Error('Could not read selected backup'), tx);
+                };
+                currentRequest.onerror = function(event) {
+                    fail(event.target.error || new Error('Could not read current database data'), tx);
+                };
+
+                tx.oncomplete = function() {
+                    if (settled) return;
+                    settled = true;
+                    _data = restoredData;
+                    window.data = restoredData;
+                    _loadPromise = null;
+                    resolve(createSafeCopy(restoredData));
+                };
+                tx.onerror = function(event) {
+                    fail(event.target.error || new Error('Backup restoration transaction failed'), null);
+                };
+                tx.onabort = function(event) {
+                    fail(event.target.error || new Error('Backup restoration transaction aborted'), null);
+                };
+            } catch (err) {
+                fail(err, null);
+            }
+        });
+    }
+
     function forceReset() {
         console.warn(
             '[Database] forceReset() called. This deletes HollowBladesDB ' +
@@ -3780,6 +3943,8 @@
         loadData: loadData,
         saveData: saveData,
         getEmptyData: getEmptyData,
+        listBackups: listBackups,
+        restoreBackup: restoreBackup,
         migrateImportedData: migrateImportedData,
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         autoLoadData: autoLoadData,
@@ -3799,7 +3964,7 @@
     (function verify() {
         var required = [
             'openDatabase', 'ensureDatabaseReady', 'loadData', 'saveData',
-            'getEmptyData', 'migrateImportedData', 'autoLoadData', 'createSafeCopy',
+            'getEmptyData', 'migrateImportedData', 'listBackups', 'restoreBackup', 'autoLoadData', 'createSafeCopy',
             'getDatabaseStatus', 'isDatabaseReady', 'getLoadError',
             'deleteDatabase', 'forceReset'
         ];
