@@ -110,7 +110,7 @@ test('real IndexedDB: manual backup, listing and restore survive persisted write
     await transactionDone(tx);
     assert.equal(persisted.data.characters[0].name, 'Original');
 
-    const recordsTx = app.indexedDB.transaction(['appData'], 'readonly');
+    const recordsTx = app.database.transaction(['appData'], 'readonly');
     const recordsRequest = recordsTx.objectStore('appData').getAll();
     const records = await new Promise((resolve, reject) => {
         recordsRequest.onsuccess = () => resolve(recordsRequest.result);
@@ -132,7 +132,7 @@ test('real IndexedDB: malformed backup aborts without replacing mainData', async
     app.window.__testSetData(current);
     await app.window.db.saveData();
 
-    const writeTx = app.indexedDB.transaction(['appData'], 'readwrite');
+    const writeTx = app.database.transaction(['appData'], 'readwrite');
     writeTx.objectStore('appData').put({
         id: 'mainData_backup_manual_broken',
         data: ['not', 'an', 'object'],
@@ -146,7 +146,7 @@ test('real IndexedDB: malformed backup aborts without replacing mainData', async
         /missing or contains invalid data/
     );
 
-    const readTx = app.indexedDB.transaction(['appData'], 'readonly');
+    const readTx = app.database.transaction(['appData'], 'readonly');
     const request = readTx.objectStore('appData').get('mainData');
     const persisted = await new Promise((resolve, reject) => {
         request.onsuccess = () => resolve(request.result);
