@@ -62,7 +62,7 @@ function createIndexedDatabase() {
         console: { log() {}, warn() {}, error() {} }
     });
     vm.runInContext(source, context, { filename: 'js/core/database.js', timeout: 5000 });
-    return { window, indexedDB: context.indexedDB };
+    return { window, indexedDBFactory: context.indexedDB };
 }
 
 function transactionDone(tx) {
@@ -76,6 +76,7 @@ function transactionDone(tx) {
 test('real IndexedDB: manual backup, listing and restore survive persisted writes', async function() {
     const app = createIndexedDatabase();
     await app.window.db.ensureDatabaseReady();
+    app.database = await app.window.db.openDatabase();
 
     const original = app.window.db.getEmptyData();
     original.currentYear = 1924;
@@ -100,7 +101,7 @@ test('real IndexedDB: manual backup, listing and restore survive persisted write
     assert.equal(app.window.data.characters[0].name, 'Original');
 
     // Read the persisted mainData record through a separate real transaction.
-    const tx = app.indexedDB.transaction(['appData'], 'readonly');
+    const tx = app.database.transaction(['appData'], 'readonly');
     const request = tx.objectStore('appData').get('mainData');
     const persisted = await new Promise((resolve, reject) => {
         request.onsuccess = () => resolve(request.result);
@@ -124,6 +125,7 @@ test('real IndexedDB: manual backup, listing and restore survive persisted write
 test('real IndexedDB: malformed backup aborts without replacing mainData', async function() {
     const app = createIndexedDatabase();
     await app.window.db.ensureDatabaseReady();
+    app.database = await app.window.db.openDatabase();
 
     const current = app.window.db.getEmptyData();
     current.characters.push({ id: 'keep-me', name: 'Keep me' });
