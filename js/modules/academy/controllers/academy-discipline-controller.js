@@ -2214,7 +2214,7 @@
         var sessionSelect = readDisciplineAssignmentField(form, 'session');
         var isHome = typeSelect.value === 'homeAssignment';
         if (field) { field.style.display = isHome ? 'none' : ''; }
-        if (sessionSelect) { sessionSelect.disabled = isHome || sessionSelect.options.length === 0; }
+        if (sessionSelect) { sessionSelect.disabled = isHome || !sessionSelect.value; }
     }
 
     function handleDisciplineAssignmentPreview(actionEl) {
