@@ -57,6 +57,8 @@ function createDatabaseHarness(options = {}) {
     source = source.slice(0, close) +
         '    window.__testMigrateData = migrateData;\n' +
         '    window.__testGetEmptyData = getEmptyData;\n' +
+        '    window.__testWritePreMigrationBackup = writePreMigrationBackup;\n' +
+        '    window.__testSetDatabaseState = function(db, status) { _indexedDB = db; _dbStatus = status; };\n' +
         source.slice(close);
 
     let nextId = 0;
@@ -168,4 +170,69 @@ test('migration registration is contiguous and targets the next version', functi
     }
 
     assert.equal(registrations.size, 34, 'exactly 34 migration steps expected');
+});
+
+
+function createBackupDatabase(options = {}) {
+    const transaction = {
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+        objectStore: function() {
+            return {
+                get: function() {
+                    const request = { result: options.existing ? { id: 'backup-1' } : null };
+                    setImmediate(function() {
+                        if (options.getFails) {
+                            if (request.onerror) request.onerror();
+                            if (transaction.onabort) transaction.onabort();
+                            return;
+                        }
+                        if (request.onsuccess) request.onsuccess();
+                        if (options.existing) {
+                            if (transaction.oncomplete) transaction.oncomplete();
+                            return;
+                        }
+                        const putRequest = { onerror: null };
+                        const originalPut = this.put;
+                        if (options.putFails) {
+                            if (putRequest.onerror) putRequest.onerror();
+                            if (transaction.onabort) transaction.onabort();
+                        } else if (options.abort) {
+                            if (transaction.onabort) transaction.onabort();
+                        } else if (transaction.oncomplete) {
+                            transaction.oncomplete();
+                        }
+                    });
+                    return request;
+                },
+                put: function() { return { onerror: null }; }
+            };
+        }
+    };
+    return { transaction: function() { return transaction; } };
+}
+
+test('pre-migration backup resolves only after transaction completion', async function() {
+    const db = createDatabaseHarness();
+    db.__testSetDatabaseState(createBackupDatabase(), 'ready');
+
+    const result = await db.__testWritePreMigrationBackup(12, { characters: [] });
+    assert.equal(result, true);
+});
+
+test('pre-migration backup failure is reported when its transaction aborts', async function() {
+    const db = createDatabaseHarness();
+    db.__testSetDatabaseState(createBackupDatabase({ abort: true }), 'ready');
+
+    const result = await db.__testWritePreMigrationBackup(12, { characters: [] });
+    assert.equal(result, false);
+});
+
+test('an existing pre-migration backup is accepted after the read transaction completes', async function() {
+    const db = createDatabaseHarness();
+    db.__testSetDatabaseState(createBackupDatabase({ existing: true }), 'ready');
+
+    const result = await db.__testWritePreMigrationBackup(12, { characters: [] });
+    assert.equal(result, true);
 });
