@@ -367,9 +367,9 @@
     // EXPOSE
     // ============================================================
     //
-    // team-events.js binds #export-candidates-btn and calls
-    // CandidateExport.export({ period }). The `export` alias below
-    // matches that call site; `exportPool` is the canonical name.
+    // Loaded with the other domain exporters and exposed through
+    // ImportExport.Text.CandidatePool. The `export` alias is kept
+    // for compatibility; `exportPool` is the canonical name.
 
     window.CandidateExport = Object.freeze({
         export: exportPool,
