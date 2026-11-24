@@ -1626,3 +1626,50 @@
         width: 100%;
     }
 }
+
+
+.academy-discipline-session-group-assignments {
+    margin: 2px 0 6px;
+    padding: 7px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-discipline-session-group-assignments-heading {
+    margin-bottom: 4px;
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.035em;
+}
+
+.academy-discipline-session-group-assignments ul {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.academy-discipline-session-group-assignments li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 3px 8px;
+    font-size: 0.7rem;
+}
+
+.academy-discipline-session-assignment-name {
+    min-width: 0;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.academy-discipline-session-assignment-meta {
+    color: var(--text-dim);
+    font-size: 0.62rem;
+}
