@@ -3282,10 +3282,24 @@
                 }
 
                 var Cascade = getAcademyCascade();
-                if (Cascade &&
-                    typeof Cascade.characterDeleted === 'function') {
-                    cascade.academyCascade = Cascade.characterDeleted(
-                        data, targetId
+                if (!Cascade ||
+                    typeof Cascade.characterDeleted !== 'function') {
+                    throw new Error(
+                        'Character deletion requires ' +
+                        'AcademyCascade.characterDeleted. ' +
+                        'Refusing to delete a character while academy, ' +
+                        'mission, or tournament references may remain.'
+                    );
+                }
+                cascade.academyCascade = Cascade.characterDeleted(
+                    data, targetId
+                );
+                if (!cascade.academyCascade ||
+                    typeof cascade.academyCascade !== 'object' ||
+                    Array.isArray(cascade.academyCascade)) {
+                    throw new Error(
+                        'AcademyCascade.characterDeleted returned an ' +
+                        'invalid result. Character deletion was cancelled.'
                     );
                 }
 
