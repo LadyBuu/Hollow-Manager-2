@@ -1069,6 +1069,9 @@
         var scoreDisplay = formatScoreDisplay(grade, scheme);
 
         var typeLabel = getTypeLabel(grade);
+        var assignmentTitle = isNonEmptyString(grade.assignmentTitle)
+            ? String(grade.assignmentTitle).trim()
+            : '';
         var slotLabel = formatSlotLabel(grade);
 
         var html = '';
@@ -1076,8 +1079,13 @@
                     'data-grade-id="' +
                         escapeAttribute(grade.id || '') + '">';
         html += '<td class="type-col">' +
-                    escapeHtml(typeLabel) +
-                '</td>';
+                    escapeHtml(typeLabel);
+        if (assignmentTitle) {
+            html += '<span class="academy-grades-editor-assignment-title">' +
+                        escapeHtml(assignmentTitle) +
+                    '</span>';
+        }
+        html += '</td>';
         html += '<td class="slot-col">' +
                     escapeHtml(slotLabel) +
                 '</td>';
