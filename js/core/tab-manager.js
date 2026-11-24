@@ -255,21 +255,9 @@
             return false;
         }
 
-        // 2. Run any active unmount hook.
-        if (_currentTab && _currentTab !== tabName) {
-            var prevEntry = _registeredTabs[_currentTab];
-            if (prevEntry && prevEntry.unmount) {
-                try {
-                    prevEntry.unmount();
-                } catch (e) {
-                    console.error('[TabManager] unmount failed:', e);
-                }
-            }
-        }
-
-        // 3. Render into the target while it is not yet active, so a
-        //    throwing render is visible only in the console, not on
-        //    screen.
+        // 2. Render into the inactive target BEFORE unmounting the
+        //    current tab. A failed destination render must leave the
+        //    current tab's DOM and lifecycle intact.
         var previousTab = _currentTab;
         var previousContainer = previousTab ? getContainerFor(previousTab) : null;
 
@@ -277,11 +265,21 @@
             _registeredTabs[tabName].render(targetContainer);
         } catch (e) {
             console.error('[TabManager] render failed for tab "' + tabName + '":', e);
-            // Restore previous tab highlight/visibility if any.
-            if (previousContainer) {
-                // Nothing changed yet for the previous tab; leave it.
-            }
+            // The current tab has not been unmounted or hidden.
             return false;
+        }
+
+        // 3. Destination render succeeded. It is now safe to release
+        //    resources owned by the previous tab before committing.
+        if (previousTab && previousTab !== tabName) {
+            var prevEntry = _registeredTabs[previousTab];
+            if (prevEntry && prevEntry.unmount) {
+                try {
+                    prevEntry.unmount();
+                } catch (e) {
+                    console.error('[TabManager] unmount failed:', e);
+                }
+            }
         }
 
         // 4. Commit DOM: hide everything else, show target.
