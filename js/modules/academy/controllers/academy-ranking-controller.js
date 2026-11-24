@@ -667,6 +667,11 @@
         var target = e.target;
         if (!target) { return; }
 
+        if (target.classList && target.classList.contains('academy-ranking-position-input')) {
+            handlePositionInput(target);
+            return;
+        }
+
         if (!target.id) { return; }
 
         if (target.id === 'academy-ranking-class-select') {
@@ -674,11 +679,6 @@
             AcademyUI.selectClass(target.value || null);
             var ctx = getContext();
             ctx.onChange();
-            return;
-        }
-
-        if (target.classList && target.classList.contains('academy-ranking-position-input')) {
-            handlePositionInput(target);
             return;
         }
 
