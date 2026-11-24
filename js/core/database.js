@@ -561,7 +561,6 @@
             try {
                 var tx = _indexedDB.transaction([STORE_NAME], 'readwrite');
                 var store = tx.objectStore(STORE_NAME);
-                var backupPutStarted = false;
 
                 tx.oncomplete = function() {
                     finish(true);
@@ -582,7 +581,6 @@
                     }
 
                     try {
-                        backupPutStarted = true;
                         var putReq = store.put({
                             id: key,
                             data: rawData,
