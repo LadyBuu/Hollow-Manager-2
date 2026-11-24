@@ -733,6 +733,12 @@
             }
         }
 
+        if (data.assessmentMode !== undefined &&
+            data.assessmentMode !== 'theoretical' &&
+            data.assessmentMode !== 'practical') {
+            return { valid: false, message: 'Assessment mode must be theoretical or practical.' };
+        }
+
         if (data.type !== undefined) {
             if (VALID_GRADE_TYPES.indexOf(data.type) === -1) {
                 return {
@@ -835,6 +841,40 @@
         return { valid: true };
     }
 
+    function applyMagicalEligibility(grade, appData) {
+        var student = findCharacterInSnapshot(appData, grade.studentId);
+        var discipline = findDisciplineInSnapshot(appData, grade.disciplineId);
+
+        // Legacy characters without an explicit flag are treated as magical
+        // to avoid retroactively changing existing academic records.
+        var studentMagical = !student || student.isMagical !== false;
+        var disciplineMagical = !!(discipline && discipline.isMagical === true);
+
+        grade.studentMagicalAtAssessment = studentMagical;
+        grade.disciplineMagicalAtAssessment = disciplineMagical;
+
+        var mustExclude = grade.assessmentMode === 'practical' &&
+            disciplineMagical && !studentMagical;
+
+        if (mustExclude) {
+            if (grade.excludedFromAverage !== true) {
+                grade.originalScore = grade.score;
+            }
+            grade.score = 0;
+            grade.excludedFromAverage = true;
+            grade.exclusionReason = 'Non-magical student cannot complete a practical magical assessment.';
+        } else {
+            if (grade.excludedFromAverage === true &&
+                grade.originalScore !== null &&
+                grade.originalScore !== undefined) {
+                grade.score = grade.originalScore;
+            }
+            grade.excludedFromAverage = false;
+            grade.originalScore = null;
+            grade.exclusionReason = '';
+        }
+    }
+
     function validateCandidateAgainstSnapshot(candidate, appData) {
         var structural = validateCandidate(candidate);
         if (!structural.valid) {
@@ -924,6 +964,12 @@
             score: score,
             maxScore: maxScore,
             type: type,
+            assessmentMode: data.assessmentMode === 'practical'
+                ? 'practical' : 'theoretical',
+            studentMagicalAtAssessment: null,
+            disciplineMagicalAtAssessment: null,
+            excludedFromAverage: false,
+            originalScore: null,
             slot: slot,
             assignmentId: isNonEmptyString(data.assignmentId)
                 ? String(data.assignmentId)
@@ -980,8 +1026,10 @@
                 if (!appData.academy.grades || typeof appData.academy.grades !== 'object') {
                     appData.academy.grades = {};
                 }
-                appData.academy.grades[targetId] = deepClone(newGrade);
-                return { grade: newGrade, id: targetId };
+                var committedGrade = deepClone(newGrade);
+                applyMagicalEligibility(committedGrade, appData);
+                appData.academy.grades[targetId] = committedGrade;
+                return { grade: committedGrade, id: targetId };
             },
             logMessage: 'Created grade for student ' + newGrade.studentId,
             successMessage: 'Grade created successfully!',
@@ -1059,6 +1107,39 @@
                 candidate.maxScore = newMax;
                 hasChanges = true;
             }
+        }
+
+        if (updates.assessmentMode !== undefined) {
+            if (updates.assessmentMode !== 'theoretical' &&
+                updates.assessmentMode !== 'practical') {
+                return Promise.resolve(failure(
+                    'Assessment mode must be theoretical or practical.'
+                ));
+            }
+            if (candidate.assessmentMode !== updates.assessmentMode) {
+                candidate.assessmentMode = updates.assessmentMode;
+                hasChanges = true;
+            }
+            var stillIneligible = candidate.assessmentMode === 'practical' &&
+                candidate.disciplineMagicalAtAssessment === true &&
+                candidate.studentMagicalAtAssessment === false;
+            if (stillIneligible) {
+                if (candidate.excludedFromAverage !== true) {
+                    candidate.originalScore = candidate.score;
+                }
+                candidate.score = 0;
+                candidate.excludedFromAverage = true;
+                candidate.exclusionReason = 'Non-magical student cannot complete a practical magical assessment.';
+            } else if (candidate.excludedFromAverage === true) {
+                if (candidate.originalScore !== null &&
+                    candidate.originalScore !== undefined) {
+                    candidate.score = candidate.originalScore;
+                }
+                candidate.originalScore = null;
+                candidate.excludedFromAverage = false;
+                candidate.exclusionReason = '';
+            }
+            hasChanges = true;
         }
 
         if (updates.type !== undefined) {
@@ -1448,11 +1529,21 @@
             );
         }
 
+        var excludedCount = 0;
+        var eligibleGrades = grades.filter(function(grade) {
+            if (grade && grade.excludedFromAverage === true) {
+                excludedCount++;
+                return false;
+            }
+            return true;
+        });
+        grades = eligibleGrades;
         var count = grades.length;
 
         if (count === 0) {
             return {
                 count: 0,
+                excludedCount: excludedCount,
                 average: 0,
                 max: 0,
                 min: 0,
@@ -1509,6 +1600,7 @@
 
         return {
             count: count,
+            excludedCount: excludedCount,
             average: Math.round(avg * 10) / 10,
             max: Math.round(max * 10) / 10,
             min: Math.round(min * 10) / 10,
