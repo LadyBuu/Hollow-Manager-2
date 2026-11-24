@@ -1069,6 +1069,13 @@
                 member.intervals[ivIdx].leavePeriod =
                     String(leaveCanon);
 
+                // A current head cannot remain appointed after their
+                // membership has ended before the application's year.
+                if (String(current.headId) === charTarget &&
+                    leaveCanon < getApplicationYear(appData)) {
+                    current.headId = null;
+                }
+
                 return {
                     characterId: charTarget,
                     joinPeriod: String(joinCanon),
