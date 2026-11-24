@@ -288,21 +288,9 @@
                !Array.isArray(value);
     }
 
-    function lineUnder(text) {
-        var out = '';
-        for (var i = 0; i < text.length; i++) {
-            out += '=';
-        }
-        return out;
-    }
+    function lineUnder() { return ''; }
 
-    function lineDash(text) {
-        var out = '';
-        for (var i = 0; i < text.length; i++) {
-            out += '-';
-        }
-        return out;
-    }
+    function lineDash() { return ''; }
 
     // ============================================================
     // DESCRIPTIVE FIELDS
@@ -552,7 +540,6 @@
             : TeamQueries.getCurrentTeamName(team);
 
         lines.push('Name:        ' + displayName);
-        lines.push('ID:          ' + safeString(team.id));
         lines.push('Type:        ' +
             (TeamConstants.getTypeLabel(team.type) || team.type || '') +
         '');
@@ -812,7 +799,6 @@
             'MEMBER ' + index + ' of ' + total + ': ' + displayName
         ));
 
-        lines.push('    Character ID: ' + safeString(charId));
         lines.push('    Role:         ' +
             (isNonEmptyString(member.role)
                 ? member.role
@@ -855,12 +841,9 @@
             intervals = filtered;
         }
 
-        lines.push('    Stints:');
+        if (intervals.length === 0) { return; }
 
-        if (intervals.length === 0) {
-            lines.push('      (no stints recorded)');
-            return;
-        }
+        lines.push('    Stints:');
 
         for (var i = 0; i < intervals.length; i++) {
             var iv = intervals[i];
@@ -1272,17 +1255,8 @@
     // selector.
 
     function buildBulkBanner(count) {
-        var bannerWidth = 64;
-        var banner = '';
-        for (var i = 0; i < bannerWidth; i++) {
-            banner += '=';
-        }
-
-        return banner + '\n' +
-            'TEAM EXPORT \u2014 ' + count + ' team' +
-            (count === 1 ? '' : 's') + '\n' +
-            'Generated: ' + new Date().toISOString() + '\n' +
-            banner;
+        return 'TEAM EXPORT \u2014 ' + count + ' team' +
+            (count === 1 ? '' : 's');
     }
 
     function buildBulkFilename(count) {
