@@ -378,19 +378,11 @@
      * department view).
      */
     function isRetiredViaCareerStatus(char, year) {
-        var CQ = getCharacterQueries();
-        if (!CQ ||
-            typeof CQ.getCharacterById !== 'function') {
-            return false;
-        }
-
-        // The character record is the source of truth. A character
-        // whose latest career entry is 'retired' is retired.
-        var latest = getLatestCareerStatusKey(char);
+        var latest = getLatestCareerStatusKey(char, year);
         return latest === 'retired';
     }
 
-    function getLatestCareerStatusKey(char) {
+    function getLatestCareerStatusKey(char, queryYear) {
         if (!char || !Array.isArray(char.careerStatus) ||
             char.careerStatus.length === 0) {
             return '';
@@ -417,6 +409,10 @@
 
             var year = parseInt(entry.startYear, 10);
             if (isNaN(year)) { year = -Infinity; }
+            if (queryYear !== undefined && queryYear !== null &&
+                year > queryYear) {
+                continue;
+            }
 
             if (year > latestYear ||
                 (year === latestYear && i > latestIndex)) {
@@ -446,44 +442,32 @@
     // ============================================================
 
     /**
-     * Return the interval of a member entry that contains year, or
-     * null when no interval contains it.
-     *
-     * A null return means the member entry exists but the query
-     * year is outside every interval (a future member, or a member
-     * from a different era).
+     * Return the latest membership interval that has started by
+     * the query year. It may have ended before that year; callers
+     * use its leavePeriod to distinguish active from former.
+     * A null result means every interval is still in the future.
      */
     function findIntervalAtYear(entry, year) {
         if (!entry || !Array.isArray(entry.intervals)) {
             return null;
         }
 
+        var selected = null;
+        var selectedJoin = -Infinity;
         for (var i = 0; i < entry.intervals.length; i++) {
             var iv = entry.intervals[i];
             if (!iv || typeof iv !== 'object') { continue; }
 
             var join = parseYear(iv.joinPeriod);
-            if (join === null) { continue; }
-            if (join > year) { continue; }
+            if (join === null || join > year) { continue; }
 
-            var leaveRaw = iv.leavePeriod;
-            var leave = null;
-            if (leaveRaw !== undefined &&
-                leaveRaw !== null &&
-                String(leaveRaw).trim() !== '') {
-                leave = parseYear(leaveRaw);
-            }
-
-            if (leave === null) {
-                // Open-ended.
-                return iv;
-            }
-            if (leave >= year) {
-                return iv;
+            if (join >= selectedJoin) {
+                selected = iv;
+                selectedJoin = join;
             }
         }
 
-        return null;
+        return selected;
     }
 
     // ============================================================
@@ -495,8 +479,8 @@
      * given year?
      *
      * Active means ALL of:
-     *   - the member entry contains an interval containing the year,
-     *   - that interval has a blank leavePeriod,
+     *   - their latest interval started by the query year has no
+     *     leave year before the query year,
      *   - the character is not deceased as of the year,
      *   - the character is not retired as of the year.
      *
@@ -520,7 +504,12 @@
         var hasLeave = leaveRaw !== undefined &&
                        leaveRaw !== null &&
                        String(leaveRaw).trim() !== '';
-        if (hasLeave) { return false; }
+        if (hasLeave) {
+            var leaveYear = parseYear(leaveRaw);
+            if (leaveYear === null || leaveYear < yearNum) {
+                return false;
+            }
+        }
 
         // Character-state checks. These route through mandatory
         // dependencies; if either is unavailable, the function
@@ -546,8 +535,8 @@
      * given year?
      *
      * Former means NOT currently active, for one of three reasons:
-     *   - their interval containing the year has a non-blank leave
-     *     that is strictly before the year,
+     *   - their latest interval started by the query year ended
+     *     strictly before that year,
      *   - the character is deceased as of the year,
      *   - the character is retired as of the year.
      *
