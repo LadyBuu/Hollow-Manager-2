@@ -1,9 +1,9 @@
 /**
- * modules/teams/team-export.js - Team Export
+ * js/import-export/team-export.js - Team Export
  * Full textual dump of one or more teams, optionally scoped to
  * a single period.
  *
- * Path: js/modules/teams/team-export.js
+ * Path: js/import-export/team-export.js
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report for one team.
