@@ -2,21 +2,9 @@
  * utils/theme-manager.js - Theme Management
  * Path: js/utils/theme-manager.js
  *
- * Manages theme switching with persistence.
- *
- * THEME CYCLE (Alternating Dark/Light):
- *   dark -> light -> vaporwave -> pastel -> carnival -> maximal 
- *   -> gits -> stained-glass -> stained-glass-dark -> deco-nouveau 
- *   -> grotesque -> illuminated -> discowing -> choc-cake 
- *   -> dada -> ukiyo-e -> brutalist -> orchestrion -> rococo 
- *   -> nautical-tile
- *
- * PERSISTENCE:
- *   The preference is stored in localStorage under
- *   'hollow-manager-theme'. Priority on load: 
- *   stored preference > system preference (light or dark only) > dark.
+ * Explicit theme selection is the primary control. The adjacent toggle
+ * remains a quick Dark/Light switch; it no longer cycles through every theme.
  */
-
 (function() {
     'use strict';
 
@@ -27,36 +15,37 @@
     var THEME_COLOR_META = 'theme-color';
 
     var THEME_TABLE = [
-        { value: 'dark', isAttribute: false, icon: '\u263E\uFE0E', title: 'Switch to dark mode', ariaLabel: 'Switch to dark mode', themeColor: '#1a1f1a' },
-        { value: 'light', isAttribute: true, icon: '\u2600\uFE0E', title: 'Switch to light mode', ariaLabel: 'Switch to light mode', themeColor: '#f5f1e8' },
-        { value: 'vaporwave', isAttribute: true, icon: '\u25C8\uFE0E', title: 'Switch to vaporwave mode', ariaLabel: 'Switch to vaporwave mode', themeColor: '#2d1b4e' },
-        { value: 'pastel', isAttribute: true, icon: '\u273F\uFE0E', title: 'Switch to pastel mode', ariaLabel: 'Switch to pastel mode', themeColor: '#f8e8f0' },
-        { value: 'carnival', isAttribute: true, icon: '\u2620\uFE0E', title: 'Switch to carnival mode', ariaLabel: 'Switch to carnival mode', themeColor: '#1a0a0a' },
-        { value: 'maximal', isAttribute: true, icon: '\u2726\uFE0E', title: 'Switch to maximal mode', ariaLabel: 'Switch to maximal mode', themeColor: '#fff0fb' },
-        { value: 'gits', isAttribute: true, icon: '\u25C9\uFE0E', title: 'Switch to GITS mode', ariaLabel: 'Switch to GITS mode', themeColor: '#04101a' },
-        { value: 'stained-glass', isAttribute: true, icon: '\u26EA\uFE0E', title: 'Switch to Stained Glass mode', ariaLabel: 'Switch to Stained Glass mode', themeColor: '#f2f7fd' },
-        { value: 'stained-glass-dark', isAttribute: true, icon: '\u26EF\uFE0E', title: 'Switch to Stained Glass Dark mode', ariaLabel: 'Switch to Stained Glass Dark mode', themeColor: '#0a1520' },
-        { value: 'deco-nouveau', isAttribute: true, icon: '\u25C6\uFE0E', title: 'Switch to Deco Nouveau mode', ariaLabel: 'Switch to Deco Nouveau mode', themeColor: '#f4f0e6' },
-        { value: 'grotesque', isAttribute: true, icon: '\uD83D\uDC41\uFE0E', title: 'Switch to Grotesque mode', ariaLabel: 'Switch to Grotesque mode', themeColor: '#0d0a0a' },
-        { value: 'illuminated', isAttribute: true, icon: '\uD83D\uDCD6\uFE0E', title: 'Switch to Illuminated mode', ariaLabel: 'Switch to Illuminated mode', themeColor: '#F4EBD5' },
-        { value: 'discowing', isAttribute: true, icon: '\uD83D\uDCAB\uFE0E', title: 'Switch to Discowing mode', ariaLabel: 'Switch to Discowing mode', themeColor: '#F8A342' },
-        { value: 'choc-cake', isAttribute: true, icon: '\uD83C\uDF70\uFE0E', title: 'Switch to Choc Cake mode', ariaLabel: 'Switch to Choc Cake mode', themeColor: '#2A0B1F' },
-        { value: 'dada', isAttribute: true, icon: '\u2702\uFE0E', title: 'Switch to Dada mode', ariaLabel: 'Switch to Dada mode', themeColor: '#E8E5DF' },
-        { value: 'ukiyo-e', isAttribute: true, icon: '\u6D77\uFE0E', title: 'Switch to Ukiyo-e mode', ariaLabel: 'Switch to Ukiyo-e mode', themeColor: '#F4EAD5' },
-        { value: 'brutalist', isAttribute: true, icon: '\u25A0\uFE0E', title: 'Switch to Brutalist mode', ariaLabel: 'Switch to Brutalist mode', themeColor: '#E6E6E6' },
-        { value: 'orchestrion', isAttribute: true, icon: '\u2699\uFE0E', title: 'Switch to Orchestrion mode', ariaLabel: 'Switch to Orchestrion mode', themeColor: '#1F1410' },
-        { value: 'rococo', isAttribute: true, icon: '\u269C\uFE0E', title: 'Switch to Rococo mode', ariaLabel: 'Switch to Rococo mode', themeColor: '#E8F0F2' },
-        { value: 'nautical-tile', isAttribute: true, icon: '\u2693\uFE0E', title: 'Switch to Nautical Tile mode', ariaLabel: 'Switch to Nautical Tile mode', themeColor: '#E4EAF0' }
+        { value: 'dark', label: 'Dark', isAttribute: false, themeColor: '#0a1505' },
+        { value: 'light', label: 'Light', isAttribute: true, themeColor: '#ece9df' },
+        { value: 'vaporwave', label: 'Vaporwave', isAttribute: true, themeColor: '#100b24' },
+        { value: 'pastel', label: 'Pastel', isAttribute: true, themeColor: '#f8e8f0' },
+        { value: 'carnival', label: 'Carnival', isAttribute: true, themeColor: '#1a0a0a' },
+        { value: 'maximal', label: 'Maximal', isAttribute: true, themeColor: '#fff0fb' },
+        { value: 'gits', label: 'GITS', isAttribute: true, themeColor: '#07080c' },
+        { value: 'stained-glass', label: 'Stained Glass', isAttribute: true, themeColor: '#0a1520' },
+        { value: 'stained-glass-dark', label: 'Stained Glass Dark', isAttribute: true, themeColor: '#0a1520' },
+        { value: 'deco-nouveau', label: 'Deco Nouveau', isAttribute: true, themeColor: '#f4f0e6' },
+        { value: 'grotesque', label: 'Grotesque', isAttribute: true, themeColor: '#0d0a0a' },
+        { value: 'illuminated', label: 'Illuminated', isAttribute: true, themeColor: '#f4ebd5' },
+        { value: 'discowing', label: 'Discowing', isAttribute: true, themeColor: '#f8a342' },
+        { value: 'choc-cake', label: 'Choc Cake', isAttribute: true, themeColor: '#2a0b1f' },
+        { value: 'dada', label: 'Dada', isAttribute: true, themeColor: '#e8e5df' },
+        { value: 'ukiyo-e', label: 'Ukiyo-e', isAttribute: true, themeColor: '#f4ead5' },
+        { value: 'brutalist', label: 'Brutalist', isAttribute: true, themeColor: '#e6e6e6' },
+        { value: 'orchestrion', label: 'Orchestrion', isAttribute: true, themeColor: '#1f1410' },
+        { value: 'rococo', label: 'Rococo', isAttribute: true, themeColor: '#e8f0f2' },
+        { value: 'nautical-tile', label: 'Nautical Tile', isAttribute: true, themeColor: '#e4eaf0' }
     ];
 
     var THEME_BY_VALUE = Object.create(null);
     THEME_TABLE.forEach(function(entry) { THEME_BY_VALUE[entry.value] = entry; });
 
-    var CYCLE = THEME_TABLE.map(function(e) { return e.value; });
     var _currentTheme = 'dark';
     var _initialized = false;
     var _mediaQueryList = null;
     var _mediaQueryListener = null;
+    var _themeSelect = null;
+    var _themeSelectListener = null;
 
     function isValidTheme(theme) {
         return typeof theme === 'string' && Object.prototype.hasOwnProperty.call(THEME_BY_VALUE, theme);
@@ -83,43 +72,33 @@
         return 'dark';
     }
 
+    function updateControls() {
+        var entry = THEME_BY_VALUE[_currentTheme];
+        var select = document.getElementById('theme-select');
+        if (select && select.value !== _currentTheme) select.value = _currentTheme;
+
+        var button = document.getElementById('theme-toggle-btn');
+        if (button) {
+            var target = _currentTheme === 'dark' ? 'light' : 'dark';
+            button.textContent = target === 'light' ? '\u263c\uFE0E' : '\u263e\uFE0E';
+            button.title = 'Switch to ' + target + ' theme';
+            button.setAttribute('aria-label', 'Switch to ' + target + ' theme');
+        }
+
+        var meta = document.querySelector('meta[name="' + THEME_COLOR_META + '"]');
+        if (meta && entry && entry.themeColor) meta.setAttribute('content', entry.themeColor);
+    }
+
     function applyTheme(theme) {
         if (!isValidTheme(theme)) return;
         _currentTheme = theme;
         var root = document.documentElement;
         var entry = THEME_BY_VALUE[theme];
 
-        if (entry.isAttribute) {
-            root.setAttribute('data-theme', theme);
-        } else {
-            root.removeAttribute('data-theme');
-        }
+        if (entry.isAttribute) root.setAttribute('data-theme', theme);
+        else root.removeAttribute('data-theme');
 
-        // Update meta theme-color
-        var meta = document.querySelector('meta[name="' + THEME_COLOR_META + '"]');
-        if (meta && entry.themeColor) meta.setAttribute('content', entry.themeColor);
-
-        // Update Toggle Button (next theme icon)
-        var btn = document.getElementById('theme-toggle-btn');
-        if (btn) {
-            var next = nextTheme();
-            var nextEntry = THEME_BY_VALUE[next];
-            if (nextEntry) {
-                btn.textContent = nextEntry.icon;
-                btn.title = nextEntry.title;
-                btn.setAttribute('aria-label', nextEntry.ariaLabel);
-            }
-        }
-
-        // Update Text Indicator (current theme name)
-        var label = document.getElementById('theme-label');
-        if (label) {
-            // Format 'stained-glass' -> 'Stained Glass'
-            var displayName = theme.split('-').map(function(word) {
-                return word.charAt(0).toUpperCase() + word.slice(1);
-            }).join(' ');
-            label.textContent = displayName;
-        }
+        updateControls();
 
         try {
             document.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme: _currentTheme } }));
@@ -129,10 +108,10 @@
     function attachMediaQueryListener() {
         if (!window.matchMedia || _mediaQueryList) return;
         _mediaQueryList = window.matchMedia('(prefers-color-scheme: light)');
-        _mediaQueryListener = function(e) {
+        _mediaQueryListener = function(event) {
             if (loadThemePreference()) return;
             if (_currentTheme !== 'dark' && _currentTheme !== 'light') return;
-            applyTheme(e.matches ? 'light' : 'dark');
+            applyTheme(event.matches ? 'light' : 'dark');
         };
         if (typeof _mediaQueryList.addEventListener === 'function') {
             _mediaQueryList.addEventListener('change', _mediaQueryListener);
@@ -153,42 +132,78 @@
     }
 
     function setTheme(theme) {
-        if (!isValidTheme(theme)) return;
+        if (!isValidTheme(theme)) return false;
         applyTheme(theme);
         saveThemePreference(theme);
+        return true;
     }
 
     function nextTheme() {
-        var idx = CYCLE.indexOf(_currentTheme);
-        if (idx === -1) idx = 0;
-        return CYCLE[(idx + 1) % CYCLE.length];
+        return _currentTheme === 'dark' ? 'light' : 'dark';
     }
 
-    function toggle() { setTheme(nextTheme()); }
-    function getTheme() { return _currentTheme; }
-    function clearPreference() { clearStoredPreference(); applyTheme(getSystemPreference()); }
+    function toggle() {
+        setTheme(nextTheme());
+    }
+
+    function getTheme() {
+        return _currentTheme;
+    }
+
+    function getThemes() {
+        return THEME_TABLE.map(function(entry) {
+            return { value: entry.value, label: entry.label };
+        });
+    }
+
+    function clearPreference() {
+        clearStoredPreference();
+        applyTheme(getSystemPreference());
+    }
+
+    function onThemeSelectChange() {
+        if (_themeSelect && isValidTheme(_themeSelect.value)) {
+            setTheme(_themeSelect.value);
+        }
+    }
 
     function init() {
         if (_initialized) return;
+
         var stored = loadThemePreference();
-        var theme = stored || getSystemPreference();
-        applyTheme(theme);
-        var btn = document.getElementById('theme-toggle-btn');
-        if (btn && !btn._themeManagerBound) {
-            btn._themeManagerBound = true;
-            btn.addEventListener('click', toggle);
+        applyTheme(stored || getSystemPreference());
+
+        var button = document.getElementById('theme-toggle-btn');
+        if (button && !button._themeManagerBound) {
+            button._themeManagerBound = true;
+            button.addEventListener('click', toggle);
         }
+
+        _themeSelect = document.getElementById('theme-select');
+        if (_themeSelect) {
+            _themeSelectListener = onThemeSelectChange;
+            _themeSelect.addEventListener('change', _themeSelectListener);
+            _themeSelect.value = _currentTheme;
+        }
+
         attachMediaQueryListener();
         _initialized = true;
     }
 
     function destroy() {
         detachMediaQueryListener();
-        var btn = document.getElementById('theme-toggle-btn');
-        if (btn && btn._themeManagerBound) {
-            btn.removeEventListener('click', toggle);
-            btn._themeManagerBound = false;
+
+        var button = document.getElementById('theme-toggle-btn');
+        if (button && button._themeManagerBound) {
+            button.removeEventListener('click', toggle);
+            button._themeManagerBound = false;
         }
+
+        if (_themeSelect && _themeSelectListener) {
+            _themeSelect.removeEventListener('change', _themeSelectListener);
+        }
+        _themeSelect = null;
+        _themeSelectListener = null;
         _initialized = false;
     }
 
@@ -198,18 +213,19 @@
         toggle: toggle,
         setTheme: setTheme,
         getTheme: getTheme,
+        getThemes: getThemes,
         clearPreference: clearPreference,
         nextTheme: nextTheme,
-        THEMES: {
+        THEMES: Object.freeze({
             DARK: 'dark', LIGHT: 'light', VAPORWAVE: 'vaporwave', PASTEL: 'pastel',
             CARNIVAL: 'carnival', MAXIMAL: 'maximal', GITS: 'gits',
             STAINED_GLASS: 'stained-glass', STAINED_GLASS_DARK: 'stained-glass-dark',
             DECO_NOUVEAU: 'deco-nouveau', GROTESQUE: 'grotesque',
-            ILLUMINATED: 'illuminated', DISCOWING: 'discowing', 
+            ILLUMINATED: 'illuminated', DISCOWING: 'discowing',
             CHOC_CAKE: 'choc-cake', DADA: 'dada', UKIYO_E: 'ukiyo-e',
             BRUTALIST: 'brutalist', ORCHESTRION: 'orchestrion',
             ROCOCO: 'rococo', NAUTICAL_TILE: 'nautical-tile'
-        }
+        })
     });
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
