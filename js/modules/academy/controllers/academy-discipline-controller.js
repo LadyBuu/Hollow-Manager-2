@@ -2198,8 +2198,12 @@
         var submit = form.querySelector(
             '[data-action="discipline-assignment-submit"]'
         );
+        var previewButton = form.querySelector(
+            '[data-action="discipline-assignment-preview"]'
+        );
         if (preview) { preview.textContent = 'Settings changed. Generate a new preview.'; }
         if (submit) { submit.disabled = true; }
+        if (previewButton) { previewButton.textContent = 'Generate preview'; }
     }
 
     function updateDisciplineAssignmentSlotVisibility(typeSelect) {
@@ -2333,6 +2337,9 @@
         var submitBtn = form.querySelector(
             '[data-action="discipline-assignment-submit"]'
         );
+        var previewButton = form.querySelector(
+            '[data-action="discipline-assignment-preview"]'
+        );
         var html = '<div class="academy-discipline-assignment-preview-heading">' +
             'Preview · ' + records.length + ' students · ' +
             Grades.getGradeTypeLabel(type) + '</div><ul>';
@@ -2345,6 +2352,7 @@
         html += '</ul><p>Regenerate to roll a different set of scores.</p>';
         if (previewEl) { previewEl.innerHTML = html; }
         if (submitBtn) { submitBtn.disabled = false; }
+        if (previewButton) { previewButton.textContent = 'Regenerate preview'; }
     }
 
     function handleDisciplineAssignmentSubmit(actionEl) {
