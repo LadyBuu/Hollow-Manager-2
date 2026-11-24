@@ -280,7 +280,7 @@
      * entry, or null when they have none. Only entries whose
      * normalised key is exactly the requested tier are considered.
      */
-    function getStatusStartYear(char, tier) {
+    function getStatusStartYear(char, tier, queryYear) {
         if (!char || !Array.isArray(char.careerStatus)) {
             return null;
         }
@@ -298,7 +298,9 @@
             if (key !== tier) { continue; }
 
             var start = parseInt(entry.startYear, 10);
-            if (isNaN(start) || start < 1) { continue; }
+            if (isNaN(start) || start < 1 || start > queryYear) {
+                continue;
+            }
 
             if (latestStart === null || start > latestStart) {
                 latestStart = start;
@@ -1191,7 +1193,7 @@
 
             var startYear = null;
             if (isSupportOrInstructor) {
-                startYear = getStatusStartYear(char, tier);
+                startYear = getStatusStartYear(char, tier, currentYear);
             }
 
             options.push({
