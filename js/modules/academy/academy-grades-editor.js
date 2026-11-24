@@ -1080,6 +1080,12 @@
                         escapeAttribute(grade.id || '') + '">';
         html += '<td class="type-col">' +
                     escapeHtml(typeLabel);
+        if (grade.assessmentMode === 'practical') {
+            html += '<span class="academy-grade-assessment-mode">Practical</span>';
+        }
+        if (grade.excludedFromAverage === true) {
+            html += '<span class="academy-grade-excluded-label">0 · excluded from average</span>';
+        }
         if (assignmentTitle) {
             html += '<span class="academy-grades-editor-assignment-title">' +
                         escapeHtml(assignmentTitle) +
@@ -1254,6 +1260,8 @@
         var initialType = isNonEmptyString(g.type)
             ? g.type
             : AcademyGrades.DEFAULT_GRADE_TYPE;
+        var initialAssessmentMode = g.assessmentMode === 'practical'
+            ? 'practical' : 'theoretical';
 
         var slotlessInitial = AcademyGrades.isSlotlessType(initialType);
 
@@ -1363,6 +1371,19 @@
                 '</p>';
         html += '</div>';
 
+        html += '<div class="form-group">';
+        html += '<label for="ag-assessment-mode">Assessment</label>';
+        html += '<select id="ag-assessment-mode" class="ag-assessment-mode">';
+        html += '<option value="theoretical"' +
+                    (initialAssessmentMode === 'theoretical' ? ' selected' : '') +
+                    '>Theoretical</option>';
+        html += '<option value="practical"' +
+                    (initialAssessmentMode === 'practical' ? ' selected' : '') +
+                    '>Practical</option>';
+        html += '</select>';
+        html += '<p class="field-hint">Practical work in magical disciplines is automatically recorded as 0 and excluded from averages for non-magical students.</p>';
+        html += '</div>';
+
         // ---- Slot (hidden when type is slotless) ----
         html += '<div class="form-group ag-slot-group"' +
                     (slotlessInitial ? ' style="display:none;"' : '') + '>';
@@ -1383,7 +1404,7 @@
         html += '<input type="number" step="0.1" id="ag-score-input" ' +
                     'class="ag-score-input" ' +
                     'value="' + escapeAttribute(initialScore) + '" ' +
-                    'min="0" required>';
+                    'min="0">';
         html += '</div>';
         html += '<div class="form-group">';
         html += '<label for="ag-max-score-input">Max Score</label>';
@@ -1590,11 +1611,32 @@
 
             var maxInput = form.querySelector('.ag-max-score-input');
             var notesInput = form.querySelector('.ag-notes-input');
+            var modeInput = form.querySelector('.ag-assessment-mode');
             var slotInput = getSlotInput();
 
             var disciplineId = discInput ? discInput.value : '';
             var type = typeInput ? typeInput.value : '';
+            var assessmentMode = modeInput && modeInput.value === 'practical'
+                ? 'practical' : 'theoretical';
             var score = scoreInput ? parseFiniteNumber(scoreInput.value) : null;
+
+            var studentRecord = null;
+            var characters = window.data && Array.isArray(window.data.characters)
+                ? window.data.characters : [];
+            for (var ci = 0; ci < characters.length; ci++) {
+                if (characters[ci] &&
+                    String(characters[ci].id) === String(_state.charId)) {
+                    studentRecord = characters[ci];
+                    break;
+                }
+            }
+            var disciplineRecord = AcademyDisciplines.getDiscipline(disciplineId);
+            var automaticExclusion = assessmentMode === 'practical' &&
+                disciplineRecord && disciplineRecord.isMagical === true &&
+                studentRecord && studentRecord.isMagical === false;
+            if (automaticExclusion) {
+                score = 0;
+            }
             var maxScore = maxInput && maxInput.value !== ''
                 ? parseFiniteNumber(maxInput.value)
                 : DEFAULT_MAX_SCORE;
@@ -1632,6 +1674,7 @@
                 payload = {
                     disciplineId: disciplineId,
                     type: type,
+                    assessmentMode: assessmentMode,
                     slot: slot,
                     score: score,
                     maxScore: maxScore,
@@ -1644,6 +1687,7 @@
                     disciplineId: disciplineId,
                     week: week,
                     type: type,
+                    assessmentMode: assessmentMode,
                     slot: slot,
                     score: score,
                     maxScore: maxScore,
