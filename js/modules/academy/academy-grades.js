@@ -2005,6 +2005,9 @@
                     String(group.disciplineId) !== disciplineId) {
                     return { valid: false, message: 'Teaching group no longer belongs to this class and discipline.' };
                 }
+                if (group.startWeek === null || group.startWeek === undefined) {
+                    return { valid: false, message: 'Teaching group has no active start week.' };
+                }
                 var groupStartWeek = Number(group.startWeek);
                 var groupEndWeek = group.endWeek === null ||
                     group.endWeek === undefined
@@ -2026,6 +2029,10 @@
                                 String(session.groupId) !== groupId ||
                                 Number(session.day) !== slot.day ||
                                 Number(session.startTime) !== slot.startTime) {
+                                return false;
+                            }
+                            if (session.startWeek === null ||
+                                session.startWeek === undefined) {
                                 return false;
                             }
                             var sessionStart = Number(session.startWeek);
@@ -2056,6 +2063,10 @@
                     for (var n = 0; n < members.length; n++) {
                         var member = members[n];
                         if (!member || String(member.characterId) !== studentIds[m]) {
+                            continue;
+                        }
+                        if (member.startWeek === null ||
+                            member.startWeek === undefined) {
                             continue;
                         }
                         var start = Number(member.startWeek);
