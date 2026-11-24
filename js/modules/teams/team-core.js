@@ -5153,10 +5153,11 @@
                     var joinNum = parsePeriod(joinRaw);
 
                     if (joinNum !== null && joinNum > deathNum) {
+                        // A future-dated membership must not be closed
+                        // before it begins. This can occur with planned
+                        // contracts and with records entered out of order.
                         result.skippedStartsAfterDeath++;
-                        if (leaveNum !== null) {
-                            continue;
-                        }
+                        continue;
                     }
 
                     iv.leavePeriod = deathStr;
