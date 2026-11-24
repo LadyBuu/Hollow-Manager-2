@@ -661,14 +661,16 @@
         }
 
         var EQ = window.EliminationQueries;
-        if (!EQ || typeof EQ.getEarliestElimination !== 'function') {
+        if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
             return false;
         }
 
-        var elimination = EQ.getEarliestElimination(studentId);
-        return !!(elimination &&
-            Number(elimination.year) === classYear &&
-            Number(elimination.week) < weekNum);
+        // The character remains eligible throughout their elimination
+        // week. Scope the query to this class year so an elimination in
+        // another academic year cannot leak into this ranking.
+        return EQ.isCharacterEliminatedByWeek(
+            studentId, weekNum, classYear
+        ) === true;
     }
 
     function getClassRankingsInternal(classId, week) {
