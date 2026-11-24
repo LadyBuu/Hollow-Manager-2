@@ -191,10 +191,11 @@
         return '';
     }
 
-    function getMemberStatusClass(memberRow) {
+    function getMemberStatusClass(memberRow, queryYear) {
         if (memberRow.isDeceased) { return 'dept-status-deceased'; }
         if (memberRow.isRetired) { return 'dept-status-retired'; }
-        if (memberRow.leaveYear !== null) {
+        if (memberRow.leaveYear !== null &&
+            memberRow.leaveYear < queryYear) {
             return 'dept-status-former';
         }
         if (memberRow.isActive) { return 'dept-status-active'; }
@@ -297,7 +298,7 @@
         };
 
         row.statusLabel = getMemberStatusLabel(row, queryYear);
-        row.statusClass = getMemberStatusClass(row);
+        row.statusClass = getMemberStatusClass(row, queryYear);
 
         return row;
     }
