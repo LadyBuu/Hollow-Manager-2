@@ -1172,8 +1172,6 @@
 
         out += 'Hollow Manager 2 \u2014 ' + useLabel + ' of ' +
             vm.className + '\n';
-        out += 'Exported ' +
-            new Date().toISOString().slice(0, 10) + '\n';
         out += count + ' ' + singular +
             (count === 1 ? '' : 's') + '\n\n';
 
