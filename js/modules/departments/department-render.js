@@ -425,6 +425,7 @@
     function renderMentorshipSection(detail) {
         var active = detail.mentorships.active;
         var former = detail.mentorships.former;
+        var error = detail.mentorships.error || '';
 
         var html = '';
         html += '<div class="department-section department-mentorships">';
@@ -438,6 +439,15 @@
                         : '') +
                 '</span>';
         html += '</div>';
+
+        if (error) {
+            html += '<p class="empty-state small" role="alert">' +
+                        'Mentorship records could not be loaded. ' +
+                        escapeHtml(error) +
+                    '</p>';
+            html += '</div>';
+            return html;
+        }
 
         if (active.length === 0 && former.length === 0) {
             html += '<p class="empty-state small">' +
