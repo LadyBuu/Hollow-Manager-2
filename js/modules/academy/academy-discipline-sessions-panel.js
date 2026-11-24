@@ -316,6 +316,12 @@
             );
             totalSessions += sessions.length;
 
+            var AcademyGrades = window.AcademyGrades;
+            var assignments = AcademyGrades &&
+                typeof AcademyGrades.getAssignmentsForGroup === 'function'
+                ? AcademyGrades.getAssignmentsForGroup(group.id, weekNum)
+                : [];
+
             var displayName = getGroupDisplayName(
                 group, disc.name, AcademyTeachingGroups
             );
@@ -330,6 +336,7 @@
                 memberCount: members.length,
                 members: members,
                 sessions: sessions,
+                assignments: Array.isArray(assignments) ? assignments : [],
                 isPickerOpen: false,
                 pickerCandidates: null
             });
@@ -645,8 +652,9 @@
         // ---- Body (collapsible) ----
         html += '<div class="academy-discipline-session-group-body">';
 
-        // Sessions list
+        // Sessions and existing assignments
         html += renderSessionsList(group);
+        html += renderAssignmentsList(group);
 
         // Roster
         html += renderRoster(group, vm);
@@ -815,6 +823,39 @@
         }
 
         html += '</div>';
+        return html;
+    }
+
+    function renderAssignmentsList(group) {
+        var assignments = Array.isArray(group.assignments)
+            ? group.assignments
+            : [];
+        if (assignments.length === 0) { return ''; }
+
+        var Grades = window.AcademyGrades;
+        var html = '<div class="academy-discipline-session-group-assignments">';
+        html += '<div class="academy-discipline-session-group-assignments-heading">' +
+                    'Assignments this week</div>';
+        html += '<ul>';
+        for (var i = 0; i < assignments.length; i++) {
+            var assignment = assignments[i];
+            if (!assignment || !isNonEmptyString(assignment.title)) { continue; }
+            var typeLabel = Grades &&
+                typeof Grades.getGradeTypeLabel === 'function'
+                ? Grades.getGradeTypeLabel(assignment.type)
+                : String(assignment.type || 'Assessment');
+            var studentCount = Array.isArray(assignment.studentIds)
+                ? assignment.studentIds.length
+                : 0;
+            html += '<li><span class="academy-discipline-session-assignment-name">' +
+                        escapeHtml(assignment.title) +
+                    '</span><span class="academy-discipline-session-assignment-meta">' +
+                        escapeHtml(typeLabel) + ' · ' +
+                        studentCount + ' student' +
+                        (studentCount === 1 ? '' : 's') +
+                    '</span></li>';
+        }
+        html += '</ul></div>';
         return html;
     }
 
