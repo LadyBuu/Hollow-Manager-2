@@ -1,5 +1,5 @@
 /**
- * js/export/import-result.js
+ * js/import-export/import-result.js
  * Structured import result container for CSV imports.
  * 
  * This module provides a consistent way to collect and report
