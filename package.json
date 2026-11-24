@@ -1,0 +1,12 @@
+{
+  "name": "hollow-manager-2",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Regression test tooling for Hollow Manager 2",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.4"
+  }
+}
