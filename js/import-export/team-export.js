@@ -288,10 +288,6 @@
                !Array.isArray(value);
     }
 
-    function lineUnder() { return ''; }
-
-    function lineDash() { return ''; }
-
     // ============================================================
     // DESCRIPTIVE FIELDS
     // ============================================================
@@ -488,7 +484,6 @@
             ) + ')';
         }
         lines.push(title);
-        lines.push(lineUnder(title));
         lines.push('');
 
         pushTeamHeader(lines, team, period, scoped);
@@ -532,7 +527,6 @@
 
     function pushTeamHeader(lines, team, period, scoped) {
         lines.push('SECTION 1: TEAM');
-        lines.push(lineDash('SECTION 1: TEAM'));
         lines.push('');
 
         var displayName = period && isNonEmptyString(period.name)
@@ -669,7 +663,6 @@
 
     function pushPeriodsSection(lines, team) {
         lines.push('SECTION 2: PERIODS');
-        lines.push(lineDash('SECTION 2: PERIODS'));
         lines.push('');
 
         var periods = TeamQueries.getPeriods(team);
@@ -715,7 +708,6 @@
 
     function pushRankingHistory(lines, team, period) {
         lines.push('SECTION 3: RANKING HISTORY');
-        lines.push(lineDash('SECTION 3: RANKING HISTORY'));
         lines.push('');
 
         var summary = TeamQueries.getRankingSummary(team);
@@ -751,7 +743,6 @@
 
     function pushMembersSection(lines, team, period) {
         lines.push('SECTION 4: MEMBERS');
-        lines.push(lineDash('SECTION 4: MEMBERS'));
         lines.push('');
 
         var allMembers = TeamQueries.getAllTeamMemberRecords(team);
@@ -793,9 +784,6 @@
         lines.push('');
         lines.push('  MEMBER ' + index + ' of ' + total +
             ': ' + displayName);
-        lines.push('  ' + lineDash(
-            'MEMBER ' + index + ' of ' + total + ': ' + displayName
-        ));
 
         lines.push('    Role:         ' +
             (isNonEmptyString(member.role)
