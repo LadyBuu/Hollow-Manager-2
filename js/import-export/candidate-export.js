@@ -95,24 +95,6 @@
     // HELPERS
     // ============================================================
 
-    function pad(value, width) {
-        var str = String(value);
-        while (str.length < width) {
-            str = '0' + str;
-        }
-        return str;
-    }
-
-    function timestampSlug() {
-        var now = new Date();
-        return now.getFullYear() + '-' +
-               pad(now.getMonth() + 1, 2) + '-' +
-               pad(now.getDate(), 2) + '_' +
-               pad(now.getHours(), 2) + '-' +
-               pad(now.getMinutes(), 2) + '-' +
-               pad(now.getSeconds(), 2);
-    }
-
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
@@ -244,9 +226,7 @@
 
     function buildFilename(period) {
         return 'pool_candidates_' +
-            String(period) + '_' +
-            timestampSlug() +
-            '.txt';
+            String(period) + '.txt';
     }
 
     function pushSummary(lines, availableCount, futureCount) {
