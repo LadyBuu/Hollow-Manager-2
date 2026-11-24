@@ -430,7 +430,11 @@
         var idMap = {};
         for (var i = 0; i < changes.length; i++) {
             var change = changes[i];
-            if (change.oldId) {
+            // A duplicate ID is ambiguous: references using that ID
+            // already resolve to the first record, which retains the ID.
+            // Remapping them to the duplicate's new ID would silently
+            // redirect every existing reference to the wrong entity.
+            if (change.oldId && change.reason !== 'Duplicate ID') {
                 idMap[change.oldId] = change.newId;
             }
         }
