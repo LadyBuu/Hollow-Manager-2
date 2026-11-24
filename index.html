@@ -4,7 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hollow Manager 2</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" href="icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#171923" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="icons/app-icon.svg" />
 
     <link rel="stylesheet" href="css/shared.css" />
     <link rel="stylesheet" href="css/dashboard.css" />
@@ -72,6 +78,7 @@
                     <button id="theme-toggle-btn" class="small" title="Toggle theme" aria-label="Toggle theme">☀</button>
                 </div>
                 <button id="export-json-btn" class="small" title="Export JSON" aria-label="Export JSON">↓</button>
+                <button id="manage-backups-btn" class="small" title="Manage local backups" aria-label="Manage local backups">Backups</button>
                 <button id="import-json-btn" class="small" title="Import JSON" aria-label="Import JSON">↑</button>
                 <input type="file" id="json-file-input" accept=".json" style="display:none;">
 
@@ -435,5 +442,14 @@
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
+    <script>
+        if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+            window.addEventListener("load", function() {
+                navigator.serviceWorker.register("./service-worker.js").catch(function(error) {
+                    console.warn("[PWA] Service worker registration failed:", error);
+                });
+            });
+        }
+    </script>
 </body>
 </html>
