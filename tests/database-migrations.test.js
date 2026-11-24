@@ -280,3 +280,129 @@ test('imported data refuses a future internal version', function() {
         /newer than this application supports/
     );
 });
+
+
+function createStoredBackupHarness(initialRecords) {
+    const records = new Map(initialRecords.map(function(record) {
+        return [record.id, record];
+    }));
+
+    function transaction() {
+        const tx = { oncomplete: null, onerror: null, onabort: null };
+        const store = {
+            get: function(id) {
+                const request = { result: undefined, onsuccess: null, onerror: null };
+                setImmediate(function() {
+                    request.result = records.get(id);
+                    if (request.onsuccess) request.onsuccess();
+                    if (pendingGets > 0) pendingGets--;
+                    if (pendingGets === 0) {
+                        setImmediate(function() {
+                            if (tx.oncomplete) tx.oncomplete();
+                        });
+                    }
+                });
+                pendingGets++;
+                return request;
+            },
+            put: function(record) {
+                records.set(record.id, record);
+                return { onerror: null };
+            },
+            openCursor: function() {
+                const request = { result: null, onsuccess: null, onerror: null };
+                const entries = Array.from(records.values());
+                let index = 0;
+                function advance() {
+                    setImmediate(function() {
+                        const value = entries[index++];
+                        request.result = value
+                            ? { value, continue: advance }
+                            : null;
+                        if (request.onsuccess) request.onsuccess();
+                        if (!value && tx.oncomplete) tx.oncomplete();
+                    });
+                }
+                advance();
+                return request;
+            }
+        };
+        let pendingGets = 0;
+        tx.objectStore = function() { return store; };
+        tx.abort = function() {
+            if (tx.onabort) tx.onabort();
+        };
+        return tx;
+    }
+
+    return {
+        records,
+        database: { transaction }
+    };
+}
+
+test('backup listing returns metadata only for stored backup records', async function() {
+    const db = createDatabaseHarness();
+    const stored = createStoredBackupHarness([
+        { id: 'mainData', data: { _dataVersion: 35 } },
+        { id: 'mainData_backup_pre_v12', data: { _dataVersion: 12 }, createdAt: '2026-01-01T00:00:00Z', dataVersion: 12 },
+        { id: 'mainData_backup_pre_restore_123', data: { _dataVersion: 35 }, createdAt: '2026-02-01T00:00:00Z', dataVersion: 35 },
+        { id: 'unrelated', data: {} }
+    ]);
+    db.__testSetDatabaseState(stored.database, 'ready');
+
+    const backups = await db.db.listBackups();
+
+    assert.equal(backups.length, 2);
+    assert.equal(backups[0].id, 'mainData_backup_pre_restore_123');
+    assert.equal(backups[1].id, 'mainData_backup_pre_v12');
+    assert.equal(Object.prototype.hasOwnProperty.call(backups[0], 'data'), false);
+});
+
+test('backup restore atomically preserves the current database as a pre-restore snapshot', async function() {
+    const db = createDatabaseHarness();
+    const current = {
+        id: 'mainData',
+        data: {
+            _dataVersion: 35,
+            characters: [{ id: 'current-character' }],
+            teams: [], tournaments: [], missions: [], departments: [],
+            activities: [], currentYear: 1924, currentWeek: 2
+        }
+    };
+    const backup = {
+        id: 'mainData_backup_pre_v12',
+        data: {
+            _dataVersion: 35,
+            characters: [{ id: 'restored-character' }],
+            teams: [], tournaments: [], missions: [], departments: [],
+            activities: [], currentYear: 1920, currentWeek: 1
+        },
+        createdAt: '2026-01-01T00:00:00Z',
+        dataVersion: 35
+    };
+    const stored = createStoredBackupHarness([current, backup]);
+    db.__testSetDatabaseState(stored.database, 'ready');
+
+    const restored = await db.db.restoreBackup(backup.id);
+
+    assert.equal(restored.characters[0].id, 'restored-character');
+    assert.equal(restored._dataVersion, 35);
+    assert.equal(stored.records.get('mainData').data.characters[0].id, 'restored-character');
+    const rollback = Array.from(stored.records.values()).find(function(record) {
+        return record.id.indexOf('mainData_backup_pre_vrestore_') === 0;
+    });
+    assert.ok(rollback, 'the pre-restore database snapshot must be retained');
+    assert.equal(rollback.data.characters[0].id, 'current-character');
+});
+
+test('backup restore rejects invalid identifiers without touching the database', async function() {
+    const db = createDatabaseHarness();
+    const stored = createStoredBackupHarness([
+        { id: 'mainData', data: { _dataVersion: 35, characters: [] } }
+    ]);
+    db.__testSetDatabaseState(stored.database, 'ready');
+
+    await assert.rejects(db.db.restoreBackup('mainData'), /Invalid backup identifier/);
+    assert.equal(stored.records.size, 1);
+});
