@@ -1,0 +1,19 @@
+{
+  "name": "Hollow Manager 2",
+  "short_name": "Hollow Manager",
+  "description": "Manage the Hollow Blades world, characters, teams and academy.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#171923",
+  "theme_color": "#171923",
+  "icons": [
+    {
+      "src": "icons/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
