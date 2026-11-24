@@ -253,6 +253,7 @@
     var _openModal = null;
     var _openMemberManagerModal = null;
     var _teamCoreConfigured = false;
+    var _sortMode = 'name';
 
     // ============================================================
     // TEAM CORE CONFIGURATION (idempotent)
@@ -373,7 +374,8 @@
             vm = AcademyAggregator.getWeeklyTeamsViewModel(
                 ctx.selectedClassId,
                 ctx.week,
-                ctx.selectedTeamId
+                ctx.selectedTeamId,
+                _sortMode
             );
         } catch (e) {
             console.warn(
@@ -498,6 +500,12 @@
         if (target.id === 'academy-weekly-teams-class-select') {
             var classId = target.value || null;
             ctx.onSelectClass(classId);
+            return;
+        }
+
+        if (target.id === 'academy-weekly-teams-sort') {
+            _sortMode = target.value === 'ranking' ? 'ranking' : 'name';
+            getRenderContext().onChange();
             return;
         }
 
