@@ -310,10 +310,12 @@
         html += '<div class="department-section-header">';
         html += '<strong>Staff</strong>';
         html += '<span class="department-section-count">' +
-                    active.length + ' active' +
-                    (former.length > 0
-                        ? ', ' + former.length + ' former'
-                        : '') +
+                    (error
+                        ? 'Unavailable'
+                        : active.length + ' active' +
+                            (former.length > 0
+                                ? ', ' + former.length + ' former'
+                                : '')) +
                 '</span>';
         html += '</div>';
 
