@@ -626,10 +626,8 @@
         }
 
         if (isNonEmptyString(team.createdAt)) {
-            lines.push('Created:     ' + team.createdAt);
         }
         if (isNonEmptyString(team.updatedAt)) {
-            lines.push('Updated:     ' + team.updatedAt);
         }
 
         lines.push('');
