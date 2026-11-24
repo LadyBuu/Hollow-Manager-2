@@ -392,6 +392,10 @@
                 '</span>';
         html += '</div>';
 
+        html += renderRandomiseControls(
+            vm, classId, week, entries.length + unrankedStudents.length
+        );
+
         if (entries.length === 0 && unrankedStudents.length === 0) {
             html += '<p class="empty-state small">' +
                         'No students are available to rank at this week.' +
@@ -418,6 +422,42 @@
         html += '</div>';
 
         return html;
+    }
+
+    // ============================================================
+    // RANDOMISE CONTROLS
+    // ============================================================
+
+    function renderRandomiseControls(vm, classId, week, totalStudents) {
+        if (!classId || totalStudents < 2) { return ''; }
+
+        return (
+            '<div class="academy-ranking-randomise">' +
+                '<div class="academy-ranking-randomise-copy">' +
+                    '<strong>Randomise ranking</strong>' +
+                    '<span>Keep the current occupants of selected positions; ' +
+                    'shuffle everyone else.</span>' +
+                '</div>' +
+                '<label for="academy-ranking-keep-positions">' +
+                    'Keep positions' +
+                '</label>' +
+                '<input type="text" ' +
+                    'id="academy-ranking-keep-positions" ' +
+                    'placeholder="e.g. 1, 3, 7" ' +
+                    'aria-describedby="academy-ranking-keep-help">' +
+                '<span id="academy-ranking-keep-help" ' +
+                    'class="academy-ranking-randomise-help">' +
+                    'Comma-separated positions. Leave blank to shuffle all.' +
+                '</span>' +
+                '<button type="button" ' +
+                    'id="academy-ranking-randomise-btn" ' +
+                    'class="small primary" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + escapeAttribute(String(week)) + '">' +
+                    'Shuffle ranking' +
+                '</button>' +
+            '</div>'
+        );
     }
 
     // ============================================================
