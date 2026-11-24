@@ -1,8 +1,8 @@
 /**
- * modules/teams/candidate-export.js - Professional Pool Candidate Export
+ * js/import-export/candidate-export.js - Professional Pool Candidate Export
  * Plain-text dump of the current Professional Pool.
  *
- * Path: js/modules/teams/candidate-export.js
+ * Path: js/import-export/candidate-export.js
  *
  * WHAT THIS OWNS:
  *   - Building a plain-text report from the Professional Pool VM.
