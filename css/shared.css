@@ -1974,3 +1974,17 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
     .modal-header h3 { font-size: 0.8rem; }
     .form-grid { gap: 4px; }
 }
+
+
+/* ============================================================
+   LOCAL BACKUP MANAGEMENT
+   ============================================================ */
+.backups-body { display: flex; flex-direction: column; gap: 10px; }
+.backups-body > p { line-height: 1.45; font-size: 0.72rem; }
+.backups-status { min-height: 1.2em; color: var(--text-dim); font-size: 0.68rem; }
+.backups-list { display: flex; flex-direction: column; gap: 6px; }
+.backup-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--panel-alt); }
+.backup-item > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.backup-item strong { font-size: 0.72rem; overflow-wrap: anywhere; }
+.backup-item small { color: var(--text-dim); font-size: 0.62rem; }
+.backup-item button { flex: 0 0 auto; }
