@@ -1,5 +1,5 @@
 /**
- * modules/teams/team-export-picker.js - Team Export Picker
+ * js/import-export/team-export-picker.js - Team Export Picker
  * Two picker modes:
  *
  *   1. PERIOD PICKER (the primary mode)
@@ -18,7 +18,7 @@
  *      teams are excluded: they use weeks, not years, and are
  *      managed by the Academy module.
  *
- * Path: js/modules/teams/team-export-picker.js
+ * Path: js/import-export/team-export-picker.js
  *
  * PERIOD PICKER BEHAVIOUR:
  *   The modal is titled "Export Team — <team name>". It renders
