@@ -370,6 +370,12 @@
             return;
         }
 
+        var positionInput = target.closest('.academy-ranking-position-input');
+        if (positionInput) {
+            e.stopPropagation();
+            return;
+        }
+
         // ---- Clear button (per row) ----
         //
         // The clear button is checked BEFORE the row, so a click
@@ -633,6 +639,28 @@
     // CHANGE
     // ============================================================
 
+    function handlePositionInput(input) {
+        if (!input || !input.dataset) { return; }
+        var classId = input.dataset.classId;
+        var week = parsePositiveInteger(input.dataset.week);
+        var charId = input.dataset.characterId;
+        var position = parsePositiveInteger(input.value);
+        if (!isNonEmptyString(classId) || week === null ||
+            !isNonEmptyString(charId) || position === null) {
+            input.focus();
+            return;
+        }
+        var Ranking;
+        try { Ranking = requireAcademyRanking('handlePositionInput'); }
+        catch (err) { console.warn(err.message); return; }
+        if (typeof Ranking.moveRanking !== 'function') { return; }
+        Promise.resolve(Ranking.moveRanking(classId, week, charId, position))
+            .then(function(result) { refreshAfterWrite('moveRanking', result); })
+            .catch(function(err) {
+                console.warn('[AcademyRankingController] moveRanking failed:', err);
+            });
+    }
+
     function handleChange(e) {
         var target = e.target;
         if (!target || !target.id) { return; }
@@ -642,6 +670,11 @@
             AcademyUI.selectClass(target.value || null);
             var ctx = getContext();
             ctx.onChange();
+            return;
+        }
+
+        if (target.classList && target.classList.contains('academy-ranking-position-input')) {
+            handlePositionInput(target);
             return;
         }
 
@@ -665,6 +698,12 @@
     function handleKeydown(e) {
         var target = e.target;
         if (!target || e.key !== 'Enter') { return; }
+
+        if (target.classList && target.classList.contains('academy-ranking-position-input')) {
+            e.preventDefault();
+            handlePositionInput(target);
+            return;
+        }
 
         if (target.id === 'academy-ranking-week-input') {
             e.preventDefault();
