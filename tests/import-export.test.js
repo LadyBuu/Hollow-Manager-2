@@ -41,6 +41,10 @@ function loadImportPipeline() {
         IdUtils: {
             generateId: () => 'generated-id',
             normaliseId: value => value === null || value === undefined ? '' : String(value)
+        },
+        data: {
+            _dataVersion: 35,
+            activities: [{ id: 'local-activity', message: 'Keep this local log' }]
         }
     };
 
@@ -103,4 +107,24 @@ test('duplicate imported IDs do not redirect references away from the first reco
         'char-shared',
         'existing references must continue pointing to the first record'
     );
+});
+
+
+test('import candidate preserves the live database version and local activity history', function() {
+    const { pipeline } = loadImportPipeline();
+    const candidate = pipeline.buildCandidateState({
+        characters: [{ id: 'char-1' }],
+        teams: [],
+        tournaments: [],
+        missions: [],
+        currentYear: 1920,
+        currentWeek: 4
+    });
+
+    assert.equal(candidate._dataVersion, 35);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(candidate.activities)),
+        [{ id: 'local-activity', message: 'Keep this local log' }]
+    );
+    assert.notEqual(candidate.activities, window.activities);
 });
