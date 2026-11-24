@@ -371,7 +371,11 @@
 
         for (var i = 0; i < grades.length; i++) {
             var grade = grades[i];
-            if (grade && String(grade.disciplineId) === target) {
+            // Eligibility exclusions must not affect weighted averages or
+            // pass/fail totals. A displayed score of zero is not a real fail.
+            if (grade &&
+                grade.excludedFromAverage !== true &&
+                String(grade.disciplineId) === target) {
                 result.push(grade);
             }
         }
