@@ -123,10 +123,6 @@
             : String(value);
     }
 
-    function lineUnder() { return ''; }
-
-    function lineDash() { return ''; }
-
     // ============================================================
     // ROW FORMATTING
     // ============================================================
@@ -231,7 +227,6 @@
         var title = 'PROFESSIONAL POOL CANDIDATES \u2014 ' +
             String(poolVM.period);
         lines.push(title);
-        lines.push(lineUnder(title));
         lines.push('');
 
         pushSummary(lines, available.length, future.length);
@@ -258,7 +253,6 @@
         var total = availableCount + futureCount;
 
         lines.push('SUMMARY');
-        lines.push(lineDash('SUMMARY'));
         lines.push('');
         lines.push('  Total candidates:  ' + total);
         lines.push('  Available now:     ' + availableCount);
@@ -269,7 +263,6 @@
     function pushAvailableSection(lines, available) {
         var title = 'AVAILABLE (' + available.length + ')';
         lines.push(title);
-        lines.push(lineDash(title));
         lines.push('');
 
         if (available.length === 0) {
@@ -289,7 +282,6 @@
 
         var title = 'FUTURE ASSIGNMENTS (' + future.length + ')';
         lines.push(title);
-        lines.push(lineDash(title));
         lines.push('');
 
         for (var i = 0; i < future.length; i++) {
