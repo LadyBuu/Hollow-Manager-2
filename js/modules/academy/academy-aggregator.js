@@ -2758,7 +2758,7 @@
     // WEEKLY TEAMS VIEW MODEL
     // ============================================================
 
-    function getWeeklyTeamsViewModel(classId, week, selectedTeamId) {
+    function getWeeklyTeamsViewModel(classId, week, selectedTeamId, sortMode) {
         var classList = getClassListViewModel();
 
         var selectedClass = null;
@@ -2812,12 +2812,34 @@
             scheduledTeamIds
         );
 
+        teams.forEach(function(team) {
+            team.ranking = getTeamRankingSummary(team._team, selectedClass.id, week);
+        });
+        var rankedTeams = teams.filter(function(team) {
+            return team.ranking.averageRank !== null;
+        }).slice().sort(function(x, y) {
+            if (x.ranking.averageRank !== y.ranking.averageRank) {
+                return x.ranking.averageRank - y.ranking.averageRank;
+            }
+            return String(x.name).localeCompare(String(y.name));
+        });
+        rankedTeams.forEach(function(team, index) { team.ranking.position = index + 1; });
+        teams.sort(function(x, y) {
+            if (sortMode === 'ranking') {
+                var xr = x.ranking.averageRank, yr = y.ranking.averageRank;
+                if (xr === null && yr !== null) { return 1; }
+                if (yr === null && xr !== null) { return -1; }
+                if (xr !== null && yr !== null && xr !== yr) { return xr - yr; }
+            }
+            return String(x.name || '').localeCompare(String(y.name || ''));
+        });
+
         var selectedTeamVM = null;
         var resolvedSelectedTeamId = null;
         if (selectedTeamId) {
             for (var j = 0; j < teams.length; j++) {
                 if (String(teams[j].id) === String(selectedTeamId)) {
-                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week);
+                    selectedTeamVM = buildWeeklyTeamDetail(teams[j]._team, week, selectedClass.id);
                     resolvedSelectedTeamId = teams[j].id;
                     break;
                 }
@@ -2834,7 +2856,8 @@
                 statusLabel: t.statusLabel,
                 periodLabel: t.periodLabel,
                 periodDisplay: t.periodDisplay,
-                memberCount: t.memberCount
+                memberCount: t.memberCount,
+                ranking: t.ranking
             };
         });
 
@@ -2905,12 +2928,43 @@
         return items;
     }
 
+    function getIndividualRanking(classId, characterId, week) {
+        var Ranking = getAcademyRanking();
+        if (!Ranking || typeof Ranking.getStudentRank !== 'function' ||
+            !classId || !characterId || week === undefined || week === null) { return null; }
+        try {
+            var record = Ranking.getStudentRank(classId, characterId, week);
+            return record && isFiniteNumber(record.rank) ? record : null;
+        } catch (e) { return null; }
+    }
+
+    function getTeamRankingSummary(team, classId, week) {
+        var active = TeamQueries.getActiveTeamMembers(team, week) || [];
+        var rankTotal = 0, rankedCount = 0;
+        for (var i = 0; i < active.length; i++) {
+            if (!active[i] || !active[i].characterId) { continue; }
+            var record = getIndividualRanking(classId, active[i].characterId, week);
+            if (!record) { continue; }
+            rankTotal += record.rank;
+            rankedCount++;
+        }
+        var averageRank = rankedCount ? rankTotal / rankedCount : null;
+        return {
+            averageRank: averageRank,
+            averageRankDisplay: averageRank !== null ? averageRank.toFixed(1) : '\u2014',
+            rankedCount: rankedCount,
+            memberCount: active.length,
+            coverageDisplay: rankedCount + '/' + active.length,
+            position: null
+        };
+    }
+
     function getTeamStatusLabel(status) {
         if (!isNonEmptyString(status)) { return 'Active'; }
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
-    function buildWeeklyTeamDetail(team, week) {
+    function buildWeeklyTeamDetail(team, week, classId) {
         if (!team) { return null; }
 
         var activeMembers = TeamQueries.getActiveTeamMembers(
@@ -2919,6 +2973,12 @@
         ) || [];
 
         var members = buildTeamMembersVM(activeMembers, team.type);
+        var ranking = getTeamRankingSummary(team, classId, week);
+        members.forEach(function(member) {
+            var record = getIndividualRanking(classId, member.characterId, week);
+            member.individualRank = record ? record.rank : null;
+            member.individualRankDisplay = record ? '#' + record.rank : '\u2014';
+        });
 
         return {
             id: team.id,
@@ -2931,6 +2991,7 @@
             periodDisplay: getTeamPeriodDisplay(team),
             temporaryMission: team.temporaryMission || null,
             memberCount: members.length,
+            ranking: ranking,
             members: members
         };
     }
