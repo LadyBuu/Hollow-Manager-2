@@ -56,6 +56,10 @@ function createHarness(options = {}) {
         }
     };
 
+    if (options.teamCore) {
+        window.TeamCore = options.teamCore;
+    }
+
     if (options.academyCascade !== 'missing') {
         window.AcademyCascade = {
             characterDeleted: function(appData, id) {
@@ -181,4 +185,66 @@ test('bulk deletion rolls back when the mandatory cascade is unavailable', async
     assert.equal(h.window.data.teams[0].members.length, 2);
     assert.equal(h.window.data.social.relationships.length, 2);
     assert.equal(h.state.saves, 0);
+});
+
+
+test('career transition updates status and ends professional stints in the same transaction', async function() {
+    const data = {
+        characters: [
+            { id: 'worker', firstName: 'Casey', lastName: 'Example', careerStatus: [] }
+        ],
+        teams: [
+            { id: 'professional-team', members: [
+                { characterId: 'worker', joinYear: '2019', leaveYear: '' }
+            ] }
+        ]
+    };
+    let cascadeArgs = null;
+    const h = createHarness({
+        data,
+        teamCore: {
+            endStintsForCharacter: function(appData, id, year) {
+                cascadeArgs = { id, year };
+                const member = appData.teams[0].members[0];
+                member.leaveYear = String(year);
+                return { stintsEnded: 1, teamsTouched: 1 };
+            }
+        }
+    });
+
+    const result = await h.window.CharacterCRUD.setCareerTransition(
+        'worker', 'retired', 2025
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(h.window.data.characters[0].careerStatus.length, 1);
+    assert.equal(h.window.data.characters[0].careerStatus[0].status, 'retired');
+    assert.equal(h.window.data.characters[0].careerStatus[0].startYear, '2025');
+    assert.equal(h.window.data.teams[0].members[0].leaveYear, '2025');
+    assert.deepEqual(cascadeArgs, { id: 'worker', year: 2025 });
+    assert.equal(h.state.saves, 1);
+});
+
+test('career transition preserves the status change when the best-effort team cascade throws', async function() {
+    const h = createHarness({
+        data: {
+            characters: [
+                { id: 'worker', firstName: 'Casey', lastName: 'Example', careerStatus: [] }
+            ],
+            teams: []
+        },
+        teamCore: {
+            endStintsForCharacter: function() {
+                throw new Error('Team cleanup unavailable');
+            }
+        }
+    });
+
+    const result = await h.window.CharacterCRUD.setCareerTransition(
+        'worker', 'retired', 2025
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(h.window.data.characters[0].careerStatus[0].status, 'retired');
+    assert.equal(h.state.saves, 1);
 });
