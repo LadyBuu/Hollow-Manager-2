@@ -310,7 +310,7 @@
         },
         {
             id: 'descriptive',
-            label: 'Descriptive (Outstanding to Insufficient)',
+            label: 'Descriptive Grade',
             bands: [
                 { label: 'Outstanding', minPercent: 90, passing: true },
                 { label: 'Excellent', minPercent: 80, passing: true },
