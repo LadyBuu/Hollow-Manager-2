@@ -57,6 +57,7 @@ function createDatabaseHarness(options = {}) {
     source = source.slice(0, close) +
         '    window.__testMigrateData = migrateData;\n' +
         '    window.__testMigrateImportedData = migrateImportedData;\n' +
+        '    window.__testSetData = function(value) { _data = value; window.data = value; };\n' +
         '    window.__testGetEmptyData = getEmptyData;\n' +
         '    window.__testWritePreMigrationBackup = writePreMigrationBackup;\n' +
         '    window.__testSetDatabaseState = function(db, status) { _indexedDB = db; _dbStatus = status; };\n' +
@@ -405,4 +406,79 @@ test('backup restore rejects invalid identifiers without touching the database',
 
     await assert.rejects(db.db.restoreBackup('mainData'), /Invalid backup identifier/);
     assert.equal(stored.records.size, 1);
+});
+
+
+test('manual backup saves current state and returns a recoverable backup identifier', async function() {
+    const db = createDatabaseHarness();
+    const records = new Map();
+    const fakeDatabase = {
+        transaction: function() {
+            const tx = { oncomplete: null, onerror: null, onabort: null };
+            const store = {
+                get: function(id) {
+                    const request = { result: undefined, onsuccess: null, onerror: null };
+                    setImmediate(function() {
+                        request.result = records.get(id);
+                        if (request.onsuccess) request.onsuccess();
+                    });
+                    return request;
+                },
+                put: function(record) {
+                    records.set(record.id, record);
+                    setImmediate(function() {
+                        if (tx.oncomplete) tx.oncomplete();
+                    });
+                    return { onerror: null };
+                }
+            };
+            tx.objectStore = function() { return store; };
+            tx.abort = function() {
+                if (tx.onabort) tx.onabort();
+            };
+            return tx;
+        }
+    };
+    const liveData = {
+        _dataVersion: 35,
+        characters: [{ id: 'manual-backup-character' }],
+        teams: [], departments: [], tournaments: [], missions: [],
+        activities: [], classes: [], locations: [],
+        currentYear: 1924, currentWeek: 1
+    };
+    db.__testSetDatabaseState(fakeDatabase, 'ready');
+    db.__testSetData(liveData);
+
+    const result = await db.db.createBackup();
+
+    assert.match(result.id, /^mainData_backup_manual_/);
+    assert.equal(result.dataVersion, 35);
+    assert.equal(records.get('mainData_backup_manual_' + result.id.split('_').slice(-2).join('_')), undefined);
+    const backupRecord = records.get(result.id);
+    assert.ok(backupRecord);
+    assert.equal(backupRecord.data.characters[0].id, 'manual-backup-character');
+});
+
+test('backup restore rejects a missing backup and leaves current data untouched', async function() {
+    const db = createDatabaseHarness();
+    const current = {
+        id: 'mainData',
+        data: {
+            _dataVersion: 35, characters: [{ id: 'keep-current' }],
+            teams: [], departments: [], tournaments: [], missions: [],
+            activities: [], classes: [], locations: [],
+            currentYear: 1924, currentWeek: 1
+        }
+    };
+    const stored = createStoredBackupHarness([current]);
+    db.__testSetDatabaseState(stored.database, 'ready');
+
+    await assert.rejects(
+        db.db.restoreBackup('mainData_backup_pre_v10'),
+        /missing or contains invalid data/
+    );
+    assert.equal(
+        stored.records.get('mainData').data.characters[0].id,
+        'keep-current'
+    );
 });
