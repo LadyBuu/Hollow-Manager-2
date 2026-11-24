@@ -530,9 +530,14 @@
 
         // ---- Rank / drag handle ----
         html += '<span class="rankings-col-rank">';
-        html += '<span class="' + rankClass + '">' +
-                    escapeHtml(entry.rankDisplay) +
-                '</span>';
+        html += '<input type="number" min="1" step="1" ' +
+                    'class="academy-ranking-position-input" ' +
+                    'aria-label="Set rank for ' + escapeAttribute(entry.characterName) + '" ' +
+                    'title="Enter a position and press Enter" ' +
+                    'data-character-id="' + characterIdAttr + '" ' +
+                    'data-class-id="' + escapeAttribute(classId) + '" ' +
+                    'data-week="' + weekAttr + '" ' +
+                    'value="' + positionAttr + '">';
         html += '<span class="rankings-drag-handle" ' +
                     'title="Drag to reorder" ' +
                     'draggable="true" ' +
