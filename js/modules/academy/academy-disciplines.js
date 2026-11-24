@@ -664,9 +664,7 @@
             weight: weight,
             gradeScheme: scheme,
             assessmentWeights: weights,
-            isMagical: data.isMagical !== undefined
-                ? data.isMagical === true
-                : (arguments.length > 5 && existingScheme && existingScheme.isMagical === true),
+            isMagical: data.isMagical === true,
             createdAt: existingCreatedAt || now,
             updatedAt: now
         };
