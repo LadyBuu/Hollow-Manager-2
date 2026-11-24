@@ -123,21 +123,9 @@
             : String(value);
     }
 
-    function lineUnder(text) {
-        var out = '';
-        for (var i = 0; i < text.length; i++) {
-            out += '=';
-        }
-        return out;
-    }
+    function lineUnder() { return ''; }
 
-    function lineDash(text) {
-        var out = '';
-        for (var i = 0; i < text.length; i++) {
-            out += '-';
-        }
-        return out;
-    }
+    function lineDash() { return ''; }
 
     // ============================================================
     // ROW FORMATTING
