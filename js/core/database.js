@@ -659,7 +659,13 @@
                 case 32: migrateToVersion33(data); break;
                 case 33: migrateToVersion34(data); break;
                 case 34: migrateToVersion35(data); break;
-                default: data._dataVersion = DATA_VERSION; break;
+                default:
+                    throw new Error(
+                        '[Database] No migration is registered for data ' +
+                        'version ' + currentVersion + '. Refusing to mark ' +
+                        'the database as migrated to version ' + DATA_VERSION +
+                        ' without applying the required migration.'
+                    );
             }
         }
 
