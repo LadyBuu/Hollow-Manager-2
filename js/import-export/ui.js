@@ -1057,6 +1057,145 @@
     }
 
     // ============================================================
+    // LOCAL DATABASE BACKUPS
+    // ============================================================
+
+    function openBackupsModal() {
+        var db = window.db;
+        var Modal = window.Modal;
+        if (!db || typeof db.listBackups !== 'function' ||
+            typeof db.createBackup !== 'function' ||
+            typeof db.restoreBackup !== 'function' ||
+            !Modal || typeof Modal.createModal !== 'function') {
+            notifyError('Backup and recovery tools are not available. Reload the page and try again.');
+            return;
+        }
+
+        var modal = Modal.createModal('backups-modal');
+        var content = document.createElement('section');
+        content.className = 'modal-content wide';
+        content.setAttribute('aria-labelledby', 'backups-modal-title');
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        var title = document.createElement('h3');
+        title.id = 'backups-modal-title';
+        title.textContent = 'Database backups';
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'close-modal';
+        close.textContent = '×';
+        close.setAttribute('aria-label', 'Close backups');
+        header.appendChild(title);
+        header.appendChild(close);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body backups-body';
+        var description = document.createElement('p');
+        description.className = 'text-dim';
+        description.textContent = 'Snapshots are stored in this browser on this device. They are not uploaded or synced. Export a JSON file as an additional off-device copy.';
+        var actions = document.createElement('div');
+        actions.className = 'form-actions';
+        var create = document.createElement('button');
+        create.type = 'button';
+        create.className = 'primary';
+        create.textContent = 'Create backup now';
+        actions.appendChild(create);
+        var status = document.createElement('p');
+        status.className = 'backups-status';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        var list = document.createElement('div');
+        list.className = 'backups-list';
+        body.appendChild(description);
+        body.appendChild(actions);
+        body.appendChild(status);
+        body.appendChild(list);
+        content.appendChild(header);
+        content.appendChild(body);
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        function closeModal() { Modal.closeModal(modal); }
+        close.addEventListener('click', closeModal);
+        Modal.modalSetup(modal, closeModal);
+
+        function renderBackups(backups) {
+            while (list.firstChild) list.removeChild(list.firstChild);
+            if (!backups.length) {
+                var empty = document.createElement('p');
+                empty.className = 'empty-state';
+                empty.textContent = 'No local backups yet. Create one before making major changes.';
+                list.appendChild(empty);
+                return;
+            }
+            backups.forEach(function(backup) {
+                var item = document.createElement('article');
+                item.className = 'backup-item';
+                var info = document.createElement('div');
+                var date = document.createElement('strong');
+                var parsed = backup.createdAt ? new Date(backup.createdAt) : null;
+                date.textContent = parsed && !isNaN(parsed.getTime())
+                    ? parsed.toLocaleString()
+                    : 'Date unavailable';
+                var meta = document.createElement('small');
+                meta.textContent = 'Data version: ' + (backup.dataVersion || 'unknown');
+                info.appendChild(date);
+                info.appendChild(meta);
+                var restore = document.createElement('button');
+                restore.type = 'button';
+                restore.className = 'small';
+                restore.textContent = 'Restore';
+                restore.addEventListener('click', function() {
+                    var when = date.textContent;
+                    if (!confirm('Restore the database snapshot from ' + when + '?\n\nYour current database will first be saved as a pre-restore backup. The application will reload after restoration.')) return;
+                    restore.disabled = true;
+                    status.textContent = 'Restoring backup…';
+                    db.restoreBackup(backup.id).then(function() {
+                        status.textContent = 'Backup restored. Reloading…';
+                        window.location.reload();
+                    }).catch(function(err) {
+                        restore.disabled = false;
+                        status.textContent = 'Restore failed: ' + err.message;
+                        notifyError('Backup restore failed: ' + err.message);
+                    });
+                });
+                item.appendChild(info);
+                item.appendChild(restore);
+                list.appendChild(item);
+            });
+        }
+
+        function loadBackups() {
+            status.textContent = 'Loading backups…';
+            db.listBackups().then(function(backups) {
+                renderBackups(backups);
+                status.textContent = backups.length + ' local backup(s) found.';
+            }).catch(function(err) {
+                status.textContent = 'Could not load backups: ' + err.message;
+            });
+        }
+
+        create.addEventListener('click', function() {
+            create.disabled = true;
+            status.textContent = 'Saving current data and creating backup…';
+            db.createBackup().then(function(result) {
+                status.textContent = 'Backup created successfully.';
+                notifySuccess('Local database backup created.');
+                loadBackups();
+            }).catch(function(err) {
+                status.textContent = 'Backup failed: ' + err.message;
+                notifyError('Could not create backup: ' + err.message);
+            }).then(function() {
+                create.disabled = false;
+            });
+        });
+
+        Modal.showModal(modal);
+        loadBackups();
+    }
+
+    // ============================================================
     // INITIALIZATION
     // ============================================================
     //
@@ -1087,6 +1226,7 @@
 
         // ---- JSON Backup ----
         bindButton('export-json-btn', handleJSONExport);
+        bindButton('manage-backups-btn', openBackupsModal);
         bindButton('import-json-btn', function() {
             triggerFileInput('json-file-input');
         });
@@ -1144,6 +1284,7 @@
 
         // Handlers (exposed for testing and programmatic use)
         handleJSONExport: handleJSONExport,
+        openBackupsModal: openBackupsModal,
         handleJSONImport: handleJSONImport,
         handleCharacterImport: handleCharacterImport,
         importCharactersBatch: importCharactersBatch,
