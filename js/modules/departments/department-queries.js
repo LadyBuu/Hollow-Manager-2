@@ -639,8 +639,11 @@
         if (!isNonEmptyString(characterId)) { return []; }
 
         var yearNum = null;
-        if (year !== undefined && year !== null && year !== '') {
+        var hasYearFilter = year !== undefined && year !== null &&
+            year !== '';
+        if (hasYearFilter) {
             yearNum = parseYear(year);
+            if (yearNum === null) { return []; }
         }
 
         var departments = getDepartmentArray();
@@ -652,7 +655,7 @@
 
             if (!isMember(dept, characterId)) { continue; }
 
-            if (yearNum === null) {
+            if (!hasYearFilter) {
                 result.push(dept);
                 continue;
             }
@@ -731,14 +734,8 @@
     }
 
     /**
-     * Mentorships where BOTH parties are members of the department
-     * at the year, and the relationship ended (non-blank endYear
-     * that is at or before the year, OR the relationship ended at
-     * any point).
-     *
-     * Concretely: the relationship has a non-blank endYear. Whether
-     * that endYear is before or after the query year, an ended
-     * relationship is former.
+     * Mentorships where BOTH parties are department members at the
+     * query year and the relationship ended at or before that year.
      */
     function getFormerMentorships(deptOrId, year) {
         return _getMentorships(deptOrId, year, /* active */ false);
@@ -784,7 +781,7 @@
                 if (!isActiveMember(dept, c1, yearNum)) { continue; }
                 if (!isActiveMember(dept, c2, yearNum)) { continue; }
 
-                var isOngoing = isOngoingRelationship(rel);
+                var isOngoing = isOngoingRelationship(rel, yearNum);
                 if (active && !isOngoing) { continue; }
                 if (!active && isOngoing) { continue; }
 
@@ -800,14 +797,17 @@
         return result;
     }
 
-    function isOngoingRelationship(rel) {
+    function isOngoingRelationship(rel, queryYear) {
         if (!rel) { return true; }
         var end = rel.endYear;
         if (end === undefined || end === null) { return true; }
         if (typeof end === 'string' && end.trim() === '') {
             return true;
         }
-        return false;
+
+        var endYear = parseYear(end);
+        if (endYear === null) { return true; }
+        return endYear > queryYear;
     }
 
     // ============================================================
