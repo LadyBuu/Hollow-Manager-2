@@ -16,5 +16,8 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install test dependencies
+        run: npm install --no-audit --no-fund
+
       - name: Run regression tests
-        run: node --test
+        run: npm test
