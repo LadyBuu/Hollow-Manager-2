@@ -251,20 +251,8 @@ if (window.__missionExportLoaded) {
             typeof value === 'object' &&
             !Array.isArray(value);
  }
- function lineUnder(text) {
-     var out = '';
-     for (var i = 0; i < text.length; i++) {
-         out += '=';
-     }
-     return out;
- }
- function lineDash(text) {
-     var out = '';
-     for (var i = 0; i < text.length; i++) {
-         out += '-';
-     }
-     return out;
- }
+ function lineUnder() { return ''; }
+ function lineDash() { return ''; }
  // ============================================================
  // LABEL COLUMN
  // ============================================================
@@ -371,7 +359,6 @@ if (window.__missionExportLoaded) {
          missionIdLabel = null;
      }
      lines.push(labelled('Mission ID', missionIdLabel || '(unavailable)'));
-     lines.push(labelled('Record ID', mission.id));
      var statusLabel = MissionConstants.getStatusLabel(
          mission.status
      );
@@ -433,16 +420,8 @@ if (window.__missionExportLoaded) {
      lines.push('');
      lines.push(labelled('Date', buildDateDisplay(mission)));
      lines.push(labelled(
-         'Created',
-         MissionViews.formatTimestamp(mission.createdAt)
-     ));
-     lines.push(labelled(
          'Completed',
          MissionViews.formatTimestamp(mission.completedAt)
-     ));
-     lines.push(labelled(
-         'Archived',
-         MissionViews.formatTimestamp(mission.archivedAt)
      ));
      lines.push('');
  }
@@ -788,7 +767,6 @@ if (window.__missionExportLoaded) {
      lines.push(lineUnder(footer));
      lines.push(footer);
      lines.push(labelled('Record ID', mission.id));
-     lines.push(labelled('Generated', new Date().toISOString()));
      lines.push(lineUnder(footer));
      return {
          text: lines.join('\n'),
@@ -967,16 +945,8 @@ if (window.__missionExportLoaded) {
  // PUBLIC API - BULK, TEXT (this revision)
  // ============================================================
  function buildBulkTextBanner(count) {
-     var bannerWidth = 64;
-     var banner = '';
-     for (var i = 0; i < bannerWidth; i++) {
-         banner += '=';
-     }
-     return banner + '\n' +
-         'MISSION EXPORT \u2014 ' + count + ' mission' +
-         (count === 1 ? '' : 's') + '\n' +
-         'Generated: ' + new Date().toISOString() + '\n' +
-         banner;
+     return 'MISSION EXPORT \u2014 ' + count + ' mission' +
+         (count === 1 ? '' : 's');
  }
  function buildBulkTextFilename(count) {
      return 'missions-export-' + count + '.txt';
