@@ -1,8 +1,8 @@
 /**
- * modules/academy/controllers/academy-people-controller.js
+ * js/modules/academy/controllers/academy-location-controller.js
  * Academy People Controller
  *
- * Path: js/modules/academy/controllers/academy-people-controller.js
+ * Path: js/modules/academy/controllers/academy-location-controller.js
  *
  * The People feature controller. Owns the People view: its
  * rendering, its event handling, and its sub-editor lifecycle
