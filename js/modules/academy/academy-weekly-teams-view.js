@@ -391,6 +391,11 @@
         html += '<span class="academy-weekly-teams-list-count">' +
                     teams.length +
                 '</span>';
+        html += '<label class="academy-team-sort-control">Sort: ' +
+                    '<select id="academy-weekly-teams-sort">' +
+                        '<option value="name"' + (vm.sortMode !== 'ranking' ? ' selected' : '') + '>Name</option>' +
+                        '<option value="ranking"' + (vm.sortMode === 'ranking' ? ' selected' : '') + '>Ranking</option>' +
+                    '</select></label>';
         html += '</div>';
 
         if (teams.length === 0) {
@@ -442,6 +447,13 @@
         html += '<span class="academy-weekly-team-members">' +
                     team.memberCount + ' members' +
                 '</span>';
+        if (team.ranking) {
+            html += '<span class="academy-weekly-team-ranking">' +
+                (team.ranking.position ? 'Team #' + team.ranking.position + ' · ' : '') +
+                'Avg. rank ' + escapeHtml(team.ranking.averageRankDisplay) +
+                ' (' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
+            '</span>';
+        }
         if (isNonEmptyString(team.periodDisplay)) {
             html += '<span class="academy-weekly-team-period">' +
                         escapeHtml(team.periodDisplay) +
@@ -531,6 +543,14 @@
                     team.memberCount +
                 '</span>';
 
+        if (team.ranking) {
+            html += '<span class="academy-weekly-team-detail-meta-item">' +
+                '<span class="meta-label">Team ranking:</span> ' +
+                (team.ranking.position ? '#' + team.ranking.position + ' · ' : '') +
+                'Average individual rank ' + escapeHtml(team.ranking.averageRankDisplay) +
+                ' (' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
+            '</span>';
+        }
         html += '</div>';
 
         html += '<div class="academy-weekly-team-detail-actions">';
@@ -621,6 +641,7 @@
         }
         html += '</div>';
 
+        secondaryParts.push('Individual rank: ' + (member.individualRankDisplay || '\u2014'));
         if (secondaryParts.length > 0) {
             html += '<div class="academy-weekly-team-member-secondary">' +
                         secondaryParts.join(' &middot; ') +
