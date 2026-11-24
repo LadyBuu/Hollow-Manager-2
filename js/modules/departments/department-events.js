@@ -634,7 +634,7 @@
         );
         if (leaveYear === null) { return; }
         leaveYear = String(leaveYear).trim();
-        if (!/^\\d+$/.test(leaveYear)) {
+        if (!/^\d+$/.test(leaveYear)) {
             notify('Enter a valid leave year.', 'error');
             return;
         }
