@@ -500,21 +500,29 @@
         });
 
         // ---- Mentorships ----
-        var activeMentorships =
-            DepartmentQueries.getActiveMentorships(
-                department, queryYear
-            );
-        var formerMentorships =
-            DepartmentQueries.getFormerMentorships(
-                department, queryYear
-            );
+        var activeMentorRows = [];
+        var formerMentorRows = [];
+        var mentorshipError = '';
 
-        var activeMentorRows = buildMentorshipRows(
-            activeMentorships
-        );
-        var formerMentorRows = buildMentorshipRows(
-            formerMentorships
-        );
+        try {
+            var activeMentorships =
+                DepartmentQueries.getActiveMentorships(
+                    department, queryYear
+                );
+            var formerMentorships =
+                DepartmentQueries.getFormerMentorships(
+                    department, queryYear
+                );
+            activeMentorRows = buildMentorshipRows(activeMentorships);
+            formerMentorRows = buildMentorshipRows(formerMentorships);
+        } catch (error) {
+            mentorshipError = error && error.message
+                ? error.message
+                : 'Mentorship records could not be loaded.';
+            console.error(
+                '[DepartmentAggregator] Mentorship query failed:', error
+            );
+        }
 
         return {
             year: queryYear,
@@ -541,7 +549,8 @@
 
             mentorships: {
                 active: activeMentorRows,
-                former: formerMentorRows
+                former: formerMentorRows,
+                error: mentorshipError
             }
         };
     }
