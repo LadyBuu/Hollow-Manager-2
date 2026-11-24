@@ -2,7 +2,7 @@
  * js/modules/shared/tournament-constants.js - Tournament Constants
  * Single source of truth for all tournament-related constants.
  *
- * Path: js/modules/tournaments/tournament-constants.js
+ * Path: js/modules/shared/tournament-constants.js
  *
  * LIFECYCLE MODEL (SIMPLIFIED):
  *   Tournaments are records, not state machines. The status field is
