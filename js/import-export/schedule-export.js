@@ -340,11 +340,6 @@
     var START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
     var END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
 
-    // Fixed layout constants. The banner width matches the team
-    // exporter's convention so the two exports read consistently.
-    var BANNER_WIDTH = 64;
-    var DAY_BANNER_WIDTH = 48;
-
     // Continuation lines align under the text after the time-range
     // column. A time label such as "09:00–10:00" is 11 characters;
     // padding to 13 leaves two spaces before the discipline name.
@@ -752,14 +747,6 @@
 
         var days = groupRowsByDay(rows);
 
-        var disciplineSet = Object.create(null);
-        for (var i = 0; i < sessions.length; i++) {
-            var did = sessions[i].disciplineId;
-            if (isNonEmptyString(did)) {
-                disciplineSet[String(did)] = true;
-            }
-        }
-
         return {
             classId: cls.id,
             className: isNonEmptyString(cls.name)
@@ -769,8 +756,7 @@
             rows: rows,
             days: days,
             sessionCount: sessions.length,
-            commitmentCount: commitments.length,
-            disciplineCount: Object.keys(disciplineSet).length
+            commitmentCount: commitments.length
         };
     }
 
@@ -803,35 +789,22 @@
     // CLASS VIEW — TEXT FORMAT
     // ============================================================
 
-    function buildBanner() {
-        return repeat('\u2500', BANNER_WIDTH);
-    }
-
     function buildDayBanner(dayName) {
-        var label = dayName.toUpperCase();
-        var prefix = '\u2500\u2500\u2500 ' + label + ' ';
-        if (prefix.length >= DAY_BANNER_WIDTH) {
-            return prefix;
-        }
-        return prefix + repeat('\u2500', DAY_BANNER_WIDTH - prefix.length);
+        return String(dayName || '').toUpperCase();
     }
 
     function emitHeader(vm) {
-        var today = new Date().toISOString().slice(0, 10);
-
         var lines = [];
         lines.push('Hollow Blades \u2014 Class Schedule Export');
         lines.push(vm.className);
-        lines.push('Week ' + vm.week + ' \u2014 Exported ' + today);
+        lines.push('Week ' + vm.week);
         lines.push('');
         lines.push('Overview');
         lines.push('  ' +
             vm.sessionCount + ' session' +
             (vm.sessionCount === 1 ? '' : 's') + ' \u00b7 ' +
             vm.commitmentCount + ' commitment' +
-            (vm.commitmentCount === 1 ? '' : 's') + ' \u00b7 ' +
-            vm.disciplineCount + ' discipline' +
-            (vm.disciplineCount === 1 ? '' : 's'));
+            (vm.commitmentCount === 1 ? '' : 's'));
 
         return lines.join('\n') + '\n';
     }
@@ -920,9 +893,7 @@
         out += '\n';
 
         if (vm.rows.length === 0) {
-            out += buildBanner() + '\n';
             out += 'No sessions or commitments this week.\n';
-            out += buildBanner() + '\n';
             return out;
         }
 
@@ -1207,12 +1178,10 @@
     // ============================================================
 
     function emitStudentHeader(vm) {
-        var today = new Date().toISOString().slice(0, 10);
-
         var lines = [];
         lines.push('Hollow Blades \u2014 Character Schedule Export');
         lines.push(vm.characterName);
-        lines.push('Week ' + vm.week + ' \u2014 Exported ' + today);
+        lines.push('Week ' + vm.week);
         lines.push('');
         lines.push('Overview');
         lines.push('  ' +
@@ -1291,9 +1260,7 @@
         out += '\n';
 
         if (vm.totalBlocks === 0) {
-            out += buildBanner() + '\n';
             out += 'No sessions or commitments this week.\n';
-            out += buildBanner() + '\n';
             return out;
         }
 
