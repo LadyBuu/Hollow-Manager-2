@@ -1775,6 +1775,277 @@
     }
 
     // ============================================================
+    // SHARED GROUP ASSIGNMENTS
+    // ============================================================
+    //
+    // One assignment record owns the shared metadata. Each student
+    // still receives an ordinary grade record, linked by assignmentId.
+    // The assignment and all grade records are written in one pipeline
+    // mutation so a failed save cannot leave half an assignment behind.
+
+    function getAssignment(assignmentId) {
+        if (!isNonEmptyString(assignmentId)) { return null; }
+        var academy = getAcademyStore();
+        var store = academy && academy.assignments;
+        if (!isObject(store)) { return null; }
+        var record = store[String(assignmentId)];
+        return isObject(record) ? deepClone(record) : null;
+    }
+
+    function getAssignmentsForGroup(groupId, week) {
+        if (!isNonEmptyString(groupId)) { return []; }
+        var academy = getAcademyStore();
+        var store = academy && academy.assignments;
+        if (!isObject(store)) { return []; }
+
+        var weekFilter = week === undefined ? null : parseWeekStrict(week);
+        if (week !== undefined && weekFilter === null) { return []; }
+
+        var result = [];
+        Object.keys(store).forEach(function(id) {
+            var record = store[id];
+            if (!isObject(record) ||
+                String(record.groupId) !== String(groupId)) {
+                return;
+            }
+            if (weekFilter !== null && record.week !== weekFilter) { return; }
+            result.push(deepClone(record));
+        });
+        result.sort(function(a, b) {
+            return String(a.createdAt || '').localeCompare(
+                String(b.createdAt || '')
+            );
+        });
+        return result;
+    }
+
+    function createGroupAssignment(data) {
+        if (!isObject(data)) {
+            return Promise.resolve(failure('Assignment data must be an object.'));
+        }
+
+        var title = isNonEmptyString(data.title)
+            ? String(data.title).trim()
+            : '';
+        if (!title || title.length > 120) {
+            return Promise.resolve(failure('Assignment title is required (maximum 120 characters).'));
+        }
+        if (!isNonEmptyString(data.classId) ||
+            !isNonEmptyString(data.disciplineId) ||
+            !isNonEmptyString(data.groupId)) {
+            return Promise.resolve(failure('Class, discipline, and teaching group are required.'));
+        }
+
+        var week = parseWeekStrict(data.week);
+        if (week === null) {
+            return Promise.resolve(failure('A valid assignment week is required.'));
+        }
+
+        var type = data.type || DEFAULT_GRADE_TYPE;
+        if (VALID_GRADE_TYPES.indexOf(type) === -1) {
+            return Promise.resolve(failure('Invalid assessment type.'));
+        }
+
+        var maxScore = parseFiniteNumberStrict(data.maxScore);
+        var minScore = parseFiniteNumberStrict(data.minScore);
+        var maxRandomScore = parseFiniteNumberStrict(data.maxRandomScore);
+        if (maxScore === null || maxScore <= 0 ||
+            minScore === null || maxRandomScore === null ||
+            minScore < 0 || maxRandomScore < minScore ||
+            maxRandomScore > maxScore) {
+            return Promise.resolve(failure('The random score range must satisfy 0 ≤ minimum ≤ maximum ≤ maximum score.'));
+        }
+
+        var slot = null;
+        if (!isSlotlessType(type)) {
+            var slotCheck = normaliseSlot(data.slot);
+            if (!slotCheck.ok || !slotCheck.slot ||
+                String(slotCheck.slot.groupId) !== String(data.groupId)) {
+                return Promise.resolve(failure(
+                    slotCheck.ok
+                        ? 'Choose a scheduled session belonging to this teaching group.'
+                        : slotCheck.message
+                ));
+            }
+            slot = slotCheck.slot;
+        }
+
+        if (!Array.isArray(data.grades) || data.grades.length === 0) {
+            return Promise.resolve(failure('At least one student grade is required.'));
+        }
+
+        var classId = String(data.classId);
+        var disciplineId = String(data.disciplineId);
+        var groupId = String(data.groupId);
+        var assignmentId = generateId().replace(/^grade_/, 'assignment_');
+        var now = new Date().toISOString();
+        var grades = [];
+        var studentIds = [];
+        var seenStudents = Object.create(null);
+
+        for (var i = 0; i < data.grades.length; i++) {
+            var input = data.grades[i];
+            if (!isObject(input) || !isNonEmptyString(input.studentId)) {
+                return Promise.resolve(failure('Every assignment grade must identify a student.'));
+            }
+            var studentId = String(input.studentId);
+            if (seenStudents[studentId]) {
+                return Promise.resolve(failure('A student appears more than once in this assignment.'));
+            }
+            seenStudents[studentId] = true;
+
+            var gradeData = {
+                studentId: studentId,
+                classId: classId,
+                disciplineId: disciplineId,
+                week: week,
+                score: input.score,
+                maxScore: maxScore,
+                type: type,
+                slot: slot,
+                assignmentId: assignmentId,
+                assignmentTitle: title,
+                notes: ''
+            };
+
+            var candidate;
+            try {
+                candidate = buildGradeRecord(gradeData, null, null);
+            } catch (e) {
+                return Promise.resolve(failure(e.message));
+            }
+            var candidateCheck = validateCandidate(candidate);
+            if (!candidateCheck.valid) {
+                return Promise.resolve(failure(
+                    'Invalid grade for student ' + studentId + ': ' +
+                    candidateCheck.message
+                ));
+            }
+
+            grades.push(candidate);
+            studentIds.push(studentId);
+        }
+
+        var assignment = {
+            id: assignmentId,
+            title: title,
+            classId: classId,
+            disciplineId: disciplineId,
+            groupId: groupId,
+            week: week,
+            type: type,
+            slot: slot,
+            maxScore: maxScore,
+            randomScoreRange: {
+                min: minScore,
+                max: maxRandomScore
+            },
+            studentIds: studentIds.slice(),
+            createdAt: now,
+            updatedAt: now
+        };
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                if (findGradeInSnapshot(appData, assignmentId)) {
+                    return { valid: false, message: 'Assignment ID collision.' };
+                }
+                if (!findClassInSnapshot(appData, classId)) {
+                    return { valid: false, message: 'Class no longer exists: ' + classId };
+                }
+                if (!findDisciplineInSnapshot(appData, disciplineId)) {
+                    return { valid: false, message: 'Discipline no longer exists: ' + disciplineId };
+                }
+
+                var groupStore = appData.academy.teachingGroups;
+                var group = isObject(groupStore) ? groupStore[groupId] : null;
+                if (!isObject(group) ||
+                    String(group.classId) !== classId ||
+                    String(group.disciplineId) !== disciplineId) {
+                    return { valid: false, message: 'Teaching group no longer belongs to this class and discipline.' };
+                }
+                if (group.startWeek !== null && group.startWeek !== undefined &&
+                    (week < Number(group.startWeek) ||
+                     (group.endWeek !== null && group.endWeek !== undefined &&
+                      week > Number(group.endWeek)))) {
+                    return { valid: false, message: 'Teaching group is not active in this week.' };
+                }
+
+                var members = Array.isArray(group.members) ? group.members : [];
+                for (var m = 0; m < studentIds.length; m++) {
+                    var active = false;
+                    for (var n = 0; n < members.length; n++) {
+                        var member = members[n];
+                        if (!member || String(member.characterId) !== studentIds[m]) {
+                            continue;
+                        }
+                        var start = Number(member.startWeek);
+                        var end = member.endWeek === null ||
+                            member.endWeek === undefined
+                            ? Infinity
+                            : Number(member.endWeek);
+                        if (isFinite(start) && week >= start && week <= end) {
+                            active = true;
+                            break;
+                        }
+                    }
+                    if (!active) {
+                        return {
+                            valid: false,
+                            message: 'Student is no longer an active member of this group: ' +
+                                studentIds[m]
+                        };
+                    }
+                }
+
+                for (var g = 0; g < grades.length; g++) {
+                    if (findGradeInSnapshot(appData, grades[g].id)) {
+                        return { valid: false, message: 'Grade ID collision.' };
+                    }
+                    var gradeCheck = validateCandidateAgainstSnapshot(
+                        grades[g], appData
+                    );
+                    if (!gradeCheck.valid) { return gradeCheck; }
+                }
+
+                if (appData.academy.assignments !== undefined &&
+                    appData.academy.assignments !== null &&
+                    !isObject(appData.academy.assignments)) {
+                    return { valid: false, message: 'The assignments store is malformed.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!isObject(appData.academy.assignments)) {
+                    appData.academy.assignments = {};
+                }
+                if (!isObject(appData.academy.grades)) {
+                    appData.academy.grades = {};
+                }
+                if (appData.academy.assignments[assignmentId]) {
+                    throw new Error('Assignment ID collision.');
+                }
+                appData.academy.assignments[assignmentId] = deepClone(assignment);
+                for (var i = 0; i < grades.length; i++) {
+                    appData.academy.grades[grades[i].id] = deepClone(grades[i]);
+                }
+                return {
+                    assignment: assignment,
+                    gradesCreated: grades.length,
+                    successCount: grades.length
+                };
+            },
+            logMessage: 'Created group assignment "' + title + '" for ' +
+                grades.length + ' student(s)',
+            successMessage: 'Group assignment created successfully!',
+            failureMessage: 'Failed to create group assignment.'
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1785,8 +2056,11 @@
         delete: deleteGrade,
         deleteStudentGrades: deleteStudentGrades,
         saveGrades: saveGrades,
+        createGroupAssignment: createGroupAssignment,
 
         // ---- Public queries (synchronous, CLONES) ----
+        getAssignment: getAssignment,
+        getAssignmentsForGroup: getAssignmentsForGroup,
         getStudentGrades: getStudentGrades,
         getStudentClassGrades: getStudentClassGrades,
         getClassGrades: getClassGrades,
