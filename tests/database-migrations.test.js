@@ -56,6 +56,7 @@ function createDatabaseHarness(options = {}) {
 
     source = source.slice(0, close) +
         '    window.__testMigrateData = migrateData;\n' +
+        '    window.__testMigrateImportedData = migrateImportedData;\n' +
         '    window.__testGetEmptyData = getEmptyData;\n' +
         '    window.__testWritePreMigrationBackup = writePreMigrationBackup;\n' +
         '    window.__testSetDatabaseState = function(db, status) { _indexedDB = db; _dbStatus = status; };\n' +
@@ -235,4 +236,47 @@ test('an existing pre-migration backup is accepted after the read transaction co
 
     const result = await db.__testWritePreMigrationBackup(12, { characters: [] });
     assert.equal(result, true);
+});
+
+
+test('imported data migrates from its recorded internal version without mutating the source', function() {
+    const db = createDatabaseHarness();
+    const source = {
+        _dataVersion: 1,
+        characters: [{ id: 'legacy-character' }],
+        teams: [],
+        tournaments: [],
+        missions: [],
+        departments: [],
+        activities: [],
+        currentYear: 1920,
+        currentWeek: 1
+    };
+
+    const migrated = db.__testMigrateImportedData(source, 1);
+
+    assert.equal(migrated._dataVersion, 35);
+    assert.equal(source._dataVersion, 1, 'source object must remain unchanged');
+    assert.equal(migrated.characters[0].id, 'legacy-character');
+    assert.ok(Array.isArray(migrated.departments));
+});
+
+test('imported data refuses an unknown internal version instead of guessing', function() {
+    const db = createDatabaseHarness();
+    assert.throws(
+        function() {
+            db.__testMigrateImportedData({ characters: [], teams: [] }, undefined);
+        },
+        /does not contain a valid internal data version/
+    );
+});
+
+test('imported data refuses a future internal version', function() {
+    const db = createDatabaseHarness();
+    assert.throws(
+        function() {
+            db.__testMigrateImportedData({ characters: [], teams: [] }, 36);
+        },
+        /newer than this application supports/
+    );
 });
