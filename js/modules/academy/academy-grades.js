@@ -1968,6 +1968,12 @@
             return Promise.resolve(failure('Invalid assessment type.'));
         }
 
+        // Group assignments use the same theoretical/practical eligibility
+        // rules as individually entered grades. Older callers default to
+        // theoretical so existing random-grade workflows remain compatible.
+        var assessmentMode = data.assessmentMode === 'practical'
+            ? 'practical' : 'theoretical';
+
         var maxScore = parseFiniteNumberStrict(data.maxScore);
         var minScore = parseFiniteNumberStrict(data.minScore);
         var maxRandomScore = parseFiniteNumberStrict(data.maxRandomScore);
@@ -2033,6 +2039,7 @@
                 score: input.score,
                 maxScore: maxScore,
                 type: type,
+                assessmentMode: assessmentMode,
                 slot: slot,
                 assignmentId: assignmentId,
                 assignmentTitle: title,
@@ -2065,6 +2072,7 @@
             groupId: groupId,
             week: week,
             type: type,
+            assessmentMode: assessmentMode,
             slot: slot,
             maxScore: maxScore,
             randomScoreRange: {
@@ -2215,13 +2223,23 @@
                     throw new Error('Assignment ID collision.');
                 }
                 appData.academy.assignments[assignmentId] = deepClone(assignment);
+                var committedGrades = [];
                 for (var i = 0; i < grades.length; i++) {
-                    appData.academy.grades[grades[i].id] = deepClone(grades[i]);
+                    var committedGrade = deepClone(grades[i]);
+                    // Evaluate eligibility against the same transaction snapshot
+                    // used to validate the students and discipline. This keeps
+                    // the rule authoritative even if a caller bypasses the UI.
+                    applyMagicalEligibility(committedGrade, appData);
+                    appData.academy.grades[committedGrade.id] = committedGrade;
+                    committedGrades.push(committedGrade);
                 }
                 return {
-                    assignment: assignment,
-                    gradesCreated: grades.length,
-                    successCount: grades.length
+                    assignment: deepClone(assignment),
+                    gradesCreated: committedGrades.length,
+                    excludedCount: committedGrades.filter(function(grade) {
+                        return grade.excludedFromAverage === true;
+                    }).length,
+                    successCount: committedGrades.length
                 };
             },
             logMessage: 'Created group assignment "' + title + '" for ' +
