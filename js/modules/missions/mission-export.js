@@ -251,8 +251,6 @@ if (window.__missionExportLoaded) {
             typeof value === 'object' &&
             !Array.isArray(value);
  }
- function lineUnder() { return ''; }
- function lineDash() { return ''; }
  // ============================================================
  // LABEL COLUMN
  // ============================================================
@@ -350,7 +348,6 @@ if (window.__missionExportLoaded) {
              ? mission.title
              : 'Untitled Mission');
      lines.push(title);
-     lines.push(lineUnder(title));
      lines.push('');
      var missionIdLabel = null;
      try {
@@ -372,7 +369,6 @@ if (window.__missionExportLoaded) {
  function pushClassification(lines, mission) {
      var heading = 'CLASSIFICATION';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var difficultyLabel = MissionConstants.getDifficultyLabel(
          mission.difficulty
@@ -416,7 +412,6 @@ if (window.__missionExportLoaded) {
  function pushTiming(lines, mission) {
      var heading = 'TIMING';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      lines.push(labelled('Date', buildDateDisplay(mission)));
      lines.push(labelled(
@@ -479,7 +474,6 @@ if (window.__missionExportLoaded) {
  function pushAssignment(lines, mission) {
      var heading = 'ASSIGNMENT';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var teamIds = MissionQueries.getTeamIdsForMission(mission);
      if (teamIds.length === 0) {
@@ -513,7 +507,6 @@ if (window.__missionExportLoaded) {
      }
      var heading = 'DESCRIPTION';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      lines.push(indentBlock(mission.description, '  '));
      lines.push('');
@@ -521,7 +514,6 @@ if (window.__missionExportLoaded) {
  function pushObjectives(lines, mission) {
      var heading = 'OBJECTIVES';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var objectives = Array.isArray(mission.objectives)
          ? mission.objectives
@@ -556,7 +548,6 @@ if (window.__missionExportLoaded) {
  function pushParticipants(lines, mission) {
      var heading = 'PARTICIPANTS';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var participants =
          MissionQueries.getParticipantsForMission(mission);
@@ -634,7 +625,6 @@ if (window.__missionExportLoaded) {
  function pushSupportPersonnel(lines, mission) {
      var heading = 'SUPPORT PERSONNEL';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var support = Array.isArray(mission.supportPersonnel)
          ? mission.supportPersonnel
@@ -657,7 +647,6 @@ if (window.__missionExportLoaded) {
  function pushReports(lines, mission) {
      var heading = 'REPORTS';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      var reports = Array.isArray(mission.reports)
          ? mission.reports
@@ -705,7 +694,6 @@ if (window.__missionExportLoaded) {
      }
      var heading = 'NOTES';
      lines.push(heading);
-     lines.push(lineDash(heading));
      lines.push('');
      if (hasNotes) {
          lines.push(indentBlock(mission.notes, '  '));
@@ -764,10 +752,7 @@ if (window.__missionExportLoaded) {
      pushReports(lines, mission);
      pushNotes(lines, mission);
      var footer = 'END OF REPORT';
-     lines.push(lineUnder(footer));
      lines.push(footer);
-     lines.push(labelled('Record ID', mission.id));
-     lines.push(lineUnder(footer));
      return {
          text: lines.join('\n'),
          mission: mission
