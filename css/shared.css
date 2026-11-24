@@ -3067,3 +3067,33 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 [data-theme="nautical-tile"] h1,[data-theme="nautical-tile"] h2,[data-theme="nautical-tile"] h3{font-family:Georgia,'Times New Roman',serif;color:var(--border);font-weight:700;letter-spacing:.02em}
 [data-theme="nautical-tile"] .panel,[data-theme="nautical-tile"] .stat-card,[data-theme="nautical-tile"] .quick-link{border:2px solid var(--border);border-radius:2px;box-shadow:2px 2px 0 rgba(13,35,66,.15)}
 [data-theme="nautical-tile"] button{border:2px solid var(--border);border-radius:0;box-shadow:2px 2px 0 rgba(13,35,66,.15);font-family:Georgia,'Times New Roman',serif}
+
+/* Explicit theme picker */
+.theme-controls { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+.theme-select {
+    appearance: auto;
+    width: 142px;
+    max-width: 42vw;
+    min-width: 104px;
+    padding: 4px 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-alt);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.68rem;
+    line-height: 1.3;
+}
+.theme-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#theme-toggle-btn { flex: 0 0 auto; min-width: 30px; }
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
