@@ -317,6 +317,36 @@
             candidate.currentWeek = 1;
         }
 
+        // These fields are intentionally local and are not part of the
+        // portable export contract. Preserve them across a full import
+        // replacement rather than silently deleting the activity history
+        // or making the next startup replay database migrations from v1.
+        var liveData = window.data && typeof window.data === 'object'
+            ? window.data
+            : null;
+        var currentDataVersion = liveData && liveData._dataVersion;
+
+        if ((!Number.isInteger(currentDataVersion) || currentDataVersion < 1) &&
+            window.db && typeof window.db.getEmptyData === 'function') {
+            try {
+                var emptyData = window.db.getEmptyData();
+                currentDataVersion = emptyData && emptyData._dataVersion;
+            } catch (versionError) {
+                // The explicit guard below reports the unavailable version.
+            }
+        }
+
+        if (!Number.isInteger(currentDataVersion) || currentDataVersion < 1) {
+            throw new Error(
+                'Cannot import safely: the current database version is unavailable.'
+            );
+        }
+
+        candidate._dataVersion = currentDataVersion;
+        candidate.activities = liveData && Array.isArray(liveData.activities)
+            ? deepClone(liveData.activities)
+            : [];
+
         return candidate;
     }
 
