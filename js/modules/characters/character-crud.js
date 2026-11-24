@@ -1318,6 +1318,10 @@
             data.isFiller = charData.isFiller === true;
         }
 
+        if (charData.isMagical !== undefined) {
+            data.isMagical = charData.isMagical === true;
+        }
+
         // ---- stats ----
         if (charData.stats !== undefined) {
             var statKeys = getStatKeys();
