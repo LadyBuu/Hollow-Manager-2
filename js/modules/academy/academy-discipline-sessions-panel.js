@@ -847,10 +847,15 @@
             var studentCount = Array.isArray(assignment.studentIds)
                 ? assignment.studentIds.length
                 : 0;
+            var slotLabel = assignment.slot
+                ? formatDayName(assignment.slot.day) + ', ' +
+                    formatHourLabel(assignment.slot.startTime)
+                : 'Take-home';
             html += '<li><span class="academy-discipline-session-assignment-name">' +
                         escapeHtml(assignment.title) +
                     '</span><span class="academy-discipline-session-assignment-meta">' +
                         escapeHtml(typeLabel) + ' · ' +
+                        escapeHtml(slotLabel) + ' · ' +
                         studentCount + ' student' +
                         (studentCount === 1 ? '' : 's') +
                     '</span></li>';
