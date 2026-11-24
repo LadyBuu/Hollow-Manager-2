@@ -370,6 +370,66 @@
     }
 
     /**
+     * Persist the current state, then create a recoverable manual snapshot.
+     * The backup is stored separately and does not replace mainData.
+     */
+    function createBackup() {
+        return saveData().then(function() {
+            return new Promise(function(resolve, reject) {
+                if (!_indexedDB || _dbStatus !== 'ready') {
+                    reject(new Error('Database not available'));
+                    return;
+                }
+                var backupId = 'mainData_backup_manual_' + Date.now() + '_' +
+                    Math.random().toString(36).slice(2, 8);
+                try {
+                    var tx = _indexedDB.transaction([STORE_NAME], 'readwrite');
+                    var store = tx.objectStore(STORE_NAME);
+                    var request = store.get('mainData');
+                    var backupRecord = null;
+
+                    request.onsuccess = function() {
+                        if (!request.result || !request.result.data) {
+                            try { tx.abort(); } catch (abortError) {}
+                            return;
+                        }
+                        backupRecord = {
+                            id: backupId,
+                            data: createSafeCopy(request.result.data),
+                            createdAt: new Date().toISOString(),
+                            dataVersion: request.result.data._dataVersion || null
+                        };
+                        store.put(backupRecord);
+                    };
+                    request.onerror = function(event) {
+                        reject(event.target.error || new Error('Could not read current data for backup'));
+                        try { tx.abort(); } catch (abortError) {}
+                    };
+                    tx.oncomplete = function() {
+                        if (backupRecord) {
+                            resolve({
+                                id: backupRecord.id,
+                                createdAt: backupRecord.createdAt,
+                                dataVersion: backupRecord.dataVersion
+                            });
+                        } else {
+                            reject(new Error('Current database data was not available for backup'));
+                        }
+                    };
+                    tx.onerror = function(event) {
+                        reject(event.target.error || new Error('Backup transaction failed'));
+                    };
+                    tx.onabort = function(event) {
+                        reject(event.target.error || new Error('Backup transaction aborted'));
+                    };
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        });
+    }
+
+    /**
      * List recoverable database snapshots without exposing their data.
      * Includes pre-migration and pre-restore backups.
      */
@@ -3946,6 +4006,7 @@
         listBackups: listBackups,
         restoreBackup: restoreBackup,
         migrateImportedData: migrateImportedData,
+        createBackup: createBackup,
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         autoLoadData: autoLoadData,
         createSafeCopy: createSafeCopy,
@@ -3964,7 +4025,7 @@
     (function verify() {
         var required = [
             'openDatabase', 'ensureDatabaseReady', 'loadData', 'saveData',
-            'getEmptyData', 'migrateImportedData', 'listBackups', 'restoreBackup', 'autoLoadData', 'createSafeCopy',
+            'getEmptyData', 'migrateImportedData', 'createBackup', 'listBackups', 'restoreBackup', 'autoLoadData', 'createSafeCopy',
             'getDatabaseStatus', 'isDatabaseReady', 'getLoadError',
             'deleteDatabase', 'forceReset'
         ];
