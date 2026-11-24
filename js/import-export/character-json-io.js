@@ -1,7 +1,7 @@
 /**
- * js/modules/characters/character-json-io.js - Character JSON Import/Export
+ * js/import-export/character-json-io.js - Character JSON Import/Export
  *
- * Path: js/modules/characters/character-json-io.js
+ * Path: js/import-export/character-json-io.js
  *
  * WHAT THIS OWNS:
  *   - Exporting a single character's FULL raw record to a JSON file.
