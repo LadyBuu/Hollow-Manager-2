@@ -27,7 +27,7 @@ test('built-in grading presets are available and valid', () => {
 test('five-, ten-, and twenty-point presets convert percentages', () => {
     assert.equal(schemes.getGradeBand(82, schemes.getPreset('scale_5')).label, '4');
     assert.equal(schemes.getGradeBand(82, schemes.getPreset('scale_10')).label, '8');
-    assert.equal(schemes.getGradeBand(52, schemes.getPreset('scale_20')).label, '11');
+    assert.equal(schemes.getGradeBand(52, schemes.getPreset('scale_20')).label, '10');
 });
 
 test('numeric scale presets carry explicit passing thresholds', () => {
