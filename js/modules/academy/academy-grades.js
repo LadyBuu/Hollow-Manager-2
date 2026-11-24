@@ -1585,10 +1585,13 @@
                     !Array.isArray(assignment.studentIds)) {
                     return;
                 }
-                assignment.studentIds = assignment.studentIds.filter(
+                var remainingStudents = assignment.studentIds.filter(
                     function(id) { return String(id) !== target; }
                 );
-                assignment.updatedAt = new Date().toISOString();
+                if (remainingStudents.length !== assignment.studentIds.length) {
+                    assignment.studentIds = remainingStudents;
+                    assignment.updatedAt = new Date().toISOString();
+                }
             });
         }
 
