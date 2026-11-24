@@ -128,3 +128,27 @@ test('import candidate preserves the live database version and local activity hi
     );
     assert.notEqual(candidate.activities, window.data.activities);
 });
+
+
+test('explicit ID regeneration still rewrites references to regenerated records', function() {
+    const { pipeline } = loadImportPipeline();
+    const source = {
+        characters: [{ id: 'char-original' }],
+        teams: [{ id: 'team-original', members: [{ characterId: 'char-original' }] }],
+        departments: [],
+        tournaments: [],
+        missions: [],
+        classes: [],
+        locations: []
+    };
+
+    const idResult = pipeline.ensureUniqueIds(source, { preserveExistingIds: false });
+    const characterChange = idResult.changes.find(change => change.collection === 'characters');
+    assert.equal(characterChange.reason, 'Regenerated ID');
+
+    const updated = pipeline.updateReferences(idResult.candidate, idResult.changes);
+    assert.equal(
+        updated.teams[0].members[0].characterId,
+        characterChange.newId
+    );
+});
