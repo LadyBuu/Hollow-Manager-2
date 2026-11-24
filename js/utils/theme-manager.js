@@ -2,8 +2,7 @@
  * utils/theme-manager.js - Theme Management
  * Path: js/utils/theme-manager.js
  *
- * Explicit theme selection is the primary control. The adjacent toggle
- * remains a quick Dark/Light switch; it no longer cycles through every theme.
+ * Explicit theme selection is the sole theme control.
  */
 (function() {
     'use strict';
@@ -76,14 +75,6 @@
         var entry = THEME_BY_VALUE[_currentTheme];
         var select = document.getElementById('theme-select');
         if (select && select.value !== _currentTheme) select.value = _currentTheme;
-
-        var button = document.getElementById('theme-toggle-btn');
-        if (button) {
-            var target = _currentTheme === 'dark' ? 'light' : 'dark';
-            button.textContent = target === 'light' ? '\u263c\uFE0E' : '\u263e\uFE0E';
-            button.title = 'Switch to ' + target + ' theme';
-            button.setAttribute('aria-label', 'Switch to ' + target + ' theme');
-        }
 
         var meta = document.querySelector('meta[name="' + THEME_COLOR_META + '"]');
         if (meta && entry && entry.themeColor) meta.setAttribute('content', entry.themeColor);
@@ -173,11 +164,6 @@
         var stored = loadThemePreference();
         applyTheme(stored || getSystemPreference());
 
-        var button = document.getElementById('theme-toggle-btn');
-        if (button && !button._themeManagerBound) {
-            button._themeManagerBound = true;
-            button.addEventListener('click', toggle);
-        }
 
         _themeSelect = document.getElementById('theme-select');
         if (_themeSelect) {
@@ -193,11 +179,6 @@
     function destroy() {
         detachMediaQueryListener();
 
-        var button = document.getElementById('theme-toggle-btn');
-        if (button && button._themeManagerBound) {
-            button.removeEventListener('click', toggle);
-            button._themeManagerBound = false;
-        }
 
         if (_themeSelect && _themeSelectListener) {
             _themeSelect.removeEventListener('change', _themeSelectListener);
