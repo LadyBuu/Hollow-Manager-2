@@ -2931,6 +2931,22 @@
             scheme = GradeSchemes.normalizeScheme(scheme);
         }
 
+        // HTML number inputs expose their values as STRINGS. The domain
+        // validator deliberately accepts only finite numbers, so convert
+        // valid entries before dispatch instead of rejecting every edited
+        // weight as the wrong type.
+        var assessmentWeights = {};
+        var rawWeights = draft.assessmentWeights || {};
+        Object.keys(rawWeights).forEach(function(type) {
+            var rawValue = rawWeights[type];
+            if (typeof rawValue === 'string' && rawValue.trim() !== '') {
+                var parsed = Number(rawValue);
+                assessmentWeights[type] = isFinite(parsed) ? parsed : rawValue;
+            } else {
+                assessmentWeights[type] = rawValue;
+            }
+        });
+
         return {
             name: (draft.name || '').trim(),
             type: draft.type,
@@ -2940,7 +2956,7 @@
             weeklyHours: draft.weeklyHours,
             weight: draft.weight,
             gradeScheme: scheme,
-            assessmentWeights: draft.assessmentWeights || {}
+            assessmentWeights: assessmentWeights
         };
     }
 
@@ -2998,7 +3014,13 @@
             : AcademyDisciplines.update(targetId, payload);
 
         promise.then(function(result) {
-            if (!result || !result.success) {
+            if (!result || result.success !== true) {
+                notify(
+                    result && isNonEmptyString(result.message)
+                        ? 'Could not save discipline: ' + result.message
+                        : 'Could not save discipline. The changes were not stored.',
+                    'error'
+                );
                 return;
             }
 
