@@ -1,8 +1,8 @@
 /**
- * js/export/export-utils.js - Shared Export Utilities
+ * js/import-export/export-utils.js - Shared Export Utilities
  *
- * This module provides utility functions for CSV/JSON import/export operations.
- * It focuses on file handling, CSV row validation, and JSON parsing for imports.
+ * This module provides shared file handling and data-transfer helpers
+ * for CSV, JSON, and plain-text exports, plus file-reading utilities.
  *
  * It does NOT contain:
  * - ID generation or normalisation (use IdUtils)
