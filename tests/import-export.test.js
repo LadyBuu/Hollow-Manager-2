@@ -45,8 +45,8 @@ function loadImportPipeline() {
         data: {
             _dataVersion: 35,
             activities: [{ id: 'local-activity', message: 'Keep this local log' }]
-        }
-,        db: {
+        },
+        db: {
             migrateImportedData: function(data, version) {
                 calls.migration++;
                 if (!Number.isInteger(version) || version < 1) throw new Error('valid internal data version is required');
