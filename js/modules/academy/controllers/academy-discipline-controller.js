@@ -2286,11 +2286,6 @@
             return;
         }
 
-        var assignmentId = _disciplineAssignmentPreview &&
-            String(_disciplineAssignmentPreview.groupId) === groupId
-            ? _disciplineAssignmentPreview.assignmentId
-            : window.IdUtils.generateId('assignment');
-
         var records = [];
         var previewRows = [];
         for (var i = 0; i < roster.length; i++) {
@@ -2310,9 +2305,7 @@
                 score: score,
                 maxScore: maxScore,
                 type: type,
-                slot: slot,
-                assignmentId: assignmentId,
-                assignmentTitle: title
+                slot: slot
             });
             previewRows.push({
                 name: nameEl ? nameEl.textContent : 'Unknown student',
@@ -2327,8 +2320,12 @@
 
         _disciplineAssignmentPreview = {
             groupId: groupId,
-            assignmentId: assignmentId,
             title: title,
+            type: type,
+            maxScore: maxScore,
+            minScore: minScore,
+            maxRandomScore: highScore,
+            slot: slot,
             records: records
         };
 
@@ -2361,8 +2358,8 @@
         }
 
         var Grades = window.AcademyGrades;
-        if (!Grades || typeof Grades.saveGrades !== 'function') {
-            notify('Academy grades module is unavailable.', 'error');
+        if (!Grades || typeof Grades.createGroupAssignment !== 'function') {
+            notify('Academy group assignment service is unavailable.', 'error');
             return;
         }
 
@@ -2374,16 +2371,28 @@
             submitBtn.textContent = 'Saving…';
         }
 
-        Grades.saveGrades(preview.records, { overwrite: false })
+        Grades.createGroupAssignment({
+            title: preview.title,
+            classId: preview.records[0].classId,
+            disciplineId: preview.records[0].disciplineId,
+            groupId: preview.groupId,
+            week: preview.records[0].week,
+            type: preview.type,
+            slot: preview.slot,
+            maxScore: preview.maxScore,
+            minScore: preview.minScore,
+            maxRandomScore: preview.maxRandomScore,
+            grades: preview.records
+        })
             .then(function(result) {
                 var data = result && result.data ? result.data : result;
-                var saved = data && typeof data.successCount === 'number'
-                    ? data.successCount
+                var saved = data && typeof data.gradesCreated === 'number'
+                    ? data.gradesCreated
                     : 0;
                 if (!result || result.success !== true || saved !== preview.records.length) {
                     var detail = result && result.message
                         ? result.message
-                        : 'Only ' + saved + ' of ' + preview.records.length + ' grades were saved.';
+                        : 'Only ' + saved + ' of ' + preview.records.length + ' grades were created.';
                     notify('Assignment was not fully saved: ' + detail, 'error');
                     if (submitBtn) {
                         submitBtn.disabled = false;
