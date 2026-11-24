@@ -1,5 +1,5 @@
 /**
- * Regression tests for explicit theme selection and Dark/Light quick switching.
+ * Regression tests for explicit theme selection.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -28,20 +28,11 @@ function createHarness(options = {}) {
         addEventListener: function(name, handler) { listeners['select:' + name] = handler; },
         removeEventListener: function(name) { delete listeners['select:' + name]; }
     };
-    const button = {
-        textContent: '',
-        title: '',
-        attributes: {},
-        addEventListener: function(name, handler) { listeners['button:' + name] = handler; },
-        removeEventListener: function(name) { delete listeners['button:' + name]; },
-        setAttribute: function(name, value) { this.attributes[name] = value; }
-    };
     const document = {
         readyState: 'complete',
         documentElement: root,
         getElementById: function(id) {
             if (id === 'theme-select') return select;
-            if (id === 'theme-toggle-btn') return button;
             return null;
         },
         querySelector: function() { return meta; },
@@ -73,7 +64,7 @@ function createHarness(options = {}) {
         { filename: 'theme-manager.js' }
     );
 
-    return { manager: window.ThemeManager, storage, attributes, listeners, meta, select, button };
+    return { manager: window.ThemeManager, storage, attributes, listeners, meta, select };
 }
 
 test('system preference is used when no saved theme exists', function() {
@@ -103,19 +94,12 @@ test('explicit selection persists and synchronises the document and picker', fun
     assert.equal(meta.content, '#07080c');
 });
 
-test('quick toggle only switches Dark and Light, including from an art theme', function() {
-    const { manager, select, attributes } = createHarness();
-    manager.setTheme('vaporwave');
-
-    manager.toggle();
-    assert.equal(manager.getTheme(), 'dark');
-    assert.equal(select.value, 'dark');
-    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'data-theme'), false);
-
-    manager.toggle();
-    assert.equal(manager.getTheme(), 'light');
-    assert.equal(select.value, 'light');
-    assert.equal(attributes['data-theme'], 'light');
+test('theme selection is available without a separate Dark/Light toggle', function() {
+    const { manager, select } = createHarness();
+    assert.equal(manager.setTheme('stained-glass'), true);
+    assert.equal(select.value, 'stained-glass');
+    assert.equal(manager.setTheme('stained-glass-dark'), true);
+    assert.equal(select.value, 'stained-glass-dark');
 });
 
 test('invalid themes are rejected without changing the current theme', function() {
