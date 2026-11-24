@@ -1,8 +1,8 @@
 /**
- * shared/queries/elimination-queries.js - Elimination Queries
+ * js/modules/tournaments/elimination-queries.js - Elimination Queries
  * Read-only elimination domain queries.
  *
- * Path: js/shared/queries/elimination-queries.js
+ * Path: js/modules/tournaments/elimination-queries.js
  *
  * This module is the SINGLE SOURCE OF TRUTH for elimination read
  * semantics. It answers questions about character eliminations. It
