@@ -1,6 +1,8 @@
 /**
- * js/shared/queries/social-queries.js - Social Queries
+ * js/modules/shared/queries/social-queries.js - Social Queries
  * Read-only queries for the social/relationship domain
+ *
+ * Path: js/modules/shared/queries/social-queries.js
  *
  * IMPORTANT:
  *   - READ-ONLY queries - no mutations
