@@ -1,5 +1,5 @@
 /**
- * js/modules/shared/mission-constants.js - Mission Constants
+ * js/modules/missions/mission-constants.js - Mission Constants
  *
  * Path: js/modules/missions/mission-constants.js
  *
