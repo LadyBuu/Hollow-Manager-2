@@ -74,6 +74,7 @@ function createHarness(options = {}) {
     const context = vm.createContext({
         window,
         Promise,
+        confirm: () => true,
         Date,
         Object,
         Array,
@@ -142,5 +143,42 @@ test('academy cascade failure rolls back all earlier domain cleanup', async func
     assert.equal(h.window.data.departments[0].headId, 'delete-me');
     assert.equal(h.window.data.social.relationships.length, 2);
     assert.equal(h.window.data.tournaments[0].participants.length, 2);
+    assert.equal(h.state.saves, 0);
+});
+
+test('bulk deletion runs the cross-domain cascade for every deleted character', async function() {
+    const h = createHarness({
+        data: {
+            characters: [
+                { id: 'one', firstName: 'One', lastName: 'Person' },
+                { id: 'two', firstName: 'Two', lastName: 'Person' }
+            ],
+            teams: [{ id: 'team', members: [{ characterId: 'one' }, { characterId: 'two' }] }],
+            departments: [{ id: 'dept', headId: 'one', members: ['one', 'two'] }],
+            social: { relationships: [{ id: 'rel', character1: 'one', character2: 'two' }] },
+            tournaments: [{ id: 'cup', participants: [{ characterId: 'one' }, { characterId: 'two' }] }],
+            missions: []
+        }
+    });
+
+    const result = await h.window.CharacterCRUD.deleteAll();
+
+    assert.equal(result.success, true);
+    assert.equal(h.window.data.characters.length, 0);
+    assert.equal(h.cascadeCalls(), 2);
+    assert.equal(h.window.data.academy.deletedCharacterIds.length, 2);
+    assert.equal(h.state.saves, 1);
+});
+
+test('bulk deletion rolls back when the mandatory cascade is unavailable', async function() {
+    const h = createHarness({ academyCascade: 'missing' });
+
+    const result = await h.window.CharacterCRUD.deleteAll();
+
+    assert.equal(result.success, false);
+    assert.match(result.message, /AcademyCascade\.characterDeleted/);
+    assert.equal(h.window.data.characters.length, 2);
+    assert.equal(h.window.data.teams[0].members.length, 2);
+    assert.equal(h.window.data.social.relationships.length, 2);
     assert.equal(h.state.saves, 0);
 });
