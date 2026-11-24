@@ -2341,7 +2341,7 @@
             '[data-action="discipline-assignment-preview"]'
         );
         var html = '<div class="academy-discipline-assignment-preview-heading">' +
-            escapeHtml(title) + ' · Preview · ' + records.length +
+            window.DomUtils.escapeHtml(title) + ' · Preview · ' + records.length +
             ' students · ' + Grades.getGradeTypeLabel(type) +
             '</div><ul>';
         for (var r = 0; r < previewRows.length; r++) {
