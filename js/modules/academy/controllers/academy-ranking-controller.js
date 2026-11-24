@@ -645,6 +645,7 @@
         var week = parsePositiveInteger(input.dataset.week);
         var charId = input.dataset.characterId;
         var position = parsePositiveInteger(input.value);
+        if (input.dataset.lastSubmittedValue === String(position)) { return; }
         if (!isNonEmptyString(classId) || week === null ||
             !isNonEmptyString(charId) || position === null) {
             input.focus();
@@ -654,6 +655,7 @@
         try { Ranking = requireAcademyRanking('handlePositionInput'); }
         catch (err) { console.warn(err.message); return; }
         if (typeof Ranking.moveRanking !== 'function') { return; }
+        input.dataset.lastSubmittedValue = String(position);
         Promise.resolve(Ranking.moveRanking(classId, week, charId, position))
             .then(function(result) { refreshAfterWrite('moveRanking', result); })
             .catch(function(err) {
@@ -663,7 +665,9 @@
 
     function handleChange(e) {
         var target = e.target;
-        if (!target || !target.id) { return; }
+        if (!target) { return; }
+
+        if (!target.id) { return; }
 
         if (target.id === 'academy-ranking-class-select') {
             // Route class changes through the shared Academy state.
