@@ -623,6 +623,75 @@
         });
     }
 
+    // Remove legacy character-side elimination records that predate
+    // stable record IDs. Modern records, including standalone records,
+    // are preserved exactly as stored. Rebuild the derived week cache
+    // only for characters whose elimination history changed.
+    function stripLegacyEliminations() {
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return {
+                        valid: false,
+                        message: 'Character store is not available.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var removed = 0;
+                var charactersAffected = 0;
+
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var char = appData.characters[i];
+                    if (!char || !Array.isArray(char.eliminations) ||
+                        char.eliminations.length === 0) {
+                        continue;
+                    }
+
+                    var kept = [];
+                    var removedFromCharacter = 0;
+
+                    for (var j = 0; j < char.eliminations.length; j++) {
+                        var elimination = char.eliminations[j];
+                        var hasValidId = elimination &&
+                            typeof elimination === 'object' &&
+                            !Array.isArray(elimination) &&
+                            typeof elimination.id === 'string' &&
+                            elimination.id.trim() !== '';
+
+                        if (!hasValidId) {
+                            removedFromCharacter++;
+                            continue;
+                        }
+
+                        kept.push(elimination);
+                    }
+
+                    if (removedFromCharacter > 0) {
+                        char.eliminations = kept;
+                        EliminationQueries.rebuildEliminatedWeeks(char);
+                        removed += removedFromCharacter;
+                        charactersAffected++;
+                    }
+                }
+
+                return {
+                    scanned: appData.characters.length,
+                    removed: removed,
+                    charactersAffected: charactersAffected
+                };
+            },
+            logMessage: function(result) {
+                return 'Stripped ' + result.removed +
+                    ' legacy character elimination record' +
+                    (result.removed === 1 ? '' : 's');
+            },
+            successMessage: 'Legacy elimination records removed.',
+            failureMessage: 'Failed to remove legacy elimination records.'
+        });
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -630,7 +699,8 @@
     window.AcademyEliminations = Object.freeze({
         addStandalone: addStandalone,
         removeStandalone: removeStandalone,
-        rebuildAllEliminationWeekCaches: rebuildAllEliminationWeekCaches
+        rebuildAllEliminationWeekCaches: rebuildAllEliminationWeekCaches,
+        stripLegacyEliminations: stripLegacyEliminations
     });
 
     // ============================================================
@@ -641,7 +711,12 @@
         var exports = window.AcademyEliminations;
         var missing = [];
 
-        var required = ['addStandalone', 'removeStandalone', 'rebuildAllEliminationWeekCaches'];
+        var required = [
+            'addStandalone',
+            'removeStandalone',
+            'rebuildAllEliminationWeekCaches',
+            'stripLegacyEliminations'
+        ];
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
