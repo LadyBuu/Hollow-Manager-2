@@ -1031,10 +1031,10 @@
                 'Import failed: source data could not be migrated safely.'
             ));
         }
-        if (sourceDataVersion < Schema.DATA_VERSION) {
+        if (sourceDataVersion < candidate._dataVersion) {
             allWarnings.push(
                 'Internal data migrated from version ' + sourceDataVersion +
-                ' to the current database version.'
+                ' to version ' + candidate._dataVersion + '.
             );
         }
 
