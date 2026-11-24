@@ -1990,6 +1990,7 @@
         var ROLE_INSTRUCTOR = 'instructor';
 
         var LABEL_WIDTH = 18;
+        var BANNER = '========================================';
         var FILENAME_PREFIX = 'character';
 
         var DEFAULT_STAT_KEYS =
