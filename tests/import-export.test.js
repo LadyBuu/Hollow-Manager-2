@@ -64,7 +64,7 @@ test('future export format is refused before migration, validation, or mutation'
 
     assert.equal(result.success, false);
     assert.equal(result.committed, false);
-    assert.match(result.message, /newer export format/i);
+    assert.match(result.message, /unsupported future export format/i);
     assert.match(result.errors.join(' '), /newer than the supported version 1/i);
     assert.deepEqual(calls, { migration: 0, mutation: 0, validation: 0 });
 });
