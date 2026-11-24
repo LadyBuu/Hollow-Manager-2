@@ -2051,9 +2051,6 @@
         }
 
         function sectionHeader(title) {
-            var underlineLen = Math.min(title.length, 60);
-            var underline = new Array(underlineLen + 1)
-                .join('-');
             return title + '\n';
         }
 
