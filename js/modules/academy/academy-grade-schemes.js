@@ -170,6 +170,10 @@
         'letter',
         'pass_fail',
         'numeric',
+        'scale_5',
+        'scale_10',
+        'scale_20',
+        'descriptive',
         'custom'
     ]);
 
@@ -243,9 +247,77 @@
         },
         {
             id: 'numeric',
-            label: 'Numeric',
+            label: 'Numeric Percentage',
             bands: [
                 { label: NUMERIC_SENTINEL_LABEL, minPercent: 0 }
+            ]
+        },
+        {
+            id: 'scale_5',
+            label: 'Five-point Scale (0–5)',
+            bands: [
+                { label: '5', minPercent: 90 },
+                { label: '4', minPercent: 75 },
+                { label: '3', minPercent: 60 },
+                { label: '2', minPercent: 45 },
+                { label: '1', minPercent: 30 },
+                { label: '0', minPercent: 0 }
+            ]
+        },
+        {
+            id: 'scale_10',
+            label: 'Ten-point Scale (0–10)',
+            bands: [
+                { label: '10', minPercent: 95 },
+                { label: '9', minPercent: 85 },
+                { label: '8', minPercent: 75 },
+                { label: '7', minPercent: 65 },
+                { label: '6', minPercent: 55 },
+                { label: '5', minPercent: 45 },
+                { label: '4', minPercent: 35 },
+                { label: '3', minPercent: 25 },
+                { label: '2', minPercent: 15 },
+                { label: '1', minPercent: 5 },
+                { label: '0', minPercent: 0 }
+            ]
+        },
+        {
+            id: 'scale_20',
+            label: 'Twenty-point Scale (0–20)',
+            bands: [
+                { label: '20', minPercent: 98 },
+                { label: '19', minPercent: 93 },
+                { label: '18', minPercent: 88 },
+                { label: '17', minPercent: 83 },
+                { label: '16', minPercent: 78 },
+                { label: '15', minPercent: 73 },
+                { label: '14', minPercent: 68 },
+                { label: '13', minPercent: 63 },
+                { label: '12', minPercent: 58 },
+                { label: '11', minPercent: 53 },
+                { label: '10', minPercent: 48 },
+                { label: '9', minPercent: 43 },
+                { label: '8', minPercent: 38 },
+                { label: '7', minPercent: 33 },
+                { label: '6', minPercent: 28 },
+                { label: '5', minPercent: 23 },
+                { label: '4', minPercent: 18 },
+                { label: '3', minPercent: 13 },
+                { label: '2', minPercent: 8 },
+                { label: '1', minPercent: 3 },
+                { label: '0', minPercent: 0 }
+            ]
+        },
+        {
+            id: 'descriptive',
+            label: 'Descriptive (Outstanding to Insufficient)',
+            bands: [
+                { label: 'Outstanding', minPercent: 90, passing: true },
+                { label: 'Excellent', minPercent: 80, passing: true },
+                { label: 'Good', minPercent: 70, passing: true },
+                { label: 'Satisfactory', minPercent: 60, passing: true },
+                { label: 'Needs Work', minPercent: 50, passing: false },
+                { label: 'Insufficient', minPercent: 0, passing: false }
             ]
         }
     ];
