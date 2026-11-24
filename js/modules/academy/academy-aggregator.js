@@ -1845,6 +1845,12 @@
             return result;
         }
 
+        var targetYear = Number(year);
+        if (!isFinite(targetYear) || targetYear < 1 ||
+            Math.floor(targetYear) !== targetYear) {
+            return result;
+        }
+
         var EQ = getEliminationQueries();
         if (!EQ || typeof EQ.isCharacterEliminatedByWeek !== 'function') {
             return result;
