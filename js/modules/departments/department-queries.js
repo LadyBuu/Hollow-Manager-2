@@ -718,9 +718,19 @@
         var SQ = requireSocialDeps();
         var list;
         try {
-            list = SQ.getCharacterRelationships(charId) || [];
+            list = SQ.getCharacterRelationships(charId);
         } catch (e) {
-            return [];
+            throw new Error(
+                '[DepartmentQueries] Failed to read mentorships for ' +
+                String(charId) + ': ' +
+                (e && e.message ? e.message : String(e))
+            );
+        }
+        if (!Array.isArray(list)) {
+            throw new Error(
+                '[DepartmentQueries] SocialQueries returned an invalid ' +
+                'relationship list for ' + String(charId) + '.'
+            );
         }
         return list;
     }
