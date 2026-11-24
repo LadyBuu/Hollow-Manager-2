@@ -1988,3 +1988,1082 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 .backup-item strong { font-size: 0.72rem; overflow-wrap: anywhere; }
 .backup-item small { color: var(--text-dim); font-size: 0.62rem; }
 .backup-item button { flex: 0 0 auto; }
+
+/* ============================================================
+   REWORKED THEME ART DIRECTION
+   Adapted from Story Organiser's theme language to Hollow Manager's
+   shared components. Dark and Light intentionally retain the green palette.
+   ============================================================ */
+[data-theme="vaporwave"] {
+    --bg: #100b24;
+    --panel: #14102e;
+    --panel-alt: #1d1747;
+    --border: #40316f;
+    --border-soft: #40316f;
+    --text: #f4e9ff;
+    --text-dim: #b8a9d4;
+    --text-muted: #8a7c9e;
+    --accent: #ff4fd8;
+    --accent-soft: color-mix(in srgb, #ff4fd8 15%, transparent);
+    --accent-hover: rgba(255,79,216,.26);
+    --info: #35e7ff;
+    --info-soft: color-mix(in srgb, #35e7ff 15%, transparent);
+    --info-hover: color-mix(in srgb, #35e7ff 25%, transparent);
+    --danger: #ff557f;
+    --danger-soft: color-mix(in srgb, #ff557f 15%, transparent);
+    --danger-hover: color-mix(in srgb, #ff557f 25%, transparent);
+    --warning: #ffd166;
+    --warning-soft: color-mix(in srgb, #ffd166 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ffd166 25%, transparent);
+    --ok: #61ffb0;
+    --overlay: rgba(7,4,18,.88);
+    --overlay-light: rgba(7,4,18,.68);
+    --radius: 10px;
+    --shadow: 0 4px 24px rgba(0,0,0,.45);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #564185;
+    --chip-bg-subtle: rgba(255,255,255,.07);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+}
+
+[data-theme="maximal"] {
+    --bg: #fff0fb;
+    --panel: #ffffff;
+    --panel-alt: #e6fffb;
+    --border: #ff2ea6;
+    --border-soft: #ff2ea6;
+    --text: #1a0033;
+    --text-dim: #5a2f88;
+    --text-muted: #8a6aa8;
+    --accent: #ff2ea6;
+    --accent-soft: color-mix(in srgb, #ff2ea6 15%, transparent);
+    --accent-hover: rgba(255,46,166,.25);
+    --info: #00e5ff;
+    --info-soft: color-mix(in srgb, #00e5ff 15%, transparent);
+    --info-hover: color-mix(in srgb, #00e5ff 25%, transparent);
+    --danger: #ff0066;
+    --danger-soft: color-mix(in srgb, #ff0066 15%, transparent);
+    --danger-hover: color-mix(in srgb, #ff0066 25%, transparent);
+    --warning: #ffea00;
+    --warning-soft: color-mix(in srgb, #ffea00 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ffea00 25%, transparent);
+    --ok: #00a89a;
+    --overlay: rgba(26,0,51,.6);
+    --overlay-light: rgba(26,0,51,.4);
+    --radius: 8px;
+    --shadow: 4px 4px 0 #00e5ff, 0 0 20px rgba(255,46,166,.4);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #1a0033;
+    --chip-bg-subtle: rgba(255,46,166,.08);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="gits"] {
+    --bg: #07080c;
+    --panel: #10131c;
+    --panel-alt: #181d2b;
+    --border: #2d3b55;
+    --border-soft: #2d3b55;
+    --text: #f2f7ff;
+    --text-dim: #9bb3d4;
+    --text-muted: #6e86a9;
+    --accent: #ff1a8c;
+    --accent-soft: color-mix(in srgb, #ff1a8c 15%, transparent);
+    --accent-hover: rgba(255,26,140,.25);
+    --info: #00e5ff;
+    --info-soft: color-mix(in srgb, #00e5ff 15%, transparent);
+    --info-hover: color-mix(in srgb, #00e5ff 25%, transparent);
+    --danger: #ff2a2a;
+    --danger-soft: color-mix(in srgb, #ff2a2a 15%, transparent);
+    --danger-hover: color-mix(in srgb, #ff2a2a 25%, transparent);
+    --warning: #f2d130;
+    --warning-soft: color-mix(in srgb, #f2d130 15%, transparent);
+    --warning-hover: color-mix(in srgb, #f2d130 25%, transparent);
+    --ok: #00ffb2;
+    --overlay: rgba(0,0,0,.85);
+    --overlay-light: rgba(0,0,0,.7);
+    --radius: 2px;
+    --shadow: 0 4px 20px rgba(0,229,255,.12), inset 0 0 0 1px #4a608a;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #4a608a;
+    --chip-bg-subtle: rgba(0,229,255,.08);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+}
+
+[data-theme="stained-glass"] {
+    --bg: #0a1520;
+    --panel: #0e1d2e;
+    --panel-alt: #132a42;
+    --border: #1d4a6e;
+    --border-soft: #1d4a6e;
+    --text: #eaf6ff;
+    --text-dim: #9fc4de;
+    --text-muted: #6e9cb8;
+    --accent: #5ee8ff;
+    --accent-soft: color-mix(in srgb, #5ee8ff 15%, transparent);
+    --accent-hover: rgba(94,232,255,.24);
+    --info: #ff4fa8;
+    --info-soft: color-mix(in srgb, #ff4fa8 15%, transparent);
+    --info-hover: color-mix(in srgb, #ff4fa8 25%, transparent);
+    --danger: #ff3d6e;
+    --danger-soft: color-mix(in srgb, #ff3d6e 15%, transparent);
+    --danger-hover: color-mix(in srgb, #ff3d6e 25%, transparent);
+    --warning: #ffd166;
+    --warning-soft: color-mix(in srgb, #ffd166 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ffd166 25%, transparent);
+    --ok: #3dffc0;
+    --overlay: rgba(4,10,18,.88);
+    --overlay-light: rgba(4,10,18,.68);
+    --radius: 4px;
+    --shadow: 0 4px 15px rgba(0,0,0,.4);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #3a7fa8;
+    --chip-bg-subtle: rgba(94,232,255,.08);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+}
+
+[data-theme="grotesque"] {
+    --bg: #0d0a0a;
+    --panel: #151111;
+    --panel-alt: #1f1818;
+    --border: #382626;
+    --border-soft: #382626;
+    --text: #e8dfd3;
+    --text-dim: #b8a89c;
+    --text-muted: #8a7a6e;
+    --accent: #7a2424;
+    --accent-soft: color-mix(in srgb, #7a2424 15%, transparent);
+    --accent-hover: rgba(122,36,36,.28);
+    --info: #4a6b55;
+    --info-soft: color-mix(in srgb, #4a6b55 15%, transparent);
+    --info-hover: color-mix(in srgb, #4a6b55 25%, transparent);
+    --danger: #d93025;
+    --danger-soft: color-mix(in srgb, #d93025 15%, transparent);
+    --danger-hover: color-mix(in srgb, #d93025 25%, transparent);
+    --warning: #b88d5a;
+    --warning-soft: color-mix(in srgb, #b88d5a 15%, transparent);
+    --warning-hover: color-mix(in srgb, #b88d5a 25%, transparent);
+    --ok: #4a6b55;
+    --overlay: rgba(13,10,10,.9);
+    --overlay-light: rgba(13,10,10,.7);
+    --radius: 6px;
+    --shadow: 0 10px 30px rgba(0,0,0,.8), inset 0 0 0 1px #050303;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #5e3b3b;
+    --chip-bg-subtle: rgba(232,223,211,.05);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+    --field-bg: #dcd3c7;
+    --field-text: #1a1515;
+    --field-border: #8a7a6e;
+}
+
+[data-theme="illuminated"] {
+    --bg: #f4ebd5;
+    --panel: #fbf7ea;
+    --panel-alt: #e8dfc8;
+    --border: #8a7b6a;
+    --border-soft: #8a7b6a;
+    --text: #1a130d;
+    --text-dim: #5a4b3c;
+    --text-muted: #8a7b6a;
+    --accent: #2e4d7b;
+    --accent-soft: color-mix(in srgb, #2e4d7b 15%, transparent);
+    --accent-hover: rgba(46,77,123,.25);
+    --info: #7a9b6e;
+    --info-soft: color-mix(in srgb, #7a9b6e 15%, transparent);
+    --info-hover: color-mix(in srgb, #7a9b6e 25%, transparent);
+    --danger: #a63c30;
+    --danger-soft: color-mix(in srgb, #a63c30 15%, transparent);
+    --danger-hover: color-mix(in srgb, #a63c30 25%, transparent);
+    --warning: #c49a45;
+    --warning-soft: color-mix(in srgb, #c49a45 15%, transparent);
+    --warning-hover: color-mix(in srgb, #c49a45 25%, transparent);
+    --ok: #4b6b50;
+    --overlay: rgba(26,19,13,.75);
+    --overlay-light: rgba(26,19,13,.55);
+    --radius: 2px;
+    --shadow: 2px 2px 0 rgba(43,33,24,.2);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #2b2118;
+    --chip-bg-subtle: rgba(43,33,24,.06);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="discowing"] {
+    --bg: #f8a342;
+    --panel: #ffffff;
+    --panel-alt: #f0f0f0;
+    --border: #000000;
+    --border-soft: #000000;
+    --text: #050505;
+    --text-dim: #1a2a40;
+    --text-muted: #4a5a70;
+    --accent: #0080ff;
+    --accent-soft: color-mix(in srgb, #0080ff 15%, transparent);
+    --accent-hover: rgba(0,128,255,.25);
+    --info: #0080ff;
+    --info-soft: color-mix(in srgb, #0080ff 15%, transparent);
+    --info-hover: color-mix(in srgb, #0080ff 25%, transparent);
+    --danger: #ff0000;
+    --danger-soft: color-mix(in srgb, #ff0000 15%, transparent);
+    --danger-hover: color-mix(in srgb, #ff0000 25%, transparent);
+    --warning: #ffd700;
+    --warning-soft: color-mix(in srgb, #ffd700 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ffd700 25%, transparent);
+    --ok: #00a86b;
+    --overlay: rgba(0,0,0,.85);
+    --overlay-light: rgba(0,0,0,.65);
+    --radius: 0px;
+    --shadow: 4px 4px 0 #000;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #000000;
+    --chip-bg-subtle: rgba(0,0,0,.05);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="choc-cake"] {
+    --bg: #2a0b1f;
+    --panel: #4b1f0a;
+    --panel-alt: #6b3110;
+    --border: #1a0000;
+    --border-soft: #1a0000;
+    --text: #f2b35a;
+    --text-dim: #d9821a;
+    --text-muted: #b36010;
+    --accent: #ff0000;
+    --accent-soft: color-mix(in srgb, #ff0000 15%, transparent);
+    --accent-hover: rgba(255,0,0,.25);
+    --info: #ffd700;
+    --info-soft: color-mix(in srgb, #ffd700 15%, transparent);
+    --info-hover: color-mix(in srgb, #ffd700 25%, transparent);
+    --danger: #b30000;
+    --danger-soft: color-mix(in srgb, #b30000 15%, transparent);
+    --danger-hover: color-mix(in srgb, #b30000 25%, transparent);
+    --warning: #ffa500;
+    --warning-soft: color-mix(in srgb, #ffa500 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ffa500 25%, transparent);
+    --ok: #6b8e23;
+    --overlay: rgba(42,11,31,.85);
+    --overlay-light: rgba(42,11,31,.7);
+    --radius: 0px;
+    --shadow: 4px 4px 0 #1a0000;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #1a0000;
+    --chip-bg-subtle: rgba(242,179,90,.1);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+}
+
+[data-theme="dada"] {
+    --bg: #e8e5df;
+    --panel: #f4f2ec;
+    --panel-alt: #d6d2c9;
+    --border: #111111;
+    --border-soft: #111111;
+    --text: #1a1a1a;
+    --text-dim: #4a4a4a;
+    --text-muted: #737373;
+    --accent: #d4a32a;
+    --accent-soft: color-mix(in srgb, #d4a32a 15%, transparent);
+    --accent-hover: rgba(212,163,42,.4);
+    --info: #d9a5a5;
+    --info-soft: color-mix(in srgb, #d9a5a5 15%, transparent);
+    --info-hover: color-mix(in srgb, #d9a5a5 25%, transparent);
+    --danger: #c93a3a;
+    --danger-soft: color-mix(in srgb, #c93a3a 15%, transparent);
+    --danger-hover: color-mix(in srgb, #c93a3a 25%, transparent);
+    --warning: #e6a43a;
+    --warning-soft: color-mix(in srgb, #e6a43a 15%, transparent);
+    --warning-hover: color-mix(in srgb, #e6a43a 25%, transparent);
+    --ok: #5a8c5a;
+    --overlay: rgba(17,17,17,.85);
+    --overlay-light: rgba(17,17,17,.65);
+    --radius: 1px;
+    --shadow: 3px 3px 0 rgba(0,0,0,.15), -1px -1px 0 rgba(255,255,255,.6);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #000000;
+    --chip-bg-subtle: rgba(0,0,0,.05);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="ukiyo-e"] {
+    --bg: #f4ead5;
+    --panel: #f9f6ee;
+    --panel-alt: #e8e0d0;
+    --border: #292d30;
+    --border-soft: #292d30;
+    --text: #292d30;
+    --text-dim: #5a5d60;
+    --text-muted: #8e9295;
+    --accent: #234f70;
+    --accent-soft: color-mix(in srgb, #234f70 15%, transparent);
+    --accent-hover: rgba(35,79,112,.22);
+    --info: #78917b;
+    --info-soft: color-mix(in srgb, #78917b 15%, transparent);
+    --info-hover: color-mix(in srgb, #78917b 25%, transparent);
+    --danger: #b83a32;
+    --danger-soft: color-mix(in srgb, #b83a32 15%, transparent);
+    --danger-hover: color-mix(in srgb, #b83a32 25%, transparent);
+    --warning: #d1a35f;
+    --warning-soft: color-mix(in srgb, #d1a35f 15%, transparent);
+    --warning-hover: color-mix(in srgb, #d1a35f 25%, transparent);
+    --ok: #78917b;
+    --overlay: rgba(41,45,48,.6);
+    --overlay-light: rgba(41,45,48,.4);
+    --radius: 0px;
+    --shadow: 2px 2px 0 #292d30;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #292d30;
+    --chip-bg-subtle: rgba(41,45,48,.06);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="brutalist"] {
+    --bg: #e6e6e6;
+    --panel: #ffffff;
+    --panel-alt: #d0d0d0;
+    --border: #000000;
+    --border-soft: #000000;
+    --text: #050505;
+    --text-dim: #333333;
+    --text-muted: #666666;
+    --accent: #ff3300;
+    --accent-soft: color-mix(in srgb, #ff3300 15%, transparent);
+    --accent-hover: rgba(255,51,0,.25);
+    --info: #000000;
+    --info-soft: color-mix(in srgb, #000000 15%, transparent);
+    --info-hover: color-mix(in srgb, #000000 25%, transparent);
+    --danger: #cc0000;
+    --danger-soft: color-mix(in srgb, #cc0000 15%, transparent);
+    --danger-hover: color-mix(in srgb, #cc0000 25%, transparent);
+    --warning: #ff3300;
+    --warning-soft: color-mix(in srgb, #ff3300 15%, transparent);
+    --warning-hover: color-mix(in srgb, #ff3300 25%, transparent);
+    --ok: #006600;
+    --overlay: rgba(0,0,0,.85);
+    --overlay-light: rgba(0,0,0,.65);
+    --radius: 0px;
+    --shadow: 8px 8px 0 #000;
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #000000;
+    --chip-bg-subtle: rgba(0,0,0,.08);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="orchestrion"] {
+    --bg: #1f1410;
+    --panel: #2e1f18;
+    --panel-alt: #3d2a20;
+    --border: #7a5520;
+    --border-soft: #7a5520;
+    --text: #ead8c0;
+    --text-dim: #bca283;
+    --text-muted: #8a7055;
+    --accent: #a82c2c;
+    --accent-soft: color-mix(in srgb, #a82c2c 15%, transparent);
+    --accent-hover: rgba(168,44,44,.35);
+    --info: #5b8c8a;
+    --info-soft: color-mix(in srgb, #5b8c8a 15%, transparent);
+    --info-hover: color-mix(in srgb, #5b8c8a 25%, transparent);
+    --danger: #d93838;
+    --danger-soft: color-mix(in srgb, #d93838 15%, transparent);
+    --danger-hover: color-mix(in srgb, #d93838 25%, transparent);
+    --warning: #d4a35f;
+    --warning-soft: color-mix(in srgb, #d4a35f 15%, transparent);
+    --warning-hover: color-mix(in srgb, #d4a35f 25%, transparent);
+    --ok: #6b8c5a;
+    --overlay: rgba(15,10,8,.9);
+    --overlay-light: rgba(15,10,8,.7);
+    --radius: 2px;
+    --shadow: 2px 2px 0 #110a07, inset 0 1px 0 rgba(255,255,255,.1);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #c48e3a;
+    --chip-bg-subtle: rgba(196,142,58,.1);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: dark;
+}
+
+[data-theme="rococo"] {
+    --bg: #e8f0f2;
+    --panel: #fff9f9;
+    --panel-alt: #f2e8e8;
+    --border: #e0d0c0;
+    --border-soft: #e0d0c0;
+    --text: #3a4245;
+    --text-dim: #6e7a7d;
+    --text-muted: #8a9a9d;
+    --accent: #527f96;
+    --accent-soft: color-mix(in srgb, #527f96 15%, transparent);
+    --accent-hover: rgba(82,127,150,.25);
+    --info: #7ca5b8;
+    --info-soft: color-mix(in srgb, #7ca5b8 15%, transparent);
+    --info-hover: color-mix(in srgb, #7ca5b8 25%, transparent);
+    --danger: #c25959;
+    --danger-soft: color-mix(in srgb, #c25959 15%, transparent);
+    --danger-hover: color-mix(in srgb, #c25959 25%, transparent);
+    --warning: #c49a45;
+    --warning-soft: color-mix(in srgb, #c49a45 15%, transparent);
+    --warning-hover: color-mix(in srgb, #c49a45 25%, transparent);
+    --ok: #7a9b6e;
+    --overlay: rgba(58,66,69,.75);
+    --overlay-light: rgba(58,66,69,.55);
+    --radius: 24px;
+    --shadow: 0 10px 25px rgba(184,144,37,.15), 0 0 0 1px rgba(212,175,55,.3);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #b89025;
+    --chip-bg-subtle: rgba(212,175,55,.1);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="nautical-tile"] {
+    --bg: #e4eaf0;
+    --panel: #ffffff;
+    --panel-alt: #f0f4f8;
+    --border: #1a3b6b;
+    --border-soft: #1a3b6b;
+    --text: #0d2342;
+    --text-dim: #3b5b82;
+    --text-muted: #5a7a9e;
+    --accent: #1f4a8a;
+    --accent-soft: color-mix(in srgb, #1f4a8a 15%, transparent);
+    --accent-hover: rgba(31,74,138,.25);
+    --info: #7aa6d0;
+    --info-soft: color-mix(in srgb, #7aa6d0 15%, transparent);
+    --info-hover: color-mix(in srgb, #7aa6d0 25%, transparent);
+    --danger: #a62c2c;
+    --danger-soft: color-mix(in srgb, #a62c2c 15%, transparent);
+    --danger-hover: color-mix(in srgb, #a62c2c 25%, transparent);
+    --warning: #c49a45;
+    --warning-soft: color-mix(in srgb, #c49a45 15%, transparent);
+    --warning-hover: color-mix(in srgb, #c49a45 25%, transparent);
+    --ok: #2c6b4a;
+    --overlay: rgba(13,35,66,.75);
+    --overlay-light: rgba(13,35,66,.55);
+    --radius: 2px;
+    --shadow: 2px 2px 0 rgba(13,35,66,.15);
+    --scrollbar-track: var(--bg);
+    --scrollbar-thumb: #0d2342;
+    --chip-bg-subtle: rgba(31,74,138,.08);
+    --graph-node-accent-fill: var(--accent);
+    --graph-node-accent-stroke: var(--border-strong, var(--border));
+    --graph-node-info-fill: var(--info);
+    --graph-node-info-stroke: var(--border);
+    --graph-node-status-deceased: var(--text-muted);
+    --graph-node-status-instructor: var(--r-e);
+    --graph-node-status-senior: var(--warning);
+    --graph-node-status-junior: var(--info);
+    --graph-node-status-rookie: var(--ok);
+    --graph-node-status-student: var(--accent);
+    --graph-node-status-support: var(--danger);
+    --graph-node-status-civilian: var(--text-dim);
+    --graph-node-status-other: var(--text-muted);
+    --magic-earth: var(--warning);
+    --magic-water: var(--info);
+    --magic-fire: var(--danger);
+    --magic-air: var(--text-muted);
+    --magic-metal: var(--border-strong, var(--border));
+    --magic-wood: var(--ok);
+    --magic-blood: var(--danger);
+    --magic-bone: var(--text);
+    --magic-mind: var(--r-e);
+    --magic-morphic: var(--r-c);
+    --magic-life: var(--ok);
+    --magic-death: var(--text-dim);
+    --magic-space: var(--info);
+    --magic-time: var(--warning);
+    --magic-dimension: var(--r-e);
+    --magic-void: var(--bg);
+    --magic-reality: var(--accent);
+    --magic-transference: var(--danger);
+    --relationship-familial: var(--ok);
+    --relationship-professional: var(--warning);
+    --relationship-romantic: var(--danger);
+    --relationship-friendship: var(--info);
+    --relationship-mentor: var(--r-e);
+    --relationship-rivalry: var(--danger);
+    --relationship-alliance: var(--ok);
+    --relationship-other: var(--text-muted);
+    color-scheme: light;
+}
+
+[data-theme="vaporwave"] body{background:radial-gradient(circle at 8% 5%,rgba(255,79,216,.15),transparent 32%),radial-gradient(circle at 92% 18%,rgba(53,231,255,.12),transparent 34%),radial-gradient(circle at 50% 110%,rgba(120,72,220,.12),transparent 42%),var(--bg);background-attachment:fixed}
+[data-theme="vaporwave"] h1,[data-theme="vaporwave"] h2,[data-theme="vaporwave"] h3{ text-shadow:0 0 7px rgba(255,79,216,.42); }
+[data-theme="vaporwave"] .panel,[data-theme="vaporwave"] .stat-card,[data-theme="vaporwave"] .quick-link{box-shadow:0 4px 24px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.04);border-color:var(--border)}
+[data-theme="vaporwave"] button.primary{box-shadow:0 0 14px rgba(255,79,216,.22)}
+
+[data-theme="maximal"] body{background:radial-gradient(600px 400px at 0 0,#ffd6f5,transparent 60%),radial-gradient(700px 500px at 100% 10%,#d6fff7,transparent 55%),radial-gradient(600px 400px at 50% 100%,#fff6a8,transparent 55%),repeating-linear-gradient(45deg,#fff0fb 0 20px,#ffe0f5 20px 40px);background-attachment:fixed}
+[data-theme="maximal"] h1,[data-theme="maximal"] h2,[data-theme="maximal"] h3{font-weight:900;text-shadow:2px 2px 0 #fff,3px 3px 0 var(--accent)}
+[data-theme="maximal"] .panel,[data-theme="maximal"] .stat-card,[data-theme="maximal"] .quick-link{border:2px solid var(--border-strong,var(--border));box-shadow:4px 4px 0 var(--info)}
+[data-theme="maximal"] button{font-weight:800;border:2px solid var(--text);box-shadow:2px 2px 0 var(--accent);text-transform:uppercase}
+
+[data-theme="gits"] body{background:linear-gradient(rgba(0,229,255,.035) 1px,transparent 1px),radial-gradient(circle at 50% 0,#0a2540 0%,var(--bg) 100%);background-size:100% 4px,100% 100%;background-attachment:fixed}
+[data-theme="gits"] h1,[data-theme="gits"] h2,[data-theme="gits"] h3{font-family:ui-monospace,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;text-shadow:-2px 0 rgba(0,229,255,.5),2px 0 rgba(255,26,140,.5)}
+[data-theme="gits"] button,[data-theme="gits"] input,[data-theme="gits"] select{border-radius:0;font-family:ui-monospace,Consolas,monospace}
+[data-theme="gits"] .panel,[data-theme="gits"] .stat-card,[data-theme="gits"] .quick-link{border-radius:0;box-shadow:inset 0 0 0 1px var(--border-strong)}
+
+[data-theme="stained-glass"] body{background:repeating-linear-gradient(90deg,rgba(94,232,255,.02) 0 1px,transparent 1px 48px),repeating-linear-gradient(0deg,rgba(94,232,255,.02) 0 1px,transparent 1px 48px),radial-gradient(ellipse at 50% 30%,rgba(255,79,168,.1),transparent 45%),radial-gradient(ellipse at 50% 0,rgba(94,232,255,.08),transparent 50%),linear-gradient(to bottom,transparent 60%,rgba(4,10,18,.9)),var(--bg);background-attachment:fixed}
+[data-theme="stained-glass"] h1,[data-theme="stained-glass"] h2,[data-theme="stained-glass"] h3{font-family:Georgia,serif;font-weight:700;text-shadow:0 0 8px rgba(94,232,255,.5),0 0 24px rgba(255,79,168,.15)}
+[data-theme="stained-glass"] .panel,[data-theme="stained-glass"] .stat-card,[data-theme="stained-glass"] .quick-link{border:1px solid var(--border-strong);box-shadow:inset 0 0 0 1px rgba(94,232,255,.08),0 4px 15px rgba(0,0,0,.3)}
+
+[data-theme="grotesque"] body{background:radial-gradient(circle at 50% 10%,rgba(232,223,211,.05),transparent 40%),radial-gradient(circle at 20% 40%,rgba(90,75,107,.06),transparent 50%),radial-gradient(ellipse at 70% 60%,rgba(122,36,36,.08),transparent 50%),radial-gradient(circle at 10% 80%,rgba(74,107,85,.06),transparent 40%),var(--bg);background-attachment:fixed}
+[data-theme="grotesque"] h1,[data-theme="grotesque"] h2,[data-theme="grotesque"] h3{font-family:Georgia,serif;font-weight:600;letter-spacing:.02em;text-shadow:0 0 10px rgba(122,36,36,.3)}
+[data-theme="grotesque"] input,[data-theme="grotesque"] select,[data-theme="grotesque"] textarea{background:#dcd3c7;color:#1a1515;border-color:#8a7a6e}
+[data-theme="grotesque"] .panel,[data-theme="grotesque"] .stat-card,[data-theme="grotesque"] .quick-link{border:1px solid var(--border-strong);box-shadow:0 10px 30px rgba(0,0,0,.55),inset 0 0 0 1px #050303}
+
+[data-theme="illuminated"] body{background:radial-gradient(circle at 10% 5%,rgba(122,155,110,.15),transparent 20%),radial-gradient(circle at 50% 2%,var(--accent-soft),transparent 25%),radial-gradient(circle at 90% 5%,var(--danger-soft),transparent 20%),var(--bg);background-attachment:fixed}
+[data-theme="illuminated"] h1,[data-theme="illuminated"] h2{font-family:Georgia,'Times New Roman',serif;font-weight:700;letter-spacing:.02em}
+[data-theme="illuminated"] .panel,[data-theme="illuminated"] .stat-card,[data-theme="illuminated"] .quick-link{border:1px solid var(--border-strong);box-shadow:inset 0 0 0 1px var(--panel),inset 0 0 0 3px #c49a45,2px 2px 0 rgba(43,33,24,.15)}
+[data-theme="illuminated"] button.primary{border:1px solid var(--border-strong);box-shadow:2px 2px 0 #c49a45}
+
+[data-theme="discowing"] body{background:radial-gradient(circle,rgba(0,0,0,.15) 1px,transparent 1px),var(--bg);background-size:6px 6px;background-attachment:fixed}
+[data-theme="discowing"] h1,[data-theme="discowing"] h2,[data-theme="discowing"] h3{font-family:Impact,'Arial Black',sans-serif;text-transform:uppercase;color:var(--accent);-webkit-text-stroke:1px #000;text-shadow:3px 3px 0 #000}
+[data-theme="discowing"] .panel,[data-theme="discowing"] .stat-card,[data-theme="discowing"] .quick-link{border:3px solid #000;box-shadow:6px 6px 0 #000}
+[data-theme="discowing"] button{border:2px solid #000;border-radius:0;font-family:Impact,'Arial Black',sans-serif;text-transform:uppercase;box-shadow:2px 2px 0 #000}
+[data-theme="discowing"] button:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 #000}
+
+[data-theme="choc-cake"] body{background:linear-gradient(45deg,rgba(0,0,0,.15) 25%,transparent 25%,transparent 75%,rgba(0,0,0,.15) 75%),linear-gradient(45deg,rgba(0,0,0,.15) 25%,transparent 25%,transparent 75%,rgba(0,0,0,.15) 75%),var(--bg);background-size:32px 32px;background-position:0 0,16px 16px;background-attachment:fixed}
+[data-theme="choc-cake"] h1,[data-theme="choc-cake"] h2,[data-theme="choc-cake"] h3{font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:.08em;text-shadow:2px 2px 0 var(--border)}
+[data-theme="choc-cake"] .panel,[data-theme="choc-cake"] .stat-card,[data-theme="choc-cake"] .quick-link{border:3px solid var(--border);border-radius:0;box-shadow:4px 4px 0 var(--border)}
+[data-theme="choc-cake"] button{border:2px solid var(--border);border-radius:0;font-family:'Courier New',monospace;text-transform:uppercase;box-shadow:3px 3px 0 var(--border);transition:none}
+[data-theme="choc-cake"] button:active{transform:translate(3px,3px);box-shadow:none}
+
+[data-theme="dada"] body{background:linear-gradient(to right,var(--info-soft) 0%,var(--info-soft) 20%,transparent 20%),linear-gradient(to left,var(--accent-soft) 0%,var(--accent-soft) 15%,transparent 15%),radial-gradient(circle,rgba(0,0,0,.06) 1px,transparent 1.5px),var(--bg);background-size:100% 100%,100% 100%,5px 5px,100% 100%;background-attachment:fixed}
+[data-theme="dada"] h1,[data-theme="dada"] h2{font-family:'Arial Black',Impact,sans-serif;font-weight:900;text-transform:uppercase;letter-spacing:-.02em;text-shadow:2px 2px 0 var(--accent),-1px -1px 0 var(--info);transform:rotate(-1deg);display:inline-block}
+[data-theme="dada"] .panel,[data-theme="dada"] .stat-card,[data-theme="dada"] .quick-link{border:2px solid var(--border);border-right-width:4px;border-bottom-width:6px;box-shadow:3px 3px 0 rgba(0,0,0,.15)}
+[data-theme="dada"] button{border:2px solid var(--border);border-radius:0;font-family:monospace;text-transform:uppercase;box-shadow:2px 2px 0 var(--border)}
+[data-theme="dada"] button:hover{transform:translate(-1px,-1px) rotate(-1deg);box-shadow:3px 3px 0 var(--border)}
+
+[data-theme="ukiyo-e"] body{background:linear-gradient(to bottom,rgba(217,108,92,.15),transparent 40%),linear-gradient(to bottom,transparent 70%,rgba(35,79,112,.1)),var(--bg);background-attachment:fixed}
+[data-theme="ukiyo-e"] h1,[data-theme="ukiyo-e"] h2,[data-theme="ukiyo-e"] h3{font-family:Georgia,'Times New Roman',serif;font-weight:700;letter-spacing:.03em}
+[data-theme="ukiyo-e"] .panel,[data-theme="ukiyo-e"] .stat-card,[data-theme="ukiyo-e"] .quick-link{border:2px solid var(--border);border-radius:0;box-shadow:4px 4px 0 rgba(41,45,48,.15)}
+[data-theme="ukiyo-e"] button{border-radius:0;border:1px solid var(--border);box-shadow:2px 2px 0 var(--border)}
+[data-theme="ukiyo-e"] .page-header{border-bottom:2px solid var(--border)}
+
+[data-theme="brutalist"] body{background:repeating-linear-gradient(90deg,rgba(0,0,0,.03) 0 1px,transparent 1px 4px),repeating-linear-gradient(0deg,rgba(0,0,0,.03) 0 1px,transparent 1px 4px),var(--bg);background-attachment:fixed}
+[data-theme="brutalist"] h1,[data-theme="brutalist"] h2{font-family:'Arial Black',Impact,sans-serif;font-weight:900;text-transform:uppercase;letter-spacing:-.04em;line-height:.95}
+[data-theme="brutalist"] h3{font-family:'Arial Black',Impact,sans-serif;text-transform:uppercase;letter-spacing:.1em;border-bottom:4px solid var(--border);padding-bottom:4px}
+[data-theme="brutalist"] .panel,[data-theme="brutalist"] .stat-card,[data-theme="brutalist"] .quick-link{border:3px solid #000;border-radius:0;box-shadow:8px 8px 0 #000}
+[data-theme="brutalist"] button{border:3px solid #000;border-radius:0;font-family:'Arial Black',Impact,sans-serif;text-transform:uppercase;box-shadow:4px 4px 0 #000}
+[data-theme="brutalist"] button:active{transform:translate(4px,4px);box-shadow:none}
+
+[data-theme="orchestrion"] body{background:repeating-linear-gradient(90deg,rgba(196,142,58,.03) 0 1px,transparent 1px 12px),repeating-linear-gradient(0deg,rgba(0,0,0,.1) 0 2px,transparent 2px 8px),var(--bg);background-attachment:fixed}
+[data-theme="orchestrion"] h1,[data-theme="orchestrion"] h2{font-family:'Arial Narrow','Courier New',monospace;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--accent);padding-bottom:4px}
+[data-theme="orchestrion"] h3{font-family:'Courier New',monospace;text-transform:uppercase;font-size:.9em;color:var(--info)}
+[data-theme="orchestrion"] .panel,[data-theme="orchestrion"] .stat-card,[data-theme="orchestrion"] .quick-link{border:1px solid var(--border-strong);border-radius:2px;box-shadow:2px 2px 0 #110a07,inset 0 1px 0 rgba(255,255,255,.1)}
+[data-theme="orchestrion"] button{border:2px solid var(--border-strong);border-radius:2px;text-transform:uppercase;font-family:'Arial Narrow','Courier New',monospace;box-shadow:2px 2px 0 #110a07}
+
+[data-theme="rococo"] body{background:radial-gradient(circle at 10% 10%,var(--info-soft),transparent 40%),radial-gradient(circle at 90% 90%,var(--accent-soft),transparent 40%),radial-gradient(circle at 50% 50%,var(--panel),var(--bg));background-attachment:fixed}
+[data-theme="rococo"] h1,[data-theme="rococo"] h2,[data-theme="rococo"] h3{font-family:Georgia,'Times New Roman',serif;font-weight:400;letter-spacing:.02em;text-shadow:1px 1px 0 var(--border-strong)}
+[data-theme="rococo"] h1{font-style:italic}
+[data-theme="rococo"] .panel,[data-theme="rococo"] .stat-card,[data-theme="rococo"] .quick-link{border:1px solid var(--border-strong);border-radius:24px;box-shadow:0 10px 25px rgba(184,144,37,.12),inset 0 0 0 1px rgba(212,175,55,.25)}
+[data-theme="rococo"] button{border-radius:999px;border:1px solid var(--border-strong);font-family:Georgia,'Times New Roman',serif}
+
+[data-theme="nautical-tile"] body{background:linear-gradient(to right,rgba(13,35,66,.06) 1px,transparent 1px),linear-gradient(to bottom,rgba(13,35,66,.06) 1px,transparent 1px),var(--bg);background-size:80px 80px;background-attachment:fixed}
+[data-theme="nautical-tile"] h1,[data-theme="nautical-tile"] h2,[data-theme="nautical-tile"] h3{font-family:Georgia,'Times New Roman',serif;color:var(--border);font-weight:700;letter-spacing:.02em}
+[data-theme="nautical-tile"] .panel,[data-theme="nautical-tile"] .stat-card,[data-theme="nautical-tile"] .quick-link{border:2px solid var(--border);border-radius:2px;box-shadow:2px 2px 0 rgba(13,35,66,.15)}
+[data-theme="nautical-tile"] button{border:2px solid var(--border);border-radius:0;box-shadow:2px 2px 0 rgba(13,35,66,.15);font-family:Georgia,'Times New Roman',serif}
