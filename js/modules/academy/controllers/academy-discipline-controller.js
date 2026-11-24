@@ -2341,7 +2341,7 @@
             Grades.getGradeTypeLabel(type) + '</div><ul>';
         for (var r = 0; r < previewRows.length; r++) {
             html += '<li><span>' +
-                DomUtils.escapeHtml(previewRows[r].name) +
+                window.DomUtils.escapeHtml(previewRows[r].name) +
                 '</span><strong>' + previewRows[r].score + ' / ' +
                 maxScore + '</strong></li>';
         }
