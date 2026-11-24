@@ -695,6 +695,40 @@
         return originalVersion;
     }
 
+    /**
+     * Migrate an imported candidate using the same internal data
+     * migrations as the persistent database. This operates on a clone
+     * and never writes to IndexedDB.
+     *
+     * @param {object} importedData - Canonical imported application data
+     * @param {number} sourceVersion - Internal DATA_VERSION from export metadata
+     * @returns {object} Fully migrated candidate at DATA_VERSION
+     */
+    function migrateImportedData(importedData, sourceVersion) {
+        if (!importedData || typeof importedData !== 'object' || Array.isArray(importedData)) {
+            throw new Error('Imported database data must be an object.');
+        }
+        if (!Number.isInteger(sourceVersion) || sourceVersion < 1) {
+            throw new Error(
+                'The export does not contain a valid internal data version. ' +
+                'Import was refused because its migration path cannot be determined safely.'
+            );
+        }
+        if (sourceVersion > DATA_VERSION) {
+            throw new Error(
+                'Export data version ' + sourceVersion +
+                ' is newer than this application supports (' + DATA_VERSION + ').'
+            );
+        }
+
+        var candidate = deepClone(importedData);
+        candidate._dataVersion = sourceVersion;
+        migrateData(candidate);
+        normaliseDataStructure(candidate);
+        candidate._dataVersion = DATA_VERSION;
+        return candidate;
+    }
+
     function migrateToVersion2(data) {
         data.characters.forEach(function(char) {
             if (char.deceased === undefined) char.deceased = false;
@@ -3746,6 +3780,7 @@
         loadData: loadData,
         saveData: saveData,
         getEmptyData: getEmptyData,
+        migrateImportedData: migrateImportedData,
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         autoLoadData: autoLoadData,
         createSafeCopy: createSafeCopy,
@@ -3764,7 +3799,7 @@
     (function verify() {
         var required = [
             'openDatabase', 'ensureDatabaseReady', 'loadData', 'saveData',
-            'getEmptyData', 'autoLoadData', 'createSafeCopy',
+            'getEmptyData', 'migrateImportedData', 'autoLoadData', 'createSafeCopy',
             'getDatabaseStatus', 'isDatabaseReady', 'getLoadError',
             'deleteDatabase', 'forceReset'
         ];
