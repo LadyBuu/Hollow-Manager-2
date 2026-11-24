@@ -50,7 +50,7 @@ function loadImportPipeline() {
 
     const context = { window, console, Promise, Date, JSON, Object, Array, String, Number, Math };
     vm.runInNewContext(source, context, { filename: 'import-pipeline.js' });
-    return { pipeline: window.ImportPipeline, calls };
+    return { pipeline: window.ImportPipeline, calls, window };
 }
 
 test('future export format is refused before migration, validation, or mutation', async () => {
@@ -111,7 +111,7 @@ test('duplicate imported IDs do not redirect references away from the first reco
 
 
 test('import candidate preserves the live database version and local activity history', function() {
-    const { pipeline } = loadImportPipeline();
+    const { pipeline, window } = loadImportPipeline();
     const candidate = pipeline.buildCandidateState({
         characters: [{ id: 'char-1' }],
         teams: [],
@@ -126,5 +126,5 @@ test('import candidate preserves the live database version and local activity hi
         JSON.parse(JSON.stringify(candidate.activities)),
         [{ id: 'local-activity', message: 'Keep this local log' }]
     );
-    assert.notEqual(candidate.activities, window.activities);
+    assert.notEqual(candidate.activities, window.data.activities);
 });
