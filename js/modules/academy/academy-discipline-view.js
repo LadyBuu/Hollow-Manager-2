@@ -1063,6 +1063,15 @@
         html += renderFieldError(errors, 'weight');
         html += '</div>';
 
+        html += '<div class="academy-discipline-editor-field">';
+        html += '<label class="academy-discipline-checkbox-label">';
+        html += '<input type="checkbox" data-discipline-field="isMagical" ' +
+                    (d.isMagical === true ? ' checked' : '') + '>';
+        html += '<span>Magical discipline</span>';
+        html += '</label>';
+        html += '<p class="field-hint">Students without magical abilities may complete theoretical work, but practical assessments are automatically excluded.</p>';
+        html += '</div>';
+
         html += '</div>';
         html += '</div>';
 
