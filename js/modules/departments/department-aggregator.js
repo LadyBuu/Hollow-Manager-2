@@ -221,7 +221,7 @@
             : false;
 
         var isRetired = char
-            ? isCharacterRetired(char)
+            ? isCharacterRetired(char, queryYear)
             : false;
 
         var isHead = department && department.headId &&
@@ -242,7 +242,11 @@
                 isActive = true;
             } else {
                 leaveYear = parseInt(leaveRaw, 10);
-                if (isNaN(leaveYear)) { leaveYear = null; }
+                if (isNaN(leaveYear)) {
+                    leaveYear = null;
+                } else if (leaveYear >= queryYear) {
+                    isActive = true;
+                }
             }
         }
 
@@ -301,30 +305,25 @@
     function findIntervalAtYear(intervals, queryYear) {
         if (!Array.isArray(intervals)) { return null; }
 
+        var selected = null;
+        var selectedJoin = -Infinity;
         for (var i = 0; i < intervals.length; i++) {
             var iv = intervals[i];
             if (!iv || typeof iv !== 'object') { continue; }
 
             var join = parseInt(iv.joinPeriod, 10);
-            if (isNaN(join)) { continue; }
-            if (join > queryYear) { continue; }
+            if (isNaN(join) || join > queryYear) { continue; }
 
-            var leaveRaw = iv.leavePeriod;
-            var hasLeave = leaveRaw !== undefined &&
-                           leaveRaw !== null &&
-                           String(leaveRaw).trim() !== '';
-
-            if (!hasLeave) { return iv; }
-
-            var leave = parseInt(leaveRaw, 10);
-            if (isNaN(leave)) { return iv; }
-            if (leave >= queryYear) { return iv; }
+            if (join >= selectedJoin) {
+                selected = iv;
+                selectedJoin = join;
+            }
         }
 
-        return null;
+        return selected;
     }
 
-    function isCharacterRetired(char) {
+    function isCharacterRetired(char, queryYear) {
         if (!char || !Array.isArray(char.careerStatus)) {
             return false;
         }
@@ -349,6 +348,7 @@
 
             var year = parseInt(entry.startYear, 10);
             if (isNaN(year)) { year = -Infinity; }
+            if (year > queryYear) { continue; }
 
             if (year > latestYear ||
                 (year === latestYear && i > latestIndex)) {
