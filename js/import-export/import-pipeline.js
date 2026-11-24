@@ -959,6 +959,20 @@
         }
         allWarnings = allWarnings.concat(validation.warnings);
 
+        // Refuse exports produced by a newer application format. Extracting
+        // them with an older schema would silently discard unknown sections
+        // and fields when the candidate replaces the live store.
+        if (typeof envelope.formatVersion === 'number' &&
+            envelope.formatVersion > Schema.FORMAT_VERSION) {
+            return Promise.resolve(createFailureResult(
+                ['Export format version ' + envelope.formatVersion +
+                 ' is newer than the supported version ' + Schema.FORMAT_VERSION +
+                 '. Open and export this file with a newer version of Hollow Manager 2.'],
+                allWarnings,
+                'Import refused: unsupported future export format.'
+            ));
+        }
+
         // ---- STAGE 2: Check if migration is needed ----
         var envelopeToImport = envelope;
         if (Migrations.needsMigration(envelope)) {
