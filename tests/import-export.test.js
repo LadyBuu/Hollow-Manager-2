@@ -46,6 +46,15 @@ function loadImportPipeline() {
             _dataVersion: 35,
             activities: [{ id: 'local-activity', message: 'Keep this local log' }]
         }
+,        db: {
+            migrateImportedData: function(data, version) {
+                calls.migration++;
+                if (!Number.isInteger(version) || version < 1) throw new Error('valid internal data version is required');
+                const migrated = JSON.parse(JSON.stringify(data));
+                migrated._dataVersion = 35;
+                return migrated;
+            }
+        }
     };
 
     const context = { window, console, Promise, Date, JSON, Object, Array, String, Number, Math };
@@ -119,7 +128,7 @@ test('import candidate preserves the live database version and local activity hi
         missions: [],
         currentYear: 1920,
         currentWeek: 4
-    });
+    }, 35);
 
     assert.equal(candidate._dataVersion, 35);
     assert.deepEqual(
@@ -150,5 +159,18 @@ test('explicit ID regeneration still rewrites references to regenerated records'
     assert.equal(
         updated.teams[0].members[0].characterId,
         characterChange.newId
+    );
+});
+
+
+test('candidate construction rejects unknown internal data versions', function() {
+    const { pipeline } = loadImportPipeline();
+    assert.throws(
+        function() {
+            pipeline.buildCandidateState({
+                characters: [], teams: [], tournaments: [], missions: []
+            }, undefined);
+        },
+        /valid internal data version/
     );
 });
