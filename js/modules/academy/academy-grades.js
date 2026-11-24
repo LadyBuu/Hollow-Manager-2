@@ -55,13 +55,15 @@
  *     rather than maintaining its own copy.
  *
  * GRADE IDENTITY:
- *   A grade's identity is the five-field tuple:
+ *   Ordinary grades retain the legacy five-field identity:
  *
  *     (studentId, classId, disciplineId, week, type)
  *
- *   A student can have an exam and a class assignment in the same
- *   week of the same discipline; both are legitimate records.
- *   Identity includes `type` for that reason.
+ *   Group-created assignments may carry assignmentId and
+ *   assignmentTitle. For those records, assignmentId further
+ *   distinguishes repeated assessments of the same type in the
+ *   same week. All student grades created for one group assignment
+ *   share that assignmentId and title.
  *
  * GRADE SLOT:
  *   A grade carries an optional slot:
@@ -798,6 +800,21 @@
             return { valid: false, message: 'Candidate type is invalid.' };
         }
 
+        if (candidate.assignmentId !== undefined &&
+            candidate.assignmentId !== null &&
+            !isNonEmptyString(candidate.assignmentId)) {
+            return { valid: false, message: 'Candidate assignmentId is invalid.' };
+        }
+        if (candidate.assignmentTitle !== undefined &&
+            candidate.assignmentTitle !== null &&
+            typeof candidate.assignmentTitle !== 'string') {
+            return { valid: false, message: 'Candidate assignmentTitle is invalid.' };
+        }
+        if (isNonEmptyString(candidate.assignmentId) &&
+            !isNonEmptyString(candidate.assignmentTitle)) {
+            return { valid: false, message: 'Assignment title is required when assignmentId is set.' };
+        }
+
         if (isSlotlessType(candidate.type)) {
             if (candidate.slot !== null) {
                 return {
@@ -905,6 +922,12 @@
             maxScore: maxScore,
             type: type,
             slot: slot,
+            assignmentId: isNonEmptyString(data.assignmentId)
+                ? String(data.assignmentId)
+                : null,
+            assignmentTitle: isNonEmptyString(data.assignmentTitle)
+                ? String(data.assignmentTitle).trim()
+                : '',
             notes: data.notes || '',
             createdAt: existingCreatedAt || now,
             updatedAt: now
@@ -1586,11 +1609,15 @@
             }
 
             var effectiveType = data.type || DEFAULT_GRADE_TYPE;
+            var effectiveAssignmentId = isNonEmptyString(data.assignmentId)
+                ? String(data.assignmentId)
+                : null;
             var tupleKey = String(data.studentId) + '::' +
                            String(data.classId) + '::' +
                            String(data.disciplineId) + '::' +
                            String(parseWeekStrict(data.week)) + '::' +
-                           String(effectiveType);
+                           String(effectiveType) + '::' +
+                           (effectiveAssignmentId || 'legacy');
             if (seenTuples[tupleKey]) {
                 errors.push({
                     index: i,
@@ -1607,7 +1634,10 @@
                     String(g.classId) === String(data.classId) &&
                     String(g.disciplineId) === String(data.disciplineId) &&
                     parseWeekStrict(g.week) === parseWeekStrict(data.week) &&
-                    String(g.type || DEFAULT_GRADE_TYPE) === String(effectiveType)) {
+                    String(g.type || DEFAULT_GRADE_TYPE) === String(effectiveType) &&
+                    (isNonEmptyString(g.assignmentId)
+                        ? String(g.assignmentId)
+                        : null) === effectiveAssignmentId) {
                     existing = g;
                     break;
                 }
