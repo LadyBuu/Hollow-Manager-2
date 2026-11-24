@@ -259,8 +259,6 @@
         //    current tab. A failed destination render must leave the
         //    current tab's DOM and lifecycle intact.
         var previousTab = _currentTab;
-        var previousContainer = previousTab ? getContainerFor(previousTab) : null;
-
         try {
             _registeredTabs[tabName].render(targetContainer);
         } catch (e) {
