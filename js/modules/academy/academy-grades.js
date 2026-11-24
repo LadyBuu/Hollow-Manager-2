@@ -1567,6 +1567,31 @@
         }
 
         result.gradesRemoved = keysToRemove.length;
+
+        // Assignment studentIds are a historical roster snapshot.
+        // Remove the deleted character while retaining the assignment
+        // metadata and the remaining students' linked grade records.
+        var assignments = appData.academy.assignments;
+        if (assignments !== undefined && assignments !== null) {
+            if (!isObject(assignments)) {
+                throw new Error(
+                    '[AcademyGrades] stripCharacterRefs found a malformed ' +
+                    'academy.assignments store.'
+                );
+            }
+            Object.keys(assignments).forEach(function(assignmentId) {
+                var assignment = assignments[assignmentId];
+                if (!isObject(assignment) ||
+                    !Array.isArray(assignment.studentIds)) {
+                    return;
+                }
+                assignment.studentIds = assignment.studentIds.filter(
+                    function(id) { return String(id) !== target; }
+                );
+                assignment.updatedAt = new Date().toISOString();
+            });
+        }
+
         return result;
     }
 
@@ -1877,7 +1902,7 @@
         var classId = String(data.classId);
         var disciplineId = String(data.disciplineId);
         var groupId = String(data.groupId);
-        var assignmentId = generateId().replace(/^grade_/, 'assignment_');
+        var assignmentId = IdUtils.generateId('assignment');
         var now = new Date().toISOString();
         var grades = [];
         var studentIds = [];
@@ -1950,7 +1975,8 @@
                 if (!appData || !appData.academy) {
                     return { valid: false, message: 'Academy data is not available.' };
                 }
-                if (findGradeInSnapshot(appData, assignmentId)) {
+                var existingAssignments = appData.academy.assignments;
+                if (isObject(existingAssignments) && existingAssignments[assignmentId]) {
                     return { valid: false, message: 'Assignment ID collision.' };
                 }
                 if (!findClassInSnapshot(appData, classId)) {
@@ -2015,6 +2041,11 @@
                     appData.academy.assignments !== null &&
                     !isObject(appData.academy.assignments)) {
                     return { valid: false, message: 'The assignments store is malformed.' };
+                }
+                if (appData.academy.grades !== undefined &&
+                    appData.academy.grades !== null &&
+                    !isObject(appData.academy.grades)) {
+                    return { valid: false, message: 'The grades store is malformed.' };
                 }
                 return { valid: true };
             },
