@@ -3472,9 +3472,47 @@
                     }
                 }
 
+                // Bulk deletion must run the same cross-domain cleanup
+                // as individual deletion. Otherwise Academy, mission,
+                // and tournament stores retain references to removed
+                // characters even though the direct stores were cleared.
+                var Cascade = getAcademyCascade();
+                if (!Cascade ||
+                    typeof Cascade.characterDeleted !== 'function') {
+                    throw new Error(
+                        'Bulk character deletion requires ' +
+                        'AcademyCascade.characterDeleted. ' +
+                        'Refusing to leave cross-domain references.'
+                    );
+                }
+
+                var deletedIds = data.characters.map(function(character) {
+                    return character && character.id !== undefined &&
+                        character.id !== null
+                        ? String(character.id)
+                        : null;
+                }).filter(function(id) {
+                    return id !== null && id !== '';
+                });
+
+                for (var cdi = 0; cdi < deletedIds.length; cdi++) {
+                    var academyResult = Cascade.characterDeleted(
+                        data, deletedIds[cdi]
+                    );
+                    if (!academyResult ||
+                        typeof academyResult !== 'object' ||
+                        Array.isArray(academyResult)) {
+                        throw new Error(
+                            'AcademyCascade.characterDeleted returned an ' +
+                            'invalid result for character ' +
+                            deletedIds[cdi] + '. Bulk deletion cancelled.'
+                        );
+                    }
+                }
+
                 data.characters = [];
 
-                return { deletedCount: count };
+                return { deletedCount: count, cascadesRun: deletedIds.length };
             },
 
             logMessage: function(result) {
