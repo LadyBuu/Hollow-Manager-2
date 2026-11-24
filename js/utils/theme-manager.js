@@ -21,7 +21,7 @@
         { value: 'pastel', label: 'Pastel', isAttribute: true, themeColor: '#fff1f7' },
         { value: 'carnival', label: 'Carnival', isAttribute: true, themeColor: '#181719' },
         { value: 'maximal', label: 'Maximal', isAttribute: true, themeColor: '#fff0fb' },
-        { value: 'gits', label: 'GITS', isAttribute: true, themeColor: '#04101a' },
+        { value: 'gits', label: 'GITS', isAttribute: true, themeColor: '#07080c' },
         { value: 'stained-glass', label: 'Stained Glass', isAttribute: true, themeColor: '#f2f7fd' },
         { value: 'stained-glass-dark', label: 'Stained Glass Dark', isAttribute: true, themeColor: '#0a1520' },
         { value: 'deco-nouveau', label: 'Deco Nouveau', isAttribute: true, themeColor: '#f4f0e6' },
