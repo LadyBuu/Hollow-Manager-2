@@ -179,6 +179,65 @@
             description: 'JSON import/export'
         },
 
+        // ---- Domain text exports (non-critical) ----
+        {
+            name: 'CharacterExport',
+            check: function(m) {
+                return m && typeof m.exportCharacterText === 'function';
+            },
+            critical: false,
+            description: 'Character text reports'
+        },
+        {
+            name: 'CharacterRosterExport',
+            check: function(m) {
+                return m && typeof m.exportText === 'function';
+            },
+            critical: false,
+            description: 'Character roster text exports'
+        },
+        {
+            name: 'TeamExport',
+            check: function(m) {
+                return m && typeof m.exportTeam === 'function' &&
+                    typeof m.exportTeamsText === 'function';
+            },
+            critical: false,
+            description: 'Team text reports'
+        },
+        {
+            name: 'CandidateExport',
+            check: function(m) {
+                return m && typeof m.exportPool === 'function';
+            },
+            critical: false,
+            description: 'Professional Pool text export'
+        },
+        {
+            name: 'MissionExport',
+            check: function(m) {
+                return m && typeof m.exportMissionText === 'function';
+            },
+            critical: false,
+            description: 'Mission text reports'
+        },
+        {
+            name: 'ClassRosterExport',
+            check: function(m) {
+                return m && typeof m.exportGraduatesText === 'function';
+            },
+            critical: false,
+            description: 'Class roster text exports'
+        },
+        {
+            name: 'ScheduleExport',
+            check: function(m) {
+                return m && typeof m.exportClassScheduleText === 'function';
+            },
+            critical: false,
+            description: 'Schedule text exports'
+        },
+
         // ---- UI (non-critical) ----
         {
             name: 'ImportExportUI',
@@ -258,6 +317,17 @@
 
             // ---- JSON ----
             JSONIO: window.JSONIO || null,
+
+            // ---- Domain text exports ----
+            Text: Object.freeze({
+                Character: window.CharacterExport || null,
+                CharacterRoster: window.CharacterRosterExport || null,
+                Team: window.TeamExport || null,
+                CandidatePool: window.CandidateExport || null,
+                Mission: window.MissionExport || null,
+                ClassRoster: window.ClassRosterExport || null,
+                Schedule: window.ScheduleExport || null
+            }),
 
             // ---- Utilities ----
             ExportUtils: window.ExportUtils || null,
