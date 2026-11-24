@@ -1638,7 +1638,8 @@
                 }
             }
             var disciplineRecord = AcademyDisciplines.getDiscipline(disciplineId);
-            var automaticExclusion = assessmentMode === 'practical' &&
+            var automaticExclusion = !existing &&
+                assessmentMode === 'practical' &&
                 disciplineRecord && disciplineRecord.isMagical === true &&
                 studentRecord && studentRecord.isMagical === false;
             if (automaticExclusion) {
