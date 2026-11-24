@@ -396,16 +396,20 @@
                 var currentId = normaliseId(item.id);
                 var shouldRegenerate = false;
                 var oldId = currentId;
+                var changeReason = null;
 
                 if (!currentId) {
                     // Empty ID - generate new
                     shouldRegenerate = true;
+                    changeReason = 'Missing ID';
                 } else if (seenIds[currentId]) {
                     // Duplicate ID - generate new
                     shouldRegenerate = true;
+                    changeReason = 'Duplicate ID';
                 } else if (!preserveExistingIds) {
-                    // Not preserving existing IDs
+                    // Explicitly regenerate otherwise valid IDs.
                     shouldRegenerate = true;
+                    changeReason = 'Regenerated ID';
                 } else {
                     // ID is valid and unique
                     seenIds[currentId] = true;
@@ -419,7 +423,7 @@
                         index: i,
                         oldId: oldId || null,
                         newId: newId,
-                        reason: oldId ? 'Duplicate ID' : 'Missing ID'
+                        reason: changeReason
                     });
                     seenIds[newId] = true;
                 }
