@@ -593,13 +593,44 @@
         });
     }
 
+    // Rebuild the derived eliminatedWeeks cache for every character.
+    // Elimination records remain untouched; only the redundant cache is repaired.
+    function rebuildAllEliminationWeekCaches() {
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !Array.isArray(appData.characters)) {
+                    return { valid: false, message: 'Character store is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var repaired = 0;
+                for (var i = 0; i < appData.characters.length; i++) {
+                    var char = appData.characters[i];
+                    if (!char) { continue; }
+                    var before = Array.isArray(char.eliminatedWeeks)
+                        ? char.eliminatedWeeks.slice() : null;
+                    EliminationQueries.rebuildEliminatedWeeks(char);
+                    if (JSON.stringify(before) !== JSON.stringify(char.eliminatedWeeks)) {
+                        repaired++;
+                    }
+                }
+                return { scanned: appData.characters.length, repaired: repaired };
+            },
+            logMessage: 'Rebuilt derived elimination-week caches',
+            successMessage: 'Elimination-week caches rebuilt.',
+            failureMessage: 'Failed to rebuild elimination-week caches.'
+        });
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyEliminations = Object.freeze({
         addStandalone: addStandalone,
-        removeStandalone: removeStandalone
+        removeStandalone: removeStandalone,
+        rebuildAllEliminationWeekCaches: rebuildAllEliminationWeekCaches
     });
 
     // ============================================================
@@ -610,7 +641,7 @@
         var exports = window.AcademyEliminations;
         var missing = [];
 
-        var required = ['addStandalone', 'removeStandalone'];
+        var required = ['addStandalone', 'removeStandalone', 'rebuildAllEliminationWeekCaches'];
         for (var i = 0; i < required.length; i++) {
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
