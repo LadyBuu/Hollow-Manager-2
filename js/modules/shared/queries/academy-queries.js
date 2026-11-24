@@ -1,8 +1,8 @@
 /**
- * shared/queries/academy-queries.js - Academy Queries
+ * js/modules/shared/queries/academy-queries.js - Academy Queries
  * Read-only academy domain queries
  *
- * Path: js/shared/queries/academy-queries.js
+ * Path: js/modules/shared/queries/academy-queries.js
  *
  * This module provides READ-ONLY access to academy class data.
  *
