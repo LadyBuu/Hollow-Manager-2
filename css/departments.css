@@ -73,6 +73,13 @@
     background: var(--panel-alt);
 }
 
+.department-sidebar-row:focus-visible,
+.department-head-name:focus-visible,
+.department-member-name-text:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .department-sidebar-row-selected {
     background: var(--accent-soft);
     border-left-color: var(--accent);
