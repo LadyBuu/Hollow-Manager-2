@@ -664,3 +664,28 @@
         font-size: 0.9rem;
     }
 }
+
+
+/* ---------- Live team ranking ---------- */
+.academy-team-sort-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 0.62rem;
+}
+.academy-team-sort-control select {
+    max-width: 110px;
+    padding: 3px 5px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.65rem;
+}
+.academy-weekly-team-ranking {
+    color: var(--accent);
+    font-size: 0.6rem;
+    font-weight: 600;
+}
