@@ -1,5 +1,5 @@
 /**
- * modules/tournaments/tournament-constants.js - Tournament Constants
+ * js/modules/shared/tournament-constants.js - Tournament Constants
  * Single source of truth for all tournament-related constants.
  *
  * Path: js/modules/tournaments/tournament-constants.js
