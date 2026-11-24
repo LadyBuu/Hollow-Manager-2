@@ -1,8 +1,8 @@
 /**
- * characters/character-queries.js - Character Queries
+ * js/modules/characters/character-queries.js - Character Queries
  * Read-only character domain queries.
  *
- * Path: js/shared/queries/character-queries.js
+ * Path: js/modules/characters/character-queries.js
  *
  * WHAT THIS OWNS:
  *   - Character lookup by id (memoized).
