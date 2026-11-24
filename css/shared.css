@@ -3097,3 +3097,130 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
     white-space: nowrap;
     border: 0;
 }
+
+/* Shared semantic palette aliases used by graph, magic and relationship views */
+[data-theme="vaporwave"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="maximal"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="gits"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="stained-glass"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="grotesque"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="illuminated"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="discowing"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="choc-cake"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="dada"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="ukiyo-e"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="brutalist"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="orchestrion"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="rococo"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
+
+[data-theme="nautical-tile"] {
+    --r-a: var(--accent);
+    --r-b: var(--info);
+    --r-c: var(--ok);
+    --r-d: var(--warning);
+    --r-e: var(--text-dim);
+    --r-f: var(--danger);
+}
