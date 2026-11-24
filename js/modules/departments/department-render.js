@@ -399,14 +399,19 @@
                         'Clear head' +
                     '</button>';
         }
-        html += '<button type="button" class="small danger" ' +
-                    'data-action="department-remove-member" ' +
-                    'data-department-id="' +
-                        escapeAttribute(deptId) + '" ' +
-                    'data-character-id="' +
-                        escapeAttribute(row.characterId) + '">' +
-                    '\u2715' +
-                '</button>';
+        if (row.openIntervalJoinYear !== null &&
+            row.openIntervalJoinYear !== undefined) {
+            html += '<button type="button" class="small danger" ' +
+                        'data-action="department-end-member" ' +
+                        'data-department-id="' +
+                            escapeAttribute(deptId) + '" ' +
+                        'data-character-id="' +
+                            escapeAttribute(row.characterId) + '" ' +
+                        'data-join-period="' +
+                            escapeAttribute(row.openIntervalJoinYear) + '">' +
+                        'End membership' +
+                    '</button>';
+        }
         html += '</span>';
 
         html += '</div>';
