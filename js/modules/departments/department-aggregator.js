@@ -233,6 +233,22 @@
         var interval = findIntervalAtYear(member.intervals, queryYear);
         var isActive = false;
         var leaveYear = null;
+        var openIntervalJoinYear = null;
+
+        if (Array.isArray(member.intervals)) {
+            for (var oi = 0; oi < member.intervals.length; oi++) {
+                var openInterval = member.intervals[oi];
+                if (!openInterval || typeof openInterval !== 'object') {
+                    continue;
+                }
+                var openLeave = openInterval.leavePeriod;
+                if (openLeave === undefined || openLeave === null ||
+                    String(openLeave).trim() === '') {
+                    openIntervalJoinYear = String(openInterval.joinPeriod);
+                    break;
+                }
+            }
+        }
 
         if (interval) {
             var leaveRaw = interval.leavePeriod;
@@ -287,6 +303,7 @@
             isHead: isHead,
 
             leaveYear: leaveYear,
+            openIntervalJoinYear: openIntervalJoinYear,
             firstJoin: firstJoin,
             joinDisplay: firstJoin === null
                 ? '\u2014'
