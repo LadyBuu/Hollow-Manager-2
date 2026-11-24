@@ -32,6 +32,12 @@
  *     - CharacterCSV     - Character CSV (schema + export + import + template)
  *     - MissionCSV       - Mission CSV (schema + export + import + template)
  * 
+ *   Domain text exports:
+ *     - CharacterExport / CharacterRosterExport
+ *     - TeamExport / CandidateExport
+ *     - MissionExport / ClassRosterExport / ScheduleExport
+ *     - Available together under `ImportExport.Text`
+ *
  *   Utilities:
  *     - ExportUtils      - File download, field helpers
  *     - ImportResult     - Structured import result container
