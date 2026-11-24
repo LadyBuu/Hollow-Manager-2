@@ -213,22 +213,6 @@ if (window.__missionExportLoaded) {
  // ============================================================
  // SMALL HELPERS
  // ============================================================
- function pad(value, width) {
-     var str = String(value);
-     while (str.length < width) {
-         str = '0' + str;
-     }
-     return str;
- }
- function timestampSlug() {
-     var now = new Date();
-     return now.getFullYear() + '-' +
-            pad(now.getMonth() + 1, 2) + '-' +
-            pad(now.getDate(), 2) + '_' +
-            pad(now.getHours(), 2) + '-' +
-            pad(now.getMinutes(), 2) + '-' +
-            pad(now.getSeconds(), 2);
- }
  function slugify(text) {
      if (!text || typeof text !== 'string') { return 'mission'; }
      var s = text
@@ -763,16 +747,14 @@ if (window.__missionExportLoaded) {
      var idPart = isNonEmptyString(mission.id)
          ? String(mission.id)
          : 'unknown';
-     return 'mission_' + slug + '_' + idPart +
-         '_' + timestampSlug() + '.txt';
+     return 'mission_' + slug + '_' + idPart + '.txt';
  }
  function buildJsonFilename(mission) {
      var slug = slugify(mission.title);
      var idPart = isNonEmptyString(mission.id)
          ? String(mission.id)
          : 'unknown';
-     return 'mission_' + slug + '_' + idPart +
-         '_' + timestampSlug() + '.json';
+     return 'mission_' + slug + '_' + idPart + '.json';
  }
  // ============================================================
  // JSON REPORT BUILDER
