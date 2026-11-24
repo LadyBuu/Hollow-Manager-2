@@ -665,7 +665,7 @@
             'char-nickname', 'char-alias',
             'char-displayFirst', 'char-displayNickname',
             'char-displayMiddle', 'char-displayLast', 'char-displayAlias',
-            'char-is-filler',
+            'char-is-filler', 'char-is-magical',
             'char-birthYear',
             'char-attraction',
             'char-deceased', 'char-deathYear', 'char-deathAge',
@@ -1246,6 +1246,7 @@
 
         var isFiller = c.isFiller === true;
         var isFillerChecked = isFiller ? ' checked' : '';
+        var isMagicalChecked = c.isMagical !== false ? ' checked' : '';
 
         return `
             <div class="tab-panel" data-tab="name" style="display:${active};">
@@ -1276,6 +1277,16 @@
                         Strip empty fields on save. Keeps name, career,
                         class, teams, eliminations, and parent links.
                         Unchecking does not restore stripped fields.
+                    </p>
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label for="char-is-magical" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.75rem;color:var(--text);">
+                        <input type="checkbox" id="char-is-magical"${isMagicalChecked} style="accent-color:var(--accent);">
+                        <span>Magical character</span>
+                    </label>
+                    <p class="field-hint" style="font-size:0.65rem;color:var(--text-dim);margin-left:20px;">
+                        Non-magical characters can complete theory work but cannot perform practical assessments in magical disciplines.
                     </p>
                 </div>
 
@@ -1901,6 +1912,7 @@
         FormUtils.setField('char-alias', char.alias);
 
         FormUtils.setField('char-is-filler', char.isFiller === true);
+        FormUtils.setField('char-is-magical', char.isMagical !== false);
 
         var prevNamesContainer = document.getElementById(
             'previous-names-container'
@@ -2202,6 +2214,7 @@
             displayParts: displayParts,
 
             isFiller: FormUtils.getField('char-is-filler') === true,
+            isMagical: FormUtils.getField('char-is-magical') !== false,
 
             birthYear: birthYearRaw,
 
