@@ -457,3 +457,23 @@
         border-top: 1px solid var(--border-soft);
     }
 }
+
+
+/* ---------- Direct numeric rank editing ---------- */
+.academy-ranking-position-input {
+    width: 42px;
+    min-width: 0;
+    padding: 3px 2px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel-alt);
+    color: var(--text);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.academy-ranking-position-input:focus {
+    border-color: var(--accent);
+    outline: 1px solid var(--accent);
+}
