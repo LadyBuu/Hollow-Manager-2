@@ -500,6 +500,7 @@
 
             var settled = false;
             var restoredData = null;
+            var returnedData = null;
             function fail(error, tx) {
                 if (settled) return;
                 settled = true;
@@ -534,6 +535,7 @@
                         migrateData(restoredData);
                         normaliseDataStructure(restoredData);
                         restoredData._dataVersion = DATA_VERSION;
+                        returnedData = createSafeCopy(restoredData);
 
                         if (currentRecord && currentRecord.data) {
                             var rollbackId = BACKUP_KEY_PREFIX + 'restore_' + Date.now();
@@ -578,7 +580,7 @@
                     _data = restoredData;
                     window.data = restoredData;
                     _loadPromise = null;
-                    resolve(createSafeCopy(restoredData));
+                    resolve(returnedData);
                 };
                 tx.onerror = function(event) {
                     fail(event.target.error || new Error('Backup restoration transaction failed'), null);
