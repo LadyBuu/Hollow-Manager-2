@@ -1034,7 +1034,7 @@
         if (sourceDataVersion < candidate._dataVersion) {
             allWarnings.push(
                 'Internal data migrated from version ' + sourceDataVersion +
-                ' to version ' + candidate._dataVersion + '.
+                ' to version ' + candidate._dataVersion + '.'
             );
         }
 
