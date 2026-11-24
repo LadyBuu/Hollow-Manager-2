@@ -162,6 +162,8 @@
  *       maxScore: 100,
  *       type: 'classAssignment',
  *       slot: { day: 2, startTime: 8, groupId: 'tgroup_xyz' },
+ *       assignmentId: 'assignment_xyz',
+ *       assignmentTitle: 'Practical assessment',
  *       notes: 'Good work',
  *       createdAt: '2026-02-15T10:00:00Z',
  *       updatedAt: '2026-02-15T10:00:00Z'
