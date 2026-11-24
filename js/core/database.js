@@ -551,25 +551,47 @@
             }
 
             var key = BACKUP_KEY_PREFIX + originalVersion;
+            var settled = false;
+            function finish(success) {
+                if (settled) return;
+                settled = true;
+                resolve(success);
+            }
 
             try {
                 var tx = _indexedDB.transaction([STORE_NAME], 'readwrite');
                 var store = tx.objectStore(STORE_NAME);
+                var backupPutStarted = false;
+
+                tx.oncomplete = function() {
+                    finish(true);
+                };
+                tx.onerror = function() {
+                    finish(false);
+                };
+                tx.onabort = function() {
+                    finish(false);
+                };
 
                 var getReq = store.get(key);
                 getReq.onsuccess = function() {
                     if (getReq.result) {
-                        resolve(true);
+                        // The existing backup is safe only once this
+                        // transaction itself has completed successfully.
                         return;
                     }
 
                     try {
-                        store.put({
+                        backupPutStarted = true;
+                        var putReq = store.put({
                             id: key,
                             data: rawData,
                             createdAt: new Date().toISOString(),
                             dataVersion: originalVersion
                         });
+                        putReq.onerror = function() {
+                            finish(false);
+                        };
                         console.log(
                             '[Database] Pre-migration backup written: ' + key
                         );
@@ -577,14 +599,17 @@
                         console.warn(
                             '[Database] Pre-migration backup failed:', e
                         );
+                        finish(false);
+                        try { tx.abort(); } catch (abortErr) {}
                     }
-                    resolve(true);
                 };
-                getReq.onerror = function() { resolve(false); };
-                tx.onerror = function() { resolve(false); };
+                getReq.onerror = function() {
+                    finish(false);
+                    try { tx.abort(); } catch (abortErr) {}
+                };
             } catch (e) {
                 console.warn('[Database] Pre-migration backup threw:', e);
-                resolve(false);
+                finish(false);
             }
         });
     }
@@ -3502,7 +3527,14 @@
                         backupPromise = writePreMigrationBackup(
                             preMigrationVersion,
                             rawRecord
-                        );
+                        ).then(function(backupWritten) {
+                            if (!backupWritten) {
+                                throw new Error(
+                                    'Pre-migration backup failed. The database migration was not saved.'
+                                );
+                            }
+                            return true;
+                        });
                     }
 
                     var migrationPromise = backupPromise
