@@ -456,7 +456,7 @@
             var tokens = rawPositions.split(',');
             for (var i = 0; i < tokens.length; i++) {
                 var token = tokens[i].trim();
-                if (!/^\\d+$/.test(token)) {
+                if (!/^\d+$/.test(token)) {
                     console.warn('[AcademyRankingController] Use comma-separated whole-number positions.');
                     if (keepInput) { keepInput.focus(); }
                     return;
