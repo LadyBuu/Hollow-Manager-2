@@ -1405,3 +1405,14 @@
         display: none;
     }
 }
+
+
+/* Named group assessments appear beneath the assessment type. */
+.academy-grades-editor-assignment-title {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-dim);
+    font-size: 0.62rem;
+    font-weight: 400;
+    line-height: 1.35;
+}
