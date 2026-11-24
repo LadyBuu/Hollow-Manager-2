@@ -382,7 +382,7 @@
                 '</span>';
 
         html += '<span class="department-member-actions">';
-        if (!row.isHead) {
+        if (!row.isHead && row.isActive) {
             html += '<button type="button" class="small secondary" ' +
                         'data-action="department-set-head" ' +
                         'data-department-id="' +
@@ -391,7 +391,7 @@
                             escapeAttribute(row.characterId) + '">' +
                         'Make head' +
                     '</button>';
-        } else {
+        } else if (row.isHead) {
             html += '<button type="button" class="small secondary" ' +
                         'data-action="department-clear-head" ' +
                         'data-department-id="' +
