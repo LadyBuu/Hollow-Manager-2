@@ -202,8 +202,11 @@
         if (!appData || typeof appData !== 'object') {
             return null;
         }
-        if (!Array.isArray(appData.departments)) {
+        if (typeof appData.departments === 'undefined') {
             appData.departments = [];
+        }
+        if (!Array.isArray(appData.departments)) {
+            return null;
         }
         return appData.departments;
     }
@@ -338,6 +341,43 @@
             }
         }
         return -1;
+    }
+
+    function getApplicationYear(appData) {
+        var value = appData && appData.currentYear;
+        var year = parseYear(value);
+        return year !== null ? year : new Date().getFullYear();
+    }
+
+    function hasActiveMembershipAtYear(dept, characterId, year) {
+        var memberIndex = findMemberIndex(dept, characterId);
+        if (memberIndex === -1) { return false; }
+
+        var member = dept.members[memberIndex];
+        if (!member || !Array.isArray(member.intervals)) {
+            return false;
+        }
+
+        for (var i = 0; i < member.intervals.length; i++) {
+            var interval = member.intervals[i];
+            if (!interval || typeof interval !== 'object') { continue; }
+
+            var join = parseYear(interval.joinPeriod);
+            if (join === null || join > year) { continue; }
+
+            var leaveRaw = interval.leavePeriod;
+            if (leaveRaw === undefined || leaveRaw === null ||
+                String(leaveRaw).trim() === '') {
+                return true;
+            }
+
+            var leave = parseYear(leaveRaw);
+            if (leave !== null && leave >= year) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -1213,11 +1253,14 @@
                     };
                 }
 
-                if (findMemberIndex(current, head) === -1) {
+                var applicationYear = getApplicationYear(appData);
+                if (!hasActiveMembershipAtYear(
+                    current, head, applicationYear
+                )) {
                     return {
                         valid: false,
-                        message: 'Head must be a member of the ' +
-                            'department.'
+                        message: 'Head must be an active department ' +
+                            'member in ' + applicationYear + '.'
                     };
                 }
 
