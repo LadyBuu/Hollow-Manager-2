@@ -1922,6 +1922,15 @@
             }
             seenStudents[studentId] = true;
 
+            var numericScore = parseFiniteNumberStrict(input.score);
+            if (numericScore === null ||
+                numericScore < minScore || numericScore > maxRandomScore) {
+                return Promise.resolve(failure(
+                    'Grade score for student ' + studentId +
+                    ' falls outside the configured random range.'
+                ));
+            }
+
             var gradeData = {
                 studentId: studentId,
                 classId: classId,
@@ -1996,11 +2005,49 @@
                     String(group.disciplineId) !== disciplineId) {
                     return { valid: false, message: 'Teaching group no longer belongs to this class and discipline.' };
                 }
-                if (group.startWeek !== null && group.startWeek !== undefined &&
-                    (week < Number(group.startWeek) ||
-                     (group.endWeek !== null && group.endWeek !== undefined &&
-                      week > Number(group.endWeek)))) {
+                var groupStartWeek = Number(group.startWeek);
+                var groupEndWeek = group.endWeek === null ||
+                    group.endWeek === undefined
+                    ? Infinity
+                    : Number(group.endWeek);
+                if (!isFinite(groupStartWeek) ||
+                    !isFinite(groupEndWeek) && groupEndWeek !== Infinity ||
+                    week < groupStartWeek || week > groupEndWeek) {
                     return { valid: false, message: 'Teaching group is not active in this week.' };
+                }
+
+                if (slot) {
+                    var sessionStore = appData.academy.teachingSessions;
+                    var matchingSession = false;
+                    if (isObject(sessionStore)) {
+                        Object.keys(sessionStore).some(function(sessionId) {
+                            var session = sessionStore[sessionId];
+                            if (!isObject(session) ||
+                                String(session.groupId) !== groupId ||
+                                Number(session.day) !== slot.day ||
+                                Number(session.startTime) !== slot.startTime) {
+                                return false;
+                            }
+                            var sessionStart = Number(session.startWeek);
+                            var sessionEnd = session.endWeek === null ||
+                                session.endWeek === undefined
+                                ? Infinity
+                                : Number(session.endWeek);
+                            if (isFinite(sessionStart) &&
+                                (isFinite(sessionEnd) || sessionEnd === Infinity) &&
+                                week >= sessionStart && week <= sessionEnd) {
+                                matchingSession = true;
+                                return true;
+                            }
+                            return false;
+                        });
+                    }
+                    if (!matchingSession) {
+                        return {
+                            valid: false,
+                            message: 'The selected class session is no longer scheduled for this group in this week.'
+                        };
+                    }
                 }
 
                 var members = Array.isArray(group.members) ? group.members : [];
