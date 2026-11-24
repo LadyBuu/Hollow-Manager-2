@@ -535,6 +535,13 @@
                 refreshUI();
             }
         );
+        delegate('[data-action="department-select"]', 'keydown',
+            function(e, target) {
+                if (e.key !== 'Enter' && e.key !== ' ') { return; }
+                e.preventDefault();
+                target.click();
+            }
+        );
     }
 
     // ============================================================
@@ -719,6 +726,17 @@
                 var charId = target.dataset.characterId;
                 if (!charId) { return; }
                 dispatchCharacterOpen(charId);
+            }
+        );
+
+        delegate(
+            '[data-action="department-open-member"], ' +
+            '[data-action="department-open-head"]',
+            'keydown',
+            function(e, target) {
+                if (e.key !== 'Enter' && e.key !== ' ') { return; }
+                e.preventDefault();
+                target.click();
             }
         );
 
