@@ -2373,11 +2373,10 @@
             return out;
         }
 
-        function buildAtAGlanceSection(char, charId) {
+        function buildAtAGlanceSection(char) {
             var CharacterQueries = getCharacterQueries();
             var out = '';
 
-            out += line('Character ID', String(charId));
 
             var status = '';
             try {
@@ -2686,11 +2685,10 @@
             return groupHeader('Combat') + out + '\n';
         }
 
-        function buildIdentitySection(char, charId) {
+        function buildIdentitySection(char) {
             var CharacterQueries = getCharacterQueries();
             var out = '';
 
-            out += line('Character ID', String(charId));
 
             var fullName = '';
             if (typeof CharacterQueries.getFullName ===
@@ -2976,46 +2974,8 @@
             var out = '';
             for (var i = 0; i < classIds.length; i++) {
                 var entry = split.student[classIds[i]];
-                out += entry.className + ' [' +
-                    entry.classId + ']\n';
+                out += entry.className + '\n';
             }
-            return out;
-        }
-
-        function buildDisciplinesStudiedSection(char, charId) {
-            var split =
-                buildRoleSplitEnrolmentMap(char, charId);
-            var classIds = Object.keys(split.student);
-
-            if (classIds.length === 0) {
-                return emptySectionBody();
-            }
-
-            classIds.sort(function(a, b) {
-                return split.student[a].className
-                    .localeCompare(
-                        split.student[b].className
-                    );
-            });
-
-            var out = '';
-            for (var i = 0; i < classIds.length; i++) {
-                var entry = split.student[classIds[i]];
-
-                out += entry.className + ' [' +
-                    entry.classId + ']\n';
-
-                for (var d = 0;
-                     d < entry.disciplineIds.length;
-                     d++) {
-                    var discId = entry.disciplineIds[d];
-                    out += '  ' +
-                        getDisciplineNameSafe(discId) + '\n';
-                }
-
-                out += '\n';
-            }
-
             return out;
         }
 
@@ -3038,8 +2998,7 @@
             var out = '';
             for (var i = 0; i < classIds.length; i++) {
                 var entry = split.instructor[classIds[i]];
-                out += entry.className + ' [' +
-                    entry.classId + ']\n';
+                out += entry.className + '\n';
             }
             return out;
         }
@@ -3064,8 +3023,7 @@
             for (var i = 0; i < classIds.length; i++) {
                 var entry = split.instructor[classIds[i]];
 
-                out += entry.className + ' [' +
-                    entry.classId + ']\n';
+                out += entry.className + '\n';
 
                 for (var d = 0;
                      d < entry.disciplineIds.length;
@@ -3771,7 +3729,6 @@
                 }
 
                 out += heading + '\n';
-                out += indentedLine('Class ID', cls.id);
                 out += indentedLine('Status', cls.status);
             }
 
@@ -3910,7 +3867,7 @@
             out += BANNER + '\n\n';
 
             out += sectionHeader('AT A GLANCE');
-            out += buildAtAGlanceSection(char, charId);
+            out += buildAtAGlanceSection(char);
             out += '\n';
 
             out += sectionHeader('TIMELINE');
@@ -3918,7 +3875,7 @@
             out += '\n';
 
             out += sectionHeader('IDENTITY');
-            out += buildIdentitySection(char, charId);
+            out += buildIdentitySection(char);
             out += '\n';
 
             out += sectionHeader('CLASSES STUDIED');
