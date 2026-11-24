@@ -974,6 +974,13 @@
                         escapeHtml(String(summary.average)) + '%' +
                     '</p>';
         }
+        if (summary && summary.excludedCount > 0) {
+            html += '<p class="academy-grades-excluded-summary">' +
+                        summary.excludedCount + ' practical magical assessment' +
+                        (summary.excludedCount === 1 ? '' : 's') +
+                        ' excluded from the average.' +
+                    '</p>';
+        }
 
         html += '</div>';
 
