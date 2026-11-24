@@ -610,47 +610,53 @@
     // ============================================================
 
     function bindMemberActions() {
-        delegate('[data-action="department-remove-member"]', 'click',
+        delegate('[data-action="department-end-member"]', 'click',
             function(e, target) {
                 e.preventDefault();
                 var deptId = target.dataset.departmentId;
                 var charId = target.dataset.characterId;
-                if (!deptId || !charId) { return; }
-                handleRemoveMember(deptId, charId);
+                var joinPeriod = target.dataset.joinPeriod;
+                if (!deptId || !charId || !joinPeriod) { return; }
+                handleEndMemberInterval(deptId, charId, joinPeriod);
             }
         );
     }
 
-    function handleRemoveMember(deptId, charId) {
+    function handleEndMemberInterval(deptId, charId, joinPeriod) {
         var char = CharacterQueries.getCharacterById(charId);
         var name = char
             ? CharacterQueries.getDisplayName(char)
             : charId;
-
-        if (!window.confirm(
-            'Remove ' + name + ' from this department?'
-        )) {
+        var leaveYear = window.prompt(
+            'Enter the final year of ' + name +
+            "'s department membership:",
+            String(getCurrentYear())
+        );
+        if (leaveYear === null) { return; }
+        leaveYear = String(leaveYear).trim();
+        if (!/^\\d+$/.test(leaveYear)) {
+            notify('Enter a valid leave year.', 'error');
             return;
         }
 
-        DepartmentCore.removeMember(deptId, charId)
-            .then(function(result) {
-                if (!result || !result.success) {
-                    notify(
-                        (result && result.message) ||
-                            'Failed to remove member.',
-                        'error'
-                    );
-                    return;
-                }
-                refreshUI();
-            })
-            .catch(function(err) {
-                console.warn(
-                    '[DepartmentEvents] removeMember threw:', err
+        DepartmentCore.endMemberInterval(
+            deptId, charId, joinPeriod, leaveYear
+        ).then(function(result) {
+            if (!result || !result.success) {
+                notify(
+                    (result && result.message) ||
+                        'Failed to end membership.',
+                    'error'
                 );
-                notify('Failed to remove member.', 'error');
-            });
+                return;
+            }
+            refreshUI();
+        }).catch(function(err) {
+            console.warn(
+                '[DepartmentEvents] endMemberInterval threw:', err
+            );
+            notify('Failed to end membership.', 'error');
+        });
     }
 
     // ============================================================
@@ -1062,17 +1068,40 @@
      *   sortGroup          0 | 1 | 2, as above
      */
     function buildStaffFormVM(dept) {
+        var currentYear = getCurrentYear();
         var existingIds = Object.create(null);
         if (Array.isArray(dept.members)) {
             for (var i = 0; i < dept.members.length; i++) {
                 var m = dept.members[i];
-                if (m && m.characterId) {
+                if (!m || !m.characterId) { continue; }
+
+                // Former members may rejoin. Exclude only members
+                // with an open interval or a departure in/after
+                // the current application year.
+                var hasCurrentOrFutureInterval = false;
+                var intervals = Array.isArray(m.intervals)
+                    ? m.intervals
+                    : [];
+                for (var j = 0; j < intervals.length; j++) {
+                    var iv = intervals[j];
+                    if (!iv || typeof iv !== 'object') { continue; }
+                    var leave = iv.leavePeriod;
+                    if (leave === undefined || leave === null ||
+                        String(leave).trim() === '') {
+                        hasCurrentOrFutureInterval = true;
+                        break;
+                    }
+                    var leaveYear = parseInt(leave, 10);
+                    if (isNaN(leaveYear) || leaveYear >= currentYear) {
+                        hasCurrentOrFutureInterval = true;
+                        break;
+                    }
+                }
+                if (hasCurrentOrFutureInterval) {
                     existingIds[String(m.characterId)] = true;
                 }
             }
         }
-
-        var currentYear = getCurrentYear();
         var eliminationYear = getEliminationYear();
         var EQ = getEliminationQueries();
         var canCheckElimination = EQ &&
