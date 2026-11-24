@@ -550,6 +550,10 @@
             }
         }
 
+        if (data.isMagical !== undefined && typeof data.isMagical !== 'boolean') {
+            return { valid: false, message: 'Magical discipline flag must be true or false.' };
+        }
+
         if (data.type !== undefined) {
             if (VALID_DISCIPLINE_TYPES.indexOf(data.type) === -1) {
                 return { valid: false, message: 'Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', ') };
@@ -660,6 +664,9 @@
             weight: weight,
             gradeScheme: scheme,
             assessmentWeights: weights,
+            isMagical: data.isMagical !== undefined
+                ? data.isMagical === true
+                : (arguments.length > 5 && existingScheme && existingScheme.isMagical === true),
             createdAt: existingCreatedAt || now,
             updatedAt: now
         };
@@ -816,6 +823,12 @@
                 candidate.type = updates.type;
                 hasChanges = true;
             }
+        }
+
+        if (updates.isMagical !== undefined &&
+            candidate.isMagical !== (updates.isMagical === true)) {
+            candidate.isMagical = updates.isMagical === true;
+            hasChanges = true;
         }
 
         // Start week
