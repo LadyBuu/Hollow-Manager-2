@@ -149,6 +149,10 @@
         return window.CharacterCRUD || null;
     }
 
+    function getAcademyEliminations() {
+        return window.AcademyEliminations || null;
+    }
+
     // ============================================================
     // SMALL HELPERS
     // ============================================================
@@ -376,6 +380,19 @@
                 '</p>';
         html += '</div>';
 
+        html += '<section class="academy-elimination-cache-repair" ' +
+                    'style="margin-bottom:16px;padding:12px;background:var(--panel);' +
+                    'border:1px solid var(--border);border-radius:var(--radius);">' +
+                    '<strong style="font-size:0.8rem;">Elimination data repair</strong>' +
+                    '<p class="field-hint" style="font-size:0.7rem;margin:5px 0 9px;">' +
+                    'Rebuilds each character’s derived eliminated-weeks cache from their elimination records. ' +
+                    'It does not change elimination dates or remove records.' +
+                    '</p>' +
+                    '<button type="button" class="small secondary academy-elimination-cache-repair-btn">' +
+                    'Rebuild elimination caches' +
+                    '</button>' +
+                    '</section>';
+
         if (vm.totalCharacters === 0) {
             html += '<p class="empty-state" ' +
                         'style="padding:8px;font-size:0.8rem;">' +
@@ -518,6 +535,13 @@
                 return;
             }
 
+            var cacheRepairBtn = target.closest('.academy-elimination-cache-repair-btn');
+            if (cacheRepairBtn) {
+                e.preventDefault();
+                handleEliminationCacheRepair();
+                return;
+            }
+
             var saveBtn = target.closest(
                 '.academy-instructor-repair-save-btn'
             );
@@ -533,6 +557,34 @@
 
         _container.addEventListener('click', handler);
         _container.__instructorRepairClickHandler = handler;
+    }
+
+    function handleEliminationCacheRepair() {
+        if (_busy) { return; }
+        var API = getAcademyEliminations();
+        if (!API || typeof API.rebuildAllEliminationWeekCaches !== 'function') {
+            notify('AcademyEliminations cache repair is unavailable. Check script loading.', 'error');
+            return;
+        }
+        _busy = true;
+        Promise.resolve(API.rebuildAllEliminationWeekCaches())
+            .then(function(result) {
+                _busy = false;
+                if (!result || result.success === false) {
+                    notify((result && result.message) || 'Elimination cache repair failed.', 'error');
+                    return;
+                }
+                var data = result.data || {};
+                notify('Scanned ' + (data.scanned || 0) + ' characters; repaired ' +
+                    (data.repaired || 0) + ' elimination cache' +
+                    ((data.repaired || 0) === 1 ? '' : 's') + '.', 'success');
+                render(_container);
+            })
+            .catch(function(err) {
+                _busy = false;
+                console.warn('[AcademyInstructorRepairView] elimination cache repair failed:', err);
+                notify('Elimination cache repair failed. See console for details.', 'error');
+            });
     }
 
     // ============================================================
