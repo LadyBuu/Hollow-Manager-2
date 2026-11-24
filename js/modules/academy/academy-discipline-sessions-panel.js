@@ -658,7 +658,13 @@
             );
         }
 
-        // Add Student button (when picker is closed)
+        // Group assignment form (when open)
+        if (group.isAssignmentFormOpen === true) {
+            html += renderAssignmentForm(group);
+        }
+
+        // Group actions remain available unless the candidate picker
+        // is occupying the group's inline action area.
         if (group.isPickerOpen !== true) {
             html += '<div class="academy-discipline-session-group-actions">';
             html += '<button type="button" class="small primary" ' +
@@ -667,11 +673,123 @@
                             escapeAttribute(group.groupId) + '">' +
                         '+ Add Student' +
                     '</button>';
+            if (group.isAssignmentFormOpen !== true) {
+                html += '<button type="button" class="small secondary" ' +
+                            'data-action="discipline-assignment-open" ' +
+                            'data-group-id="' +
+                                escapeAttribute(group.groupId) + '">' +
+                            '+ Add Assignment' +
+                        '</button>';
+            }
             html += '</div>';
         }
 
         html += '</div>'; // body
         html += '</div>'; // block
+        return html;
+    }
+
+    function renderAssignmentForm(group) {
+        var sessions = Array.isArray(group.sessions) ? group.sessions : [];
+        var html = '';
+        html += '<div class="academy-discipline-assignment-form" ' +
+                    'data-group-id="' + escapeAttribute(group.groupId) + '">';
+        html += '<h5 class="academy-discipline-assignment-title">New group assignment</h5>';
+        html += '<div class="academy-discipline-assignment-grid">';
+
+        html += '<label class="academy-discipline-assignment-field">' +
+                    '<span>Assignment name</span>' +
+                    '<input type="text" maxlength="120" ' +
+                        'data-assignment-field="title" ' +
+                        'placeholder="e.g. Practical assessment" ' +
+                        'autocomplete="off">' +
+                '</label>';
+
+        html += '<label class="academy-discipline-assignment-field">' +
+                    '<span>Assessment type</span>' +
+                    '<select data-assignment-field="type">';
+        var types = [
+            ['classAssignment', 'Class Assignment'],
+            ['quiz', 'Quiz'],
+            ['exam', 'Exam'],
+            ['participation', 'Participation'],
+            ['groupProject', 'Group Project'],
+            ['homeAssignment', 'Home Assignment']
+        ];
+        for (var t = 0; t < types.length; t++) {
+            html += '<option value="' + types[t][0] + '"' +
+                        (t === 0 ? ' selected' : '') + '>' +
+                        escapeHtml(types[t][1]) + '</option>';
+        }
+        html += '</select></label>';
+
+        html += '<label class="academy-discipline-assignment-field ' +
+                    'academy-discipline-assignment-session-field">' +
+                    '<span>Class session</span>' +
+                    '<select data-assignment-field="session" ' +
+                        (sessions.length === 0 ? ' disabled' : '') + '>';
+        if (sessions.length === 0) {
+            html += '<option value="">No scheduled sessions</option>';
+        } else {
+            for (var i = 0; i < sessions.length; i++) {
+                var session = sessions[i];
+                html += '<option value="' + escapeAttribute(session.sessionId) + '" ' +
+                            'data-day="' + escapeAttribute(String(session.day)) + '" ' +
+                            'data-start-time="' + escapeAttribute(String(session.startTime)) + '"' +
+                            (i === 0 ? ' selected' : '') + '>' +
+                            escapeHtml(session.dayLabel + ', ' + session.startTimeLabel) +
+                        '</option>';
+            }
+        }
+        html += '</select></label>';
+
+        html += '<label class="academy-discipline-assignment-field">' +
+                    '<span>Maximum score</span>' +
+                    '<input type="number" min="1" max="1000" step="1" ' +
+                        'value="100" data-assignment-field="max-score">' +
+                '</label>';
+
+        html += '<label class="academy-discipline-assignment-field">' +
+                    '<span>Random score minimum</span>' +
+                    '<input type="number" min="0" max="1000" step="1" ' +
+                        'value="60" data-assignment-field="min-score">' +
+                '</label>';
+
+        html += '<label class="academy-discipline-assignment-field">' +
+                    '<span>Random score maximum</span>' +
+                    '<input type="number" min="0" max="1000" step="1" ' +
+                        'value="100" data-assignment-field="max-random-score">' +
+                '</label>';
+
+        html += '</div>';
+        html += '<p class="academy-discipline-assignment-hint">' +
+                    'Each student receives an independent random score. ' +
+                    'Preview the results before saving.' +
+                '</p>';
+        if (sessions.length === 0) {
+            html += '<p class="academy-discipline-assignment-hint">' +
+                        'This group has no scheduled meeting this week. ' +
+                        'Choose Home Assignment to create a slotless grade.' +
+                    '</p>';
+        }
+        html += '<div class="academy-discipline-assignment-preview" ' +
+                    'data-assignment-preview role="status" aria-live="polite">' +
+                    'No grades generated yet.' +
+                '</div>';
+        html += '<div class="academy-discipline-assignment-actions">';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="discipline-assignment-preview" ' +
+                    'data-group-id="' + escapeAttribute(group.groupId) + '">' +
+                    'Generate preview</button>';
+        html += '<button type="button" class="small secondary" disabled ' +
+                    'data-action="discipline-assignment-submit" ' +
+                    'data-group-id="' + escapeAttribute(group.groupId) + '">' +
+                    'Save grades</button>';
+        html += '<button type="button" class="small secondary" ' +
+                    'data-action="discipline-assignment-cancel" ' +
+                    'data-group-id="' + escapeAttribute(group.groupId) + '">' +
+                    'Cancel</button>';
+        html += '</div></div>';
         return html;
     }
 
