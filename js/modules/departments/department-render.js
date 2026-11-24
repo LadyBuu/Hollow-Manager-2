@@ -169,6 +169,10 @@
         var html = '';
         html += '<div class="' + rowClass + '" ' +
                     'data-action="department-select" ' +
+                    'role="button" tabindex="0" ' +
+                    'aria-pressed="' + (isSelected ? 'true' : 'false') + '" ' +
+                    'aria-label="Select department ' +
+                        escapeAttribute(summary.name) + '" ' +
                     'data-department-id="' +
                         escapeAttribute(summary.id) + '">';
 
@@ -233,6 +237,9 @@
             html += 'Head: ' +
                 '<span class="department-head-name" ' +
                     'data-action="department-open-head" ' +
+                    'role="button" tabindex="0" ' +
+                    'aria-label="Open character ' +
+                        escapeAttribute(detail.head.displayName) + '" ' +
                     'data-character-id="' +
                         escapeAttribute(detail.head.characterId) + '">' +
                     escapeHtml(detail.head.displayName) +
@@ -361,6 +368,9 @@
         html += '<span class="department-member-name">';
         html += '<span class="department-member-name-text" ' +
                     'data-action="department-open-member" ' +
+                    'role="button" tabindex="0" ' +
+                    'aria-label="Open character ' +
+                        escapeAttribute(row.displayName) + '" ' +
                     'data-character-id="' +
                         escapeAttribute(row.characterId) + '">' +
                     escapeHtml(row.displayName) +
@@ -524,8 +534,9 @@
                                 'New Department' +
                             '</h3>' +
                             '<button type="button" class="close-modal" ' +
-                                    'data-action="department-form-close"' +
-                                    '>&times;</button>' +
+                                    'data-action="department-form-close" ' +
+                                    'aria-label="Close department form">' +
+                                    '&times;</button>' +
                         '</div>' +
                         '<div class="modal-body">' +
                             '<div id="department-form-content"></div>' +
@@ -541,8 +552,9 @@
                                 'Add Staff' +
                             '</h3>' +
                             '<button type="button" class="close-modal" ' +
-                                    'data-action="department-staff-close"' +
-                                    '>&times;</button>' +
+                                    'data-action="department-staff-close" ' +
+                                    'aria-label="Close add staff form">' +
+                                    '&times;</button>' +
                         '</div>' +
                         '<div class="modal-body">' +
                             '<div id="department-staff-content"></div>' +
