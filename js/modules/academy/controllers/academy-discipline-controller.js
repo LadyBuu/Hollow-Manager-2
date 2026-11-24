@@ -1086,6 +1086,7 @@
             id: record.id,
             name: record.name || '',
             type: record.type || 'mandatory',
+            isMagical: record.isMagical === true,
             startWeek: typeof record.startWeek === 'number'
                 ? record.startWeek
                 : MIN_WEEK,
@@ -1116,6 +1117,7 @@
             id: null,
             name: '',
             type: 'mandatory',
+            isMagical: false,
             startWeek: MIN_WEEK,
             endWeek: MAX_WEEK,
             weeklyHours: 1,
@@ -2512,6 +2514,9 @@
             case 'type':
                 _disciplineDraft.type = inputEl.value;
                 return;
+            case 'isMagical':
+                _disciplineDraft.isMagical = inputEl.checked === true;
+                return;
             case 'startWeek':
                 _disciplineDraft.startWeek = inputEl.value;
                 return;
@@ -2929,6 +2934,7 @@
         return {
             name: (draft.name || '').trim(),
             type: draft.type,
+            isMagical: draft.isMagical === true,
             startWeek: draft.startWeek,
             endWeek: draft.endWeek,
             weeklyHours: draft.weeklyHours,
