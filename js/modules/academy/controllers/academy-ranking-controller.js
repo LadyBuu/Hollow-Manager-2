@@ -382,6 +382,14 @@
             return;
         }
 
+        // ---- Randomise ranking ----
+        var randomiseBtn = target.closest('#academy-ranking-randomise-btn');
+        if (randomiseBtn) {
+            e.preventDefault();
+            handleRandomiseClick(randomiseBtn);
+            return;
+        }
+
         // ---- Insert button (strip) ----
         var insertBtn = target.closest('#academy-ranking-insert-btn');
         if (insertBtn) {
@@ -406,6 +414,103 @@
             var c = getContext();
             c.onOpenCharacterInPeople(row.dataset.characterId);
             return;
+        }
+    }
+
+    function handleRandomiseClick(button) {
+        var classId = readClassIdFromDataset(button);
+        var week = readWeekFromDataset(button);
+        if (!isNonEmptyString(classId) || week === null) {
+            console.warn('[AcademyRankingController] Randomise requires a class and valid week.');
+            return;
+        }
+
+        var vm;
+        try {
+            vm = AcademyAggregator.getRankingViewModel(classId, week);
+        } catch (err) {
+            console.warn('[AcademyRankingController] Could not read ranking before shuffle:', err);
+            return;
+        }
+        if (!vm || !Array.isArray(vm.rankedCharIds) ||
+            !Array.isArray(vm.unrankedStudents)) {
+            console.warn('[AcademyRankingController] Ranking view model is incomplete; shuffle cancelled.');
+            return;
+        }
+
+        var order = vm.rankedCharIds.slice();
+        vm.unrankedStudents.forEach(function(student) {
+            if (student && isNonEmptyString(student.id) &&
+                order.indexOf(student.id) === -1) {
+                order.push(student.id);
+            }
+        });
+        if (order.length < 2) { return; }
+
+        var keepInput = _host
+            ? _host.querySelector('#academy-ranking-keep-positions')
+            : null;
+        var rawPositions = keepInput ? keepInput.value.trim() : '';
+        var keep = {};
+        if (rawPositions !== '') {
+            var tokens = rawPositions.split(',');
+            for (var i = 0; i < tokens.length; i++) {
+                var token = tokens[i].trim();
+                if (!/^\\d+$/.test(token)) {
+                    console.warn('[AcademyRankingController] Use comma-separated whole-number positions.');
+                    if (keepInput) { keepInput.focus(); }
+                    return;
+                }
+                var position = Number(token);
+                if (!Number.isSafeInteger(position) || position < 1 ||
+                    position > order.length) {
+                    console.warn('[AcademyRankingController] Kept positions must be between 1 and ' + order.length + '.');
+                    if (keepInput) { keepInput.focus(); }
+                    return;
+                }
+                if (keep[position]) {
+                    console.warn('[AcademyRankingController] Position ' + position + ' was listed more than once.');
+                    if (keepInput) { keepInput.focus(); }
+                    return;
+                }
+                keep[position] = true;
+            }
+        }
+
+        var shuffled = order.slice();
+        var movable = [];
+        for (var p = 0; p < order.length; p++) {
+            if (!keep[p + 1]) { movable.push(order[p]); }
+        }
+        for (var j = movable.length - 1; j > 0; j--) {
+            var swapIndex = Math.floor(Math.random() * (j + 1));
+            var temp = movable[j];
+            movable[j] = movable[swapIndex];
+            movable[swapIndex] = temp;
+        }
+
+        var next = [];
+        var movableIndex = 0;
+        for (var slot = 0; slot < order.length; slot++) {
+            next.push(keep[slot + 1] ? order[slot] : movable[movableIndex++]);
+        }
+
+        var Ranking;
+        try {
+            Ranking = requireAcademyRanking('handleRandomiseClick');
+            if (typeof Ranking.setRanking !== 'function') {
+                throw new Error('AcademyRanking.setRanking is unavailable.');
+            }
+            Promise.resolve(Ranking.setRanking(classId, week, next))
+                .then(function(result) {
+                    refreshAfterWrite('randomise ranking', result);
+                })
+                .catch(function(err) {
+                    console.warn('[AcademyRankingController] Randomise failed:', err);
+                    refreshAfterWrite('randomise ranking', { success: false, message: err.message });
+                });
+        } catch (err) {
+            console.warn('[AcademyRankingController] Randomise failed:', err);
         }
     }
 
