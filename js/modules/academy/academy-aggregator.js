@@ -1834,7 +1834,7 @@
     // ELIMINATION PROJECTION
     // ============================================================
 
-    function readEliminationState(charId, week) {
+    function readEliminationState(charId, week, year) {
         var result = {
             eliminated: false,
             eliminationWeek: null,
@@ -1850,18 +1850,29 @@
             return result;
         }
 
-        result.eliminated = EQ.isCharacterEliminatedByWeek(charId, week) === true;
+        result.eliminated = EQ.isCharacterEliminatedByWeek(
+            charId, week, year
+        ) === true;
 
         if (result.eliminated) {
-            if (typeof EQ.getEliminationWeek === 'function') {
-                result.eliminationWeek = EQ.getEliminationWeek(charId);
-            }
-            if (typeof EQ.getEliminationReason === 'function') {
-                var reason = EQ.getEliminationReason(charId);
-                if (typeof reason === 'string' && reason !== 'Unknown') {
-                    result.eliminationReason = reason;
+            var character = CharacterQueries.getCharacterById(charId);
+            var eliminations = character && Array.isArray(character.eliminations)
+                ? character.eliminations : [];
+            var targetYear = Number(year);
+            var earliestWeek = null;
+            var earliestReason = '';
+            for (var i = 0; i < eliminations.length; i++) {
+                var record = eliminations[i];
+                if (!record || Number(record.year) !== targetYear) { continue; }
+                var recordWeek = Number(record.week);
+                if (!isFinite(recordWeek) || Math.floor(recordWeek) !== recordWeek) { continue; }
+                if (earliestWeek === null || recordWeek < earliestWeek) {
+                    earliestWeek = recordWeek;
+                    earliestReason = typeof record.reason === 'string' ? record.reason : '';
                 }
             }
+            result.eliminationWeek = earliestWeek;
+            result.eliminationReason = earliestReason;
         }
 
         return result;
@@ -1907,7 +1918,7 @@
             }
             if (!found) { continue; }
 
-            var elim = readEliminationState(c.id, weekNum);
+            var elim = readEliminationState(c.id, weekNum, cls.year);
 
             result.push({
                 id: c.id,
