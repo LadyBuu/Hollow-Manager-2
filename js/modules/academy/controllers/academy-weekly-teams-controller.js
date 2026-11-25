@@ -530,10 +530,9 @@
             notify('Select a scheduled team and week first.', 'error');
             return;
         }
-        var host = document.getElementById('academy-content');
-        var input = host
-            ? host.querySelector('#academy-weekly-team-group-penalty')
-            : document.getElementById('academy-weekly-team-group-penalty');
+        var input = document.getElementById(
+            'academy-weekly-team-group-penalty'
+        );
         if (!input || input.value.trim() === '') {
             notify('Enter a penalty between 0 and 100.', 'error');
             return;
