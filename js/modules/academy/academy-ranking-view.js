@@ -549,11 +549,9 @@
 
         // ---- Name (button for keyboard activation) ----
         html += '<span class="rankings-col-name">';
-        html += '<button type="button" ' +
-                    'class="academy-ranking-name-btn" ' +
-                    'data-character-id="' + characterIdAttr + '">' +
+        html += '<span class="academy-ranking-name">' +
                     escapeHtml(entry.characterName) +
-                '</button>';
+                '</span>';
         if (entry.isInstructor) {
             html += ' <span class="academy-ranking-instructor-badge">' +
                         'Instructor' +
