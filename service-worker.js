@@ -4,7 +4,7 @@
  */
 'use strict';
 
-var CACHE_NAME = 'hollow-manager-shell-v4';
+var CACHE_NAME = 'hollow-manager-shell-v5';
 var SHELL_FILES = [
     './index.html',
     './word-hoard/',
