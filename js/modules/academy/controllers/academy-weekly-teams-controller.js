@@ -150,7 +150,8 @@
         typeof AcademyWeeklyTeams.assignTeamToClass !== 'function' ||
         typeof AcademyWeeklyTeams.ensureWindow !== 'function' ||
         typeof AcademyWeeklyTeams.setWindow !== 'function' ||
-        typeof AcademyWeeklyTeams.clearClassWindows !== 'function') {
+        typeof AcademyWeeklyTeams.clearClassWindows !== 'function' ||
+        typeof AcademyWeeklyTeams.setGroupDynamicPenalty !== 'function') {
         _missing.push('AcademyWeeklyTeams API');
     }
     if (!View ||
@@ -478,6 +479,10 @@
                 e.preventDefault();
                 handleClearRosters();
                 return;
+            case 'weekly-teams-save-group-penalty':
+                e.preventDefault();
+                handleSaveGroupDynamicPenalty();
+                return;
             case 'weekly-teams-toggle-orphans':
                 e.preventDefault();
                 handleToggleOrphans(actionEl);
@@ -516,6 +521,50 @@
             }
             return;
         }
+    }
+
+    function handleSaveGroupDynamicPenalty() {
+        var ctx = getRenderContext();
+        if (!ctx.classId || !ctx.teamId ||
+            !isFiniteNumber(ctx.week)) {
+            notify('Select a scheduled team and week first.', 'error');
+            return;
+        }
+        var host = document.getElementById('academy-content');
+        var input = host
+            ? host.querySelector('#academy-weekly-team-group-penalty')
+            : document.getElementById('academy-weekly-team-group-penalty');
+        if (!input || input.value.trim() === '') {
+            notify('Enter a penalty between 0 and 100.', 'error');
+            return;
+        }
+        var penalty = Number(input.value);
+        if (!isFinite(penalty) || penalty < 0 || penalty > 100) {
+            notify('Penalty must be between 0 and 100.', 'error');
+            return;
+        }
+        AcademyWeeklyTeams.setGroupDynamicPenalty(
+            ctx.classId, ctx.teamId, ctx.week, penalty
+        ).then(function(result) {
+            if (!result || !result.success) {
+                notify(
+                    result && result.message
+                        ? result.message
+                        : 'Failed to save group-dynamic penalty.',
+                    'error'
+                );
+                return;
+            }
+            notify('Group-dynamic penalty saved.', 'success');
+            getRenderContext().onChange();
+        }).catch(function(error) {
+            notify(
+                error && error.message
+                    ? error.message
+                    : 'Failed to save group-dynamic penalty.',
+                'error'
+            );
+        });
     }
 
     function handleInput(e) {
