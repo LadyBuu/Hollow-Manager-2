@@ -127,5 +127,5 @@ $('clear-button').addEventListener('click',async()=>{
  try{await clear();showWords([]);await refreshCount();status('backup-feedback','The hoard has been cleared.');}
  catch(error){status('backup-feedback',error.message||'Could not clear database.',true);}
 });
-openDatabase().then(refreshCount).catch(error=>{status('storage-status',error.message||'Database unavailable.',true);status('add-feedback','Storage is unavailable in this browser.',true);});
-}\n})();
+openDatabase().then(refreshCount).catch(error=>{status('storage-status',error.message||'Database unavailable.',true);status('add-feedback','Storage is unavailable in this browser.',true);});}
+})();
