@@ -8,3 +8,19 @@
 [data-theme="dating-sim"] .random-word{font-family:"Trebuchet MS","Arial Rounded MT Bold",Arial,sans-serif;font-weight:800}
 [data-theme="dating-sim"] .panel{background:color-mix(in srgb,var(--panel) 94%,transparent)}
 @media(max-width:680px){.hoard-header-actions{width:100%;justify-content:space-between}.hoard-header-actions .eyebrow{display:none}}
+
+
+[data-theme="dating-sim"] .app-shell{max-width:1120px}
+[data-theme="dating-sim"] .topbar{padding:12px 14px;background:linear-gradient(90deg,#e8d8ff,#fffaff 55%,#d8f8fb);border:2px solid #b99cdb;box-shadow:3px 3px 0 rgba(145,112,180,.2)}
+[data-theme="dating-sim"] .back-link{font-family:"Courier New",monospace;font-weight:700;color:#79559e}
+[data-theme="dating-sim"] .hero{align-items:center;padding-top:42px}
+[data-theme="dating-sim"] .total-card{border:2px solid #b99cdb;border-radius:2px;background:linear-gradient(145deg,#fffaff,#eee3ff);box-shadow:4px 5px 0 rgba(145,112,180,.22)}
+[data-theme="dating-sim"] .total-number{color:#dc55bd;text-shadow:1px 1px #fff}
+[data-theme="dating-sim"] .panel{border-radius:2px}
+[data-theme="dating-sim"] .section-heading h2::before{content:"♥ ";color:#e653c5;font-size:.75em}
+[data-theme="dating-sim"] textarea{min-height:190px;background-color:#fffaff;background-image:linear-gradient(rgba(114,220,232,.08) 1px,transparent 1px);background-size:100% 25px;line-height:25px}
+[data-theme="dating-sim"] .random-result{border:2px dashed #b99cdb;border-radius:2px;background-color:#fbf7ff;background-image:radial-gradient(circle,#f1d5ef 1px,transparent 1.5px);background-size:12px 12px}
+[data-theme="dating-sim"] .random-word{color:#d84cbb;font-family:"Trebuchet MS","Arial Rounded MT Bold",sans-serif;text-shadow:2px 2px 0 #fff;font-weight:900}
+[data-theme="dating-sim"] .random-word:nth-child(3n){color:#55b9c9}
+[data-theme="dating-sim"] .hint::before{content:"✧ ";color:#dc55bd}
+[data-theme="dating-sim"] footer{border-top:1px dotted #b99cdb}
