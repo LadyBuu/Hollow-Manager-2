@@ -241,7 +241,7 @@
         { id: 'rankings',         label: 'Rankings' },
         { id: 'disciplines',      label: 'Disciplines' },
         { id: 'locations',        label: 'Locations' },
-        { id: 'instructorRepair', label: 'Instructor Repair' },
+        { id: 'instructorRepair', label: 'Repairs' },
         { id: 'sharedGroups',     label: 'Shared Groups' }
     ];
 
