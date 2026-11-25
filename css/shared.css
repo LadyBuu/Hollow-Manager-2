@@ -2999,6 +2999,86 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 [data-theme="nautical-tile"] .panel,[data-theme="nautical-tile"] .stat-card,[data-theme="nautical-tile"] .quick-link{border:2px solid var(--border);border-radius:2px;box-shadow:2px 2px 0 rgba(13,35,66,.15)}
 [data-theme="nautical-tile"] button{border:2px solid var(--border);border-radius:0;box-shadow:2px 2px 0 rgba(13,35,66,.15);font-family:Georgia,'Times New Roman',serif}
 
+
+/* ============================================================
+   DATING SIM — bubblegum UI, sugary pinks, cyan accents
+   ============================================================ */
+[data-theme="dating-sim"] {
+    color-scheme: light;
+    --bg: #fff0f7;
+    --panel: #fffafd;
+    --panel-alt: #ffe1ef;
+    --border: #f3a9cf;
+    --border-soft: #f8c9e1;
+    --border-strong: #df78b2;
+    --text: #512b4b;
+    --text-dim: #a66f96;
+    --muted: #a66f96;
+    --accent: #ff65ad;
+    --accent-soft: rgba(255, 101, 173, .16);
+    --accent-hover: rgba(255, 101, 173, .27);
+    --info: #64d9e8;
+    --info-soft: rgba(100, 217, 232, .18);
+    --info-hover: rgba(100, 217, 232, .3);
+    --danger: #e84d79;
+    --danger-soft: rgba(232, 77, 121, .14);
+    --danger-hover: rgba(232, 77, 121, .24);
+    --warning: #e9a64e;
+    --warning-soft: rgba(233, 166, 78, .16);
+    --warning-hover: rgba(233, 166, 78, .26);
+    --ok: #67bd9c;
+    --overlay: rgba(79, 35, 67, .34);
+    --overlay-light: rgba(79, 35, 67, .2);
+    --shadow: 0 8px 28px rgba(202, 104, 160, .16), 0 2px 7px rgba(111, 57, 98, .08);
+    --radius: 16px;
+    --scrollbar-track: #ffeaf4;
+    --scrollbar-thumb: #efa8cc;
+    --graph-node-accent-fill: #ff65ad;
+    --graph-node-accent-stroke: #df4e99;
+    --graph-node-info-fill: #64d9e8;
+    --graph-node-info-stroke: #36b5c8;
+    --graph-node-status-deceased: #9a8a99;
+    --graph-node-status-instructor: #a77be0;
+    --graph-node-status-senior: #e9a64e;
+    --graph-node-status-junior: #64b9dc;
+    --graph-node-status-rookie: #67bd9c;
+    --graph-node-status-student: #ff65ad;
+    --graph-node-status-support: #f28c72;
+    --graph-node-status-civilian: #a66f96;
+    --graph-node-status-other: #a66f96;
+    --magic-earth: #a98b69; --magic-water: #64b9dc; --magic-fire: #f28c72;
+    --magic-air: #9cdeeb; --magic-metal: #a7b8c3; --magic-wood: #67bd9c;
+    --magic-blood: #e84d79; --magic-bone: #e9dfcf; --magic-mind: #a77be0;
+    --magic-morphic: #55c8b1; --magic-life: #67bd9c; --magic-death: #78647b;
+    --magic-space: #64b9dc; --magic-time: #e9a64e; --magic-dimension: #a77be0;
+    --magic-void: #59445c; --magic-reality: #ff65ad; --magic-transference: #e84d79;
+    --relationship-familial: #67bd9c; --relationship-professional: #e9a64e;
+    --relationship-romantic: #e84d79; --relationship-friendship: #64b9dc;
+    --relationship-mentor: #a77be0; --relationship-rivalry: #f28c72;
+    --relationship-alliance: #55c8b1; --relationship-other: #a66f96;
+    --chip-bg-subtle: rgba(255, 101, 173, .09);
+}
+[data-theme="dating-sim"] body {
+    background-color: var(--bg);
+    background-image: radial-gradient(circle at 12px 12px, rgba(255,101,173,.12) 1.5px, transparent 2px), radial-gradient(circle at 36px 36px, rgba(100,217,232,.12) 1.5px, transparent 2px), linear-gradient(135deg, #fff7fb, #ffedf6 55%, #f0fbff);
+    background-size: 48px 48px, 48px 48px, auto;
+    background-attachment: fixed;
+    font-family: "Trebuchet MS", "Arial Rounded MT Bold", Arial, sans-serif;
+}
+[data-theme="dating-sim"] h1,
+[data-theme="dating-sim"] h2,
+[data-theme="dating-sim"] h3 { color: #a83f80; font-family: "Trebuchet MS", "Arial Rounded MT Bold", Arial, sans-serif; font-weight: 800; letter-spacing: -.035em; }
+[data-theme="dating-sim"] .panel,
+[data-theme="dating-sim"] .stat-card,
+[data-theme="dating-sim"] .quick-link { border: 1px solid var(--border); border-radius: 19px; box-shadow: var(--shadow); }
+[data-theme="dating-sim"] button { border: 1px solid var(--border-strong); border-radius: 999px; box-shadow: 0 3px 0 rgba(191, 75, 139, .16); font-weight: 750; }
+[data-theme="dating-sim"] button:active { transform: translateY(2px); box-shadow: none; }
+[data-theme="dating-sim"] input,
+[data-theme="dating-sim"] select,
+[data-theme="dating-sim"] textarea { border-color: var(--border); border-radius: 12px; }
+[data-theme="dating-sim"] .page-header { border-bottom: 2px dotted var(--border); }
+[data-theme="dating-sim"] .theme-select { background: var(--panel); color: var(--text); }
+
 /* Explicit theme picker */
 .theme-controls { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
 .theme-select {
