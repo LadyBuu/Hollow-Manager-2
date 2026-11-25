@@ -233,6 +233,11 @@
                     '+ Add Character' +
                 '</button>';
         html += '<button type="button" class="small secondary" ' +
+                    'data-action="populate-class" ' +
+                    'data-class-id="' + escapeAttribute(classVM.id) + '">' +
+                    'Populate Class' +
+                '</button>';
+        html += '<button type="button" class="small secondary" ' +
                     'data-action="edit-class-disciplines" ' +
                     'data-class-id="' + escapeAttribute(classVM.id) + '">' +
                     'Disciplines' +
