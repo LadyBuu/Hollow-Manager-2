@@ -1233,14 +1233,23 @@
             // fallback path, which now logs a diagnostic. The
             // console.warn is expected; the test verifies the
             // returned value only.
-            var malformed = exports.normalizeScheme({
-                label: 'My Scheme',
-                bands: [
-                    { label: 'Pass', minPercent: 70 },
-                    { label: 'Fail', minPercent: '80garbage' }
-                ]
-            });
-            if (malformed.label !== 'Numeric') {
+            var originalWarn = console.warn;
+            var malformed;
+            try {
+                // This malformed fixture intentionally exercises the
+                // fallback diagnostic. Keep the verification itself quiet.
+                console.warn = function() {};
+                malformed = exports.normalizeScheme({
+                    label: 'My Scheme',
+                    bands: [
+                        { label: 'Pass', minPercent: 70 },
+                        { label: 'Fail', minPercent: '80garbage' }
+                    ]
+                });
+            } finally {
+                console.warn = originalWarn;
+            }
+            if (malformed.label !== 'Numeric Percentage') {
                 missing.push(
                     'normalizeScheme did not fall back on malformed ' +
                     'minPercent'
