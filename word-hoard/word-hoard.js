@@ -78,7 +78,7 @@ async function add(text,options={}){
 $('add-button').addEventListener('click',()=>add($('word-input').value,{clear:true}));
 $('file-input').addEventListener('change',async event=>{
  const file=event.target.files&&event.target.files[0];if(!file)return;
- try{const text=await file.text();if(/\\.json$/i.test(file.name)){const result=await importJSON(text);status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');await refreshCount();}else{await add(text);}}catch(error){status('add-feedback',error.message||'Could not read file.',true);}event.target.value='';
+ try{const text=await file.text();if(/\.json$/i.test(file.name)){const result=await importJSON(text);status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');await refreshCount();}else{await add(text);}}catch(error){status('add-feedback',error.message||'Could not read file.',true);}event.target.value='';
 });
 $('random-button').addEventListener('click',async()=>{
  try{const amount=Math.max(1,Math.min(100,Number($('random-count').value)||1));$('random-count').value=amount;const words=await random(amount);showWords(words);if(!words.length)status('add-feedback','The hoard is empty. Add some words first.');}
