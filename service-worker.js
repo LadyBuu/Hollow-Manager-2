@@ -4,7 +4,7 @@
  */
 'use strict';
 
-var CACHE_NAME = 'hollow-manager-shell-v6';
+var CACHE_NAME = 'hollow-manager-shell-v7';
 var SHELL_FILES = [
     './index.html',
     './word-hoard/',
@@ -150,6 +150,7 @@ var SHELL_FILES = [
     './js/modules/tournaments/tournament-core.js',
     './js/modules/academy/academy-character-detail-aggregator.js',
     './js/modules/academy/academy-class-detail.js',
+    './js/modules/academy/academy-class-populate.js',
     './js/modules/academy/academy-grades-editor.js',
     './js/modules/academy/academy-character-detail.js',
     './js/modules/academy/academy-discipline-view.js',
