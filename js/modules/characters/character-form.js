@@ -1293,28 +1293,28 @@
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label for="char-firstName" style="font-size:0.7rem;color:var(--text-dim);">First Name *</label>
-                        <input type="text" id="char-firstName" value="${escapeAttribute(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <div class="word-hoard-field-row"><input type="text" id="char-firstName" value="${escapeAttribute(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;"><button type="button" class="small secondary word-hoard-random-btn" data-target="char-firstName" title="Get a random word from Word Hoard" aria-label="Random first name">Random</button></div>
                     </div>
                     <div class="form-group">
                         <label for="char-middleName" style="font-size:0.7rem;color:var(--text-dim);">Middle Name</label>
-                        <input type="text" id="char-middleName" value="${escapeAttribute(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <div class="word-hoard-field-row"><input type="text" id="char-middleName" value="${escapeAttribute(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;"><button type="button" class="small secondary word-hoard-random-btn" data-target="char-middleName" title="Get a random word from Word Hoard" aria-label="Random middle name">Random</button></div>
                     </div>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label for="char-lastName" style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
-                        <input type="text" id="char-lastName" value="${escapeAttribute(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <div class="word-hoard-field-row"><input type="text" id="char-lastName" value="${escapeAttribute(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;"><button type="button" class="small secondary word-hoard-random-btn" data-target="char-lastName" title="Get a random word from Word Hoard" aria-label="Random last name">Random</button></div>
                     </div>
                     <div class="form-group">
                         <label for="char-nickname" style="font-size:0.7rem;color:var(--text-dim);">Nickname</label>
-                        <input type="text" id="char-nickname" value="${escapeAttribute(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        <div class="word-hoard-field-row"><input type="text" id="char-nickname" value="${escapeAttribute(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;"><button type="button" class="small secondary word-hoard-random-btn" data-target="char-nickname" title="Get a random word from Word Hoard" aria-label="Random nickname">Random</button></div>
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label for="char-alias" style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
-                    <input type="text" id="char-alias" value="${escapeAttribute(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    <div class="word-hoard-field-row"><input type="text" id="char-alias" value="${escapeAttribute(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;"><button type="button" class="small secondary word-hoard-random-btn" data-target="char-alias" title="Get a random word from Word Hoard" aria-label="Random alias">Random</button></div>
                 </div>
 
                 <div class="form-group" style="margin-top:8px;">
