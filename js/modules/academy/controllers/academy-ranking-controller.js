@@ -376,6 +376,15 @@
             return;
         }
 
+        // Character names are display-only. Do not let their clicks
+        // fall through to the row-level People navigation handler.
+        var nameCell = target.closest('.rankings-col-name');
+        if (nameCell) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+
         // ---- Clear button (per row) ----
         //
         // The clear button is checked BEFORE the row, so a click
@@ -401,15 +410,6 @@
         if (insertBtn) {
             e.preventDefault();
             handleInsertClick(insertBtn);
-            return;
-        }
-
-        // ---- Name button ----
-        var nameBtn = target.closest('.academy-ranking-name-btn');
-        if (nameBtn && nameBtn.dataset && nameBtn.dataset.characterId) {
-            e.preventDefault();
-            var ctx = getContext();
-            ctx.onOpenCharacterInPeople(nameBtn.dataset.characterId);
             return;
         }
 
