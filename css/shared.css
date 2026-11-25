@@ -3246,3 +3246,183 @@ main { padding: 8px 10px; max-width: 1400px; margin: 0 auto; overflow-x: hidden;
 [data-theme="choc-cake"] body,
 [data-theme="dada"] body,
 [data-theme="orchestrion"] body { font-family: "Courier New", Courier, monospace; }
+
+
+/* ============================================================
+   DATING SIM — retro angel desktop / lace-and-pixel interface
+   Drawn from the uploaded reference: lavender gingham, window chrome,
+   scalloped lace, candy-magenta accents and little cyan status lights.
+   ============================================================ */
+[data-theme="dating-sim"] {
+    color-scheme: light;
+    --bg: #f7efff;
+    --panel: #fffaff;
+    --panel-alt: #eee3ff;
+    --border: #b99cdb;
+    --border-soft: #dfc9f2;
+    --border-strong: #8e6ab9;
+    --text: #49345f;
+    --text-dim: #8b76a6;
+    --muted: #8b76a6;
+    --accent: #e653c5;
+    --accent-soft: rgba(230, 83, 197, .16);
+    --accent-hover: rgba(230, 83, 197, .28);
+    --info: #72dce8;
+    --info-soft: rgba(114, 220, 232, .2);
+    --info-hover: rgba(114, 220, 232, .34);
+    --danger: #dc4c91;
+    --danger-soft: rgba(220, 76, 145, .14);
+    --danger-hover: rgba(220, 76, 145, .25);
+    --warning: #e8b4ed;
+    --warning-soft: rgba(232, 180, 237, .22);
+    --warning-hover: rgba(232, 180, 237, .34);
+    --ok: #75cfc9;
+    --overlay: rgba(57, 34, 79, .42);
+    --overlay-light: rgba(57, 34, 79, .22);
+    --shadow: 4px 5px 0 rgba(145, 112, 180, .22);
+    --radius: 3px;
+    --scrollbar-track: #f0e5ff;
+    --scrollbar-thumb: #c4a6e4;
+    --graph-node-accent-fill: #e653c5;
+    --graph-node-accent-stroke: #a43d9e;
+    --graph-node-info-fill: #72dce8;
+    --graph-node-info-stroke: #399eaf;
+    --graph-node-status-deceased: #9a8fa2;
+    --graph-node-status-instructor: #a98bd4;
+    --graph-node-status-senior: #e8b4ed;
+    --graph-node-status-junior: #72cddd;
+    --graph-node-status-rookie: #75cfc9;
+    --graph-node-status-student: #e653c5;
+    --graph-node-status-support: #ee9acb;
+    --graph-node-status-civilian: #8b76a6;
+    --graph-node-status-other: #8b76a6;
+    --magic-earth: #b69b85; --magic-water: #72cddd; --magic-fire: #e98b9e;
+    --magic-air: #b9eaf0; --magic-metal: #aebbd0; --magic-wood: #75cfc9;
+    --magic-blood: #dc4c91; --magic-bone: #eee4dc; --magic-mind: #a98bd4;
+    --magic-morphic: #69c4bd; --magic-life: #75cfc9; --magic-death: #786b89;
+    --magic-space: #72dce8; --magic-time: #e8b4ed; --magic-dimension: #a98bd4;
+    --magic-void: #59466e; --magic-reality: #e653c5; --magic-transference: #dc4c91;
+    --relationship-familial: #75cfc9; --relationship-professional: #e8b4ed;
+    --relationship-romantic: #e653c5; --relationship-friendship: #72dce8;
+    --relationship-mentor: #a98bd4; --relationship-rivalry: #e98b9e;
+    --relationship-alliance: #69c4bd; --relationship-other: #8b76a6;
+    --chip-bg-subtle: rgba(230, 83, 197, .1);
+}
+[data-theme="dating-sim"] body {
+    color: var(--text);
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(45deg, rgba(190,160,225,.13) 25%, transparent 25%, transparent 75%, rgba(190,160,225,.13) 75%),
+      linear-gradient(45deg, rgba(190,160,225,.13) 25%, transparent 25%, transparent 75%, rgba(190,160,225,.13) 75%),
+      radial-gradient(circle at 50% 0%, #fffaff 0, transparent 58%);
+    background-position: 0 0, 12px 12px, center;
+    background-size: 24px 24px, 24px 24px, auto;
+    background-attachment: fixed;
+    font-family: "Courier New", "Lucida Console", monospace;
+    font-size: 13px;
+}
+[data-theme="dating-sim"] h1,
+[data-theme="dating-sim"] h2,
+[data-theme="dating-sim"] h3 {
+    color: #79559e;
+    font-family: "Trebuchet MS", "Arial Rounded MT Bold", sans-serif;
+    font-weight: 900;
+    letter-spacing: -.035em;
+    text-shadow: 1px 1px 0 #fff, 2px 2px 0 rgba(185,156,219,.45);
+}
+[data-theme="dating-sim"] .panel,
+[data-theme="dating-sim"] .stat-card,
+[data-theme="dating-sim"] .quick-link,
+[data-theme="dating-sim"] .modal-content {
+    position: relative;
+    border: 2px solid var(--border);
+    border-radius: 2px;
+    background: var(--panel);
+    box-shadow: 4px 5px 0 rgba(145,112,180,.22);
+}
+[data-theme="dating-sim"] .panel::before,
+[data-theme="dating-sim"] .stat-card::before {
+    content: "";
+    display: block;
+    height: 9px;
+    margin: -1px -1px 13px;
+    border-bottom: 1px solid #b99cdb;
+    background: repeating-linear-gradient(90deg, #d9c2f4 0 18px, #f7eaff 18px 36px, #a9e9ef 36px 42px, #f7eaff 42px 60px);
+}
+[data-theme="dating-sim"] button,
+[data-theme="dating-sim"] .btn,
+[data-theme="dating-sim"] .button {
+    border: 2px solid #9b79bf;
+    border-radius: 2px;
+    background: linear-gradient(180deg, #fffaff 0%, #eadcff 100%);
+    color: #604477;
+    box-shadow: 2px 2px 0 #b99cdb;
+    font-family: "Courier New", monospace;
+    font-weight: 700;
+    text-shadow: 1px 1px #fff;
+}
+[data-theme="dating-sim"] button:hover:not(:disabled),
+[data-theme="dating-sim"] .btn:hover:not(:disabled),
+[data-theme="dating-sim"] .button:hover:not(:disabled) {
+    border-color: #d64dbb;
+    background: linear-gradient(180deg, #fffaff 0%, #f8d8f2 100%);
+}
+[data-theme="dating-sim"] button:active,
+[data-theme="dating-sim"] .btn:active,
+[data-theme="dating-sim"] .button:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+}
+[data-theme="dating-sim"] .btn-primary,
+[data-theme="dating-sim"] button.primary,
+[data-theme="dating-sim"] .button.primary {
+    border-color: #bd45a9;
+    background: linear-gradient(180deg, #f49be1, #df5fc5);
+    color: #fffaff;
+    text-shadow: 1px 1px #a53b99;
+}
+[data-theme="dating-sim"] input,
+[data-theme="dating-sim"] select,
+[data-theme="dating-sim"] textarea {
+    border: 2px solid #c4a6e4;
+    border-radius: 2px;
+    background-color: #fffaff;
+    box-shadow: inset 1px 1px 0 #eadfff;
+    color: #49345f;
+    font-family: "Courier New", monospace;
+}
+[data-theme="dating-sim"] input:focus,
+[data-theme="dating-sim"] select:focus,
+[data-theme="dating-sim"] textarea:focus {
+    outline: 2px dotted #e653c5;
+    outline-offset: 2px;
+}
+[data-theme="dating-sim"] .page-header,
+[data-theme="dating-sim"] .topbar {
+    border-bottom: 3px double #b99cdb;
+}
+[data-theme="dating-sim"] .page-header::after {
+    content: "♥  ✧  ♥";
+    display: block;
+    padding: 5px 0 0;
+    color: #df72cc;
+    font-size: 11px;
+    letter-spacing: .45em;
+    text-align: center;
+}
+[data-theme="dating-sim"] .theme-select {
+    border: 2px solid #9b79bf;
+    border-radius: 2px;
+    background: #fffaff;
+    color: #604477;
+}
+[data-theme="dating-sim"] .badge,
+[data-theme="dating-sim"] .chip {
+    border: 1px solid #c4a6e4;
+    border-radius: 2px;
+    background: #f2e8ff;
+}
+[data-theme="dating-sim"] ::selection {
+    background: #f3b6e9;
+    color: #49345f;
+}
