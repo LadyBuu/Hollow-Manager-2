@@ -526,7 +526,7 @@
     function handleSaveGroupDynamicPenalty() {
         var ctx = getRenderContext();
         if (!ctx.classId || !ctx.teamId ||
-            !isFiniteNumber(ctx.week)) {
+            typeof ctx.week !== 'number' || !isFinite(ctx.week)) {
             notify('Select a scheduled team and week first.', 'error');
             return;
         }
