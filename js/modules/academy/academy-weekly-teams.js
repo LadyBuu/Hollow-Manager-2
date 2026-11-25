@@ -1562,6 +1562,13 @@
                 'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
             ));
         }
+        if (penalty === undefined || penalty === null ||
+            (typeof penalty === 'string' && penalty.trim() === '') ||
+            (typeof penalty !== 'number' && typeof penalty !== 'string')) {
+            return Promise.resolve(failure(
+                'Group-dynamic penalty must be between 0 and 100.'
+            ));
+        }
         var value = (typeof penalty === 'number') ? penalty : Number(penalty);
         if (!isFinite(value) || value < 0 || value > 100) {
             return Promise.resolve(failure(
