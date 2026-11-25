@@ -14,7 +14,6 @@
  *     CharacterEvents consume.
  *   - The character list toggle (mobile drawer).
  *   - The Research button. Opens window.Research.
- *   - The Bulk Add button. Opens window.CharacterBulkCreate.
  *   - window.showCharacterForm (the single owner).
  *   - window.toggleCharacterList (delegates to CharacterEvents).
  *   - window._clearEditState (dispatches characterCleared).
@@ -117,7 +116,6 @@
  *   - window.DataLoader
  *   - window.CharacterViews
  *   - window.Research
- *   - window.CharacterBulkCreate
  *   - window.UI_CONSTANTS
  */
 
