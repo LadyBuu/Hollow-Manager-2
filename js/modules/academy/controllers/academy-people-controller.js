@@ -926,6 +926,9 @@
             case 'edit-class-add-character':
                 handleClassAction('add-character', el.dataset.classId);
                 return;
+            case 'populate-class':
+                handleClassAction('populate-class', el.dataset.classId);
+                return;
             case 'edit-class-disciplines':
                 handleClassAction('disciplines', el.dataset.classId);
                 return;
@@ -1124,6 +1127,26 @@
     }
 
     function handleClassAction(action, classId) {
+        if (action === 'populate-class') {
+            var Populate = window.AcademyClassPopulate;
+            if (!Populate || typeof Populate.open !== 'function') {
+                notify('Populate Class is not available.', 'error');
+                return;
+            }
+            try {
+                Populate.open(classId, {
+                    onComplete: function() {
+                        var ctx = getContext();
+                        ctx.onChange();
+                    }
+                });
+            } catch (e) {
+                console.warn('[AcademyPeopleController] Populate Class failed:', e);
+                notify('Could not open Populate Class.', 'error');
+            }
+            return;
+        }
+
         switch (action) {
             case 'disciplines':
                 handleOpenDisciplinesPicker(classId);
