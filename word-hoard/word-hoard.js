@@ -29,7 +29,14 @@ function openDatabase(){
  });
  return dbPromise;
 }
-function cleanToken(value){return String(value||'').normalize('NFKC').replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,'').trim();}
+function normaliseWord(value){
+ let word=String(value??'').normalize('NFKC').trim();
+ word=word.replace(/\[.*$/u,'').replace(/^[^\p{L}]+|[^\p{L}\p{M}'’\-]+$/gu,'').trim();
+ if(!word||/\p{N}/u.test(word)||!/\p{L}/u.test(word))return '';
+ const first=word.search(/\p{L}/u);
+ return word.slice(0,first)+word.charAt(first).toLocaleUpperCase()+word.slice(first+1);
+}
+function cleanToken(value){return normaliseWord(value);}
 function parseText(text,options={}){
  let source=String(text??'');
  if(options.html||/<\s*(?:html|body|p|div|br|li|h[1-6])\b/i.test(source)){
@@ -39,7 +46,7 @@ function parseText(text,options={}){
  }
  const words=[],seen=new Set();let duplicates=0;
  for(const part of source.split(/[\s,;]+/u)){
-  const word=cleanToken(part);if(!word||! /\p{L}/u.test(word))continue;
+  const word=cleanToken(part);if(!word)continue;
   const key=word.toLocaleLowerCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);words.push({key,word});
  }
  words.duplicates=duplicates;return words;
