@@ -1840,6 +1840,25 @@
     padding: 3px 2px;
 }
 
+.bulk-create-name-field {
+    display: flex;
+    align-items: stretch;
+    gap: 3px;
+    min-width: 0;
+}
+
+.bulk-create-name-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.bulk-create-random {
+    flex: 0 0 auto;
+    padding: 3px 6px;
+    font-size: 0.62rem;
+    white-space: nowrap;
+}
+
 .bulk-create-row input {
     width: 100%;
     padding: 5px 8px;
@@ -1936,8 +1955,8 @@
         border-radius: 6px;
     }
 
-    .bulk-create-first      { grid-area: first; }
-    .bulk-create-last       { grid-area: last; }
+    .bulk-create-name-field:first-child { grid-area: first; }
+    .bulk-create-name-field:nth-child(2) { grid-area: last; }
     .bulk-create-birth-year { grid-area: year; }
     .bulk-create-gender     { grid-area: gender; }
     .bulk-create-remove {
