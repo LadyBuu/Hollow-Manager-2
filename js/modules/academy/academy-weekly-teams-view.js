@@ -450,8 +450,10 @@
         if (team.ranking) {
             html += '<span class="academy-weekly-team-ranking">' +
                 (team.ranking.position ? 'Team #' + team.ranking.position + ' · ' : '') +
-                'Avg. rank ' + escapeHtml(team.ranking.averageRankDisplay) +
-                ' (' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
+                'Team rank ' + escapeHtml(team.ranking.adjustedAverageRankDisplay) +
+                ' (base ' + escapeHtml(team.ranking.averageRankDisplay) +
+                ' + penalty ' + escapeHtml(team.ranking.groupDynamicPenaltyDisplay) +
+                '; ' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
             '</span>';
         }
         if (isNonEmptyString(team.periodDisplay)) {
@@ -490,6 +492,7 @@
         }
 
         html += renderDetailHeader(selected, vm.week);
+        html += renderGroupDynamicControl(selected, vm.week);
         html += renderDetailMembers(selected);
 
         html += '</div>';
@@ -547,8 +550,10 @@
             html += '<span class="academy-weekly-team-detail-meta-item">' +
                 '<span class="meta-label">Team ranking:</span> ' +
                 (team.ranking.position ? '#' + team.ranking.position + ' · ' : '') +
-                'Average individual rank ' + escapeHtml(team.ranking.averageRankDisplay) +
-                ' (' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
+                'Adjusted team rank ' + escapeHtml(team.ranking.adjustedAverageRankDisplay) +
+                ' (base ' + escapeHtml(team.ranking.averageRankDisplay) +
+                ' + penalty ' + escapeHtml(team.ranking.groupDynamicPenaltyDisplay) +
+                '; ' + escapeHtml(team.ranking.coverageDisplay) + ' ranked)' +
             '</span>';
         }
         html += '</div>';
@@ -572,6 +577,28 @@
         html += '</div>';
 
         html += '</div>';
+        return html;
+    }
+
+    function renderGroupDynamicControl(team, week) {
+        var penalty = team.ranking &&
+            isFiniteNumber(team.ranking.groupDynamicPenalty)
+                ? team.ranking.groupDynamicPenalty
+                : 0;
+        var html = '';
+        html += '<section class="academy-weekly-team-dynamics">';
+        html += '<h4>Group dynamics</h4>';
+        html += '<p class="small">Penalty added to the team\'s average individual rank. ' +
+                    'Higher values worsen the team ranking. This never changes individual rankings.</p>';
+        html += '<div class="academy-weekly-team-dynamics-controls">';
+        html += '<label for="academy-weekly-team-group-penalty">Penalty (0–100)</label>';
+        html += '<input type="number" id="academy-weekly-team-group-penalty" ' +
+                    'min="0" max="100" step="0.5" value="' +
+                    escapeAttribute(String(penalty)) + '">';
+        html += '<button type="button" class="small primary" ' +
+                    'data-action="weekly-teams-save-group-penalty">Save penalty</button>';
+        html += '</div>';
+        html += '</section>';
         return html;
     }
 
