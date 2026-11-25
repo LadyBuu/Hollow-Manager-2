@@ -1515,6 +1515,7 @@
         bindBirthYearListener(container);
         bindRandomButtons(container);
         bindFieldRandomButtons(container);
+        bindWordHoardNameButtons(container);
         bindPreviousNameButtons(container);
         bindCareerButtons(container);
         bindCareerStatusWizard(container);
@@ -2020,6 +2021,86 @@
                         newPersonalityValue
                     );
                     return;
+                }
+            }
+        );
+    }
+
+    // ============================================================
+    // WORD HOARD NAME FIELD RANDOMISER
+    // ============================================================
+
+    function bindWordHoardNameButtons(container) {
+        addSafeDelegatedListener(
+            container, '.word-hoard-random-btn', 'click',
+            async function(e, target) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                var fieldId = target.dataset
+                    ? target.dataset.target
+                    : null;
+                var allowedFields = [
+                    'char-firstName',
+                    'char-middleName',
+                    'char-lastName',
+                    'char-nickname',
+                    'char-alias'
+                ];
+
+                if (allowedFields.indexOf(fieldId) === -1) {
+                    return;
+                }
+
+                var input = document.getElementById(fieldId);
+                if (!input || !input.closest('#character-form')) {
+                    return;
+                }
+
+                var WordHoard = window.WordHoard;
+                if (!WordHoard ||
+                    typeof WordHoard.random !== 'function') {
+                    notify(
+                        'Word Hoard is unavailable. Open the Word Hoard app once and try again.',
+                        'error'
+                    );
+                    return;
+                }
+
+                var originalText = target.textContent;
+                target.disabled = true;
+                target.textContent = '…';
+
+                try {
+                    var words = await WordHoard.random(1);
+                    if (!words || !words.length) {
+                        notify(
+                            'Word Hoard is empty. Add some words first.',
+                            'error'
+                        );
+                        return;
+                    }
+
+                    input.value = words[0];
+                    input.dispatchEvent(new Event('input', {
+                        bubbles: true
+                    }));
+                    input.dispatchEvent(new Event('change', {
+                        bubbles: true
+                    }));
+                    input.focus();
+                } catch (err) {
+                    console.error(
+                        '[CharacterEvents] Word Hoard random failed:',
+                        err
+                    );
+                    notify(
+                        'Could not retrieve a word from Word Hoard.',
+                        'error'
+                    );
+                } finally {
+                    target.disabled = false;
+                    target.textContent = originalText;
                 }
             }
         );
