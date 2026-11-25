@@ -2833,17 +2833,17 @@
             team.ranking = getTeamRankingSummary(team._team, selectedClass.id, week);
         });
         var rankedTeams = teams.filter(function(team) {
-            return team.ranking.averageRank !== null;
+            return team.ranking.adjustedAverageRank !== null;
         }).slice().sort(function(x, y) {
-            if (x.ranking.averageRank !== y.ranking.averageRank) {
-                return x.ranking.averageRank - y.ranking.averageRank;
+            if (x.ranking.adjustedAverageRank !== y.ranking.adjustedAverageRank) {
+                return x.ranking.adjustedAverageRank - y.ranking.adjustedAverageRank;
             }
             return String(x.name).localeCompare(String(y.name));
         });
         rankedTeams.forEach(function(team, index) { team.ranking.position = index + 1; });
         teams.sort(function(x, y) {
             if (sortMode === 'ranking') {
-                var xr = x.ranking.averageRank, yr = y.ranking.averageRank;
+                var xr = x.ranking.adjustedAverageRank, yr = y.ranking.adjustedAverageRank;
                 if (xr === null && yr !== null) { return 1; }
                 if (yr === null && xr !== null) { return -1; }
                 if (xr !== null && yr !== null && xr !== yr) { return xr - yr; }
@@ -2967,9 +2967,28 @@
             rankedCount++;
         }
         var averageRank = rankedCount ? rankTotal / rankedCount : null;
+        var AWT = getAcademyWeeklyTeams();
+        var groupDynamicPenalty = 0;
+        if (AWT && typeof AWT.getGroupDynamicPenalty === 'function') {
+            groupDynamicPenalty = AWT.getGroupDynamicPenalty(
+                classId, team.id, week
+            );
+        }
+        if (!isFiniteNumber(groupDynamicPenalty) ||
+            groupDynamicPenalty < 0) {
+            groupDynamicPenalty = 0;
+        }
+        var adjustedAverageRank = averageRank !== null
+            ? averageRank + groupDynamicPenalty
+            : null;
         return {
             averageRank: averageRank,
             averageRankDisplay: averageRank !== null ? averageRank.toFixed(1) : '\u2014',
+            groupDynamicPenalty: groupDynamicPenalty,
+            groupDynamicPenaltyDisplay: groupDynamicPenalty.toFixed(1),
+            adjustedAverageRank: adjustedAverageRank,
+            adjustedAverageRankDisplay: adjustedAverageRank !== null
+                ? adjustedAverageRank.toFixed(1) : '\u2014',
             rankedCount: rankedCount,
             memberCount: active.length,
             coverageDisplay: rankedCount + '/' + active.length,
