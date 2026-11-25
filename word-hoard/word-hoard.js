@@ -84,7 +84,11 @@ async function importJSON(text){
 async function exportJSON(){const entries=await getAll();return JSON.stringify({version:1,exportedAt:new Date().toISOString(),words:entries.map(entry=>entry.word)},null,2);}
 async function clear(){const db=await openDatabase();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('Could not clear database.'));});}
 window.WordHoard=Object.freeze({openDatabase,parseText,addText,getAll,count,random,importJSON,exportJSON,clear});
-const $=id=>document.getElementById(id);\n// This script also supplies the Word Hoard API to the main app.\n// Bind page controls only on the standalone Word Hoard page.\nif ($('add-button')) {\nlet lastResult=[];
+const $=id=>document.getElementById(id);
+// This script also supplies the Word Hoard API to the main app.
+// Bind page controls only on the standalone Word Hoard page.
+if ($('add-button')) {
+let lastResult=[];
 function status(id,message,error=false){const el=$(id);el.textContent=message;el.style.color=error?'var(--danger)':'';}
 async function refreshCount(){const total=await count();$('word-count').textContent=total.toLocaleString();$('storage-status').textContent='Saved in this browser · IndexedDB';return total;}
 function showWords(words){
