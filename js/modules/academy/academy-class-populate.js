@@ -25,7 +25,7 @@
     if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') missing.push('DomUtils');
     if (!Notifications || typeof Notifications.notify !== 'function') missing.push('NotificationSystem');
     if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function' ||
-        typeof CharacterCRUD.deleteCharacter !== 'function') missing.push('CharacterCRUD');
+        typeof CharacterCRUD.delete !== 'function') missing.push('CharacterCRUD');
     if (!AcademyClasses || typeof AcademyClasses.getClass !== 'function' ||
         typeof AcademyClasses.addToClass !== 'function') missing.push('AcademyClasses');
     if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') missing.push('CharacterGenerator');
@@ -223,6 +223,12 @@
                             nickname: '',
                             alias: '',
                             gender: physical.gender,
+                            skin: physical.skin,
+                            hair: physical.hair,
+                            eyes: physical.eyes,
+                            height: physical.height,
+                            weight: physical.weight,
+                            build: physical.build,
                             birthYear: String(settings.from + Math.floor(Math.random() * (settings.to - settings.from + 1))),
                             isFiller: false,
                             personality: {},
@@ -250,7 +256,7 @@
             var rollbackFailures = [];
             for (var r = createdIds.length - 1; r >= 0; r--) {
                 try {
-                    var removed = await CharacterCRUD.deleteCharacter(createdIds[r]);
+                    var removed = await CharacterCRUD.delete(createdIds[r]);
                     if (!removed || !removed.success) rollbackFailures.push(createdIds[r]);
                 } catch (rollbackError) {
                     rollbackFailures.push(createdIds[r]);
