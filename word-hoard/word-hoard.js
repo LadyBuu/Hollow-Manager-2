@@ -22,23 +22,23 @@ function parseText(text,options={}){
  }else{
   source=source.replace(/^\s{0,3}[\x60]{3,}.*$/gm,' ').replace(/^\s{0,3}#{1,6}\s+/gm,' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/<[^>]*>/g,' ').replace(/[*_~>#|]/g,' ');
  }
- const words=[],seen=new Set();
+ const words=[],seen=new Set();let duplicates=0;
  for(const part of source.split(/[\s,;]+/u)){
   const word=cleanToken(part);if(!word||! /\p{L}/u.test(word))continue;
-  const key=word.toLocaleLowerCase();if(seen.has(key))continue;seen.add(key);words.push({key,word});
+  const key=word.toLocaleLowerCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);words.push({key,word});
  }
- return words;
+ words.duplicates=duplicates;return words;
 }
 async function count(){
  const db=await openDatabase();return new Promise((resolve,reject)=>{const r=db.transaction(STORE,'readonly').objectStore(STORE).count();r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
 }
 async function addText(text,options={}){
- const incoming=parseText(text,options);if(!incoming.length)return{added:0,duplicates:0,total:await count()};
+ const incoming=parseText(text,options);if(!incoming.length)return{added:0,duplicates:incoming.duplicates||0,total:await count()};
  const db=await openDatabase();
  return new Promise((resolve,reject)=>{
   const tx=db.transaction(STORE,'readwrite'),store=tx.objectStore(STORE);let added=0,duplicates=0;
   for(const entry of incoming){const r=store.add({...entry,addedAt:Date.now()});r.onsuccess=()=>added++;r.onerror=event=>{if(r.error&&r.error.name==='ConstraintError'){duplicates++;event.preventDefault();event.stopPropagation();}};}
-  tx.oncomplete=()=>count().then(total=>resolve({added,duplicates:incoming.length-added,total})).catch(reject);
+  tx.oncomplete=()=>count().then(total=>resolve({added,duplicates:(incoming.duplicates||0)+incoming.length-added,total})).catch(reject);
   tx.onerror=()=>reject(tx.error||new Error('Could not save imported words.'));
   tx.onabort=()=>reject(tx.error||new Error('Import was cancelled.'));
  });
@@ -46,7 +46,7 @@ async function addText(text,options={}){
 async function getAll(){
  const db=await openDatabase();return new Promise((resolve,reject)=>{const r=db.transaction(STORE,'readonly').objectStore(STORE).getAll();r.onsuccess=()=>resolve(r.result||[]);r.onerror=()=>reject(r.error);});
 }
-function randomIndex(max){if(crypto&&crypto.getRandomValues){const a=new Uint32Array(1);crypto.getRandomValues(a);return Math.floor(a[0]/4294967296*max);}return Math.floor(Math.random()*max);}
+function randomIndex(max){if(window.crypto&&window.crypto.getRandomValues){const a=new Uint32Array(1);window.crypto.getRandomValues(a);return Math.floor(a[0]/4294967296*max);}return Math.floor(Math.random()*max);}
 async function random(amount=1){
  const entries=await getAll(),pool=entries.slice(),result=[],wanted=Math.max(1,Math.min(100,Number(amount)||1));
  for(let i=0;i<Math.min(wanted,pool.length);i++){const index=randomIndex(pool.length);result.push(pool[index].word);pool.splice(index,1);}
