@@ -854,6 +854,24 @@
         return record ? deepClone(record) : null;
     }
 
+    /**
+     * Returns the group-dynamic penalty configured for one team/week.
+     * Missing values intentionally mean zero.
+     */
+    function getGroupDynamicPenalty(classId, teamId, week) {
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) { return 0; }
+        var record = getTeamRecordInternalFromStore(
+            getStore(), classId, teamId
+        );
+        if (!record || !isPlainObject(record.groupDynamicPenaltyByWeek)) {
+            return 0;
+        }
+        var value = record.groupDynamicPenaltyByWeek[String(weekNum)];
+        return typeof value === 'number' &&
+            isFinite(value) && value >= 0 && value <= 100 ? value : 0;
+    }
+
     function getAllTeamRecords(classId) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -1522,6 +1540,104 @@
                 ' at week ' + weekNum,
             successMessage: 'Team opened for this week.',
             failureMessage: 'Failed to open team for this week.'
+        });
+    }
+
+    /**
+     * Set the group-dynamic penalty for a single team and week.
+     * The value is stored on the existing weekly-team record, keyed
+     * by week, so changing team membership or the display week does
+     * not overwrite another week's assessment.
+     */
+    function setGroupDynamicPenalty(classId, teamId, week, penalty) {
+        if (!isNonEmptyString(classId)) {
+            return Promise.resolve(failure('Class ID is required.'));
+        }
+        if (!isNonEmptyString(teamId)) {
+            return Promise.resolve(failure('Team ID is required.'));
+        }
+        var weekNum = parseWeekStrict(week);
+        if (weekNum === null) {
+            return Promise.resolve(failure(
+                'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'
+            ));
+        }
+        var value = (typeof penalty === 'number') ? penalty : Number(penalty);
+        if (!isFinite(value) || value < 0 || value > 100) {
+            return Promise.resolve(failure(
+                'Group-dynamic penalty must be between 0 and 100.'
+            ));
+        }
+        var targetClass = String(classId);
+        var targetTeam = String(teamId);
+        var weekKey = String(weekNum);
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return {
+                        valid: false,
+                        message: 'Application data is not available.'
+                    };
+                }
+                var classError = validateTeamClassInSnapshot(
+                    appData, targetTeam, targetClass
+                );
+                if (classError) {
+                    return { valid: false, message: classError };
+                }
+                var store = getStoreFromSnapshot(appData);
+                var record = getTeamRecordInternalFromStore(
+                    store, targetClass, targetTeam
+                );
+                if (!record) {
+                    return {
+                        valid: false,
+                        message: 'This team has no weekly assignment record.'
+                    };
+                }
+                if (!TeamQueries.windowContains(
+                    record.startWeek, record.endWeek, weekNum
+                )) {
+                    return {
+                        valid: false,
+                        message: 'This team is not scheduled for that week.'
+                    };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var store = getStoreFromSnapshot(appData);
+                var record = getTeamRecordInternalFromStore(
+                    store, targetClass, targetTeam
+                );
+                if (!record) {
+                    throw new Error('Weekly team record disappeared during save.');
+                }
+                if (!isPlainObject(record.groupDynamicPenaltyByWeek)) {
+                    record.groupDynamicPenaltyByWeek = {};
+                }
+                if (value === 0) {
+                    delete record.groupDynamicPenaltyByWeek[weekKey];
+                } else {
+                    record.groupDynamicPenaltyByWeek[weekKey] = value;
+                }
+                if (Object.keys(record.groupDynamicPenaltyByWeek).length === 0) {
+                    delete record.groupDynamicPenaltyByWeek;
+                }
+                record.updatedAt = new Date().toISOString();
+                return {
+                    classId: targetClass,
+                    teamId: targetTeam,
+                    week: weekNum,
+                    penalty: value
+                };
+            },
+            logMessage: 'Set group-dynamic penalty for team ' +
+                targetTeam + ' in class ' + targetClass +
+                ' at week ' + weekNum + ' to ' + value,
+            successMessage: 'Group-dynamic penalty saved.',
+            failureMessage: 'Failed to save group-dynamic penalty.'
         });
     }
 
@@ -3055,6 +3171,8 @@
     window.AcademyWeeklyTeams = Object.freeze({
         // Reads
         getTeamRecord: getTeamRecord,
+        getGroupDynamicPenalty: getGroupDynamicPenalty,
+        setGroupDynamicPenalty: setGroupDynamicPenalty,
         getAllTeamRecords: getAllTeamRecords,
         getActiveMembers: getActiveMembers,
         getAllMembers: getAllMembers,
