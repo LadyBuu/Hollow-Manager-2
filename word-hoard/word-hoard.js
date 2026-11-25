@@ -1,13 +1,28 @@
 (function(){
 'use strict';
-const DB_NAME='hollow-word-hoard',DB_VERSION=1,STORE='words';
+const DB_NAME='hollow-word-hoard',DB_VERSION=2,STORE='words';
 let dbPromise;
 function openDatabase(){
  if(dbPromise)return dbPromise;
  dbPromise=new Promise((resolve,reject)=>{
   if(!indexedDB){reject(new Error('IndexedDB is unavailable in this browser.'));return;}
   const request=indexedDB.open(DB_NAME,DB_VERSION);
-  request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains(STORE))request.result.createObjectStore(STORE,{keyPath:'key'});};
+  request.onupgradeneeded=event=>{
+   const db=request.result;
+   const store=db.objectStoreNames.contains(STORE)
+    ?request.transaction.objectStore(STORE)
+    :db.createObjectStore(STORE,{keyPath:'key'});
+   if(event.oldVersion<2&&event.oldVersion>0){
+    const cursorRequest=store.openCursor();
+    cursorRequest.onsuccess=()=>{
+     const cursor=cursorRequest.result;if(!cursor)return;
+     const record=cursor.value,word=normaliseWord(record.word);
+     if(!word){cursor.delete();}
+     else{cursor.update({...record,key:word.toLocaleLowerCase(),word});}
+     cursor.continue();
+    };
+   }
+  };
   request.onsuccess=()=>resolve(request.result);
   request.onerror=()=>reject(request.error||new Error('Could not open the word database.'));
   request.onblocked=()=>reject(new Error('The database is blocked by another open tab. Close other Word Hoard tabs and retry.'));
