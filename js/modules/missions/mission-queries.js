@@ -325,12 +325,12 @@
             if (!isPlainObject(p)) { continue; }
 
             var cid = normaliseId(p.characterId);
-            if (cid === null) { continue; }
+            if (cid === '') { continue; }
 
             var tid = null;
             if (p.teamId !== undefined && p.teamId !== null && p.teamId !== '') {
                 tid = normaliseId(p.teamId);
-                if (tid === null) { continue; }
+                if (tid === '') { continue; }
             }
 
             var source = p.source;
