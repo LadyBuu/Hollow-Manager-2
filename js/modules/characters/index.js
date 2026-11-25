@@ -217,14 +217,6 @@
             );
         }
 
-        if (!window.CharacterBulkCreate ||
-            typeof window.CharacterBulkCreate.open !== 'function') {
-            console.warn(
-                '[CharactersModule] CharacterBulkCreate module not ' +
-                'loaded — Bulk Add button will be inactive.'
-            );
-        }
-
         if (missing.length > 0) {
             console.warn(
                 '[CharactersModule] Missing dependencies:',
@@ -359,9 +351,6 @@
         // Research button: opens the research modal.
         bindResearchButton(container);
 
-        // Bulk Add button: opens the bulk-create modal.
-        bindBulkAddButton(container);
-
         // Re-render the form if an edit id is already set.
         var editId = getCurrentEditId();
         if (editId &&
@@ -443,48 +432,6 @@
         }
     }
 
-    function bindBulkAddButton(container) {
-        if (!container) { return; }
-
-        var btn = null;
-        try {
-            btn = container.querySelector('#bulk-add-btn');
-        } catch (e) {
-            console.warn(
-                '[CharactersModule] Bulk Add button lookup threw:', e
-            );
-            return;
-        }
-        if (!btn) { return; }
-
-        try {
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-
-                var Bulk = window.CharacterBulkCreate || null;
-                if (!Bulk || typeof Bulk.open !== 'function') {
-                    console.warn(
-                        '[CharactersModule] CharacterBulkCreate ' +
-                        'module is not loaded.'
-                    );
-                    return;
-                }
-
-                try {
-                    Bulk.open();
-                } catch (err) {
-                    console.warn(
-                        '[CharactersModule] CharacterBulkCreate.open ' +
-                        'threw:', err
-                    );
-                }
-            });
-        } catch (e) {
-            console.warn(
-                '[CharactersModule] Bulk Add button bind threw:', e
-            );
-        }
-    }
 
     // ============================================================
     // FILTER STATE RESTORE
@@ -575,10 +522,6 @@
                                     class="small secondary"
                                     title="Search character profiles"
                                     aria-label="Search character profiles">\u2315</button>
-                            <button id="bulk-add-btn"
-                                    class="small secondary"
-                                    title="Bulk create characters"
-                                    aria-label="Bulk create characters">\u2726</button>
                             <button id="add-character-btn"
                                     class="primary small"
                                     title="Add character"
