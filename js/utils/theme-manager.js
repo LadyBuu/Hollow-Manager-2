@@ -33,7 +33,8 @@
         { value: 'ukiyo-e', label: 'Ukiyo-e', isAttribute: true, themeColor: '#f4ead5' },
         { value: 'brutalist', label: 'Brutalist', isAttribute: true, themeColor: '#e6e6e6' },
         { value: 'rococo', label: 'Rococo', isAttribute: true, themeColor: '#e8f0f2' },
-        { value: 'nautical-tile', label: 'Nautical Tile', isAttribute: true, themeColor: '#e4eaf0' }
+        { value: 'nautical-tile', label: 'Nautical Tile', isAttribute: true, themeColor: '#e4eaf0' },
+        { value: 'dating-sim', label: 'Dating Sim', isAttribute: true, themeColor: '#fff0f7' }
     ];
 
     var THEME_BY_VALUE = Object.create(null);
@@ -205,7 +206,7 @@
             ILLUMINATED: 'illuminated', DISCOWING: 'discowing',
             CHOC_CAKE: 'choc-cake', DADA: 'dada', UKIYO_E: 'ukiyo-e',
             BRUTALIST: 'brutalist', ORCHESTRION: 'orchestrion',
-            ROCOCO: 'rococo', NAUTICAL_TILE: 'nautical-tile'
+            ROCOCO: 'rococo', NAUTICAL_TILE: 'nautical-tile', DATING_SIM: 'dating-sim'
         })
     });
 
