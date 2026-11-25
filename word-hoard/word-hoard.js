@@ -31,8 +31,10 @@ function openDatabase(){
 }
 function normaliseWord(value){
  let word=String(value??'').normalize('NFKC').trim();
- word=word.replace(/\[.*$/u,'').replace(/^[^\p{L}]+|[^\p{L}\p{M}'’\-]+$/gu,'').trim();
- if(!word||/\p{N}/u.test(word)||!/\p{L}/u.test(word))return '';
+ word=word.replace(/\[.*$/u,'').trim();
+ if(!word||/\p{N}/u.test(word))return '';
+ word=word.replace(/^[^\p{L}]+|[^\p{L}\p{M}'’\-]+$/gu,'').trim();
+ if(!word||!/\p{L}/u.test(word))return '';
  const first=word.search(/\p{L}/u);
  return word.slice(0,first)+word.charAt(first).toLocaleUpperCase()+word.slice(first+1);
 }
