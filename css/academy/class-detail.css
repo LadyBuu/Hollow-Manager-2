@@ -245,3 +245,35 @@
         min-width: 0;
     }
 }
+
+
+/* Populate Class modal */
+.academy-populate-class-content {
+    width: min(440px, calc(100vw - 32px));
+}
+.academy-populate-class-fields {
+    display: grid;
+    gap: 12px;
+}
+.academy-populate-class-fields label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.academy-populate-class-fields input {
+    width: 100%;
+    box-sizing: border-box;
+}
+.academy-populate-year-range {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.academy-populate-class-note {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    line-height: 1.5;
+}
