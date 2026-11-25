@@ -328,15 +328,25 @@
 
         var html = '';
 
+        html += '<div class="bulk-create-name-field">';
         html += '<input type="text" ' +
                     'class="bulk-create-first" ' +
                     'placeholder="First name" ' +
                     'value="' + escapeAttribute(first) + '">';
+        html += '<button type="button" class="small secondary word-hoard-random-btn bulk-create-random" ' +
+                    'data-bulk-action="random-word" data-target="bulk-create-first" ' +
+                    'title="Get a random word from Word Hoard" aria-label="Random first name">Random</button>';
+        html += '</div>';
 
+        html += '<div class="bulk-create-name-field">';
         html += '<input type="text" ' +
                     'class="bulk-create-last" ' +
                     'placeholder="Last name" ' +
                     'value="' + escapeAttribute(last) + '">';
+        html += '<button type="button" class="small secondary word-hoard-random-btn bulk-create-random" ' +
+                    'data-bulk-action="random-word" data-target="bulk-create-last" ' +
+                    'title="Get a random word from Word Hoard" aria-label="Random last name">Random</button>';
+        html += '</div>';
 
         html += '<input type="number" ' +
                     'class="bulk-create-birth-year" ' +
@@ -670,9 +680,55 @@
     // EVENT HANDLING
     // ============================================================
 
+    async function randomiseName(button) {
+        if (!button || !_rowsEl) { return; }
+        var targetClass = button.dataset ? button.dataset.target : '';
+        if (targetClass !== 'bulk-create-first' &&
+            targetClass !== 'bulk-create-last') { return; }
+
+        var row = button.closest('.bulk-create-row');
+        var input = row && row.querySelector('.' + targetClass);
+        if (!input) { return; }
+
+        var WordHoard = window.WordHoard;
+        if (!WordHoard || typeof WordHoard.random !== 'function') {
+            notify('Word Hoard is unavailable. Open the Word Hoard app once and try again.', 'error');
+            return;
+        }
+
+        var originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = '…';
+        try {
+            var words = await WordHoard.random(1);
+            if (!words || !words.length) {
+                notify('Word Hoard is empty. Add some words first.', 'error');
+                return;
+            }
+            input.value = words[0];
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.focus();
+        } catch (err) {
+            console.error('[CharacterBulkCreate] Word Hoard random failed:', err);
+            notify('Could not retrieve a word from Word Hoard.', 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+
     function handleContentClick(e) {
         var target = e.target;
         if (!target || typeof target.closest !== 'function') { return; }
+
+        var randomButton = target.closest('[data-bulk-action="random-word"]');
+        if (randomButton) {
+            e.preventDefault();
+            e.stopPropagation();
+            randomiseName(randomButton);
+            return;
+        }
 
         var actionEl = target.closest('[data-bulk-action]');
         if (!actionEl || !actionEl.dataset) { return; }
