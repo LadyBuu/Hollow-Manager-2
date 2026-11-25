@@ -66,7 +66,7 @@
  *   header:
  *
  *     .rankings-col-rank      position number + drag grip
- *     .rankings-col-name      student name (button for keyboard)
+ *     .rankings-col-name      student name (display-only text)
  *     .rankings-col-total     "N" (of totalStudents)
  *     .rankings-col-pct       percentile, if any
  *     .rankings-col-avg       average display
@@ -106,13 +106,12 @@
  *   - #academy-ranking-class-select (change)
  *   - #academy-ranking-week-input   (change / Enter)
  *   - .academy-ranking-row [data-character-id]  (click, delegated)
- *   - .academy-ranking-name-btn [data-character-id]  (click)
  *   - .academy-ranking-clear-btn [data-character-id] (click)
  *   - #academy-ranking-insert-btn   (click)
  *
  * ACCESSIBILITY:
- *   The row is not a control. The name is a real <button> so
- *   keyboard users can activate it. The drag handle is
+ *   The row is draggable, but the character name is display-only
+ *   text and does not navigate. The drag handle is
  *   aria-hidden; keyboard users reorder via the move controls
  *   (up/down) that the delegated listener provides, or via the
  *   position input in the insert strip. Drag is an enhancement,
