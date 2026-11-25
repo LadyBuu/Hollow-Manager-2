@@ -2241,3 +2241,30 @@
         display: none;
     }
 }
+
+
+/* Word Hoard random controls on character name fields */
+.word-hoard-field-row {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    width: 100%;
+}
+
+.word-hoard-field-row input {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto !important;
+}
+
+.word-hoard-random-btn {
+    flex: 0 0 auto;
+    padding: 3px 7px;
+    font-size: 0.6rem;
+    white-space: nowrap;
+}
+
+.word-hoard-random-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
