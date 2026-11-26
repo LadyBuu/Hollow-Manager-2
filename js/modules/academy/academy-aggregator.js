@@ -2958,10 +2958,41 @@
 
     function getTeamRankingSummary(team, classId, week) {
         var active = TeamQueries.getActiveTeamMembers(team, week) || [];
+        var scoringMembers = active.slice();
+        var weekNum = resolveWeek(week);
+        var classRecord = AcademyClasses.getClass(classId);
+        var classYear = classRecord && classRecord.year;
+        var EQ = getEliminationQueries();
+
+        // Score the elimination week before the member leaves the team.
+        // Membership may already have been closed for that week.
+        if (weekNum !== null && weekNum > CalendarConstants.MIN_WEEK &&
+            EQ && typeof EQ.isCharacterEliminatedByWeek === 'function') {
+            var allMembers = TeamQueries.getAllTeamMemberRecords(team) || [];
+            for (var em = 0; em < allMembers.length; em++) {
+                var member = allMembers[em];
+                if (!member || !member.characterId ||
+                    scoringMembers.some(function(existing) {
+                        return existing && String(existing.characterId) ===
+                            String(member.characterId);
+                    })) { continue; }
+                if (!TeamQueries.isMemberActive(member, weekNum - 1)) {
+                    continue;
+                }
+                var character = CharacterQueries.getCharacterById(member.characterId);
+                if (!character || !EQ.isCharacterEliminatedByWeek(
+                    character, weekNum, classYear
+                )) { continue; }
+                scoringMembers.push(member);
+            }
+        }
+
         var rankTotal = 0, rankedCount = 0;
-        for (var i = 0; i < active.length; i++) {
-            if (!active[i] || !active[i].characterId) { continue; }
-            var record = getIndividualRanking(classId, active[i].characterId, week);
+        for (var i = 0; i < scoringMembers.length; i++) {
+            if (!scoringMembers[i] || !scoringMembers[i].characterId) { continue; }
+            var record = getIndividualRanking(
+                classId, scoringMembers[i].characterId, week
+            );
             if (!record) { continue; }
             rankTotal += record.rank;
             rankedCount++;
@@ -2990,8 +3021,8 @@
             adjustedAverageRankDisplay: adjustedAverageRank !== null
                 ? adjustedAverageRank.toFixed(1) : '\u2014',
             rankedCount: rankedCount,
-            memberCount: active.length,
-            coverageDisplay: rankedCount + '/' + active.length,
+            memberCount: scoringMembers.length,
+            coverageDisplay: rankedCount + '/' + scoringMembers.length,
             position: null
         };
     }
