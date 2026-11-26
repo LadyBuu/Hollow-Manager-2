@@ -9,7 +9,8 @@ function openDatabase(){
   const request=indexedDB.open(DB_NAME,DB_VERSION);
   request.onupgradeneeded=event=>{
    const db=request.result;
-   if(!db.objectStoreNames.contains(BLOCKED))db.createObjectStore(BLOCKED,{keyPath:'key'});\n   const store=db.objectStoreNames.contains(STORE)
+   if(!db.objectStoreNames.contains(BLOCKED))db.createObjectStore(BLOCKED,{keyPath:'key'});
+   const store=db.objectStoreNames.contains(STORE)
     ?request.transaction.objectStore(STORE)
     :db.createObjectStore(STORE,{keyPath:'key'});
    if(event.oldVersion<2&&event.oldVersion>0){
@@ -57,8 +58,10 @@ async function count(){
  const db=await openDatabase();return new Promise((resolve,reject)=>{const r=db.transaction(STORE,'readonly').objectStore(STORE).count();r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
 }
 async function addText(text,options={}){
- const incoming=parseText(text,options);if(!incoming.length)return{added:0,duplicates:incoming.duplicates||0,total:await count()};
- const db=await openDatabase();
+ const incoming=parseText(text,options),db=await openDatabase();
+ const blocked=await new Promise((resolve,reject)=>{const r=db.transaction(BLOCKED,'readonly').objectStore(BLOCKED).getAll();r.onsuccess=()=>resolve(new Set((r.result||[]).map(x=>x.key)));r.onerror=()=>reject(r.error);});
+ const eligible=incoming.filter(x=>!blocked.has(x.key));
+ if(!eligible.length)return{added:0,duplicates:(incoming.duplicates||0)+incoming.length,total:await count()};
  return new Promise((resolve,reject)=>{
   const tx=db.transaction(STORE,'readwrite'),store=tx.objectStore(STORE);let added=0,duplicates=0;
   for(const entry of eligible){const r=store.add({...entry,addedAt:Date.now()});r.onsuccess=()=>added++;r.onerror=event=>{if(r.error&&r.error.name==='ConstraintError'){duplicates++;event.preventDefault();event.stopPropagation();}};}
