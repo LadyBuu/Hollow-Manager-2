@@ -59,7 +59,7 @@ function normaliseWord(value){
  word=word.replace(/\[.*$/u,'').trim();
  if(!word||/\p{N}/u.test(word))return '';
  word=word.replace(/^[^\p{L}]+|[^\p{L}\p{M}'’\-]+$/gu,'').trim();
- if(!word||!/\p{L}/u.test(word))return '';
+ if(!word||!/^[A-Za-z'’-]+$/.test(word)||word.length===1||RELIGIOUS_TERMS.has(word.toLocaleLowerCase())||!/[A-Za-z]/.test(word))return '';
  const first=word.search(/\p{L}/u);
  return word.slice(0,first)+word.charAt(first).toLocaleUpperCase()+word.slice(first+1);
 }
