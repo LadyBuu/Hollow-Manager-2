@@ -85,7 +85,8 @@ async function importJSON(text){
  return addText(words.map(item=>typeof item==='string'?item:item&&item.word?item.word:'').join('\n'));
 }
 async function exportJSON(){const entries=await getAll();return JSON.stringify({version:1,exportedAt:new Date().toISOString(),words:entries.map(entry=>entry.word)},null,2);}
-async function clear(){const db=await openDatabase();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('Could not clear database.'));});}\nasync function removeWord(word){const db=await openDatabase(),key=String(word).toLocaleLowerCase();return new Promise((resolve,reject)=>{const tx=db.transaction([STORE,BLOCKED],'readwrite');tx.objectStore(STORE).delete(key);tx.objectStore(BLOCKED).put({key,word});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
+async function clear(){const db=await openDatabase();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('Could not clear database.'));});}
+async function removeWord(word){const db=await openDatabase(),key=String(word).toLocaleLowerCase();return new Promise((resolve,reject)=>{const tx=db.transaction([STORE,BLOCKED],'readwrite');tx.objectStore(STORE).delete(key);tx.objectStore(BLOCKED).put({key,word});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
 window.WordHoard=Object.freeze({openDatabase,parseText,addText,getAll,count,random,importJSON,exportJSON,clear,removeWord});
 const $=id=>document.getElementById(id);
 // This script also supplies the Word Hoard API to the main app.
