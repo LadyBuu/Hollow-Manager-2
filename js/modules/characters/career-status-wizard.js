@@ -26,15 +26,8 @@
  *   senior   ongoing (no end)
  *   support  ongoing (no end)
  *
- * DURATION CONVENTION (user-selected):
- *   Inclusive — the next stage starts in the SAME YEAR the
- *               previous stage ends.
- *   Exclusive — the next stage starts in the YEAR AFTER the
- *               previous stage ends.
- *
- *   The convention affects ONLY the next stage's startYear.
- *   A stage's endYear is always `startYear + duration - 1`,
- *   regardless of convention.
+ * TIMING: Every stage is inclusive. The next stage starts in
+ *         the same year the previous stage ends.
  *
  * REPLACE SEMANTICS:
  *   The wizard REPLACES the character's careerStatus array with
@@ -191,7 +184,6 @@
         startYear: 1900,
         route: 'A',
         routeBJunior: true,
-        convention: 'exclusive'
     };
 
     var _contentChangeHandler = null;
@@ -308,7 +300,6 @@
         var startYear = _state.startYear;
         var route = _state.route;
         var routeBJunior = _state.routeBJunior;
-        var convention = _state.convention;
 
         var plan = ['trainee', 'rookie'];
         if (route === 'A') {
@@ -366,9 +357,7 @@
             if (ongoing) {
                 // Nothing after an ongoing stage.
             } else {
-                cursor = (convention === 'inclusive')
-                    ? endYear
-                    : endYear + 1;
+                cursor = endYear;
             }
         }
 
@@ -436,15 +425,6 @@
             _state.routeBJunior = juniorCb.checked === true;
         }
 
-        var convRadios = _contentEl.querySelectorAll(
-            'input[name="csw-convention"]'
-        );
-        for (var j = 0; j < convRadios.length; j++) {
-            if (convRadios[j].checked) {
-                _state.convention = convRadios[j].value;
-                break;
-            }
-        }
     }
 
     // ============================================================
@@ -524,7 +504,7 @@
         // ---- Start year ----
         html += '<div class="form-group csw-field">';
         html += '<label for="csw-start-year">' +
-                    'Start year (first year of trainee)' +
+                    'Graduation year (career starts this year)' +
                 '</label>';
         html += '<input type="number" id="csw-start-year" ' +
                     'class="csw-start-year" ' +
@@ -541,14 +521,14 @@
         html += '<label class="csw-radio-row">';
         html += '<input type="radio" name="csw-route" value="A"' +
                     (_state.route === 'A' ? ' checked' : '') + '>';
-        html += '<span>Route A \u2014 Trainee \u2192 Rookie \u2192 ' +
+        html += '<span>Senior \u2014 Trainee \u2192 Rookie \u2192 ' +
                     'Junior \u2192 Senior</span>';
         html += '</label>';
 
         html += '<label class="csw-radio-row">';
         html += '<input type="radio" name="csw-route" value="B"' +
                     (_state.route === 'B' ? ' checked' : '') + '>';
-        html += '<span>Route B \u2014 Trainee \u2192 Rookie \u2192 ' +
+        html += '<span>Support \u2014 Trainee \u2192 Rookie \u2192 ' +
                     '\u2026 \u2192 Support</span>';
         html += '</label>';
 
@@ -562,32 +542,6 @@
         html += '<span>Include a Junior stage before Support</span>';
         html += '</label>';
         html += '</div>';
-
-        html += '</div>';
-
-        // ---- Convention ----
-        html += '<div class="form-group csw-field">';
-        html += '<label>Next-stage timing</label>';
-
-        html += '<label class="csw-radio-row">';
-        html += '<input type="radio" name="csw-convention" ' +
-                    'value="inclusive"' +
-                    (_state.convention === 'inclusive'
-                        ? ' checked' : '') + '>';
-        html += '<span>Inclusive \u2014 next stage starts in the ' +
-                    '<strong>same year</strong> the previous stage ' +
-                    'ends</span>';
-        html += '</label>';
-
-        html += '<label class="csw-radio-row">';
-        html += '<input type="radio" name="csw-convention" ' +
-                    'value="exclusive"' +
-                    (_state.convention === 'exclusive'
-                        ? ' checked' : '') + '>';
-        html += '<span>Exclusive \u2014 next stage starts the ' +
-                    '<strong>year after</strong> the previous stage ' +
-                    'ends</span>';
-        html += '</label>';
 
         html += '</div>';
 
@@ -883,7 +837,6 @@
         _state.startYear = seedYear;
         _state.route = 'A';
         _state.routeBJunior = true;
-        _state.convention = 'exclusive';
 
         var M = getModal();
         var shell = M.createModal('career-status-wizard-modal');
@@ -1009,10 +962,6 @@
             }
             if (typeof next.routeBJunior === 'boolean') {
                 _state.routeBJunior = next.routeBJunior;
-            }
-            if (next.convention === 'inclusive' ||
-                next.convention === 'exclusive') {
-                _state.convention = next.convention;
             }
         },
         _setCharId: function(id) {
