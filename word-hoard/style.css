@@ -24,3 +24,5 @@
 [data-theme="dating-sim"] .random-word:nth-child(3n){color:#55b9c9}
 [data-theme="dating-sim"] .hint::before{content:"✧ ";color:#dc55bd}
 [data-theme="dating-sim"] footer{border-top:1px dotted #b99cdb}
+
+.hoard-search{width:100%;padding:11px 13px;color:var(--text);background:var(--panel-alt);border:1px solid var(--border);border-radius:8px}.hoard-list{max-height:420px;overflow:auto;margin-top:12px;border:1px solid var(--border);border-radius:9px}.hoard-word-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border)}.hoard-word-row:last-child{border-bottom:0}.hoard-word-row span{overflow-wrap:anywhere}.hoard-word-row .button{min-height:30px;padding:5px 10px;font-size:.75rem;flex-shrink:0}
