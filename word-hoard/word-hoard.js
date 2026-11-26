@@ -1,6 +1,6 @@
 (function(){
 'use strict';
-const DB_NAME='hollow-word-hoard',DB_VERSION=2,STORE='words';
+const DB_NAME='hollow-word-hoard',DB_VERSION=3,STORE='words',BLOCKED='blocked';
 let dbPromise;
 function openDatabase(){
  if(dbPromise)return dbPromise;
@@ -9,7 +9,7 @@ function openDatabase(){
   const request=indexedDB.open(DB_NAME,DB_VERSION);
   request.onupgradeneeded=event=>{
    const db=request.result;
-   const store=db.objectStoreNames.contains(STORE)
+   if(!db.objectStoreNames.contains(BLOCKED))db.createObjectStore(BLOCKED,{keyPath:'key'});\n   const store=db.objectStoreNames.contains(STORE)
     ?request.transaction.objectStore(STORE)
     :db.createObjectStore(STORE,{keyPath:'key'});
    if(event.oldVersion<2&&event.oldVersion>0){
@@ -61,7 +61,7 @@ async function addText(text,options={}){
  const db=await openDatabase();
  return new Promise((resolve,reject)=>{
   const tx=db.transaction(STORE,'readwrite'),store=tx.objectStore(STORE);let added=0,duplicates=0;
-  for(const entry of incoming){const r=store.add({...entry,addedAt:Date.now()});r.onsuccess=()=>added++;r.onerror=event=>{if(r.error&&r.error.name==='ConstraintError'){duplicates++;event.preventDefault();event.stopPropagation();}};}
+  for(const entry of eligible){const r=store.add({...entry,addedAt:Date.now()});r.onsuccess=()=>added++;r.onerror=event=>{if(r.error&&r.error.name==='ConstraintError'){duplicates++;event.preventDefault();event.stopPropagation();}};}
   tx.oncomplete=()=>count().then(total=>resolve({added,duplicates:(incoming.duplicates||0)+incoming.length-added,total})).catch(reject);
   tx.onerror=()=>reject(tx.error||new Error('Could not save imported words.'));
   tx.onabort=()=>reject(tx.error||new Error('Import was cancelled.'));
@@ -82,8 +82,8 @@ async function importJSON(text){
  return addText(words.map(item=>typeof item==='string'?item:item&&item.word?item.word:'').join('\n'));
 }
 async function exportJSON(){const entries=await getAll();return JSON.stringify({version:1,exportedAt:new Date().toISOString(),words:entries.map(entry=>entry.word)},null,2);}
-async function clear(){const db=await openDatabase();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('Could not clear database.'));});}
-window.WordHoard=Object.freeze({openDatabase,parseText,addText,getAll,count,random,importJSON,exportJSON,clear});
+async function clear(){const db=await openDatabase();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error||new Error('Could not clear database.'));});}\nasync function removeWord(word){const db=await openDatabase(),key=String(word).toLocaleLowerCase();return new Promise((resolve,reject)=>{const tx=db.transaction([STORE,BLOCKED],'readwrite');tx.objectStore(STORE).delete(key);tx.objectStore(BLOCKED).put({key,word});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}
+window.WordHoard=Object.freeze({openDatabase,parseText,addText,getAll,count,random,importJSON,exportJSON,clear,removeWord});
 const $=id=>document.getElementById(id);
 // This script also supplies the Word Hoard API to the main app.
 // Bind page controls only on the standalone Word Hoard page.
