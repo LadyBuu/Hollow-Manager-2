@@ -1,6 +1,6 @@
 (function(){
 'use strict';
-const DB_NAME='hollow-word-hoard',DB_VERSION=3,STORE='words',BLOCKED='blocked';
+const DB_NAME='hollow-word-hoard',DB_VERSION=4,STORE='words',BLOCKED='blocked';
 let dbPromise;
 function openDatabase(){
  if(dbPromise)return dbPromise;
@@ -23,6 +23,15 @@ function openDatabase(){
      cursor.continue();
     };
    }
+   else if(event.oldVersion<4&&event.oldVersion>0){
+    const cursorRequest=store.openCursor();
+    cursorRequest.onsuccess=()=>{
+     const cursor=cursorRequest.result;if(!cursor)return;
+     const record=cursor.value,word=normaliseWord(record.word);
+     if(!word)cursor.delete();
+     cursor.continue();
+    };
+   }
   };
   request.onsuccess=()=>resolve(request.result);
   request.onerror=()=>reject(request.error||new Error('Could not open the word database.'));
@@ -30,8 +39,23 @@ function openDatabase(){
  });
  return dbPromise;
 }
+const RELIGIOUS_TERMS=new Set([
+ 'bible','biblical','quran','koran','torah','talmud','gospel','gospels','psalm','psalms',
+ 'jesus','christ','christian','christianity','christmas','easter','church','churches',
+ 'allah','islam','islamic','muslim','muslims','muhammad','mohammed','ramadan','eid',
+ 'mosque','mosques','hindu','hinduism','hindus','krishna','vishnu','shiva','brahma',
+ 'buddha','buddhism','buddhist','buddhists','dharma','nirvana','sikh','sikhism',
+ 'gurugranth','waheguru','jain','jainism','jainism','judaism','jewish','jews',
+ 'hanukkah','chanukah','passover','pesach','rabbi','synagogue','yomkippur',
+ 'pagan','paganism','wicca','wiccan','astrology','zodiac','horoscope',
+ 'god','gods','goddess','deity','deities','prayer','prayers','worship','worshipper',
+ 'saint','saints','angel','angels','demon','demons','devil','satan','heaven','hell',
+ 'prophet','prophets','scripture','scriptures','sacred','holy','religion','religious'
+]);
 function normaliseWord(value){
- let word=String(value??'').normalize('NFKC').trim();
+ let raw=String(value??'').normalize('NFKC').trim();
+ if(raw.includes('/')||!/^[A-Za-z'’-]+$/.test(raw))return '';
+ let word=raw;
  word=word.replace(/\[.*$/u,'').trim();
  if(!word||/\p{N}/u.test(word))return '';
  word=word.replace(/^[^\p{L}]+|[^\p{L}\p{M}'’\-]+$/gu,'').trim();
