@@ -97,16 +97,17 @@ function showWords(words){
  words.forEach(word=>{const el=document.createElement('span');el.className='random-word';el.textContent=word;box.append(el);});
  lastResult=words;$('copy-button').disabled=false;
 }
+async function replaceImport(text){await clear();return addText(text);}
 async function add(text,options={}){
  if(!String(text).trim()){status('add-feedback','There is nothing to add.');return;}
  status('add-feedback','Adding…');
- try{const result=await addText(text);status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');if(options.clear)$('word-input').value='';await refreshCount();}
+ try{const result=await (options.replace?replaceImport(text):addText(text));status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');if(options.clear)$('word-input').value='';await refreshCount();}
  catch(error){status('add-feedback',error.message||'Import failed.',true);}
 }
 $('add-button').addEventListener('click',()=>add($('word-input').value,{clear:true}));
 $('file-input').addEventListener('change',async event=>{
  const file=event.target.files&&event.target.files[0];if(!file)return;
- try{const text=await file.text();if(/\.json$/i.test(file.name)){const result=await importJSON(text);status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');await refreshCount();}else{await add(text);}}catch(error){status('add-feedback',error.message||'Could not read file.',true);}event.target.value='';
+ try{const text=await file.text();const replace=confirm('Replace the current hoard? Choose Cancel to merge/add.');if(replace)await clear();if(/\.json$/i.test(file.name)){const result=await importJSON(text);status('add-feedback','Added '+result.added.toLocaleString()+' · skipped '+result.duplicates.toLocaleString()+' duplicates');await refreshCount();}else{await add(text);}}catch(error){status('add-feedback',error.message||'Could not read file.',true);}event.target.value='';
 });
 $('random-button').addEventListener('click',async()=>{
  try{const amount=Math.max(1,Math.min(100,Number($('random-count').value)||1));$('random-count').value=amount;const words=await random(amount);showWords(words);if(!words.length)status('add-feedback','The hoard is empty. Add some words first.');}
@@ -119,7 +120,7 @@ $('export-button').addEventListener('click',async()=>{
 });
 $('backup-input').addEventListener('change',async event=>{
  const file=event.target.files&&event.target.files[0];if(!file)return;
- try{const result=await importJSON(await file.text());status('backup-feedback','Merged backup: added '+result.added.toLocaleString()+', skipped '+result.duplicates.toLocaleString()+' duplicates.');await refreshCount();}
+ try{const text=await file.text();const replace=confirm('Replace the current hoard? Choose Cancel to merge.');if(replace)await clear();const result=await importJSON(text);status('backup-feedback','Merged backup: added '+result.added.toLocaleString()+', skipped '+result.duplicates.toLocaleString()+' duplicates.');await refreshCount();}
  catch(error){status('backup-feedback',error.message||'Could not import backup.',true);}event.target.value='';
 });
 $('clear-button').addEventListener('click',async()=>{
@@ -127,5 +128,7 @@ $('clear-button').addEventListener('click',async()=>{
  try{await clear();showWords([]);await refreshCount();status('backup-feedback','The hoard has been cleared.');}
  catch(error){status('backup-feedback',error.message||'Could not clear database.',true);}
 });
-openDatabase().then(refreshCount).catch(error=>{status('storage-status',error.message||'Database unavailable.',true);status('add-feedback','Storage is unavailable in this browser.',true);});}
+async function renderHoard(){const list=$('hoard-list');if(!list)return;const q=$('hoard-search').value.trim().toLocaleLowerCase();const words=(await getAll()).map(x=>x.word).filter(w=>w.toLocaleLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b));list.replaceChildren();$('hoard-list-count').textContent=words.length.toLocaleString()+' shown';words.forEach(word=>{const row=document.createElement('div');row.className='hoard-word-row';const label=document.createElement('span');label.textContent=word;const del=document.createElement('button');del.className='button secondary';del.textContent='Delete';del.addEventListener('click',async()=>{if(!confirm('Delete '+word+' and block it from future imports?'))return;await removeWord(word);await renderHoard();await refreshCount();});row.append(label,del);list.append(row);});}
+$('hoard-search').addEventListener('input',renderHoard);
+openDatabase().then(refreshCount).then(renderHoard).catch(error=>{status('storage-status',error.message||'Database unavailable.',true);status('add-feedback','Storage is unavailable in this browser.',true);});}
 })();
